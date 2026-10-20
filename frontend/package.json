@@ -39,6 +39,9 @@
   "overrides": {
     "runed": {
       "@sveltejs/kit": "$@sveltejs/kit"
+    },
+    "@vscode/markdown-it-katex": {
+      "katex": "$katex"
     }
   }
 }
