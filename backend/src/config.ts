@@ -1,0 +1,44 @@
+import { z } from "zod";
+
+const schema = z.object({
+  NODE_ENV: z.enum(["development", "production", "test"]).default("production"),
+  PORT: z.coerce.number().int().default(3000),
+  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+  APP_ORIGIN: z.url(),
+  DATABASE_HOST: z.string().default("db"),
+  DATABASE_PORT: z.coerce.number().int().default(5432),
+  DATABASE_NAME: z.string().default("research_hub"),
+  DATABASE_USER: z.string().default("research_hub"),
+  POSTGRES_PASSWORD: z.string().min(1),
+  OWNER_NAME: z.string().min(1).default("Owner"),
+  OWNER_PASSWORD: z.string().min(8),
+  AUTH_SECRET: z.string().min(32),
+  S3_ENDPOINT: z.url().default("http://rustfs:9000"),
+  S3_REGION: z.string().default("us-east-1"),
+  S3_BUCKET: z.string().min(3).default("hub"),
+  S3_ACCESS_KEY: z.string().min(1),
+  S3_SECRET_KEY: z.string().min(1),
+  OVERLEAF_URL: z.string().default(""),
+  VAPID_PUBLIC_KEY: z.string().default(""),
+  VAPID_PRIVATE_KEY: z.string().default(""),
+  VAPID_SUBJECT: z.string().default("mailto:admin@example.com"),
+  WEBAUTHN_RP_ID: z.string().default("localhost"),
+  WEBAUTHN_RP_NAME: z.string().default("Speech-AI Research Hub"),
+  /** Max upload sizes in bytes. */
+  MAX_MEDIA_BYTES: z.coerce.number().int().default(1024 * 1024 * 1024),
+  MAX_SLIDE_ZIP_BYTES: z.coerce.number().int().default(200 * 1024 * 1024),
+  MAX_REFERENCE_BYTES: z.coerce.number().int().default(50 * 1024 * 1024),
+});
+
+export type Config = z.infer<typeof schema>;
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const parsed = schema.safeParse(env);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("\n");
+    throw new Error(`Invalid configuration:\n${issues}`);
+  }
+  return parsed.data;
+}
+
+export const secureCookies = (config: Config) => config.APP_ORIGIN.startsWith("https://");
