@@ -2,8 +2,14 @@ import webpush from "web-push";
 import type { FastifyBaseLogger } from "fastify";
 import type { Config } from "../config.js";
 import type { Db, Queryable } from "../db.js";
+import type { NotifyPref } from "./preferences.js";
 
 export type NotificationPayload = { kind: "media" | "slide" | "system"; title: string; body: string; url: string };
+/**
+ * `pref`: the `preferences.notify` flag that gates the Web Push (users who turned it off get no push).
+ * `null` = always push (e.g. the explicit push test). In-app notifications are recorded regardless.
+ */
+export type PushOptions = { pref: NotifyPref | null; tag?: string };
 
 export class Notifier {
   private readonly pushEnabled: boolean;
@@ -25,16 +31,24 @@ export class Notifier {
     );
   }
 
-  /** Best-effort Web Push; expired subscriptions are removed. Never throws. */
-  async push(userIds: string[], payload: NotificationPayload, tag?: string) {
+  /** Push subscriptions of `userIds` that want a push for `pref`. A missing flag means on; only `false` opts out. */
+  async subscriptionsFor(userIds: string[], pref: NotifyPref | null) {
+    const result = await this.db.query<{ endpoint: string; p256dh: string; auth: string }>(
+      `SELECT s.endpoint,s.p256dh,s.auth FROM push_subscriptions s JOIN users u ON u.id=s.user_id
+        WHERE s.user_id=ANY($1::uuid[]) AND u.disabled_at IS NULL
+          AND ($2::text IS NULL OR (u.preferences->'notify'->$2::text) IS DISTINCT FROM 'false'::jsonb)`,
+      [userIds, pref],
+    );
+    return result.rows;
+  }
+
+  /** Best-effort Web Push to users whose `options.pref` is on; expired subscriptions are removed. Never throws. */
+  async push(userIds: string[], payload: NotificationPayload, options: PushOptions) {
     if (!userIds.length || !this.pushEnabled) return;
     try {
-      const subs = await this.db.query<{ endpoint: string; p256dh: string; auth: string }>(
-        "SELECT endpoint,p256dh,auth FROM push_subscriptions WHERE user_id=ANY($1::uuid[])",
-        [userIds],
-      );
-      const body = JSON.stringify({ ...payload, tag: tag ?? payload.kind });
-      await Promise.all(subs.rows.map(async sub => {
+      const subs = await this.subscriptionsFor(userIds, options.pref);
+      const body = JSON.stringify({ ...payload, tag: options.tag ?? payload.kind });
+      await Promise.all(subs.map(async sub => {
         try {
           await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, body, { TTL: 3600, urgency: "high" });
         } catch (error) {
@@ -48,9 +62,9 @@ export class Notifier {
     }
   }
 
-  async notify(userIds: string[], payload: NotificationPayload, tag?: string) {
+  async notify(userIds: string[], payload: NotificationPayload, options: PushOptions) {
     await this.record(this.db, userIds, payload);
-    await this.push(userIds, payload, tag);
+    await this.push(userIds, payload, options);
   }
 }
 

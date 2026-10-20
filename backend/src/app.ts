@@ -21,6 +21,9 @@ import slides from "./routes/slides.js";
 import slideReviews from "./routes/slide-reviews.js";
 import slideTags from "./routes/slide-tags.js";
 import slideView from "./routes/slide-view.js";
+import dashboard from "./routes/dashboard.js";
+import search from "./routes/search.js";
+import jobs from "./routes/jobs.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -90,6 +93,9 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(slideReviews, { prefix: "/api" });
   await app.register(slideTags, { prefix: "/api" });
   await app.register(slideView, { prefix: "/api" });
+  await app.register(dashboard, { prefix: "/api" });
+  await app.register(search, { prefix: "/api" });
+  await app.register(jobs, { prefix: "/api" });
 
   return app;
 }

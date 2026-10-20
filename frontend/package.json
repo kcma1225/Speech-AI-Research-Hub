@@ -3,6 +3,10 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
+  "imports": {
+    "#lib": "./src/lib",
+    "#lib/*": "./src/lib/*"
+  },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
@@ -10,15 +14,26 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "devDependencies": {
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/noto-sans-tc": "5.3.1",
+    "@fontsource-variable/noto-serif-tc": "5.3.1",
+    "@fontsource/instrument-serif": "5.3.0",
+    "@lucide/svelte": "1.60.0",
     "@sveltejs/adapter-static": "^4.0.0",
     "@sveltejs/kit": "^3.1.0",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^22.20.5",
+    "bits-ui": "2.19.5",
     "svelte": "^5.57.2",
     "svelte-check": "^4.7.7",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vite": "^8.0.12"
+  },
+  "overrides": {
+    "runed": {
+      "@sveltejs/kit": "$@sveltejs/kit"
+    }
   }
 }

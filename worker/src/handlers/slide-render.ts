@@ -56,7 +56,9 @@ export const slideRender: Handler = async (raw, context) => {
   if (!(await exists(htmlFile))) throw new JobInputError(`編譯後找不到 ${entryHtml}。\n${tail(render.log)}`);
 
   progress(STAGES.pdf, 60);
-  await exportPdf(outputDir, htmlFile, context);
+  // Kept outside outputDir so it is not uploaded with the deck's own files.
+  const thumbnailFile = path.join(workDir, THUMBNAIL_NAME);
+  const captured = await exportPdf(outputDir, htmlFile, thumbnailFile, context);
 
   progress(STAGES.upload, 80);
   const files = await listFiles(outputDir);
@@ -80,6 +82,7 @@ export const slideRender: Handler = async (raw, context) => {
   });
   // Written last: a concurrent or crashed upload never leaves a marker over an incomplete set.
   if (!sharedReady) await storage.put(sharedPrefix + SHARED_MARKER, "", "text/plain");
+  const thumbnailKey = await uploadThumbnail(thumbnailFile, thumbnailTarget(outputPrefix, own, captured), context);
 
   const version = await run("quarto", ["--version"], { timeoutMs: 30_000, signal, keepLog: 200 });
   progress(STAGES.done, 100);
@@ -89,15 +92,17 @@ export const slideRender: Handler = async (raw, context) => {
     quartoVersion: version.log.trim(),
     fileCount: files.length,
     sharedPrefix,
+    ...(thumbnailKey ? { thumbnailKey } : {}),
   } satisfies SlideRenderResult;
 };
 
 /**
  * Bundles CDN math/fonts locally (prepare-pdf.py) and prints the deck with headless Chrome
- * (one retry for a blank/incomplete print).
+ * (one retry for a blank/incomplete print), then screenshots the first slide in the same browser.
  * The worker has no internet, so anything still pointing at a CDN would render wrong.
+ * Returns whether `thumbnailFile` was written; a thumbnail failure is only logged.
  */
-async function exportPdf(outputDir: string, htmlFile: string, { config, signal }: HandlerContext) {
+async function exportPdf(outputDir: string, htmlFile: string, thumbnailFile: string, { config, signal, log }: HandlerContext): Promise<boolean> {
   const prepare = await run("python3", [config.PREPARE_PDF_SCRIPT, outputDir, htmlFile], {
     timeoutMs: 60_000,
     signal,
@@ -113,10 +118,20 @@ async function exportPdf(outputDir: string, htmlFile: string, { config, signal }
     const profile = path.join(path.dirname(outputDir), `chrome-profile-${attempt}`);
     await mkdir(profile, { recursive: true });
     try {
-      await printPdf(pathToFileURL(htmlFile).href + "?print-pdf", pdf, { chromeBin: config.CHROME_BIN, profileDir: profile, timeoutMs: PDF_TIMEOUT_MS, signal });
+      await rm(thumbnailFile, { force: true });
+      const { thumbnailError } = await printPdf(pathToFileURL(htmlFile).href + "?print-pdf", pdf, {
+        chromeBin: config.CHROME_BIN,
+        profileDir: profile,
+        timeoutMs: PDF_TIMEOUT_MS,
+        signal,
+        thumbnail: { url: pathToFileURL(htmlFile).href, output: thumbnailFile },
+      });
       const header = await readFile(pdf).then(buffer => buffer.subarray(0, 5).toString("latin1"), () => "");
       const size = await stat(pdf).then(info => info.size, () => 0);
-      if (header === "%PDF-" && size >= 10_000) return;
+      if (header === "%PDF-" && size >= 10_000) {
+        if (thumbnailError) log.warn({ err: thumbnailError }, "slide thumbnail failed; continuing without it");
+        return !thumbnailError && (await exists(thumbnailFile));
+      }
       failure = `輸出檔案不完整（${size} bytes）`;
     } catch (error) {
       if (error instanceof JobAbortedError) throw error;
@@ -129,6 +144,29 @@ async function exportPdf(outputDir: string, htmlFile: string, { config, signal }
 }
 
 const PDF_ATTEMPTS = 2;
+export const THUMBNAIL_NAME = "_hub-thumbnail.png";
+
+/**
+ * Key for the generated thumbnail, or undefined when there is none to upload: not captured, or the
+ * deck ships its own `_hub-thumbnail.png` at the output root (never overwrite a file the deck serves).
+ */
+export function thumbnailTarget(outputPrefix: string, ownFiles: readonly string[], captured: boolean): string | undefined {
+  if (!captured || ownFiles.includes(THUMBNAIL_NAME)) return undefined;
+  return outputPrefix + THUMBNAIL_NAME;
+}
+
+/** Best-effort upload; any failure other than an abort is logged and the thumbnail omitted. */
+async function uploadThumbnail(file: string, key: string | undefined, { storage, signal, log }: HandlerContext): Promise<string | undefined> {
+  if (!key) return undefined;
+  try {
+    await storage.uploadFile(key, file, "image/png", signal);
+    return key;
+  } catch (error) {
+    throwIfAborted(signal);
+    log.warn({ err: error, key }, "could not upload slide thumbnail; continuing without it");
+    return undefined;
+  }
+}
 
 /** Relative posix paths of every output file, excluding logs. */
 async function listFiles(root: string): Promise<string[]> {

@@ -1,1 +1,190 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/noto-sans-tc";
+@import "@fontsource/instrument-serif";
+@import "@fontsource/instrument-serif/400-italic.css";
+@import "@fontsource-variable/noto-serif-tc";
+
+/* Dark mode follows data-theme on <html>, set by the bootstrap script in app.html and lib/theme. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #ecebe7;
+  --canvas-2: #e4e2dd;
+  --surface: #ffffff;
+  --surface-2: #f6f5f2;
+  --surface-3: #efede9;
+  --ink: #161514;
+  --ink-2: #4c4a46;
+  --ink-3: #8a8780;
+  --line: #e3e1dc;
+  --line-2: #d6d3cc;
+  --primary: #161514;
+  --primary-ink: #fbfaf8;
+  --primary-hover: #34322f;
+  --ring: #161514;
+  --danger: #c2362b;
+  --danger-soft: #fbe6e3;
+  --success: #2f7d4f;
+  --overlay: rgb(22 21 20 / 0.32);
+  --shadow-card: 0 1px 2px rgb(22 21 20 / 0.04), 0 1px 1px rgb(22 21 20 / 0.02);
+  --shadow-pop: 0 12px 32px -8px rgb(22 21 20 / 0.18), 0 2px 6px rgb(22 21 20 / 0.06);
+
+  /* Pastel pills (bg / ink). */
+  --pill-peach: #fde3d3;
+  --pill-peach-ink: #8a3d14;
+  --pill-mint: #d9f0e1;
+  --pill-mint-ink: #22603c;
+  --pill-sky: #dbe9fb;
+  --pill-sky-ink: #24508c;
+  --pill-lilac: #e9e1fb;
+  --pill-lilac-ink: #5434a0;
+  --pill-butter: #f8edc6;
+  --pill-butter-ink: #765a0b;
+  --pill-rose: #fadfe6;
+  --pill-rose-ink: #962a4b;
+  --pill-stone: #ebe9e4;
+  --pill-stone-ink: #4c4a46;
+
+  /* Warm hero gradient. */
+  --hero-a: #ffd7bd;
+  --hero-b: #f8b9a4;
+  --hero-c: #f3c6dc;
+  --hero-d: #fbe9d7;
+  --hero-ink: #2a1a12;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #121211;
+  --canvas-2: #1a1918;
+  --surface: #1c1b1a;
+  --surface-2: #232220;
+  --surface-3: #2b2a27;
+  --ink: #f3f0ea;
+  --ink-2: #bdb8af;
+  --ink-3: #85817a;
+  --line: #2c2b28;
+  --line-2: #3a3834;
+  --primary: #f3f0ea;
+  --primary-ink: #161514;
+  --primary-hover: #d9d5cd;
+  --ring: #f3f0ea;
+  --danger: #ef7a6e;
+  --danger-soft: #3a1f1b;
+  --success: #6fc493;
+  --overlay: rgb(0 0 0 / 0.55);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-pop: 0 16px 40px -8px rgb(0 0 0 / 0.6), 0 2px 6px rgb(0 0 0 / 0.3);
+
+  --pill-peach: #3d2619;
+  --pill-peach-ink: #f6b48d;
+  --pill-mint: #1b3326;
+  --pill-mint-ink: #8fd6aa;
+  --pill-sky: #1b2a40;
+  --pill-sky-ink: #9cc2f5;
+  --pill-lilac: #2a2240;
+  --pill-lilac-ink: #c3b0f5;
+  --pill-butter: #352d14;
+  --pill-butter-ink: #ecd283;
+  --pill-rose: #3a1d27;
+  --pill-rose-ink: #f2a3bb;
+  --pill-stone: #2b2a27;
+  --pill-stone-ink: #c9c4bb;
+
+  --hero-a: #5a3220;
+  --hero-b: #6b2f2a;
+  --hero-c: #4d2a44;
+  --hero-d: #2c211b;
+  --hero-ink: #fbeee4;
+}
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-canvas-2: var(--canvas-2);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-primary: var(--primary);
+  --color-primary-ink: var(--primary-ink);
+  --color-primary-hover: var(--primary-hover);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-success: var(--success);
+  --color-hero-ink: var(--hero-ink);
+  --font-sans: "Inter Variable", "Noto Sans TC Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Instrument Serif", "Noto Serif TC Variable", ui-serif, Georgia, serif;
+  --shadow-card: var(--shadow-card);
+  --shadow-pop: var(--shadow-pop);
+  --radius-card: 22px;
+}
+
+@layer base {
+  html {
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    min-height: 100dvh;
+    background: var(--canvas);
+  }
+  ::selection {
+    background: var(--hero-b);
+    color: var(--hero-ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-2) transparent;
+  }
+}
+
+@utility hero-gradient {
+  background:
+    radial-gradient(120% 140% at 0% 0%, var(--hero-a) 0%, transparent 55%),
+    radial-gradient(90% 120% at 100% 0%, var(--hero-c) 0%, transparent 60%),
+    radial-gradient(120% 120% at 70% 100%, var(--hero-b) 0%, transparent 60%),
+    var(--hero-d);
+}
+
+@utility font-display {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+@keyframes sheet-up {
+  from { transform: translateY(24px); opacity: 0; }
+}
+@keyframes sheet-left {
+  from { transform: translateX(24px); opacity: 0; }
+}

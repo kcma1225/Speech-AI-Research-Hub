@@ -7,7 +7,7 @@ import { transaction, type Queryable } from "../db.js";
 import { requireEditor, requireUser, type CurrentUser } from "../lib/auth.js";
 import { badRequest, conflict, HttpError, isUniqueViolation, notFound, parse } from "../lib/http.js";
 import { keys } from "../lib/storage.js";
-import { newShareKey, projectById, slugPattern, type SlideProject } from "../lib/slides/access.js";
+import { newShareKey, projectById, slideUrls, slugPattern, type SlideProject } from "../lib/slides/access.js";
 import { listVersions, liveStatus, slideDetail, VERSION_SELECT } from "../lib/slides/detail.js";
 import { parseTagFilter, tagIdsSchema } from "../lib/slides/filters.js";
 import { receiveUpload, type ReceivedUpload } from "../lib/slides/upload.js";
@@ -107,7 +107,7 @@ const slides: FastifyPluginAsync = async app => {
     const q = query.q?.trim() ? `%${escapeLike(query.q.trim())}%` : null;
     const result = await app.db.query(
       `SELECT p.id,p.title,p.slug,p.public_view,p.created_at,p.updated_at,p.active_version_id,
-              av.version AS active_version,
+              av.version AS active_version,(av.thumbnail_key IS NOT NULL AND av.status='published') AS has_thumbnail,
               lv.id AS latest_version_id,lv.version AS latest_version,lv.status AS latest_status,lj.status AS latest_job_status,
               COALESCE((SELECT json_agg(json_build_object('id',t.id,'name',t.name) ORDER BY lower(t.name))
                           FROM slide_project_tags j JOIN slide_tags t ON t.id=j.tag_id WHERE j.project_id=p.id),'[]') AS tags,
@@ -123,9 +123,10 @@ const slides: FastifyPluginAsync = async app => {
         ORDER BY p.updated_at DESC, p.id`,
       [q, filter.mode === "set", filter.mode === "set" ? filter.ids : [], filter.mode === "set" && filter.untagged],
     );
-    const rows = result.rows.map(({ latest_job_status, latest_status, ...row }) => ({
+    const rows = result.rows.map(({ latest_job_status, latest_status, has_thumbnail, ...row }) => ({
       ...row,
       latest_status: latest_status ? liveStatus({ status: latest_status, job_status: latest_job_status }) : null,
+      thumbnailUrl: has_thumbnail ? slideUrls.thumbnail(row.id, row.active_version_id) : null,
     }));
     return reply.header("Cache-Control", "no-store").send({ slides: rows });
   });
@@ -181,6 +182,32 @@ const slides: FastifyPluginAsync = async app => {
     const project = await projectById(app.db, id);
     if (!project) throw notFound(MISSING);
     return reply.header("Cache-Control", "no-store").send(await slideDetail(app.db, secret, project, user));
+  });
+
+  /** Active version's first-slide PNG. ETag = version id, so a new active version changes it. */
+  app.get("/slides/:id/thumbnail", async (request, reply) => {
+    await requireUser(request);
+    const { id } = parse(projectParams, request.params, "找不到縮圖。");
+    const row = (await app.db.query<{ id: string; thumbnail_key: string | null }>(
+      `SELECT v.id,v.thumbnail_key FROM slide_projects p JOIN slide_versions v ON v.id=p.active_version_id
+        WHERE p.id=$1 AND v.status='published'`,
+      [id],
+    )).rows[0];
+    if (!row?.thumbnail_key) throw notFound("找不到縮圖。");
+    const etag = `"${row.id}"`;
+    reply
+      .header("Cache-Control", "private, max-age=300")
+      .header("X-Content-Type-Options", "nosniff")
+      .header("ETag", etag);
+    if (request.headers["if-none-match"] === etag) return reply.code(304).send();
+    const object = await app.storage.get(row.thumbnail_key);
+    if (!object) {
+      reply.removeHeader("ETag").header("Cache-Control", "no-store");
+      throw notFound("找不到縮圖。");
+    }
+    reply.header("Content-Type", "image/png");
+    if (object.contentLength !== undefined) reply.header("Content-Length", object.contentLength);
+    return reply.send(object.body);
   });
 
   app.patch("/slides/:id", async request => {

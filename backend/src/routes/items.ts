@@ -53,7 +53,7 @@ type DetailRow = {
   id: string; title: string; content: string; event_date: string; created_at: string; updated_at: string;
   created_by: string; created_by_name: string | null; updated_by: string; updated_by_name: string | null;
   audio_key: string | null; audio_name: string | null; audio_bytes: string | null; audio_duration_seconds: number | null;
-  transcript: unknown; transcript_name: string | null;
+  transcript: unknown; transcript_name: string | null; audio_peaks: number[] | null;
 };
 
 const routes: FastifyPluginAsync = async app => {
@@ -109,7 +109,7 @@ const routes: FastifyPluginAsync = async app => {
     const row = (await app.db.query<DetailRow>(
       `SELECT i.id,i.title,i.content,to_char(i.event_date,'YYYY-MM-DD') AS event_date,i.created_at,i.updated_at,
               i.created_by,cu.name AS created_by_name,i.updated_by,uu.name AS updated_by_name,
-              i.audio_key,i.audio_name,i.audio_bytes,i.audio_duration_seconds,i.transcript,i.transcript_name
+              i.audio_key,i.audio_name,i.audio_bytes,i.audio_duration_seconds,i.audio_peaks,i.transcript,i.transcript_name
          FROM items i LEFT JOIN users cu ON cu.id=i.created_by LEFT JOIN users uu ON uu.id=i.updated_by
         WHERE i.id=$1`,
       [id],
@@ -129,6 +129,7 @@ const routes: FastifyPluginAsync = async app => {
       audio: row.audio_key
         ? { name: row.audio_name, bytes: row.audio_bytes === null ? null : Number(row.audio_bytes), duration_seconds: row.audio_duration_seconds, url: `/api/media/${row.id}` }
         : null,
+      audio_peaks: row.audio_key ? row.audio_peaks ?? null : null,
       transcript: row.transcript ?? null,
       transcript_name: row.transcript_name,
       media_job: mediaJob,

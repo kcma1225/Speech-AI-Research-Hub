@@ -25,7 +25,7 @@ const slideReviews: FastifyPluginAsync = async app => {
     const row = result.rows[0];
     if (!row) throw notFound("簡報不存在。");
     if (row.created_by !== user.id) {
-      await app.notifier.notify([row.created_by], { kind: "slide", title: `${user.name} 新增了簡報審閱`, body: `${row.title}：${input.body}`, url: slideUrls.player(row.slug) }, `review-${row.id}`)
+      await app.notifier.notify([row.created_by], { kind: "slide", title: `${user.name} 新增了簡報審閱`, body: `${row.title}：${input.body}`, url: slideUrls.player(row.slug) }, { pref: "reviews", tag: `review-${row.id}` })
         .catch(error => request.log.warn({ err: error }, "review notification failed"));
     }
     return reply.code(201).send({ review: { id: row.id, body: input.body, created_at: row.created_at, author: user.name, author_id: user.id, replies: [] } });
@@ -50,7 +50,7 @@ const slideReviews: FastifyPluginAsync = async app => {
     const row = result.rows[0];
     if (!row) throw notFound("審閱不存在。");
     if (row.author_id !== user.id) {
-      await app.notifier.notify([row.author_id], { kind: "slide", title: `${user.name} 回覆了你的審閱`, body: `${row.title}：${input.body}`, url: slideUrls.player(row.slug) }, `reply-${row.id}`)
+      await app.notifier.notify([row.author_id], { kind: "slide", title: `${user.name} 回覆了你的審閱`, body: `${row.title}：${input.body}`, url: slideUrls.player(row.slug) }, { pref: "replies", tag: `reply-${row.id}` })
         .catch(error => request.log.warn({ err: error }, "reply notification failed"));
     }
     return reply.code(201).send({ reply: { id: row.id, review_id: reviewId, body: input.body, created_at: row.created_at, author: user.name, author_id: user.id } });

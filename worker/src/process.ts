@@ -8,6 +8,8 @@ export type RunOptions = {
   signal: AbortSignal;
   /** Called with each stdout chunk (as text). */
   onStdout?: (chunk: string) => void;
+  /** Binary stdout: called with each raw chunk instead; stdout is then not kept in `log`. */
+  onStdoutData?: (chunk: Buffer) => void;
   /** Keep this many trailing characters of combined output. */
   keepLog?: number;
 };
@@ -41,6 +43,7 @@ export function run(command: string, args: string[], options: RunOptions): Promi
     const onAbort = () => kill();
     options.signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => {
+      if (options.onStdoutData) return options.onStdoutData(chunk);
       append(chunk);
       options.onStdout?.(chunk.toString("utf8"));
     });

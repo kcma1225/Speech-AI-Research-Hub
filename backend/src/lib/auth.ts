@@ -2,9 +2,32 @@ import { createHash, randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { secureCookies } from "../config.js";
 import { forbidden, unauthorized } from "./http.js";
+import { resolvePreferences, type Preferences } from "./preferences.js";
 
 export type Role = "owner" | "admin" | "member" | "professor";
-export type CurrentUser = { id: string; name: string; role: Role; auth_mode: "either" | "two_factor"; theme: "system" | "light" | "dark" };
+export type Locale = "zh-TW" | "en";
+export type CurrentUser = {
+  id: string;
+  name: string;
+  role: Role;
+  auth_mode: "either" | "two_factor";
+  theme: "system" | "light" | "dark";
+  locale: Locale;
+  /** Stored preferences with defaults filled in. */
+  preferences: Preferences;
+};
+
+/** Columns of `users` (alias `u`) that make up a CurrentUser; pass the row to `toCurrentUser`. */
+export const CURRENT_USER_COLUMNS = "u.id,u.name,u.role,u.auth_mode,u.theme,u.locale,u.preferences";
+export const toCurrentUser = (row: Omit<CurrentUser, "preferences"> & { preferences: unknown }): CurrentUser => ({
+  id: row.id,
+  name: row.name,
+  role: row.role,
+  auth_mode: row.auth_mode,
+  theme: row.theme,
+  locale: row.locale,
+  preferences: resolvePreferences(row.preferences),
+});
 
 export const SESSION_COOKIE = "hub_session";
 const SESSION_DAYS = 30;
@@ -18,7 +41,7 @@ export async function currentUser(request: FastifyRequest): Promise<CurrentUser 
   const token = request.cookies[SESSION_COOKIE];
   if (!token) return (request.user = null);
   const result = await request.server.db.query<CurrentUser & { session_id: string; stale: boolean }>(
-    `SELECT u.id,u.name,u.role,u.auth_mode,u.theme,s.id AS session_id,(s.last_seen_at < now() - interval '10 minutes') AS stale
+    `SELECT ${CURRENT_USER_COLUMNS},s.id AS session_id,(s.last_seen_at < now() - interval '10 minutes') AS stale
        FROM sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token_hash=$1 AND s.expires_at>now() AND u.disabled_at IS NULL`,
     [sha256(token)],
@@ -26,8 +49,7 @@ export async function currentUser(request: FastifyRequest): Promise<CurrentUser 
   const row = result.rows[0];
   if (!row) return (request.user = null);
   if (row.stale) void request.server.db.query("UPDATE sessions SET last_seen_at=now() WHERE id=$1", [row.session_id]).catch(() => {});
-  const { session_id: _, stale: __, ...user } = row;
-  return (request.user = user);
+  return (request.user = toCurrentUser(row));
 }
 
 export async function requireUser(request: FastifyRequest): Promise<CurrentUser> {

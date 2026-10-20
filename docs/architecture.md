@@ -20,7 +20,7 @@ v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf)
 
 | Service | Dir | Responsibility |
 |---|---|---|
-| nginx | `nginx/` | TLS, rate limit on `/api/auth/`, serves `frontend/` build, proxies `/api/` |
+| nginx | `nginx/` | TLS, strict rate limit on `/api/auth/login` and `/api/join`, serves `frontend/` build, proxies `/api/` |
 | frontend | `frontend/` | SvelteKit 2 + Svelte 5, `adapter-static`, SPA (`ssr = false`). Built into the nginx image |
 | backend | `backend/` | All HTTP API, auth, RBAC, migrations, file streaming from S3, job enqueue + finalize |
 | worker | `worker/` | Claims jobs from Postgres, slide render (Quarto → HTML + PDF), media transcode (ffmpeg) |
@@ -70,7 +70,7 @@ Defined in `backend/src/lib/storage.ts` `keys`; the worker receives full keys in
 | `media/uploads/<uploadId>/source` | raw uploaded media (deleted by worker after transcode, or by finalizer on failure). `uploadId` is a fresh UUID, not the job id (the file is streamed before the job row exists) |
 | `media/items/<itemId>/<uploadId>.m4a` | transcoded audio (24 kHz mono 48 kbps AAC, `+faststart`) |
 | `slides/<projectId>/<versionId>/source.zip` | uploaded deck ZIP (validated by backend before enqueue) |
-| `slides/<projectId>/<versionId>/output/…` | rendered deck: entry HTML + its own assets, plus `slides.pdf` |
+| `slides/<projectId>/<versionId>/output/…` | rendered deck: entry HTML + its own assets, plus `slides.pdf` and (optional) `_hub-thumbnail.png` (960 px wide, deck aspect ratio PNG of the first slide, `slide_versions.thumbnail_key`) |
 | `slides/_shared/<hash>/…` | `offline-assets/` (MathJax, KaTeX, fonts) shared by every version rendered with the same assets; `.complete` marker written last. Never deleted per version (`slide_versions.shared_prefix`) |
 | `references/<projectId>/<referenceId>` | reference PDF |
 
@@ -112,14 +112,18 @@ Cancellation (backend): `cancelJob(client, jobId)` cancels queued jobs immediate
 ```ts
 // kind = "media_transcode"
 type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: string; fileName: string };
-type MediaTranscodeResult  = { outputKey: string; bytes: number; durationSeconds: number | null };
+type MediaTranscodeResult  = { outputKey: string; bytes: number; durationSeconds: number | null; peaks?: number[] };
 // kind = "slide_render"
 type SlideRenderPayload = { projectId: string; versionId: string; sourceKey: string; entry: string; outputPrefix: string };
-type SlideRenderResult  = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number; sharedPrefix: string };
+type SlideRenderResult  = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number; sharedPrefix: string; thumbnailKey?: string };
 ```
 
 `entry` is the QMD path inside the ZIP (posix, relative, validated). `entryHtml` is the entry HTML path
 relative to `outputPrefix`. `pdfKey` is a full key (`<outputPrefix>slides.pdf`).
+`thumbnailKey` (optional) is a full key `<outputPrefix>_hub-thumbnail.png` (PNG 960 px wide, deck aspect ratio of the first slide); absent when
+the screenshot failed or the worker is older. The finalizer ignores it unless it is a plain key under the version's
+`output_prefix`. `peaks` (optional) is the audio waveform: up to 1000 values in [0,1] with 3 decimals; the finalizer
+stores it only when it is an array of ≤ 2000 finite numbers in [0,1] (otherwise NULL).
 
 Media stages (shown to users, 繁中): `排隊中` → `分析媒體` → `音訊轉碼` → `上傳結果` → `完成`.
 Slide stages: `排隊中` → `解壓縮` → `編譯簡報` → `匯出 PDF` → `上傳結果` → `完成`.
@@ -134,10 +138,10 @@ All under `/api`. `→` describes the response body. Unless noted, routes need a
 |---|---|---|
 | GET `/health`, `/health/ready`, `/config` | public | done (`health.ts`) |
 | GET `/auth/accounts?ids=a,b` | public | names for device-remembered account hints → `{accounts:[{id,name}]}` (only enabled users, max 10 ids) |
-| GET `/auth/me` | public | `{user: CurrentUser \| null}` |
+| GET `/auth/me` | public | `{user: CurrentUser \| null}`; `CurrentUser = {id, name, role, auth_mode, theme, locale: "zh-TW"\|"en", preferences: Preferences}` (preferences with defaults filled in, see below) |
 | POST `/auth/login` `{userId?, name?, password}` | public | argon2 verify; 401 on failure; `two_factor` users → 403 (Passkey not implemented); sets session; updates `last_login_at` → `{account:{id,name}}` |
 | POST `/auth/logout` | user | clears session |
-| PATCH `/auth/profile` `{name?, theme?, currentPassword?, newPassword?}` | user | password change requires current password; revokes other sessions |
+| PATCH `/auth/profile` `{name?, theme?, locale?, preferences?, currentPassword?, newPassword?}` | user | password change requires current password; revokes other sessions. `preferences` is a deep-partial `Preferences` merged into the stored value (unknown keys / out-of-range values → 400) → `{user: CurrentUser}` |
 | GET `/auth/sessions`, DELETE `/auth/sessions/:id` | user | list / revoke own sessions |
 | POST `/join` `{token, name, password}` | public | consume invitation atomically (row lock, `use_count < max_uses`, not expired/revoked), create user, session |
 | GET `/join/:token` | public | validate token → `{role, expiresAt}` or 404 |
@@ -152,12 +156,25 @@ All under `/api`. `→` describes the response body. Unless noted, routes need a
 | GET `/push`, POST `/push` `{subscription}`, DELETE `/push` `{endpoint}` | user | Web Push subscription management; GET → `{enabled, publicKey, subscribed}` |
 | POST `/push/test` | user | send a test push |
 
+User preferences (`users.preferences`, `backend/src/lib/preferences.ts`; missing or invalid stored keys read as the default):
+
+```ts
+type Preferences = {
+  notify: { slideRendered: boolean; mediaTranscoded: boolean; reviews: boolean; replies: boolean }; // all default true
+  editor: { fontSize: number /* int 12..22, default 15 */; layout: "split" | "edit" | "preview" /* default "split" */ };
+};
+```
+
+`notify.*` gates **Web Push only**; in-app notifications are always recorded. Every `Notifier.push/notify` call
+names the flag it is gated by (`{ pref, tag }`): slide render finished/failed → `slideRendered`, media transcode
+finished/failed → `mediaTranscoded`, new review → `reviews`, reply → `replies`, `/push/test` → none (`pref: null`).
+
 ### Notes, tags, media (`items.ts`, `tags.ts`, `slide-tags.ts`, `media.ts`)
 
 | Method & path | Access | Notes |
 |---|---|---|
 | GET `/items?tags=&q=&limit=&cursor=` | user | `tags` omitted = all; `tags=` (empty) = none; ids comma-separated, `none` = untagged. `q` searches title + content (ILIKE). Keyset pagination by (event_date, created_at, id). Each item: id, title, excerpt, event_date, tags, has_audio, has_transcript, updated_at, author names |
-| GET `/items/:id` | user | full note incl. content, tags, audio meta, transcript cues, active media job |
+| GET `/items/:id` | user | full note incl. content, tags, audio meta, `audio_peaks` (`number[]` or null), transcript cues, active media job |
 | POST `/items` `{title, event_date, content?, tagIds?}` | editor | |
 | PATCH `/items/:id` | editor | partial update; `updated_by`, `updated_at` |
 | DELETE `/items/:id` | editor | also cancels its jobs and deletes its S3 objects (post-commit) |
@@ -170,16 +187,18 @@ All under `/api`. `→` describes the response body. Unless noted, routes need a
 | GET `/tags`, POST `/tags` `{name}`, PATCH `/tags/:id` `{name}`, DELETE `/tags/:id` | GET user, writes editor | names 1–40 chars, unique case-insensitive → 409 on duplicate; deleting a tag never deletes notes. GET includes `count` (usage) |
 | same under `/slide-tags` | same | separate tag set for slides |
 
-Finalizer `media_transcode`: on success set `items.audio_*` (delete the previous audio object post-commit),
+Finalizer `media_transcode`: on success set `items.audio_*` incl. `audio_peaks` (a new audio replaces the peaks, NULL when the
+result has none or they are invalid; delete the previous audio object post-commit),
 notify the uploader (`kind:'media'`, url `/items/<id>`); on failure/cancel delete the upload + partial output.
 
 ### Slides (`slides.ts`, `slide-reviews.ts`, `slide-view.ts`)
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET `/slides?tags=&q=` | user | projects with active version, status of latest version, tags, reference count |
+| GET `/slides?tags=&q=` | user | projects with active version, status of latest version, tags, reference count, `thumbnailUrl` (`/api/slides/<id>/thumbnail?v=<activeVersionId>` or null) |
 | POST `/slides` (multipart: `title`, `slug`, `entry?`, `public?`, file `.zip`) | editor | validate ZIP (see below), create project + version 1, upload zip, enqueue render (202) |
-| GET `/slides/:id` | user | detail: project, versions, references, reviews (+ replies, author names), tags, `viewUrl` for active version |
+| GET `/slides/:id` | user | detail: project, versions (each with `hasThumbnail`), references, reviews (+ replies, author names), tags, `viewUrl` for active version, `thumbnailUrl` (same format; null for anonymous by-slug viewers) |
+| GET `/slides/:id/thumbnail` | user | streams the active version's `_hub-thumbnail.png`: `image/png`, `Cache-Control: private, max-age=300`, `X-Content-Type-Options: nosniff`, `ETag: "<versionId>"` (`If-None-Match` → 304); 404 when there is no active version, no thumbnail or the object is missing |
 | PATCH `/slides/:id` `{title?, slug?, public_view?, tagIds?, rotateShareKey?}` | editor | |
 | DELETE `/slides/:id` | editor | cascade + delete S3 prefixes post-commit |
 | GET `/slides/:id/versions`, POST `/slides/:id/versions` (multipart zip, `entry?`) | GET user, POST editor | new version → render job |
@@ -204,9 +223,44 @@ extracting): only these extensions `.qmd .md .css .scss .yml .yaml .png .jpg .jp
 are skipped (see "Behaviour notes"). Entry: explicit `entry` if given and present, else root
 `index.qmd`, else the only `.qmd`; otherwise 400 asking for the entry path.
 
-Finalizer `slide_render`: on success mark version `published`, set `entry_html`, `pdf_key`, `quarto_version`
+Finalizer `slide_render`: on success mark version `published`, set `entry_html`, `pdf_key`, `quarto_version`, `thumbnail_key`
 and make it active unless a newer version is already active; notify uploader (`kind:'slide'`). On failure set
 `status='failed'`, `error`; delete the partial output prefix post-commit.
+
+### UI support (`dashboard.ts`, `search.ts`, `jobs.ts`)
+
+All three need a session and reply with `Cache-Control: no-store`.
+
+**GET `/dashboard`** →
+```ts
+{ stats: { slides, notes, recordings, pendingReviews, slidesThisWeek, notesThisWeek },   // ints
+  latestSlide: { id, title, slug, version, authorName, publishedAt, tags: {id,name}[], thumbnailUrl, reviewCount } | null,
+  activity: { kind: "slide_version"|"note"|"recording"|"review"|"reply", id, title, url, actor: {id,name} | null, at }[],
+  pendingReviews: { reviewId, slideId, slideTitle, excerpt, authorName, createdAt }[],
+  recentNotes: { id, title, excerpt, updatedAt, tags: {id,name}[], hasAudio }[] }
+```
+- `recordings` = notes with audio. "This week" = since Monday 00:00 Asia/Taipei: `slidesThisWeek` counts versions
+  published this week, `notesThisWeek` notes created this week.
+- A version's publish time is its render job's `finished_at` (fallback: upload time). `latestSlide` = the project whose
+  active version was published most recently; `authorName` = uploader of that version (fallback: deck creator).
+- `pendingReviews` (max 5, newest first) and `stats.pendingReviews` = reviews without any reply: for the Owner (the only
+  one who replies) all of them, for everyone else those on decks they created. `excerpt` = plain text, ≤ 120 chars.
+- `activity`: latest 10 across kinds, newest first. `id` is the event row's own id (version, note, transcode job, review,
+  reply); `url` is the SPA path: `/slides/<projectId>` (slide_version, review, reply; `title` = deck title, plus
+  ` v<n>` for slide_version), `/notes/<id>` (note created), `/recordings/<itemId>` (successful transcode).
+- `recentNotes`: 6 most recently updated notes.
+
+**GET `/search?q=`** (`q` trimmed, 1–100 chars, else 400) → `{ slides: {id,title,slug}[], notes: {id,title,excerpt,hasAudio}[],
+tags: {id,name,kind:"note"|"slide"}[] }`. Case-insensitive substring match (ILIKE with `\`, `%`, `_` escaped) on deck
+title/slug, note title/content, and tag names of both namespaces; max 6 per list, newest first (`updated_at` for decks and
+notes, `created_at` for tags).
+
+**GET `/jobs/active`** → `{ jobs: { id, kind:"slide_render"|"media_transcode", status:"queued"|"running"|"succeeded"|"failed"|"cancelled",
+stage, progress, label, url, updatedAt }[] }`: the caller's jobs that are queued/running or finished in the last 10 minutes,
+max 10, newest first. `stage` is the worker's 繁中 stage; the raw values `queued`/`starting`/`cancelled` written by the
+database/backend are shown as `排隊中`/`準備中`/`已取消`. `progress` is 100 once succeeded. `label` = `<deck title> v<n>`
+or the note title (fallback: upload file name, `已刪除的簡報`/`已刪除的筆記`); `url` = `/slides/<projectId>` or
+`/notes/<itemId>`, null when the target was deleted. `updatedAt` = latest of created/started/heartbeat/finished.
 
 ### Slide viewing
 
@@ -234,6 +288,10 @@ response carries the sandbox CSP, `Cache-Control: private, no-store`, `X-Content
   backend validator and the worker (Finder-made ZIPs work); `.env*`, symlinks, unsafe paths, encrypted entries,
   duplicate names (worker) and disallowed types are rejected.
 - `GET /api/config` → `{ latexUrl, pushPublicKey }` (`latexUrl` = `LATEX_ORIGIN`, null when unset).
+- Migrations: `0001_init` (schema), `0002_slide_shared_assets` (`slide_versions.shared_prefix`), `0003_ui_prefs`
+  (`users.locale` `zh-TW`|`en`, `users.preferences` jsonb, `slide_versions.thumbnail_key`, `items.audio_peaks` jsonb array).
+- There is no "remove audio" route: audio (and its peaks) only changes when a new transcode replaces it or the note is
+  deleted. A failed render clears the version's `thumbnail_key`.
 
 ## Aldine (LaTeX) security model
 

@@ -7,10 +7,14 @@ export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancell
 
 /** Payload/result contracts shared with the worker. Keep in sync with worker/src/types.ts. */
 export type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: string; fileName: string };
-export type MediaTranscodeResult = { outputKey: string; bytes: number; durationSeconds: number | null };
+/** `peaks`: optional waveform, up to 1000 values in [0,1] (3 decimals). */
+export type MediaTranscodeResult = { outputKey: string; bytes: number; durationSeconds: number | null; peaks?: number[] };
 export type SlideRenderPayload = { projectId: string; versionId: string; sourceKey: string; entry: string; outputPrefix: string };
-/** `sharedPrefix`: where `offline-assets/` of this render lives (shared across versions, never deleted per version). */
-export type SlideRenderResult = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number; sharedPrefix: string };
+/**
+ * `sharedPrefix`: where `offline-assets/` of this render lives (shared across versions, never deleted per version).
+ * `thumbnailKey`: optional full key `<outputPrefix>_hub-thumbnail.png` (960 px wide, deck aspect ratio PNG of the first slide); absent when the screenshot failed.
+ */
+export type SlideRenderResult = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number; sharedPrefix: string; thumbnailKey?: string };
 
 export type JobRow = {
   id: string;

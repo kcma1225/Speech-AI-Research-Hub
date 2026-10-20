@@ -42,7 +42,7 @@ const push: FastifyPluginAsync = async app => {
     if (!app.notifier.canPush) throw conflict("伺服器尚未設定推播金鑰。");
     const count = (await app.db.query<{ count: number }>("SELECT count(*)::int AS count FROM push_subscriptions WHERE user_id=$1", [user.id])).rows[0]!.count;
     if (!count) throw conflict("此帳號尚未在任何裝置開啟推播。");
-    await app.notifier.push([user.id], { kind: "system", title: "測試通知", body: "推播已開啟，這台裝置會收到處理完成通知。", url: "/" }, "test");
+    await app.notifier.push([user.id], { kind: "system", title: "測試通知", body: "推播已開啟，這台裝置會收到處理完成通知。", url: "/" }, { pref: null, tag: "test" });
     return { ok: true, devices: count };
   });
 };

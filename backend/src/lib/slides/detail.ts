@@ -12,6 +12,7 @@ type VersionRow = {
   entry_html: string | null;
   pdf_key: string | null;
   quarto_version: string | null;
+  thumbnail_key: string | null;
   created_at: string;
   job_status: string | null;
   job_stage: string | null;
@@ -22,7 +23,7 @@ type VersionRow = {
 export const liveStatus = (row: Pick<VersionRow, "status" | "job_status">) =>
   row.status === "queued" && row.job_status === "running" ? "rendering" : row.status;
 
-export const VERSION_SELECT = `SELECT v.id,v.version,v.status,v.error,v.source_name,v.entry_qmd,v.entry_html,v.pdf_key,v.quarto_version,v.created_at,
+export const VERSION_SELECT = `SELECT v.id,v.version,v.status,v.error,v.source_name,v.entry_qmd,v.entry_html,v.pdf_key,v.quarto_version,v.thumbnail_key,v.created_at,
   j.status AS job_status,j.stage AS job_stage,j.progress AS job_progress
   FROM slide_versions v LEFT JOIN jobs j ON j.id=v.job_id`;
 
@@ -44,6 +45,7 @@ export async function listVersions(db: Queryable, secret: string, project: Slide
       is_active: row.id === project.active_version_id,
       viewUrl: published ? slideUrls.view(project.slug, viewToken(secret, project.id, row.id), row.id, row.entry_html!) : null,
       pdfUrl: published && row.pdf_key ? slideUrls.pdf(project.slug, row.id) : null,
+      hasThumbnail: Boolean(published && row.thumbnail_key),
     };
   });
 }
@@ -71,6 +73,8 @@ export async function slideDetail(db: Queryable, secret: string, project: SlideP
   ]);
   const editor = isEditorRole(user);
   const active = versions.find(version => version.id === project.active_version_id && version.viewUrl) ?? null;
+  // The thumbnail route needs a session, so anonymous viewers get no URL.
+  const thumbnailUrl = user && active?.hasThumbnail ? slideUrls.thumbnail(project.id, active.id) : null;
   return {
     project: {
       id: project.id,
@@ -86,6 +90,7 @@ export async function slideDetail(db: Queryable, secret: string, project: SlideP
       playerUrl: slideUrls.player(project.slug),
     },
     activeVersion: active,
+    thumbnailUrl,
     viewUrl: active?.viewUrl ?? null,
     pdfUrl: active?.pdfUrl ?? null,
     versions,

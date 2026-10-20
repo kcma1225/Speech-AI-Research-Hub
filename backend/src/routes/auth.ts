@@ -2,8 +2,9 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { hashPassword, verifyPassword } from "../bootstrap.js";
 import { transaction } from "../db.js";
-import { audit, clearSession, createSession, currentUser, requireUser, SESSION_COOKIE, sha256 } from "../lib/auth.js";
+import { audit, clearSession, createSession, CURRENT_USER_COLUMNS, currentUser, requireUser, SESSION_COOKIE, sha256, toCurrentUser } from "../lib/auth.js";
 import { badRequest, conflict, forbidden, idParams, isUniqueViolation, notFound, parse, unauthorized } from "../lib/http.js";
+import { mergePreferences, preferencesPatchSchema } from "../lib/preferences.js";
 
 const password = z.string().max(4096).refine(value => value.trim().length > 0);
 const loginInput = z
@@ -13,6 +14,8 @@ const profileInput = z
   .object({
     name: z.string().trim().min(1).max(80).optional(),
     theme: z.enum(["system", "light", "dark"]).optional(),
+    locale: z.enum(["zh-TW", "en"]).optional(),
+    preferences: preferencesPatchSchema.optional(),
     currentPassword: z.string().min(1).max(4096).optional(),
     newPassword: password.optional(),
   })
@@ -60,17 +63,22 @@ const auth: FastifyPluginAsync = async app => {
 
   app.patch("/auth/profile", async (request, reply) => {
     const user = await requireUser(request);
-    const data = parse(profileInput, request.body, "請填寫名稱、目前密碼；新密碼不可只有空白。");
+    const data = parse(profileInput, request.body, "請確認名稱、目前密碼與偏好設定；新密碼不可只有空白。");
     const currentToken = sha256(request.cookies[SESSION_COOKIE] ?? "");
     try {
       const updated = await transaction(app.db, async client => {
-        const record = (await client.query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id=$1 FOR UPDATE", [user.id])).rows[0];
+        const record = (await client.query<{ password_hash: string; preferences: unknown }>("SELECT password_hash,preferences FROM users WHERE id=$1 FOR UPDATE", [user.id])).rows[0];
         if (!record) throw unauthorized();
         if (data.currentPassword !== undefined && !(await verifyPassword(record.password_hash, data.currentPassword))) {
           throw forbidden("目前密碼不正確。");
         }
         if (data.name !== undefined) await client.query("UPDATE users SET name=$1 WHERE id=$2", [data.name, user.id]);
         if (data.theme !== undefined) await client.query("UPDATE users SET theme=$1 WHERE id=$2", [data.theme, user.id]);
+        if (data.locale !== undefined) await client.query("UPDATE users SET locale=$1 WHERE id=$2", [data.locale, user.id]);
+        if (data.preferences !== undefined) {
+          const merged = mergePreferences(record.preferences, data.preferences);
+          await client.query("UPDATE users SET preferences=$1 WHERE id=$2", [JSON.stringify(merged), user.id]);
+        }
         if (data.newPassword) {
           await client.query("UPDATE users SET password_hash=$1 WHERE id=$2", [await hashPassword(data.newPassword), user.id]);
           await client.query("DELETE FROM sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, currentToken]);
@@ -79,7 +87,7 @@ const auth: FastifyPluginAsync = async app => {
         if (data.name !== undefined) {
           await client.query("INSERT INTO audit_log(actor_id,action,target_type,target_id) VALUES($1,'profile_name_changed','user',$2)", [user.id, user.id]);
         }
-        return (await client.query("SELECT id,name,role,auth_mode,theme FROM users WHERE id=$1", [user.id])).rows[0];
+        return toCurrentUser((await client.query(`SELECT ${CURRENT_USER_COLUMNS} FROM users u WHERE u.id=$1`, [user.id])).rows[0]);
       });
       reply.header("Cache-Control", "no-store");
       return { user: updated };

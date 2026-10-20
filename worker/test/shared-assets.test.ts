@@ -29,3 +29,16 @@ describe("hashTree", () => {
     expect(await hashTree(moved, ["offline-assets/a2.js", "offline-assets/b/c.css"])).not.toBe(h);
   });
 });
+
+describe("thumbnailTarget", () => {
+  const prefix = "slides/p/v/output/";
+  it("uses <outputPrefix>_hub-thumbnail.png when captured", async () => {
+    const { thumbnailTarget } = await import("../src/handlers/slide-render.js");
+    expect(thumbnailTarget(prefix, ["index.html", "img/_hub-thumbnail.png"], true)).toBe(`${prefix}_hub-thumbnail.png`);
+  });
+  it("is omitted when not captured or when the deck serves its own _hub-thumbnail.png", async () => {
+    const { thumbnailTarget } = await import("../src/handlers/slide-render.js");
+    expect(thumbnailTarget(prefix, ["index.html"], false)).toBeUndefined();
+    expect(thumbnailTarget(prefix, ["index.html", "_hub-thumbnail.png"], true)).toBeUndefined();
+  });
+});

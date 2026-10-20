@@ -6,11 +6,20 @@ Runs background jobs from the Postgres `jobs` table (contract: `docs/architectur
   (`src/annotate.ts`, assets in `assets/annotate`) → `quarto render --to revealjs --no-execute` (180 s) →
   bundle math and fonts locally (`scripts/prepare-pdf.py`) and print `slides.pdf` with headless Chrome
   through puppeteer-core (`src/pdf.ts`). It waits for fonts, images, Reveal's print layout and MathJax,
-  blocks any non-`file:` request, and retries once → upload the deck's own files to `outputPrefix` (16 in parallel, with Content-Type set). `offline-assets/`
+  blocks any non-`file:` request, and retries once. In the same browser it then loads the deck normally at
+  960 px wide, deck aspect ratio, jumps to the first slide, hides Reveal controls/progress/slide number and the annotate toolbar, and
+  screenshots it (best effort, 30 s) → upload the deck's own files to `outputPrefix` (16 in parallel, with Content-Type set). `offline-assets/`
   (MathJax/KaTeX/fonts, ~1.6k files, identical for a given image) goes once to `slides/_shared/<hash>/`, with a
-  `.complete` marker written last; later renders skip it (first render ~2 min, later ones ~20 s).
+  `.complete` marker written last; later renders skip it (first render ~2 min, later ones ~20 s). The thumbnail
+  goes last to `<outputPrefix>_hub-thumbnail.png` (`image/png`) and is returned as `thumbnailKey`. If capture or upload
+  fails, or the deck ships its own `_hub-thumbnail.png` at the output root, it is logged and `thumbnailKey` is omitted;
+  the job still succeeds.
 - `media_transcode`: download the upload → ffprobe duration → ffmpeg to 24 kHz mono 48 kbps AAC/M4A
-  (`+faststart` for Range playback, progress 0–95 %) → upload to `outputKey` → delete the upload.
+  (`+faststart` for Range playback, progress 0–95 %) → waveform peaks (`src/peaks.ts`): ffmpeg decodes the M4A to
+  mono 8 kHz s16le on a pipe, folded while streaming into 1/20 s windows (max |sample|), then into
+  N = min(1000, ceil(duration·20)) buckets by max, normalized to [0,1] and rounded to 3 decimals (2.5 h: ~15 s, PCM is
+  never buffered). It is returned as `peaks`. On failure it is logged and `peaks` is omitted → upload to `outputKey` →
+  delete the upload.
 
 ## Runtime model
 

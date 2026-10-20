@@ -2,10 +2,22 @@
 export type JobKind = "media_transcode" | "slide_render";
 
 export type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: string; fileName: string };
-export type MediaTranscodeResult = { outputKey: string; bytes: number; durationSeconds: number | null };
+/** `peaks`: waveform overview, ≤1000 values in [0,1] (3 decimals); omitted when it could not be computed. */
+export type MediaTranscodeResult = { outputKey: string; bytes: number; durationSeconds: number | null; peaks?: number[] };
 export type SlideRenderPayload = { projectId: string; versionId: string; sourceKey: string; entry: string; outputPrefix: string };
-/** `sharedPrefix`: where `offline-assets/` of this render is stored (content-addressed, shared across versions). */
-export type SlideRenderResult = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number; sharedPrefix: string };
+/**
+ * `sharedPrefix`: where `offline-assets/` of this render is stored (content-addressed, shared across versions).
+ * `thumbnailKey`: full key of the 960 px wide, deck aspect ratio PNG of the first slide (`<outputPrefix>_hub-thumbnail.png`); omitted when
+ * capture/upload failed or the deck ships its own `_hub-thumbnail.png`.
+ */
+export type SlideRenderResult = {
+  entryHtml: string;
+  pdfKey: string;
+  quartoVersion: string;
+  fileCount: number;
+  sharedPrefix: string;
+  thumbnailKey?: string;
+};
 
 export type ClaimedJob = {
   id: string;

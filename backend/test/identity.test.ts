@@ -225,8 +225,8 @@ describe.skipIf(!hasTestDb)("identity", () => {
     it("lists, counts unread, marks read and deletes", async () => {
       const member = await t.login("member");
       const other = await t.login("member");
-      await t.app.notifier.notify([member.id, other.id], { kind: "system", title: "a", body: "b", url: "/" });
-      await t.app.notifier.notify([member.id], { kind: "media", title: "c", body: "d", url: "/items/x" });
+      await t.app.notifier.notify([member.id, other.id], { kind: "system", title: "a", body: "b", url: "/" }, { pref: null });
+      await t.app.notifier.notify([member.id], { kind: "media", title: "c", body: "d", url: "/items/x" }, { pref: "mediaTranscoded" });
 
       const list = (await inject("GET", "/api/notifications", member.cookie)).json().notifications as { id: string }[];
       expect(list).toHaveLength(2);

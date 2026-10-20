@@ -3,9 +3,10 @@ import path from "node:path";
 import { z } from "zod";
 import { JobInputError, tail, throwIfAborted } from "../errors.js";
 import { ProgressParser, parseDuration, progressPercent, transcodeArgs } from "../ffmpeg.js";
+import { PeakAccumulator, peakArgs } from "../peaks.js";
 import { run } from "../process.js";
 import { STAGES, type MediaTranscodeResult } from "../types.js";
-import type { Handler } from "./context.js";
+import type { Handler, HandlerContext } from "./context.js";
 
 const payloadSchema = z.object({
   itemId: z.uuid(),
@@ -15,8 +16,10 @@ const payloadSchema = z.object({
 });
 
 const TRANSCODE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+const PEAKS_TIMEOUT_MS = 10 * 60 * 1000;
 
-export const mediaTranscode: Handler = async (raw, { storage, signal, workDir, progress, log }) => {
+export const mediaTranscode: Handler = async (raw, context) => {
+  const { storage, signal, workDir, progress, log } = context;
   const payload = payloadSchema.safeParse(raw);
   if (!payload.success) throw new JobInputError("工作內容不正確。");
   const { sourceKey, outputKey } = payload.data;
@@ -56,6 +59,7 @@ export const mediaTranscode: Handler = async (raw, { storage, signal, workDir, p
   }
   const { size } = await stat(output);
   if (size === 0) throw new JobInputError("媒體檔沒有可用的音訊。");
+  const peaks = await computePeaks(output, context);
 
   progress(STAGES.upload, 96);
   await storage.uploadFile(outputKey, output, "audio/mp4", signal);
@@ -63,8 +67,35 @@ export const mediaTranscode: Handler = async (raw, { storage, signal, workDir, p
   // The upload is no longer needed; a failed delete must not fail a finished transcode.
   await storage.delete(sourceKey).catch(error => log.warn({ err: error, key: sourceKey }, "could not delete media upload"));
   progress(STAGES.done, 100);
-  return { outputKey, bytes: size, durationSeconds } satisfies MediaTranscodeResult;
+  return { outputKey, bytes: size, durationSeconds, ...(peaks ? { peaks } : {}) } satisfies MediaTranscodeResult;
 };
+
+/**
+ * Waveform peaks of the transcoded audio, decoded through a pipe and bucketed while streaming
+ * (recordings can be hours long). Best effort: any failure other than an abort is logged and yields
+ * undefined, so the job still succeeds without peaks.
+ */
+async function computePeaks(file: string, { signal, log }: HandlerContext): Promise<number[] | undefined> {
+  const peaks = new PeakAccumulator();
+  try {
+    const result = await run("ffmpeg", peakArgs(file), {
+      timeoutMs: PEAKS_TIMEOUT_MS,
+      signal,
+      keepLog: 2000,
+      onStdoutData: chunk => peaks.push(chunk),
+    });
+    if (result.timedOut || result.code !== 0) {
+      log.warn({ code: result.code, timedOut: result.timedOut, log: tail(result.log, 1000) }, "waveform peaks failed; continuing without them");
+      return undefined;
+    }
+    const values = peaks.finish();
+    return values.length ? values : undefined;
+  } catch (error) {
+    throwIfAborted(signal);
+    log.warn({ err: error }, "waveform peaks failed; continuing without them");
+    return undefined;
+  }
+}
 
 /** Removes partial output after cancel/failure; the finalizer deletes the upload itself. */
 export async function cleanupMedia(raw: unknown, remove: (key: string) => Promise<void>) {

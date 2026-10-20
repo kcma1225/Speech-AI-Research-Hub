@@ -2,6 +2,13 @@ import type { FastifyInstance } from "fastify";
 import type { NotificationPayload } from "../lib/notify.js";
 import { registerFinalizer, type MediaTranscodePayload, type MediaTranscodeResult } from "./queue.js";
 
+/** JSON for `items.audio_peaks`: at most 2000 finite numbers in [0,1]; anything else is ignored (NULL). */
+export function validPeaks(peaks: unknown): string | null {
+  if (!Array.isArray(peaks) || !peaks.length || peaks.length > 2000) return null;
+  if (!peaks.every(value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1)) return null;
+  return JSON.stringify(peaks);
+}
+
 /**
  * Applies finished `media_transcode` jobs: attach the new audio to its note (replacing the old file)
  * and notify the uploader; on failure or cancel, remove the upload and any partial output.
@@ -24,7 +31,7 @@ export function registerMediaFinalizer(app: FastifyInstance) {
       const cleanup = removeObjects([payload.sourceKey, payload.outputKey]);
       return async () => {
         await cleanup();
-        if (notice && job.created_by) await app.notifier.push([job.created_by], notice, `media-${job.id}`);
+        if (notice && job.created_by) await app.notifier.push([job.created_by], notice, { pref: "mediaTranscoded", tag: `media-${job.id}` });
       };
     }
 
@@ -34,9 +41,9 @@ export function registerMediaFinalizer(app: FastifyInstance) {
     if (!item) return removeObjects([payload.sourceKey, result.outputKey, payload.outputKey]);
 
     await client.query(
-      `UPDATE items SET audio_key=$1,audio_name=$2,audio_bytes=$3,audio_duration_seconds=$4,
+      `UPDATE items SET audio_key=$1,audio_name=$2,audio_bytes=$3,audio_duration_seconds=$4,audio_peaks=$7,
               updated_by=COALESCE($5,updated_by),updated_at=now() WHERE id=$6`,
-      [result.outputKey, payload.fileName.slice(0, 255), result.bytes, result.durationSeconds, job.created_by, payload.itemId],
+      [result.outputKey, payload.fileName.slice(0, 255), result.bytes, result.durationSeconds, job.created_by, payload.itemId, validPeaks(result.peaks)],
     );
     const notice: NotificationPayload = { kind: "media", title: "影音處理完成", body: payload.fileName, url: `/items/${payload.itemId}` };
     if (job.created_by) await app.notifier.record(client, [job.created_by], notice);
@@ -44,7 +51,7 @@ export function registerMediaFinalizer(app: FastifyInstance) {
     const cleanup = removeObjects([previous, payload.sourceKey]);
     return async () => {
       await cleanup();
-      if (job.created_by) await app.notifier.push([job.created_by], notice, `media-${job.id}`);
+      if (job.created_by) await app.notifier.push([job.created_by], notice, { pref: "mediaTranscoded", tag: `media-${job.id}` });
     };
   });
 }

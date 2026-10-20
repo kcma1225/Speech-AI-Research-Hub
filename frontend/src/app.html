@@ -2,8 +2,19 @@
 <html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+    <title>Speech-AI Hub</title>
+    <script>
+      // Applies the cached theme/locale before first paint (the account value replaces it after /auth/me).
+      try {
+        var t = localStorage.getItem("hub-theme") || "system";
+        var dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        if (localStorage.getItem("hub-locale") === "en") document.documentElement.lang = "en";
+      } catch (e) {}
+    </script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">

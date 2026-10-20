@@ -16,8 +16,9 @@ FROM ghcr.io/quarto-dev/quarto:1.10.19
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates python3 ffmpeg fontconfig libnss3 libatk-bridge2.0-0 libgtk-3-0 libasound2 libx11-xcb1 \
-      libgbm1 libxss1 libxtst6 \
+      libgbm1 libxss1 libxtst6 fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
+# Noto CJK: decks are mostly Traditional Chinese; without it PDFs/thumbnails render missing glyphs.
 # Pinned, checksum-verified browser + offline math/fonts (downloaded at build time only).
 COPY scripts/build-assets.py /usr/local/bin/build-assets.py
 RUN python3 /usr/local/bin/build-assets.py && chmod -R a+rX /opt/chrome /opt/slide-assets \

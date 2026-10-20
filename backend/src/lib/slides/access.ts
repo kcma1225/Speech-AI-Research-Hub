@@ -92,4 +92,6 @@ export const slideUrls = {
   reference: (slug: string, referenceId: string) => `/api/slides/reference/${encodeURIComponent(slug)}/${referenceId}`,
   share: (slug: string, key: string) => `/api/slides/share/${encodeURIComponent(slug)}/${encodeURIComponent(key)}`,
   player: (slug: string) => `/slides/play/${encodeURIComponent(slug)}`,
+  /** Active version's thumbnail (signed-in users); `v` busts caches when the active version changes. */
+  thumbnail: (projectId: string, versionId: string) => `/api/slides/${projectId}/thumbnail?v=${versionId}`,
 };
