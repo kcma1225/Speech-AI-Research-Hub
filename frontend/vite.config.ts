@@ -11,6 +11,17 @@ export default defineConfig({
   ],
   server: {
     // `npm run dev` proxies the API to a locally running backend.
-    proxy: { "/api": { target: process.env.API_PROXY ?? "http://127.0.0.1:3000", changeOrigin: false } },
+    // API_PROXY may point at the compose nginx (e.g. http://127.0.0.1:18080); API_ORIGIN then rewrites the
+    // Origin header to the stack's APP_ORIGIN so its CSRF check accepts writes from the dev server.
+    proxy: {
+      "/api": {
+        target: process.env.API_PROXY ?? "http://127.0.0.1:3000",
+        changeOrigin: false,
+        configure: proxy => {
+          const origin = process.env.API_ORIGIN;
+          if (origin) proxy.on("proxyReq", req => req.getHeader("origin") && req.setHeader("origin", origin));
+        },
+      },
+    },
   },
 });
