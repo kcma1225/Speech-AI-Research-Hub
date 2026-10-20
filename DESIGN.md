@@ -1,5 +1,7 @@
 # DESIGN.md — Speech-AI Research Hub
 
+> **v1 design, superseded.** v2 is being redesigned (see docs/architecture.md and the v2 frontend design doc once written). Kept for reference only.
+
 ## Context
 
 - Artifact type: internal SaaS application + onboarding/auth + settings/admin CMS; Quarto research decks use app routes backed by isolated renderer.

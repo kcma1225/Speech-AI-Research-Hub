@@ -1,11 +1,11 @@
 **/node_modules
-**/.next
-slides/.quarto
-slides/_site
-nginx/certs/*.pem
+**/.svelte-kit
+**/build
+**/dist
 .env
 .env.*
 .git
 .DS_Store
-*.png
 backups
+legacy-export
+nginx/certs/*.pem

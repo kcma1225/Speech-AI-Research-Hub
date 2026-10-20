@@ -9,7 +9,8 @@ export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancell
 export type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: string; fileName: string };
 export type MediaTranscodeResult = { outputKey: string; bytes: number; durationSeconds: number | null };
 export type SlideRenderPayload = { projectId: string; versionId: string; sourceKey: string; entry: string; outputPrefix: string };
-export type SlideRenderResult = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number };
+/** `sharedPrefix`: where `offline-assets/` of this render lives (shared across versions, never deleted per version). */
+export type SlideRenderResult = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number; sharedPrefix: string };
 
 export type JobRow = {
   id: string;

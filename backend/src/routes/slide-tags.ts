@@ -1,6 +1,8 @@
 import type { FastifyPluginAsync } from "fastify";
+import { registerTagRoutes, slideTags } from "../lib/notes/tag-store.js";
 
-// STUB: implemented by a sub-agent; see docs/architecture.md "API".
-const routes: FastifyPluginAsync = async _app => {};
+const routes: FastifyPluginAsync = async app => {
+  registerTagRoutes(app, "/slide-tags", slideTags);
+};
 
 export default routes;

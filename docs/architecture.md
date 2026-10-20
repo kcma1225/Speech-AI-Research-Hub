@@ -1,7 +1,7 @@
 # Architecture (v2)
 
 v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf). v1 data is exported with
-`scripts/export-legacy.sh` and is **not** migrated; v2 starts from an empty database and bucket.
+`scripts/export-legacy.sh` (run on the v1 host) and is **not** migrated; v2 starts from an empty database and bucket.
 
 ```
                     :80 / :443  (the only published ports)
@@ -14,6 +14,8 @@ v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf)
      └── rustfs  (S3-compatible object storage, bucket $S3_BUCKET)              │
    worker   (Node 22 + Quarto + headless Chrome + ffmpeg)                       │
      └── network "jobs" (internal: true, no internet): db + rustfs only         │
+   latex-app + latex-compiler (Aldine, profile `latex`, own hostname)           │
+     └── network "latex" (internal: true): compiler has no internet             │
 ```
 
 | Service | Dir | Responsibility |
@@ -24,6 +26,7 @@ v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf)
 | worker | `worker/` | Claims jobs from Postgres, slide render (Quarto → HTML + PDF), media transcode (ffmpeg) |
 | db | `postgres/` | PostgreSQL 17; `postgres/init/` creates the `hub_worker` role on first init |
 | rustfs | — | `rustfs/rustfs:1.0.1`, S3 API on `:9000`, never published |
+| latex-app, latex-compiler | `deploy/aldine/` | Optional (`--profile latex`): Aldine collaborative LaTeX on `LATEX_HOSTNAME`. Compiler image adds Noto CJK. See `docs/aldine-evaluation.md` |
 
 ## Conventions (backend)
 
@@ -64,10 +67,11 @@ Defined in `backend/src/lib/storage.ts` `keys`; the worker receives full keys in
 
 | Key | Content |
 |---|---|
-| `media/uploads/<jobId>/source` | raw uploaded media (deleted by worker after transcode, or by finalizer on failure) |
-| `media/items/<itemId>/<jobId>.m4a` | transcoded audio (24 kHz mono 48 kbps AAC) |
+| `media/uploads/<uploadId>/source` | raw uploaded media (deleted by worker after transcode, or by finalizer on failure). `uploadId` is a fresh UUID, not the job id (the file is streamed before the job row exists) |
+| `media/items/<itemId>/<uploadId>.m4a` | transcoded audio (24 kHz mono 48 kbps AAC, `+faststart`) |
 | `slides/<projectId>/<versionId>/source.zip` | uploaded deck ZIP (validated by backend before enqueue) |
-| `slides/<projectId>/<versionId>/output/…` | rendered deck: entry HTML + assets, plus `slides.pdf` |
+| `slides/<projectId>/<versionId>/output/…` | rendered deck: entry HTML + its own assets, plus `slides.pdf` |
+| `slides/_shared/<hash>/…` | `offline-assets/` (MathJax, KaTeX, fonts) shared by every version rendered with the same assets; `.complete` marker written last. Never deleted per version (`slide_versions.shared_prefix`) |
 | `references/<projectId>/<referenceId>` | reference PDF |
 
 ## Jobs
@@ -111,7 +115,7 @@ type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: str
 type MediaTranscodeResult  = { outputKey: string; bytes: number; durationSeconds: number | null };
 // kind = "slide_render"
 type SlideRenderPayload = { projectId: string; versionId: string; sourceKey: string; entry: string; outputPrefix: string };
-type SlideRenderResult  = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number };
+type SlideRenderResult  = { entryHtml: string; pdfKey: string; quartoVersion: string; fileCount: number; sharedPrefix: string };
 ```
 
 `entry` is the QMD path inside the ZIP (posix, relative, validated). `entryHtml` is the entry HTML path
@@ -163,7 +167,7 @@ All under `/api`. `→` describes the response body. Unless noted, routes need a
 | GET `/media/:itemId` | user | stream audio from S3 with **Range** support (206), `audio/mp4`, `Accept-Ranges: bytes` |
 | GET `/media-jobs` | user | caller's latest 20 media jobs → `{jobs:[{id,item_id,status,stage,progress,duration_seconds,error,file_name,created_at}]}` (status mapped: queued/running → `processing`, succeeded → `completed`) |
 | GET `/media-jobs/:id`, DELETE `/media-jobs/:id` | owner of job | status / cancel |
-| GET `/tags`, POST `/tags` `{name}`, PATCH `/tags/:id` `{name}`, DELETE `/tags/:id` | GET user, writes editor | names 1–40 chars, unique case-insensitive → 409 on duplicate; deleting a tag never deletes notes. GET includes `item_count` |
+| GET `/tags`, POST `/tags` `{name}`, PATCH `/tags/:id` `{name}`, DELETE `/tags/:id` | GET user, writes editor | names 1–40 chars, unique case-insensitive → 409 on duplicate; deleting a tag never deletes notes. GET includes `count` (usage) |
 | same under `/slide-tags` | same | separate tag set for slides |
 
 Finalizer `media_transcode`: on success set `items.audio_*` (delete the previous audio object post-commit),
@@ -185,7 +189,7 @@ notify the uploader (`kind:'media'`, url `/items/<id>`); on failure/cancel delet
 | POST `/slides/:id/render` | editor | retry the latest failed version (new job) |
 | POST `/slides/:id/references` (multipart PDF ≤ `MAX_REFERENCE_BYTES`, or JSON `{title,url}`) | editor | first reference becomes default |
 | PATCH `/slides/:id/references/:refId` `{title?, isDefault?}`, DELETE | editor | keep exactly one default when any exist |
-| POST `/slides/:id/reviews` `{body}` | professor (and owner) | notify editors? — notify the deck creator (`kind:'slide'`) |
+| POST `/slides/:id/reviews` `{body}` | professor (and owner) | notifies the deck creator (`kind:'slide'`), never yourself |
 | POST `/slides/:id/reviews/:reviewId/replies` `{body}` | owner | notify the review author |
 | GET `/slides/by-slug/:slug?key=` | public* | player data: project, active version, `viewUrl`, `pdfUrl`, references, reviews. *Allowed for a user, `public_view`, a valid `key`, or the `slide_share_<slug>` cookie |
 | GET `/slides/share/:slug/:key` | public | valid key → set httpOnly cookie `slide_share_<slug>` (path `/`, 30 days) and 302 to `/slides/play/<slug>` |
@@ -196,8 +200,8 @@ notify the uploader (`kind:'media'`, url `/items/<id>`); on failure/cancel delet
 ZIP validation (backend, before upload, from a temp file using yauzl; the worker re-validates while
 extracting): only these extensions `.qmd .md .css .scss .yml .yaml .png .jpg .jpeg .gif .svg .webp .pdf .bib
 .csl .json .js .woff .woff2 .ttf .otf .txt .csv .mp4 .webm .mp3 .wav .m4a`; ≤2000 files, ≤500 MB uncompressed,
-≤100 MB per file, depth ≤12, no absolute paths / `..` / backslashes / NUL, no symlinks, no `.git`,
-`node_modules`, `__MACOSX`, `.env*`, `_site`, `.quarto`. Entry: explicit `entry` if given and present, else root
+≤100 MB per file, depth ≤12, no absolute paths / `..` / backslashes / NUL, no symlinks, no `.env*`; junk directories
+are skipped (see "Behaviour notes"). Entry: explicit `entry` if given and present, else root
 `index.qmd`, else the only `.qmd`; otherwise 400 asking for the entry path.
 
 Finalizer `slide_render`: on success mark version `published`, set `entry_html`, `pdf_key`, `quarto_version`
@@ -219,3 +223,21 @@ entry HTML; reject `slides.pdf`, `pdf.log`, `offline-assets/licenses/*`, any `..
 in-memory Web Storage shim, the `scrollActivationWidth:0` Reveal patch and the 44 px touch-target CSS; every
 response carries the sandbox CSP, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer`.
+
+## Behaviour notes (as built)
+
+- A deck has no active version until its first render publishes; a newer published version becomes active
+  unless an even newer one already is. Failed/cancelled renders notify the uploader too.
+- `POST /items`: `event_date` optional (defaults to today in Asia/Taipei); list returns `nextCursor`.
+- Invitation revoke is soft (`revoked_at`); logout always clears the cookie, even without a valid session.
+- ZIP junk (`__MACOSX`, `.DS_Store`, `Thumbs.db`, `.git`, `node_modules`, `_site`, `.quarto`) is skipped by both the
+  backend validator and the worker (Finder-made ZIPs work); `.env*`, symlinks, unsafe paths, encrypted entries,
+  duplicate names (worker) and disallowed types are rejected.
+- `GET /api/config` → `{ latexUrl, pushPublicKey }` (`latexUrl` = `LATEX_ORIGIN`, null when unset).
+
+## Aldine (LaTeX) security model
+
+Accepted by the user (2026-10-20): accounts are lab members only, and any Aldine user can read other projects'
+files (upstream limitation). Account creation is behind nginx Basic Auth (`owner` / `LATEX_REGISTER_PASSWORD`)
+until the hub becomes Aldine's OIDC provider. Never serve Aldine under a path of `APP_HOSTNAME`: its scripts would
+share the hub origin and could call `/api` with the hub session.

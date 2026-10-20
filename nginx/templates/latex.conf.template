@@ -1,0 +1,9 @@
+map $http_upgrade $latex_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+server {
+    listen 80;
+    server_name ${LATEX_HOSTNAME};
+    include /etc/nginx/conf.d/latex-locations.inc;
+}

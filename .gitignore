@@ -2,8 +2,6 @@
 .env.*
 !.env.example
 nginx/certs/*.pem
-app/.env
-app/.env.*
 **/node_modules/
 **/.next/
 slides/_site/
@@ -13,5 +11,6 @@ slides/.quarto/
 /.quarto/
 **/*.quarto_ipynb
 backups/
+legacy-export/
 **/*.tsbuildinfo
 .playwright-mcp/

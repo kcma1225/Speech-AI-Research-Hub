@@ -21,7 +21,7 @@ export async function bootstrapOwner(pool: Db, config: Config) {
     } else if (envChanged) {
       await client.query("UPDATE users SET password_hash=$1 WHERE id=$2", [await hashPassword(config.OWNER_PASSWORD), owner.id]);
       await client.query("DELETE FROM sessions WHERE user_id=$1", [owner.id]);
-      await client.query("INSERT INTO audit_log(actor_id,action,target_type,target_id) VALUES($1,'owner_password_rebound','user',$1)", [owner.id]);
+      await client.query("INSERT INTO audit_log(actor_id,action,target_type,target_id) VALUES($1,'owner_password_rebound','user',$2)", [owner.id, owner.id]);
     }
     if (envChanged) {
       await client.query(

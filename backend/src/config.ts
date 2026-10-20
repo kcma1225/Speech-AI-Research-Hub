@@ -18,7 +18,7 @@ const schema = z.object({
   S3_BUCKET: z.string().min(3).default("hub"),
   S3_ACCESS_KEY: z.string().min(1),
   S3_SECRET_KEY: z.string().min(1),
-  OVERLEAF_URL: z.string().default(""),
+  LATEX_URL: z.string().default(""),
   VAPID_PUBLIC_KEY: z.string().default(""),
   VAPID_PRIVATE_KEY: z.string().default(""),
   VAPID_SUBJECT: z.string().default("mailto:admin@example.com"),
