@@ -38,6 +38,7 @@ docker compose down               # 停止；資料保留在 volumes
 ## Aldine（協作 LaTeX）
 
 - 必須使用獨立主機名（`LATEX_HOSTNAME`、`LATEX_ORIGIN`），不可掛在 Hub 網址的子路徑下。
+- 只有 IP、沒有網域時：用 `latex.<IP>.nip.io`（公共 DNS 會解析回該 IP），例如 `LATEX_HOSTNAME=latex.162.38.3.177.nip.io`、`LATEX_ORIGIN=http://latex.162.38.3.177.nip.io:18080`。`latex.localhost` 只在伺服器本機有效，其他裝置連不到。
 - Aldine 沒有邀請制：建立帳號的網址受 nginx Basic Auth 保護（帳號 `owner`，密碼 `LATEX_REGISTER_PASSWORD`）。
 - 帳號只開給實驗室成員：Aldine 使用者之間可以讀到彼此的專案檔案（上游限制，已接受）。不要放保密稿件。
 - 編譯 image 約 8 GB（TeX Live＋Noto CJK），請預留磁碟。評估細節見 [`docs/aldine-evaluation.md`](docs/aldine-evaluation.md)。
