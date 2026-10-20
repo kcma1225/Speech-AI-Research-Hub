@@ -20,7 +20,7 @@ v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf)
 
 | Service | Dir | Responsibility |
 |---|---|---|
-| nginx | `nginx/` | TLS, strict rate limit on `/api/auth/login` and `/api/join`, serves `frontend/` build, proxies `/api/` |
+| nginx | `nginx/` | TLS (or behind a TLS proxy: `TRUSTED_PROXIES` → real client IP from X-Forwarded-For), strict rate limit on `/api/auth/login` and `/api/join`, serves `frontend/` build, proxies `/api/` |
 | frontend | `frontend/` | SvelteKit 2 + Svelte 5, `adapter-static`, SPA (`ssr = false`). Built into the nginx image |
 | backend | `backend/` | All HTTP API, auth, RBAC, migrations, file streaming from S3, job enqueue + finalize |
 | worker | `worker/` | Claims jobs from Postgres, slide render (Quarto → HTML + PDF), media transcode (ffmpeg) |

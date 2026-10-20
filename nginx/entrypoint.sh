@@ -7,10 +7,24 @@ HTTPS_ENABLED="${HTTPS_ENABLED:-false}"
 case "$APP_HOSTNAME" in *[!a-zA-Z0-9.:-]*) echo 'Invalid APP_HOSTNAME' >&2; exit 1;; esac
 case "$APP_ORIGIN" in http://*|https://*) ;; *) echo 'Invalid APP_ORIGIN' >&2; exit 1;; esac
 
+# Reverse proxy / CDN in front of nginx: trust its X-Forwarded-For so rate limits, logs and the backend
+# see the real client IP. Space- or comma-separated IPs/CIDRs; empty = nginx is the edge.
+TRUSTED_PROXIES="$(printf '%s' "${TRUSTED_PROXIES:-}" | tr ',' ' ')"
+
 SCRIPT_HASHES="$(cat /etc/nginx/script-hashes)"
 export APP_HOSTNAME SCRIPT_HASHES
 out=/etc/nginx/conf.d
 rm -f "$out"/*.conf "$out"/*.inc
+
+if [ -n "$TRUSTED_PROXIES" ]; then
+  {
+    for proxy in $TRUSTED_PROXIES; do
+      case "$proxy" in *[!0-9a-fA-F.:/]*) echo "Invalid TRUSTED_PROXIES entry: $proxy" >&2; exit 1;; esac
+      printf 'set_real_ip_from %s;\n' "$proxy"
+    done
+    printf 'real_ip_header X-Forwarded-For;\nreal_ip_recursive on;\n'
+  } >"$out/real-ip.conf"
+fi
 
 case "$HTTPS_ENABLED" in
   true)

@@ -20,6 +20,7 @@ services:
       HTTPS_ENABLED: ${HTTPS_ENABLED:-false}
       APP_HOSTNAME: ${APP_HOSTNAME:-localhost}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       # Optional Aldine LaTeX editor (profile `latex`); empty LATEX_HOSTNAME disables its server block.
       LATEX_HOSTNAME: ${LATEX_HOSTNAME:-}
       LATEX_REGISTER_PASSWORD: ${LATEX_REGISTER_PASSWORD:-}

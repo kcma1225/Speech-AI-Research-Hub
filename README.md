@@ -32,6 +32,7 @@ docker compose down               # 停止；資料保留在 volumes
 - `POSTGRES_PASSWORD`、`WORKER_DB_PASSWORD`：每次 db 啟動會重新套用到既有 role。worker 使用最小權限的 `hub_worker`（只能讀寫 `jobs` 表）。
 - `AUTH_SECRET`：簽章簡報檢視 token；更換後已開啟的簡報需重新整理。Session 不受影響。
 - `S3_ACCESS_KEY`、`S3_SECRET_KEY`：RustFS 帳密，backend 與 worker 共用。
+- 前面有反向代理（如 OpenResty、Cloudflare）時：在代理終止 TLS，`HTTPS_ENABLED=false`、`APP_ORIGIN=https://<網域>`，並把代理的 IP 填入 `TRUSTED_PROXIES`，否則所有人共用代理 IP 的登入頻率限制。
 - HTTPS：把涵蓋 `APP_HOSTNAME`（與 `LATEX_HOSTNAME`）的 `fullchain.pem`、`privkey.pem` 放進 `nginx/certs/`，設 `HTTPS_ENABLED=true` 並把 origin 改成 `https://`。若 TLS 在 Cloudflare 等前端終止，維持 `false`。
 - Web Push：`VAPID_*`（`npx web-push generate-vapid-keys`）。手機推播需要 HTTPS，iOS 需先加入主畫面。
 
