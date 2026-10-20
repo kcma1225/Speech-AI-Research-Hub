@@ -1,0 +1,212 @@
+---
+title: "LW ASR：中英夾雜串流語音辨識 v3"
+date: "2026-10-13"
+description: "LW-v3-A 在受測輕量串流系統中綜合最佳；選定為 v3 發布模型"
+from: markdown+markdown_in_html_blocks
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    transition: none
+    progress: true
+    css: slides.css
+revealjs-plugins:
+  - annotate
+---
+
+## 問題定義
+
+```{=html}
+<div class="statement">真實台灣中英夾雜語音不足，模型難以學到自然 code-switching。</div>
+<div class="pipeline problem-flow" role="img" aria-label="從真實語音不足到辨識錯誤的問題流程">
+  <div class="node"><span class="index">01</span><span class="node-title">真實語音不足</span><span class="node-copy">對話、課堂<br>台灣口音</span></div>
+  <div class="connector"><span>資料缺口</span><i></i></div>
+  <div class="node"><span class="index">02</span><span class="node-title">夾雜模式稀疏</span><span class="node-copy">中文 ↔ English<br>切換樣態有限</span></div>
+  <div class="connector"><span>訓練不足</span><i></i></div>
+  <div class="node outcome"><span class="index">03</span><span class="node-title">真實場景誤辨</span><span class="node-copy">評測指標<br>MER</span></div>
+</div>
+<div class="research-question"><span>研究問題</span>經篩選的合成中英夾雜語音，能否降低真實夾雜測試集 MER？</div>
+<div class="provenance">來源：使用者提供的研究目標與資料描述｜數字：本頁無</div>
+```
+
+::: {.notes}
+問題不是一般語音總量，而是接近台灣真實場景的中英夾雜資料不足。本週只回答一個問題：加入篩選後的合成夾雜語音，是否改善真實夾雜測試集 MER。
+:::
+
+## Idea 或架構
+
+```{=html}
+<div class="flow-caption">合成資料製作流程</div>
+<div class="pipeline method-flow" role="img" aria-label="qwen3.8 產生文字，CosyVoice2 合成語音，FireRedASR2 篩選，得到合成資料">
+  <div class="node"><span class="index">01</span><span class="node-title">qwen3.8</span><span class="node-copy">產生夾雜文字<br>14.5 萬句</span></div>
+  <div class="connector"><span>文字</span><i></i></div>
+  <div class="node"><span class="index">02</span><span class="node-title">CosyVoice2</span><span class="node-copy">零樣本 TTS<br>台灣口音</span></div>
+  <div class="connector"><span>語音</span><i></i></div>
+  <div class="node changed"><span class="index">03</span><span class="node-title">FireRedASR2</span><span class="node-copy">錯誤率 ≤ 0.15<br>品質篩選</span></div>
+  <div class="connector"><span>保留 61.5%</span><i></i></div>
+  <div class="node output"><span class="index">04</span><span class="node-title">250.1 h</span><span class="node-copy">177,897 句<br>合成夾雜語音</span></div>
+</div>
+<div class="split-experiment">
+  <div class="experiment-arm control"><span>A · control</span><b>真實資料</b><small>Real only</small></div>
+  <div class="experiment-equals">相同模型／超參數／類別比例／seed</div>
+  <div class="experiment-arm treatment"><span>B · treatment</span><b>真實＋合成資料</b><small>夾雜類加入 30% 合成語音</small></div>
+</div>
+<div class="provenance">來源：training_history_v1_v3.md §3.5｜最終使用 177,897 句、250.144 h</div>
+```
+
+::: {.notes}
+流程有四步：qwen3.8 產生夾雜文字、CosyVoice2 合成語音、FireRedASR2 依 MER 與英文詞規則篩選，最後使用 177,897 句、250.144 小時。B 組只改夾雜類內部組成：30% 合成、70% 真實；en、zh、mixed 類別占比與 epoch 長度和 A 相同。
+:::
+
+## 當前模型：輸入到輸出
+
+```{=html}
+<div class="model-spec"><span>Zipformer2-M</span><span>因果串流</span><span>Pruned RNN-T</span><span>72.9M 部署參數</span></div>
+<div class="model-flow" role="img" aria-label="16 kHz 音訊經過 fbank、卷積降採樣、Zipformer2 encoder、RNN-T decoder 與 joiner，輸出中英文字 token">
+  <div class="model-main">
+    <div class="model-node input"><span>INPUT</span><b>16 kHz 單聲道音訊</b><small>串流 chunk 16｜320 ms</small></div>
+    <div class="model-arrow"><i></i></div>
+    <div class="model-node"><span>FEATURE</span><b>80 維 fbank</b><small>Conv2dSubsampling｜4×</small></div>
+    <div class="model-arrow"><i></i></div>
+    <div class="model-node encoder"><span>ENCODER</span><b>Zipformer2-M</b><small>6 stacks｜2,2,3,4,3,2 layers<br>dim 192→256→384→512→384→256</small></div>
+    <div class="model-arrow"><i></i></div>
+    <div class="model-node joiner"><span>JOINT</span><b>Joiner</b><small>512 dim｜融合聲學與文字狀態</small></div>
+    <div class="model-arrow"><i></i></div>
+    <div class="model-node output"><span>OUTPUT</span><b>中英文字 token</b><small>7,611 BPE vocab｜greedy decoding</small></div>
+  </div>
+  <div class="decoder-branch">
+    <div class="history"><span>已輸出 token</span><small>前 2 個 token</small></div>
+    <div class="branch-arrow"><i></i></div>
+    <div class="model-node decoder"><span>DECODER</span><b>Stateless decoder</b><small>context size 2｜512 dim</small></div>
+    <div class="branch-up"><i></i><span>文字狀態</span></div>
+  </div>
+</div>
+<div class="model-note"><span>訓練目標</span>Transducer only；未啟用 CTC 或 attention decoder</div>
+<div class="provenance">來源：training_history_v1_v3.md §2.1–2.4、§5｜v3-A／v3-B 架構相同</div>
+```
+
+::: {.notes}
+輸入是 16 kHz 單聲道音訊，先轉成 80 維 fbank，再由 Conv2dSubsampling 降採樣四倍。Zipformer2-M 是因果 encoder，包含六個 stack。RNN-T 的 stateless decoder 使用前兩個已輸出 token 建立文字狀態；Joiner 融合 encoder 的聲學狀態與 decoder 的文字狀態，預測 7,611 詞表中的下一個 token。目前只使用 transducer loss，沒有啟用 CTC 或 attention decoder。
+:::
+
+## 對帳
+
+```{=html}
+<div class="accounting">
+  <div class="account-row missing"><span class="state">待補</span><div><b>上週 Issue 第 5 格原文</b><p>未收到原文，不代寫承諾內容。</p></div></div>
+  <div class="account-row done"><span class="state">完成</span><div><b>v3-A 訓練</b><p>20 epochs；dev 最佳為 ep20 avg10。</p></div></div>
+  <div class="account-row done"><span class="state">完成</span><div><b>統一串流評測</b><p>7,414 句；Beam 4；320 ms；strict normalization。</p></div></div>
+  <div class="account-row done"><span class="state">完成</span><div><b>最終模型選擇</b><p>依預設門檻選定 LW-v3-A 發布。</p></div></div>
+</div>
+<div class="provenance">來源：asr_streaming_evaluation_report_v3.pdf §3、§4、§8｜文件日期 2026-10-13 15:57</div>
+```
+
+::: {.notes}
+這頁仍不能完成上週 Issue 的逐字對帳，因為未收到第 5 格原文。最新評測已完成 A、B 各自 epoch 20 avg10、統一測試子集、Beam 4 解碼與 bootstrap 信賴區間。依事先規則，B 必須在夾雜類勝過 A 超過 0.5 點才採用；結果未達門檻，因此選 A。
+:::
+
+## Table 1 現況
+
+```{=html}
+<div class="table-meta"><span>最終統一評測</span><strong>7,414 句</strong><span>Beam 4｜320 ms｜strict</span></div>
+```
+
+| 系統 | 綜合 ↓ | 中文 CER ↓ | 英文 WER ↓ | 夾雜 MER ↓ |
+|---|---:|---:|---:|---:|
+| **LW-v3-A｜發布模型** | **14.47** | **14.97** | **15.38** | **13.45** |
+| LW-v3-B｜加入合成 | 14.59 | 15.24 | 15.31 | 13.57 |
+| LW-v2 | 14.81 | 14.34 | 14.73 | 15.27 |
+| pfluo｜320 ms | 17.15 | 13.33 | 18.46 | 19.67 |
+| sherpa-bilingual | 19.90 | 12.57 | 30.26 | 19.84 |
+
+```{=html}
+<div class="table-reading"><span>目前讀法</span><p>LW-v3-A 綜合錯誤率最低；夾雜 MER 也是受測串流系統最低。中文與英文仍落後 v2。</p></div>
+<div class="provenance">來源：asr_streaming_evaluation_report_v3.pdf 表 2｜綜合 = .25 英文 + .35 中文 + .40 夾雜</div>
+```
+
+::: {.notes}
+所有列使用相同 7,414 句分層子集、統一 strict normalization、Beam 4 與 320 ms chunk。LW-v3-A 綜合 14.47，顯著優於 v2 的 14.81；優勢來自夾雜 MER 13.45，但中文與英文各退步 0.63、0.65 點。
+:::
+
+## 本週關鍵結果
+
+```{=html}
+<div class="result-headline">選定 LW-v3-A：綜合 14.47%，串流系統最佳。</div>
+<div class="comparison-chart" role="img" aria-label="LW-v3-A 與 LW-v3-B 最終 Beam 4 結果比較">
+  <div class="chart-header"><span></span><span class="series-a">A 真實資料</span><span class="series-b">B 加入合成</span><span>差值 B−A</span></div>
+  <div class="chart-row"><span>綜合</span><div class="measure"><i class="a" style="width:72.35%"></i><em>14.47</em></div><div class="measure"><i class="b" style="width:72.95%"></i><em>14.59</em></div><strong>+0.13</strong></div>
+  <div class="chart-row"><span>中文 CER</span><div class="measure"><i class="a" style="width:74.85%"></i><em>14.97</em></div><div class="measure"><i class="b" style="width:76.2%"></i><em>15.24</em></div><strong>+0.26</strong></div>
+  <div class="chart-row"><span>英文 WER</span><div class="measure"><i class="a" style="width:76.9%"></i><em>15.38</em></div><div class="measure"><i class="b" style="width:76.55%"></i><em>15.31</em></div><strong>−0.07</strong></div>
+  <div class="chart-row"><span>夾雜 MER</span><div class="measure"><i class="a" style="width:67.25%"></i><em>13.45</em></div><div class="measure"><i class="b" style="width:67.85%"></i><em>13.57</em></div><strong>+0.14</strong></div>
+</div>
+<div class="confidence-note"><b>A/B 差異不顯著</b><span>綜合差 +0.13，95% CI [−0.07, +0.31]</span><span>預設門檻：B 的夾雜 MER 須勝出 &gt; 0.5 點</span></div>
+<div class="provenance">來源：asr_streaming_evaluation_report_v3.pdf 表 2、表 3、§8｜Beam 4｜320 ms</div>
+```
+
+::: {.notes}
+最終評測使用 A、B 各自 epoch 20 avg10。B 相較 A：綜合高 0.13、中文高 0.26、英文低 0.07、夾雜高 0.14 點；所有 A/B 信賴區間都跨 0。B 未達事先設定的夾雜勝出 0.5 點門檻，因此選定 A。
+:::
+
+## 卡住
+
+```{=html}
+<div class="diagnostic-flow" role="img" aria-label="目前現象分成資料稀釋與大 batch 少步數兩個待驗證假設">
+  <div class="observed"><span>觀察</span><b>綜合顯著優於 v2<br>但中文、英文退步</b></div>
+  <div class="fork"><i></i><i></i></div>
+  <div class="hypotheses">
+    <div><span>假設 A</span><b>單一來源稀釋</b><p>WenetSpeech 佔 v3 總時數 48.2%<br>其他中文來源曝光下降</p></div>
+    <div><span>假設 B</span><b>大 batch、少步數</b><p>v3：46,860 steps<br>v2：242,208 steps</p></div>
+  </div>
+  <div class="next-test">下一步：限制單一來源，並依 batch 大小重估 LR、lr_batches 與 epochs。</div>
+</div>
+<div class="signal"><span>正向訊號</span><b>NTU ML2021 MER　28.87 → 11.88</b><small>同領域訓練；測試音檔未進 train／dev</small></div>
+<div class="provenance">來源：asr_streaming_evaluation_report_v3.pdf §4.5、§6–7｜稀釋與排程仍屬推論</div>
+```
+
+::: {.notes}
+統一評測下，v2 相對 A 的綜合差為 +0.34，95% CI [+0.12, +0.59]，但 A 的中文與英文分別退步 0.63、0.65 點。可能原因仍是 WenetSpeech 占比與大 batch 排程。NTU ML2021 從 28.87 降到 11.88，但 v3 使用同課程、同講者其他片段訓練，因此屬領域內增益，不能當作完全獨立泛化。
+:::
+
+## Idea card {.compact}
+
+```{=html}
+<div class="draft-label">AI 草稿範例｜需研究者逐格確認後才能呈報</div>
+<div class="idea-sheet">
+  <div><span>痛點</span><p>v3 綜合與夾雜進步，但中文、英文仍落後 v2。</p></div><div><span>證據</span><p>A：綜合 14.47、CER 14.97、WER 15.38、MER 13.45；B 無顯著增益。</p></div>
+  <div><span>假設</span><p>增益可能被單一來源稀釋，以及大 batch 下排程與步數不匹配抵消。</p></div><div><span>最小驗證</span><p>限制來源占比；另依 batch 大小重設 LR 排程與 epochs，做單變因比較。</p></div>
+  <div><span>成功門檻</span><p>綜合優於 A，並縮小中文／英文退步；門檻數值待教授確認。</p></div><div><span>Prior work</span><p>待補：合成 code-switching ASR 與資料配比研究，需查證原始論文。</p></div>
+  <div><span>差異</span><p>不只比較有無合成資料；拆開來源占比與大 batch 排程的影響。</p></div><div><span>失敗所得</span><p>可判斷問題來自資料組成、訓練排程，或合成資料本身。</p></div>
+</div>
+<div class="author-note">此頁不是研究者定稿；證據來自 training_history_v1_v3.md，Prior work 尚未查證。</div>
+```
+
+::: {.notes}
+本頁是 AI 草稿範例，不是研究者定稿。報告前需逐格確認，尤其是成功門檻與 Prior work；確認後再請現場預測，最後由教授判斷。
+:::
+
+## 下週與要問 {.compact}
+
+```{=html}
+<div class="next-layout">
+  <div class="run-list"><h3>下週 run</h3>
+    <div><span>01</span><p><b>發布 LW-v3-A</b><small>ep20 avg10｜INT8 75 MB</small></p></div>
+    <div><span>02</span><p><b>來源占比控制</b><small>WenetSpeech 上限待教授確認</small></p></div>
+    <div><span>03</span><p><b>大 batch 排程控制</b><small>LR、lr_batches、epochs 待確認</small></p></div>
+    <div><span>04</span><p><b>v4 測試集規格</b><small>10–20 h 台灣口音人工校對</small></p></div>
+  </div>
+  <div class="decision-list"><h3>請教授決定</h3>
+    <div><span>Q1</span><p>目前訓練方式或超參數是否需要調整？</p></div>
+    <div><span>Q2</span><p>約 5 萬小時訓練資料應從哪些來源取得？</p></div>
+    <div class="reading-list"><span>本週淺讀</span><p>〔暫無〕</p></div>
+  </div>
+</div>
+<div class="provenance">來源：使用者指定的下週規劃與提問｜訓練調整與資料來源待教授確認</div>
+```
+
+::: {.notes}
+先完成模型平均與控制實驗規劃，再請教授判斷訓練方式或超參數是否需要調整，以及約五萬小時資料應從哪些來源取得。本頁只列問題，不代答。
+:::

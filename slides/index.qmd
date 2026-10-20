@@ -1,0 +1,16 @@
+---
+title: "Speech-AI Research Hub 簡報"
+listing:
+  contents:
+    - meet1/index.qmd
+    - interspeech_2019_zhao/index.qmd
+  sort: "date desc"
+  type: grid
+  fields: [date, title, description]
+  categories: false
+page-layout: full
+---
+
+## 會議紀錄
+
+每次會議使用獨立路徑：`/meet1/`、`/meet2/`、`/meet3/`……

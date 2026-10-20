@@ -1,0 +1,15 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - index.qmd
+    - meet1/index.qmd
+    - interspeech_2019_zhao/index.qmd
+
+website:
+  title: "Speech-AI Research Hub 簡報"
+
+format:
+  html:
+    lang: zh-TW
+    toc: false

@@ -1,0 +1,11 @@
+**/node_modules
+**/.next
+slides/.quarto
+slides/_site
+nginx/certs/*.pem
+.env
+.env.*
+.git
+.DS_Store
+*.png
+backups

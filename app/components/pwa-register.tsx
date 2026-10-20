@@ -1,0 +1,3 @@
+"use client";
+import { useEffect } from "react";
+export function PwaRegister(){useEffect(()=>{const media=matchMedia("(display-mode: standalone), (display-mode: fullscreen), (display-mode: minimal-ui), (display-mode: window-controls-overlay)");const sync=()=>{if(media.matches||(navigator as Navigator&{standalone?:boolean}).standalone===true)document.documentElement.dataset.pwa="true";else delete document.documentElement.dataset.pwa};sync();media.addEventListener("change",sync);if("serviceWorker" in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>undefined);return()=>media.removeEventListener("change",sync)},[]);return null}

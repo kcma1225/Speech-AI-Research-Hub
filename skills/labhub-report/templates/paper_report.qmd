@@ -1,0 +1,266 @@
+---
+title: "〔論文短名〕"
+subtitle: "〔第一作者 et al., 會議 年份〕"
+author: "〔姓名〕"
+date: "〔YYYY-MM-DD〕"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    html-math-method:
+      method: katex
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+<!-- 存成 reports/〔會議〕_〔年份〕_〔第一作者姓〕.qmd（全小寫）。固定13頁，投影片本體英文，講稿繁體中文。
+第7、12、13頁 AI 不生，使用者自己寫。見 references/paper-report.md。
+render: quarto render reports/〔檔名〕.qmd -->
+
+## One-sentence claim
+
+In 〔task〕, 〔method〕 improves 〔metric〕 on 〔dataset〕 from 〔A〕 to 〔B〕, at the cost of 〔　〕.
+(Table 〔N〕)
+
+〔Author, Venue Year, URL〕
+
+::: {.notes}
+**【講述】**（約 1 分鐘）
+
+為什麼挑這篇
+
+**【提示】**
+
+- 出處：論文表〔N〕
+:::
+
+## Background
+
+〔原本的 pipeline，示意圖〕
+
+![Original pipeline](figs/background.png)
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+原本怎麼做
+
+**【提示】**
+
+- 出處：§〔　〕
+:::
+
+## Pain point
+
+〔背景圖上標出壞掉的位置；一個具體失敗例子〕
+
+![](figs/painpoint.png)
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+這個例子為什麼錯
+
+**【提示】**
+
+- 出處：§〔　〕
+:::
+
+## Architecture
+
+<!-- Mermaid flowchart LR；新模組用 stroke-width:4px 標出；節點標籤不含括號/引號/斜線 -->
+
+```{mermaid}
+flowchart LR
+  A[Input] --> B[Encoder]
+  B --> C[New Module]
+  C --> D[Decoder]
+  D --> E[Output]
+  style C stroke-width:4px
+```
+
+::: {.notes}
+**【講述】**（約 2 分鐘）
+
+輸入、輸出、每個模組一句
+
+**【提示】**
+
+- 出處：§〔　〕
+:::
+
+## Training
+
+<!-- 同一張架構圖，節點命名一致；加損失節點與梯度流向；凍結模組 fill:#ddd -->
+
+```{mermaid}
+flowchart LR
+  A[Input] --> B[Encoder]
+  B --> C[New Module]
+  C --> D[Decoder]
+  D --> E[Output]
+  E --> L[Loss]
+  style C stroke-width:4px
+  style B fill:#ddd
+```
+
+資料：〔　〕　損失：〔　〕　更新：〔　〕　凍結：〔　〕
+
+::: {.notes}
+**【講述】**（約 2 分鐘）
+
+資料從哪來、算什麼損失、更新什麼
+
+**【提示】**
+
+- 出處：§〔　〕
+:::
+
+## Inference
+
+<!-- 同一張架構圖，拿掉訓練才有的節點 -->
+
+```{mermaid}
+flowchart LR
+  A[Input] --> B[Encoder]
+  B --> C[New Module]
+  C --> D[Decoder]
+  D --> E[Output]
+  style C stroke-width:4px
+```
+
+和訓練哪裡不同：〔　〕
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+和訓練哪裡不同
+
+**【提示】**
+
+- 出處：§〔　〕
+:::
+
+## Trace one example
+
+<!-- 這頁我自己寫，AI不生 -->
+
+〔　〕
+
+::: {.notes}
+〔　〕
+:::
+
+## Why it works
+
+- 拿掉會怎樣：〔　〕
+- 放這個位置的原因：〔　〕
+- 成本：〔　〕
+
+::: {.notes}
+**【講述】**（約 0.5 分鐘）
+
+**【提示】**
+
+- 之後和第11頁消融表對
+:::
+
+## Setup and fairness
+
+| 資料集 | 指標 | Baseline |
+|---|---|---|
+| 〔　〕 | 〔　〕 | 〔　〕 |
+
+公平性四問：同backbone？〔　〕　同資料？〔　〕　baseline重跑還是引用？〔　〕　多seed？〔　〕
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+哪裡不公平
+
+**【提示】**
+
+- 出處：實驗設定節
+:::
+
+## Main results
+
+<!-- 主表只留3-5列，關鍵數字加粗 -->
+
+| 方法 | 〔指標〕 |
+|---|---|
+| Baseline | 〔　〕 |
+| **〔method〕** | **〔　〕** |
+
+取自論文表〔N〕
+
+::: {.notes}
+**【講述】**（約 2 分鐘）
+
+贏多少、哪裡贏最多、哪裡沒贏
+
+**【提示】**
+
+- 出處：表〔N〕
+:::
+
+## Ablation and key figure
+
+| 去掉 | 指標變化 |
+|---|---|
+| 〔　〕 | 〔　〕 |
+
+![取自原論文 Fig. N](figs/selling.png)
+
+沒報的東西：〔推論速度／其他資料集／seed〕
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+消融有沒有驗證第8頁的推理；圖想證明什麼
+
+**【提示】**
+
+- 出處：表/圖〔N〕
+:::
+
+## My assessment
+
+<!-- 這頁我自己寫，AI不生 -->
+
+- Strongest point: 〔　〕
+- Weakest point: 〔　〕
+- What a reviewer would ask: 〔　〕
+
+::: {.notes}
+〔　〕
+:::
+
+## Takeaways for my work
+
+<!-- 這頁我自己寫，AI不生 -->
+
+- What to borrow: 〔　〕
+- Idea card?: 〔是：來源〔　〕編號〔　〕／否：原因〕
+
+::: {.notes}
+〔　〕
+:::

@@ -1,0 +1,9 @@
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import path from "node:path";
+import { Readable } from "node:stream";
+import { NextResponse } from "next/server";
+import { isUuid } from "@/lib/origin";
+import { currentUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+export async function GET(request:Request,{params}:{params:Promise<{id:string}>}){if(!await currentUser())return NextResponse.json({error:"請重新登入。"},{status:401});const {id}=await params;if(!isUuid(id))return NextResponse.json({error:"檔案不存在。"},{status:404});const result=await(await db()).query("SELECT storage_name,mime_type FROM items WHERE id=$1",[id]);const media=result.rows[0];if(!media?.storage_name)return NextResponse.json({error:"檔案不存在。"},{status:404});const filePath=path.join(process.env.UPLOAD_DIR??"/data/uploads",media.storage_name);const info=await stat(filePath).catch(()=>null);if(!info)return NextResponse.json({error:"檔案不存在。"},{status:404});const range=request.headers.get("range");if(range){const match=/bytes=(\d+)-(\d*)/.exec(range);if(!match)return new NextResponse(null,{status:416});const start=Number(match[1]);const end=match[2]?Number(match[2]):info.size-1;if(start>end||end>=info.size)return new NextResponse(null,{status:416});return new NextResponse(Readable.toWeb(createReadStream(filePath,{start,end})) as ReadableStream,{status:206,headers:{"Content-Type":media.mime_type??"audio/webm","Content-Length":String(end-start+1),"Content-Range":`bytes ${start}-${end}/${info.size}`,"Accept-Ranges":"bytes","Cache-Control":"private, no-store"}})}return new NextResponse(Readable.toWeb(createReadStream(filePath)) as ReadableStream,{headers:{"Content-Type":media.mime_type??"audio/webm","Content-Length":String(info.size),"Accept-Ranges":"bytes","Cache-Control":"private, no-store"}})}

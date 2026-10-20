@@ -1,0 +1,446 @@
+---
+title: "Shallow-Fusion End-to-End Contextual Biasing"
+subtitle: "Zhao, Sainath, Rybach, Rondon, Bhatia, Li, Pang · Google · Interspeech 2019"
+author: "〔Presenter〕"
+date: "2026-10-19"
+description: "Paper report: wordpiece + early biasing + prefix-gated FST lets RNN-T beat a conventional model on contextual sets"
+from: markdown+markdown_in_html_blocks
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    transition: none
+    progress: true
+    css: slides.css
+    html-math-method:
+      method: katex
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+revealjs-plugins:
+  - annotate
+---
+
+## One-sentence claim
+
+```{=html}
+<div class="claim-meta"><span>Task: contextual ASR (songs, contacts, apps)</span><span>Model: RNN-T, 4,096 wordpieces</span><span>Metric: WER %</span></div>
+<p class="claim">On contextual voice queries, <b>wordpiece-level shallow fusion applied before beam pruning, gated by mined prefixes</b>, plus 100M unsupervised utterances, cuts RNN-T WER on Cnt-Real from <b>15.8 → 5.8</b> and beats a 130 MB conventional model on 4 of 5 sets — <span class="cost">at the cost of per-category weight tuning, a mined prefix list, and still losing on Songs.</span></p>
+<div class="claim-figures">
+  <div><span>Cnt-Real · real contacts</span><b>15.8 → 5.8</b><small>E1 → E9, Tables 3 &amp; 4</small></div>
+  <div><span>VS · no context to bias</span><b>6.9 → 7.3</b><small>E1 → E8, Table 3</small></div>
+  <div><span>vs. conventional, Cnt-Real</span><b>5.8 vs 6.8</b><small>Table 6</small></div>
+</div>
+<div class="provenance">Source: Zhao et al., Interspeech 2019, pp. 1418–1422, doi:10.21437/Interspeech.2019-1209 · Tables 3, 4, 6 · AI→✓ checked against PDF</div>
+```
+
+::: {.notes}
+**【講述】**（約 1 分鐘）
+
+今天報告的是 Google 在 Interspeech 2019 的 Shallow-Fusion End-to-End Contextual Biasing。一句話講完：在聯絡人、歌名、App 名這類情境語音上，作者把 contextual FST 的偏置改成 wordpiece 層級、在 beam pruning 之前就加分、再用從 log 挖出來的前綴（像 call、play）去控制什麼時候偏置，最後加上一億句非監督資料。結果真實聯絡人測試集 Cnt-Real 的 WER 從 15.8 降到 5.8，而且在五個測試集裡有四個贏過同大小 130 MB 的傳統 CTC 系統。代價是每個類別要各自調權重、要有一份挖出來的前綴清單，而且 Songs 還是輸。
+
+為什麼挑這篇：這是 E2E 模型第一次在情境偏置上被證明能贏過商用傳統系統，後面 TCPGen、NAM 這一路的論文都拿它當 shallow fusion baseline。
+
+**【提示】**
+
+- 15.8 是 E1（無偏置 WPM，Table 3）；5.8 是 E9 + Biasing（Table 4）。中間 E8 是 6.7。
+- 摘要說 20–40% relative 贏「almost all」；實際算 Table 6 是 VS −28%、Apps −21%、Cnt-Real −15%、Cnt-TTS −5%、Songs +25%（輸）。只有 VS、Apps 落在 20–40%，被問到要誠實講。
+- 數字出處：Table 3、4、6。
+:::
+
+## Background
+
+```{=html}
+<div class="flow-label">Conventional ASR: biasing lives inside the LM</div>
+<div class="flow" style="grid-template-columns: 1fr 40px 1fr 40px 1.2fr 40px 1fr;">
+  <div class="node"><span class="tag">AM</span><b>Acoustic model</b><small>CTC, phoneme targets</small></div>
+  <div class="arrow"><i></i></div>
+  <div class="node"><span class="tag">PM</span><b>Pronunciation</b><small>lexicon</small></div>
+  <div class="arrow"><i></i></div>
+  <div class="node out"><span class="tag">LM ∘ Context</span><b>ASR LM composed with contextual n-gram FST</b><small>on-the-fly rescoring, wide beam</small></div>
+  <div class="arrow"><i></i></div>
+  <div class="node"><span class="tag">Output</span><b>Words</b><small>"call Kaitlyn"</small></div>
+</div>
+<div class="flow-label">End-to-end ASR: one network, so context must be fused from outside</div>
+<div class="flow" style="grid-template-columns: 2.2fr 40px 1.2fr 40px 1fr;">
+  <div class="node"><span class="tag">AM + PM + LM</span><b>RNN-T, single neural network</b><small>trained on 35M utterances, ~27.5k h — far less text than a conventional LM</small></div>
+  <div class="arrow"><span>P(y|x)</span><i></i></div>
+  <div class="node new"><span class="tag">Shallow fusion</span><b>+ λ · log P<sub>C</sub>(y)</b><small>external contextual LM</small></div>
+  <div class="arrow"><i></i></div>
+  <div class="node"><span class="tag">Output</span><b>Wordpieces</b><small>beam ≈ 4–10</small></div>
+</div>
+```
+
+:::: {.equation}
+::: {.formula}
+$$\mathbf{y}^* = \arg\max_{\mathbf{y}}\; \log P(\mathbf{y}\mid\mathbf{x}) + \lambda \log P_C(\mathbf{y})$$
+:::
+
+P~C~: contextual LM built from the user's songs, contacts, apps. λ: how hard to push toward them. Eq. (1).
+::::
+
+[Source: §1, §2.1, Eq. (1), §3.1 · AI→✓]{.provenance}
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+先講原本怎麼做。傳統 ASR 有聲學模型、發音詞典、語言模型三塊。要偏向使用者的聯絡人或歌名，就把這些詞做成一個 n-gram FST，跟 ASR 的 LM 組合，解碼時順便加分。因為傳統系統 beam 很寬，這招很有效。
+
+E2E 模型把三塊合成一個網路，沒有獨立的 LM 可以組合，所以只能從外面做 shallow fusion：每一步把 E2E 的分數加上 λ 乘以 contextual LM 的分數，就是第一式。λ 是超參數，決定偏置多強。
+
+**【提示】**
+
+- 公式出處：Eq. (1)，§2.1。
+- 訓練資料 35M 句、約 27,500 小時：§3.1。
+- 傳統模型細節（CTC phoneme AM + PM + LM，130 MB）：§4.4、ref [5]。
+:::
+
+## Pain point
+
+```{=html}
+<div class="beam-wrap">
+  <div class="beam">
+    <h3>1 · Pruned before biasing <small>word-level fusion, prior work [2]</small></h3>
+    <div class="beam-step"><span>step t</span><div class="hyps"><span class="hyp">call ca</span><span class="hyp">call kay</span><span class="hyp">call cat</span><span class="hyp target">call kait</span></div></div>
+    <div class="beam-step"><span>prune k=4</span><div class="hyps"><span class="hyp">call ca</span><span class="hyp">call kay</span><span class="hyp">call cat</span><span class="hyp pruned">call kait</span></div></div>
+    <div class="beam-step"><span>word end</span><div class="hyps"><span class="hyp">call caitlin</span><span class="hyp">call kay lynn</span></div></div>
+    <p class="cap">Bonus is only added at the word boundary — "Kaitlyn" already fell off the beam.</p>
+  </div>
+  <div class="beam">
+    <h3>2 · Beam flooded by partial matches <small>grapheme biasing [4]</small></h3>
+    <div class="beam-step"><span>bias "cat"</span><div class="hyps"><span class="hyp flood">c</span><span class="hyp flood">ca</span></div></div>
+    <div class="beam-step"><span>beam</span><div class="hyps"><span class="hyp flood">car</span><span class="hyp flood">cab</span><span class="hyp flood">can</span><span class="hyp target">cat</span></div></div>
+    <div class="beam-step"><span>non-context</span><div class="hyps"><span class="hyp">"what's the weather"</span><span class="hyp flood">→ biased anyway</span></div></div>
+    <p class="cap">Every "c…" word gets a bonus; and biasing never switches off on anti-context queries (not evaluated in [4]).</p>
+  </div>
+</div>
+<div class="reading warn"><span>Root cause</span><p>E2E beams keep ~4–10 hypotheses and see few proper nouns in training, so rare names are pruned before any bonus can help.</p></div>
+<div class="provenance">Source: §1, §2.2, §2.3.2 ("cat"/"car" example is the paper's; "Kaitlyn" beam trace is an illustration, not from the paper) · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+痛點有兩個，對應兩種舊做法。
+
+左邊是 Williams 2018 的做法，contextual LM 只在詞邊界加分。E2E 每步只留 4 到 10 個假設，像 Kaitlyn 這種罕見名字，前面幾個 wordpiece 分數低，還沒走到詞尾就被剪掉，偏置根本來不及作用。
+
+右邊是 Pundak 2018 的 Deep Context 那一套，改成每個 grapheme 都加分。這解決了第一個問題，但字元太細：偏置 c、a 的時候，car、cab 這些不相干的詞也一起被拉進 beam。另外這種偏置永遠開著，使用者如果只是問天氣，也會被偏置干擾，作者把這叫 anti-context，前作沒有評估。
+
+根本原因：E2E 訓練看到的專有名詞少，beam 又窄。
+
+**【提示】**
+
+- cat / car 的例子是論文 §2.3.2 原文；左邊 Kaitlyn 的 beam 走法是我為了說明畫的示意，不是論文資料。
+- beam 4–10：§1 第二段。
+- anti-context 沒在 [4] 評估：§1、§2.2。
+:::
+
+## Architecture
+
+{{< include _figs/arch_arch.md >}}
+
+```{=html}
+<div class="changes">
+  <div><span>01</span><p><b>Wordpiece arcs</b> — FST spells phrases in the same 4,096 wordpieces the RNN-T emits <small>§2.3.2</small></p></div>
+  <div><span>02</span><p><b>Subtractive cost</b> — failure arcs take back the bonus if the phrase is not completed <small>§2.2, Fig. 1</small></p></div>
+  <div><span>03</span><p><b>Early biasing</b> — add λ log P<sub>C</sub> before beam pruning, not after <small>§2.3.1</small></p></div>
+  <div><span>04</span><p><b>Prefix FST</b> — "call", "play", "open"…; empty prefix allowed with smaller λ <small>§2.3.3</small></p></div>
+</div>
+<div class="legend-row"><span><i class="new"></i>changed by this paper</span><span><i></i>standard RNN-T, unchanged</span><span><i class="out"></i>output</span></div>
+<div class="provenance">Source: §2.1–2.3 (FST), §3.2 (RNN-T sizes) · diagram drawn by presenter from the text · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（約 2 分鐘）
+
+整體架構：左邊是標準 RNN-T。80 維 log-Mel，疊四幀降到 30 ms，進 8 層 LSTM encoder，每層 2,000 單元、投影到 600。下面的 decoder 是 2 層 LSTM，吃前面輸出的 wordpiece。Joint network 600 單元，接 4,096 個 wordpiece 的 softmax，得到 P(y|x)。
+
+這篇論文不改 RNN-T 本身，改的是橘色框：contextual FST 和它跟 beam search 接在哪裡。四個改動：第一，FST 用 wordpiece 而不是字元來拼片語；第二，沿用前作的 subtractive cost，片語沒拼完就把加過的分扣回去；第三，在 beam pruning 之前就把偏置分數加上去；第四，FST 前面串一個前綴 FST，像 call、play，允許空前綴但用比較小的 λ。
+
+**【提示】**
+
+- RNN-T 尺寸：§3.2。
+- FST 建法 min(det(S∘G))：§2.1。G 是詞級 n-gram FST，S 是 speller。
+- 前綴挖掘：出現超過 50 次的前綴，聯絡人 292 個、歌曲 11 個、App 66 個（§2.3.3）。
+:::
+
+## Training
+
+{{< include _figs/arch_train.md >}}
+
+```{=html}
+<div class="changes">
+  <div><span>D</span><p><b>Data</b> — 35M supervised utts + ~100M unsupervised, filtered for proper nouns <small>§2.4.1, §3.1</small></p></div>
+  <div><span>B</span><p><b>Batch mix</b> — 80% supervised / 20% unsupervised per step <small>§2.4.1</small></p></div>
+  <div><span>L</span><p><b>Loss</b> — standard RNN-T loss; nothing frozen <small>§3.2</small></p></div>
+  <div><span>F</span><p><b>FST</b> — no trainable parameters; λ tuned per category on test sets <small>§3.2</small></p></div>
+</div>
+<div class="legend-row"><span><i></i>trained</span><span><i class="ghost"></i>not present at training time</span><span><i class="out"></i>loss</span></div>
+<div class="provenance">Source: §2.4.1, §3.1, §3.2 · loss type not stated explicitly beyond "RNN-T model [18]" · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（約 2 分鐘）
+
+訓練時，同一張圖裡 fusion、beam、contextual FST 都是虛線，因為它們只在推論時存在。FST 沒有可訓練參數，λ 是每個類別各自調。
+
+所以「訓練」改的其實是資料：35M 句人工轉寫的 voice search，加上大約一億句非監督資料。非監督資料怎麼來：從 voice search 流量挖匿名語音，用最好的傳統 ASR 解碼，只留高信心的，再用專有名詞標記器過濾，只留有專有名詞的。每個 batch 80% 從監督資料、20% 從非監督資料抽。
+
+整個網路用 RNN-T loss 一起更新，沒有凍結。在 8×8 TPU、batch 4,096 上訓練。
+
+**【提示】**
+
+- 80/20 是引用他們 ICASSP 2019 的 weak distillation [14] 的經驗值。
+- λ「調在 test set 上」（§3.2 原文 "to optimize performance on the above test sets"）——這是公平性問題，第 9 頁再講。
+- 另外兩種資料策略 TTS、fuzzing 也是這裡改資料，結果放 appendix。
+:::
+
+## Inference
+
+{{< include _figs/arch_infer.md >}}
+
+```{=html}
+<div class="order"><span>Prior work [2, 4]</span><div class="seq"><b>E2E score</b><em>→</em><b>prune to k</b><em>→</em><b class="late">add P<sub>C</sub></b><small>rescoring the lattice: name may already be gone</small></div></div>
+<div class="order"><span>This paper</span><div class="seq"><b>E2E score</b><em>→</em><b class="new">add λ P<sub>C</sub></b><em>→</em><b>prune to k</b><small>name survives the cut</small></div></div>
+<div class="legend-row"><span><i class="new"></i>changed by this paper</span><span><i></i>unchanged</span><span><i class="out"></i>output</span></div>
+<div class="provenance">Source: §2.3.1, §3.2 · per-utterance FST built from that utterance's biasing list · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+推論時才把 FST 接上。每一句話會帶自己的偏置清單，例如這個使用者的聯絡人，當場編成 contextual FST。
+
+和訓練最大的不同、也是這篇最關鍵的一點，是加分的順序。以前的做法，不論傳統還是 E2E，都是先剪枝、再在 lattice 上加偏置分數，所以名字可能早就被剪掉。這篇改成先加 λ 乘以 P_C，再剪到 k 個。順序一換，罕見名字就能撐過剪枝。
+
+**【提示】**
+
+- 原文：「we explore applying the contextual model directly to the E2E model score before the general beam pruning」，§2.3.1。
+- 論文沒寫 beam size 具體值，只說 E2E 一般 4–10。沒寫解碼延遲。
+:::
+
+## Trace one example
+
+```{=html}
+<div class="author-only">Author-only page — to be written by the presenter, not AI (Lab-Hub rule)</div>
+```
+
+{{< include _figs/fst_fig.md >}}
+
+```{=html}
+<div class="blank-sheet">
+  <div><span>Input → after prefix FST</span><p>〔　〕</p></div>
+  <div><span>Wordpiece scores before / after fusion</span><p>〔　〕</p></div>
+  <div><span>What survives pruning, and why</span><p>〔　〕</p></div>
+</div>
+<div class="provenance">Figure redrawn from paper Fig. 1 · trace content: 〔presenter〕</div>
+```
+
+::: {.notes}
+〔　〕
+:::
+
+## Why it works
+
+```{=html}
+<div class="why-head"><span>Component</span><span>What breaks without it</span><span>Cnt-TTS WER, before → after</span></div>
+<div class="why-rows">
+  <div class="why-row"><b>Subtractive cost</b><p>Partial matches keep their bonus and crowd the beam.</p><span class="delta">E2 24.2 → E3 <strong>13.2</strong></span></div>
+  <div class="why-row"><b>Wordpiece units</b><p>Grapheme "c" also boosts car, cab, can.</p><span class="delta">E3 13.2 → E4 <strong>10.0</strong></span></div>
+  <div class="why-row"><b>Early biasing</b><p>Bonus arrives after the name was pruned.</p><span class="delta">E4 10.0 → E5 <strong>7.3</strong></span></div>
+  <div class="why-row"><b>Empty prefix, lower λ</b><p>Bias is always on: VS 6.9 → 12.5.</p><span class="delta">VS E5 12.5 → E8 <strong>7.3</strong></span></div>
+  <div class="why-row"><b>Unsupervised data</b><p>Model has never spelled the name.</p><span class="delta">E8 6.8 → E9 <strong>5.4</strong></span></div>
+</div>
+<div class="reading"><span>Cost</span><p>No new parameters. Costs are an extra FST lookup per step, a mined prefix list per category, λ tuned per category, and 100M extra training utterances.</p></div>
+<div class="provenance">Source: Tables 2, 3, 4 · runtime cost of the FST is not reported · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（約 0.5 分鐘）
+
+每個成分拿掉會怎樣，用 Cnt-TTS 這一欄看最清楚：subtractive cost 讓 24.2 掉到 13.2，wordpiece 再到 10.0，early biasing 再到 7.3。前綴機制看的是 VS：沒有它，VS 從 6.9 壞到 12.5；空前綴加小權重救回 7.3。最後非監督資料把 6.8 推到 5.4。成本面：沒加參數，但多了每步的 FST 查詢、每個類別要挖前綴、調 λ，加上一億句訓練資料。
+
+**【提示】**
+
+- 和第 11 頁消融對：每一列都對得到 Table 2/3/4。
+- 推論多花多少時間、FST 多大：論文沒報。
+:::
+
+## Setup and fairness
+
+| Test set | Utts | Avg. biasing phrases | Biasing OOV, sup. | Audio |
+|---|---:|---:|---:|---:|
+| VS (anti-context) | 14k | — | — | Real |
+| Songs | 15k | 303 | 1.4% | TTS |
+| Cnt-TTS | 15k | 75 | 6.2% | TTS |
+| Cnt-Real | 5k | 197 | 6.9% | Real |
+| Apps | 16k | 13 | 1.5% | TTS |
+
+```{=html}
+<div class="fair">
+  <div><span class="v ok">Same</span><p>Same RNN-T backbone across E0–E11<small>§3.2</small></p></div>
+  <div><span class="v warn">Partly</span><p>Same data? E9–E11 add 100M / 3M utts<small>§2.4</small></p></div>
+  <div><span class="v warn">Partly</span><p>Baseline rerun? Conventional model from [5], same 130 MB size<small>§4.4</small></p></div>
+  <div><span class="v no">No</span><p>Multiple seeds or CIs? λ tuned on the test sets<small>§3.2</small></p></div>
+</div>
+<div class="provenance">Source: Table 1, §3.1–3.2, §4.4 · 3 of 5 sets are TTS voice from the same family as TTS training data · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+五個測試集：VS 是一般 voice search，沒有偏置對象，專門測 anti-context。Songs、Cnt-TTS、Apps 三個是 TTS 合成的，Cnt-Real 是真實流量裡想打給聯絡人的句子，而且是使用者後來又手打一次的困難句。
+
+公平性四問：同 backbone，是；同資料，E9 之後多了一億句，所以和傳統模型比的時候不完全同資料；baseline 是引用 McGraw 2016 的同尺寸傳統模型，論文沒說有沒有在同一批資料上重訓；多 seed 與信賴區間完全沒有，而且 λ 是在測試集上調的。
+
+**【提示】**
+
+- 最大的疑點：λ "tuned … to optimize performance on the above test sets"，§3.2。沒有獨立 dev set。
+- 三個 TTS 測試集用 parallel WaveNet，同一個聲音；但作者有說測試片語沒出現在 TTS 訓練資料。
+- Cnt-Real 只有 5k 句，差 1 個百分點大約 50 句。
+:::
+
+## Main results
+
+```{=html}
+<p class="lede">RNN-T with biasing beats the 130 MB conventional model on <b>4 of 5 sets</b>; it <span class="cost">loses on Songs</span>.</p>
+```
+
+{{< include _figs/main_results.md >}}
+
+```{=html}
+<div class="reading warn"><span>Check</span><p>Abstract says 20–40% relative on almost all sets. From Table 6: VS −28%, Apps −21% are in that range; Cnt-Real −15%, Cnt-TTS −5% are not.</p></div>
+<div class="provenance">Source: Table 6 · rel. WER = (RNN-T − conv.) / conv., computed by presenter · negative = RNN-T better · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（約 2 分鐘）
+
+主結果是 Table 6，RNN-T 加所有改進（E9）對上 130 MB 傳統模型。藍色是 RNN-T，灰色是傳統模型，右邊是相對差，負的代表 RNN-T 比較好。
+
+VS 從 9.3 降到 6.7，相對好 28%；Apps 1.9 對 2.4，好 21%；Cnt-Real 5.8 對 6.8，好 15%；Cnt-TTS 5.4 對 5.7，只好 5%。Songs 反而輸：3.0 對 2.4，差了 25%。作者推測是歌曲的前綴只挖到 11 個，不夠完整。
+
+我要提醒一件事：摘要說「20 到 40% relative across almost all test sets」，但自己算只有 VS 和 Apps 落在這範圍。結論應該講成「在五個裡贏四個」比較準。
+
+**【提示】**
+
+- Table 6 的 VS 是 6.7，但 Table 3 的 E8 VS 是 7.3；論文沒說明 E9 的 VS 從哪來，推測是 E9 自己測的。被問到要說「論文沒交代」。
+- 相對差是我自己算的，不是論文的數字。
+:::
+
+## Ablation and key figure
+
+```{=html}
+<div class="panels">
+  <div>
+    <p class="panel-title">Shallow-fusion steps, E1 → E5<small>WER %, each step adds one change</small></p>
+```
+
+{{< include _figs/ablation.md >}}
+
+```{=html}
+  </div>
+  <div>
+    <p class="panel-title">Anti-context: does biasing hurt VS?<small>WER %, VS biased with 200 random contact phrases</small></p>
+```
+
+{{< include _figs/anti_context.md >}}
+
+```{=html}
+  </div>
+</div>
+<div class="reading"><span>Not reported</span><p>Decoding latency, FST size, beam width used, variance across seeds, a held-out set for λ.</p></div>
+<div class="provenance">Source: Table 2 (left), Table 3 (right) · orange VS bar = degraded above 10% · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+左邊是 Table 2 的消融，空心點是不偏置的 E1，越深的藍代表越後面的步驟，最深的是 E5。四個集合都是一路往左降：Cnt-TTS 從 37.0 到 7.3，Songs 從 22.7 到 5.3。順帶一提，沒偏置時 wordpiece 的 E1 在 Songs、Cnt-TTS 反而比 grapheme 的 E0 差，偏置後才翻轉。
+
+右邊是 anti-context，也是我覺得這篇的賣點圖。VS 是不該被偏置的一般查詢。E5 直接偏置，VS 從 6.9 壞到 12.5，幾乎翻倍。E6 只允許非空前綴，VS 回到 7.0，但 Songs 從 5.3 壞到 10.1。E7 允許空前綴，又回到 12.5。E8 空前綴給較小權重，VS 7.3、Cnt-Real 6.7，兩邊都顧到。
+
+沒報的：解碼延遲、FST 大小、實際 beam 寬、多 seed、調 λ 的獨立 dev set。
+
+**【提示】**
+
+- E6 的 Songs 10.1 不在右圖（右圖只畫 Cnt-Real），被問到要講。
+- 和第 8 頁「Why it works」每一列對得起來。
+:::
+
+## My assessment
+
+```{=html}
+<div class="author-only">Author-only page — to be written by the presenter, not AI (Lab-Hub rule)</div>
+<div class="author-sheet">
+  <div><span>Strongest point</span><p>〔　〕</p></div>
+  <div><span>Weakest point</span><p>〔　〕</p></div>
+  <div><span>What a reviewer would ask</span><p>〔　〕</p></div>
+</div>
+```
+
+::: {.notes}
+〔　〕
+:::
+
+## Takeaways for my work
+
+```{=html}
+<div class="author-only">Author-only page — to be written by the presenter, not AI (Lab-Hub rule)</div>
+<div class="author-sheet">
+  <div><span>What to borrow</span><p>〔　〕</p></div>
+  <div><span>Idea card?</span><p>〔Yes: source 〔　〕 no. 〔　〕 / No: reason 〔　〕〕</p></div>
+</div>
+```
+
+::: {.notes}
+〔　〕
+:::
+
+## Appendix · Proper-noun data {.appendix}
+
+| Exp | Training data | Songs | Cnt-Real | Cnt-TTS | Apps |
+|---|---|---:|---:|---:|---:|
+| E8 | Supervised, + biasing | 5.3 | 6.7 | 6.8 | 2.4 |
+| **E9** | **+ 100M unsupervised, + biasing** | **3.0** | **5.8** | **5.4** | **1.9** |
+| E10 | + TTS proper nouns, + biasing | 4.3 | 7.1 | 1.8 | 1.0 |
+| E11 | Fuzzed transcripts, + biasing | 7.2 | 11.0 | 14.0 | 4.4 |
+
+```{=html}
+<div class="limits">
+  <div><b>TTS data wins only on TTS tests</b><p>E10 best on Cnt-TTS, Apps; worse on real Cnt-Real (7.1 vs 6.7). Gain is matched audio, not vocabulary.</p><span class="src">Table 4, §4.3</span></div>
+  <div><b>Unsupervised data fixes OOV names</b><p>Cnt-Real OOV phrase error with biasing: 29.4% (E8) → 19.0% (E9).</p><span class="src">Table 5</span></div>
+  <div><b>Fuzzing hurts everywhere</b><p>Reason "still unclear" to the authors.</p><span class="src">§4.3</span></div>
+</div>
+<div class="provenance">Source: Tables 4, 5 · Cnt-Real OOV without biasing is 91.9% (E8) — the 91.9 → 19.0 jump mixes two changes · AI→✓</div>
+```
+
+::: {.notes}
+**【講述】**（備用頁，被問到再講）
+
+三種補專有名詞知識的方法比較。非監督資料 E9 在所有集合都贏 E8。TTS 合成資料 E10 在 TTS 測試集上贏很多，Cnt-TTS 只剩 1.8，但真實的 Cnt-Real 反而壞到 7.1，作者認為 TTS 的進步主要來自聲學條件吻合，不是學到更多名字。Fuzzing 用同音字替換專有名詞，結果全部變差，作者也說不清楚原因。
+
+**【提示】**
+
+- 常見誤引：「OOV 錯誤率 91.9% → 19.0%」。91.9 是 E8 不偏置，19.0 是 E9 加偏置，同時改了兩件事。同為加偏置的比較是 29.4 → 19.0。
+- TTS 資料：58 萬聯絡人名、4.2 萬歌名、7 萬 App 名，每類約 100 萬句，batch 90/10 混（§2.4.2）。
+:::

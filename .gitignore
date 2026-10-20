@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+nginx/certs/*.pem
+app/.env
+app/.env.*
+**/node_modules/
+**/.next/
+slides/_site/
+slides/.quarto/
+.DS_Store
+
+/.quarto/
+**/*.quarto_ipynb
+backups/
+**/*.tsbuildinfo
+.playwright-mcp/

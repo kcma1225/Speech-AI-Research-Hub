@@ -1,0 +1,118 @@
+---
+title: "〔題目簡稱〕 進度報告 〔YYMMDD〕"
+author: "〔姓名〕"
+date: "〔YYYY-MM-DD〕"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    html-math-method:
+      method: katex
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+<!-- 存成 reports/progress_〔YYMMDD〕.qmd（開會日期）。固定8頁，見 references/progress-report.md。
+每個數字要對得回 results.csv 的某一列；前兩頁沒變就沿用上週，不要重畫。
+render: quarto render reports/progress_〔YYMMDD〕.qmd -->
+
+## 問題定義
+
+〔示意圖：題目在解什麼、原本做法在哪裡壞掉〕
+
+![](figs/problem.png)
+
+::: {.notes}
+一句話：我在解什麼
+:::
+
+## Idea 或架構
+
+〔示意圖：idea card 的假設，或 method figure；新成分用不同框標出〕
+
+![](figs/idea.png)
+
+::: {.notes}
+一句話：我動的是哪一格
+:::
+
+## 對帳
+
+| 上週說要做 | 實際做到 |
+|---|---|
+| 〔從上週投影片/Issue複製〕 | 〔做到／沒做到，標紅並寫原因〕 |
+
+::: {.notes}
+沒做到的原因，一句
+:::
+
+## Table 1 現況
+
+距上次新數字：〔N〕 週 <!-- 超過4週：這次meeting固定要討論換題/砍格子/再給兩週 -->
+
+〔整張 Table 1，本週新填的格子加粗，空格留 — ；數值代碼 C=引用 R=重跑 O=自己方法〕
+
+::: {.notes}
+每個新格子的數字從哪個 run_id 來
+:::
+
+## 本週關鍵結果
+
+〔一張圖或一張小表，只放最重要的一個〕
+
+::: {.notes}
+這個結果代表什麼、和預期差在哪
+:::
+
+## 卡住
+
+- 問題：〔　〕
+- 試過：〔　〕
+- 卡在哪：〔　〕
+
+::: {.notes}
+想請教授或partner幫什麼
+:::
+
+## Idea card
+
+<!-- 八格精簡版，不可由AI生成idea內容，使用者自己填 -->
+
+- 痛點：〔　〕
+- 假設：〔　〕
+- 最小驗證：〔　〕
+- 最接近的 prior work：〔　〕
+
+::: {.notes}
+為什麼這張值得做；沒把握的地方
+:::
+
+## 下週與要問
+
+下週要跑的 run：
+
+1. 〔　〕
+
+要教授決定的事：
+
+1. 〔　〕
+
+本週淺讀：〔2篇短名〕

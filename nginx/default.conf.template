@@ -1,0 +1,50 @@
+limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=10r/m;
+upstream research_app { server app:3000; keepalive 16; }
+upstream overleaf_app { server overleaf:80; keepalive 16; }
+
+server {
+    listen 80 default_server;
+    server_name ${APP_HOSTNAME};
+    client_max_body_size 1g;
+    ${APP_HTTP_REDIRECT}
+    location ~ ^/api/auth/ {
+        limit_req zone=auth_limit burst=5 nodelay;
+        proxy_pass http://research_app;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location / {
+        proxy_pass http://research_app;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+server {
+    listen 80;
+    server_name ${OVERLEAF_HOSTNAME};
+    client_max_body_size 1g;
+    ${OVERLEAF_HTTP_REDIRECT}
+    location / {
+        proxy_pass http://overleaf_app;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+        proxy_hide_header X-Frame-Options;
+        proxy_hide_header Content-Security-Policy;
+        add_header Content-Security-Policy "$upstream_http_content_security_policy; frame-ancestors ${APP_ORIGIN}" always;
+    }
+}
