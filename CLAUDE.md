@@ -39,7 +39,7 @@ TEST_ADMIN_DB_URL=postgres://postgres:pw@127.0.0.1:55440/research_hub TEST_WORKE
 
 ## Architecture
 
-- **nginx** (`nginx/`): builds the SvelteKit app into its image and serves it (SPA fallback); proxies `/api/` to the backend; renders `LATEX_HOSTNAME` → Aldine only when that env is set. The entrypoint renders templates for HTTP or HTTPS mode. The SPA's inline bootstrap script is allowed by CSP hash computed at build (`csp-hashes.mjs`), not `'unsafe-inline'`.
+- **nginx** (`nginx/`): builds the SvelteKit app into its image and serves it (SPA fallback); proxies `/api/` to the backend; serves Aldine on `LATEX_HOSTNAME` or under `LATEX_PATH` (production uses `/latex`) only when one is set. The entrypoint renders templates for HTTP or HTTPS mode. The SPA's inline bootstrap script is allowed by CSP hash computed at build (`csp-hashes.mjs`), not `'unsafe-inline'`.
 - **backend** (`backend/`, Fastify 5, ESM with `.js` import suffixes):
   - Each feature is a plugin in `src/routes/*.ts`, registered in `src/app.ts` under `/api`. Domain helpers live in `src/lib/<feature>/`.
   - Every route checks access itself with `requireUser` / `requireEditor` (everyone except professor) / `requireOwner` from `src/lib/auth.ts`, and validates input with zod via `parse()` from `src/lib/http.ts`.
@@ -53,7 +53,7 @@ TEST_ADMIN_DB_URL=postgres://postgres:pw@127.0.0.1:55440/research_hub TEST_WORKE
   - Payload/result types are duplicated in `backend/src/jobs/queue.ts` and `worker/src/types.ts`; keep them in sync.
 - **worker** (`worker/`): runs as DB role `hub_worker` (only `SELECT, UPDATE ON jobs`) on an internal network without internet. `slide_render` validates and extracts the ZIP, injects the annotate plugin (`assets/annotate`), runs `quarto render`, then prints the PDF with puppeteer + pinned Chrome. `offline-assets/` is uploaded once per content hash to `slides/_shared/<hash>/` (`slide_versions.shared_prefix`). `media_transcode` runs ffmpeg.
 - **Slide viewing**: decks render in a sandboxed iframe without `allow-same-origin` (opaque origin, no cookies), so asset URLs carry a capability: an HMAC view token signed with `AUTH_SECRET` (12 h), `public`, or the share key. `src/routes/slide-view.ts` patches deck HTML (in-memory Web Storage shim, Reveal tweak) and sets a sandbox CSP on every asset.
-- **Aldine** (profile `latex`, `deploy/aldine/`): must stay on its own hostname, never a subpath of the hub origin. Account creation is behind nginx Basic Auth. Lab members can read each other's projects (accepted risk; see `docs/aldine-evaluation.md`).
+- **Aldine** (profile `latex`, `deploy/aldine/`): `LATEX_HOSTNAME` (isolated) or `LATEX_PATH` (same origin as the hub; production runs `/latex` as an accepted risk, and nginx strips `hub_session` from requests to Aldine — keep that). Account creation is behind nginx Basic Auth. Lab members can read each other's projects (accepted risk; see `docs/aldine-evaluation.md`).
 - **frontend** (`frontend/`): SvelteKit (adapter-static, `ssr = false`) + Svelte 5 + Tailwind 4. Currently a placeholder; the real UI is pending a design discussion with the user. `npm run dev` proxies `/api` to `127.0.0.1:3000`.
 
 ## Other files

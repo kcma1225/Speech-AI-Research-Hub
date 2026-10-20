@@ -46,6 +46,7 @@
    - 第二階段改 SSO 後，在 Hub 停用的人下次登入就會被擋，但現有 session 最多還能用 30 天（要靠 OIDC 文件中的撤銷步驟處理）。
 3. **跨專案讀取**：上游的架構限制。所有 Aldine 帳號持有人都能讀到其他人的專案。只發帳號給實驗室成員；機密內容（例如審稿中的稿件、產學合約）不要放在 Aldine。建議向上游回報（依其 SECURITY.md 流程）。
 4. **為什麼要用獨立網域**：如果掛在 Hub 的同源子路徑，Aldine 的前端程式和 Hub 同源。它的 JS 可以帶著使用者的 Hub cookie 呼叫 `/api/*`，而且會通過我們的 Origin 檢查；反過來也一樣。用獨立網域（例如 `latex.<domain>`）可以靠瀏覽器的同源政策把兩邊隔開，代價是需要多一筆 DNS 和憑證 SAN。
+   **2026-10-20 決議：正式站（speech-ai-hub.gugulu.tw）改用子路徑 `/latex`（`LATEX_PATH`），使用者接受此風險**，以省去額外的 DNS 與反向代理設定。緩解措施：nginx 轉送給 Aldine 時移除 `hub_session` cookie、建立帳號仍需 Basic Auth、只開放實驗室成員。之後若有子網域，改設 `LATEX_HOSTNAME` 即可恢復隔離。
 5. **專案很年輕**（3 個月、單一主要作者）：鎖定版本 tag；升級前先看 CHANGELOG，並依上述「備份方式」完成兩個 volume 的備份。如果專案停擺，資料都是標準 git repo 加 JSON，可以匯出到 Overleaf 或 GitHub。
 6. **image 體積**：compiler 約 8 GB，加中文字型後再多約 0.3–0.5 GB。主機磁碟要預留空間。
 7. **對外連線**：app 需要對外網路做 DOI、arXiv、Zotero 查詢（放在 `edge` 網路）；compiler 完全斷網。AI 修錯與 MCP 預設關閉，不要設任何 API key。

@@ -1,0 +1,26 @@
+# Aldine under ${LATEX_PATH} on the hub origin (LATEX_PATH mode). Same-origin with the hub: an accepted risk,
+# see docs/aldine-evaluation.md. Aldine is built with ALDINE_PUBLIC_URL=<APP_ORIGIN>${LATEX_PATH}, so the
+# path is passed through unchanged (proxy_pass with a variable and no URI keeps the request URI).
+# Relative redirect: behind a TLS proxy nginx would otherwise build an http:// Location.
+location = ${LATEX_PATH} { absolute_redirect off; return 301 ${LATEX_PATH}/; }
+location = ${LATEX_PATH}/api/auth/register {
+    auth_basic "Speech-AI Hub LaTeX: account creation";
+    auth_basic_user_file /etc/nginx/conf.d/latex-register.htpasswd;
+    limit_req zone=auth_limit burst=5 nodelay;
+    set $latex_upstream http://latex-app:3000;
+    proxy_pass $latex_upstream;
+    include /etc/nginx/snippets/latex-proxy.conf;
+}
+location = ${LATEX_PATH}/api/auth/login {
+    limit_req zone=auth_limit burst=5 nodelay;
+    set $latex_upstream http://latex-app:3000;
+    proxy_pass $latex_upstream;
+    include /etc/nginx/snippets/latex-proxy.conf;
+}
+location ${LATEX_PATH}/ {
+    # Project ZIP import accepts up to ~81 MB (base64 of a 60 MB ZIP).
+    client_max_body_size 81m;
+    set $latex_upstream http://latex-app:3000;
+    proxy_pass $latex_upstream;
+    include /etc/nginx/snippets/latex-proxy.conf;
+}

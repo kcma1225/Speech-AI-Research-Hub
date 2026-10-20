@@ -21,8 +21,9 @@ services:
       APP_HOSTNAME: ${APP_HOSTNAME:-localhost}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
-      # Optional Aldine LaTeX editor (profile `latex`); empty LATEX_HOSTNAME disables its server block.
+      # Optional Aldine LaTeX editor (profile `latex`): own hostname or a path; both empty disables it.
       LATEX_HOSTNAME: ${LATEX_HOSTNAME:-}
+      LATEX_PATH: ${LATEX_PATH:-}
       LATEX_REGISTER_PASSWORD: ${LATEX_REGISTER_PASSWORD:-}
     volumes:
       - ./nginx/certs:/etc/nginx/certs:ro
@@ -164,7 +165,7 @@ services:
     logging: *logging
 
   # --- Optional: Aldine collaborative LaTeX editor (`docker compose --profile latex up -d`). ---
-  # Served by nginx on LATEX_HOSTNAME only. Evaluation and accepted risks: docs/aldine-evaluation.md.
+  # Served by nginx on LATEX_HOSTNAME or under LATEX_PATH. Evaluation and accepted risks: docs/aldine-evaluation.md.
   latex-app:
     profiles: ["latex"]
     image: ghcr.io/trahloff/aldine-app:0.12.3

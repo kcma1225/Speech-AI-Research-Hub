@@ -298,5 +298,11 @@ opaque-origin sandbox) also get `Access-Control-Allow-Origin: null` — the path
 
 Accepted by the user (2026-10-20): accounts are lab members only, and any Aldine user can read other projects'
 files (upstream limitation). Account creation is behind nginx Basic Auth (`owner` / `LATEX_REGISTER_PASSWORD`)
-until the hub becomes Aldine's OIDC provider. Never serve Aldine under a path of `APP_HOSTNAME`: its scripts would
-share the hub origin and could call `/api` with the hub session.
+until the hub becomes Aldine's OIDC provider.
+
+Two mounts (nginx `entrypoint.sh`): `LATEX_HOSTNAME` (own hostname, isolated by the same-origin policy; preferred)
+or `LATEX_PATH` (e.g. `/latex` on the hub origin). **The deployment at speech-ai-hub.gugulu.tw uses `LATEX_PATH=/latex`,
+accepted by the user on 2026-10-20** to avoid an extra DNS name/proxy route. Consequence: Aldine's scripts share the
+hub origin, so an XSS in Aldine could call `/api` as the signed-in hub user and pass the Origin check. Mitigations
+in path mode: nginx strips `hub_session` from the Cookie header sent to Aldine (`$latex_cookie` map), registration
+stays behind Basic Auth, and accounts are lab members only. Moving to `LATEX_HOSTNAME` later removes the risk.

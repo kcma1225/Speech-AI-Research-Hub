@@ -1,5 +1,5 @@
-# Aldine (collaborative LaTeX) on its own hostname: never a subpath of the hub origin, so its scripts
-# cannot call the hub API with the hub session cookie. See docs/aldine-evaluation.md.
+# Aldine (collaborative LaTeX) on its own hostname (LATEX_HOSTNAME): isolated from the hub origin, so its
+# scripts cannot call the hub API with the hub session. LATEX_PATH mode trades that away; see docs/aldine-evaluation.md.
 # Project ZIP import accepts up to ~81 MB (base64 of a 60 MB ZIP).
 client_max_body_size 81m;
 # Resolve at request time so nginx still starts when the `latex` profile is not running (502 instead).

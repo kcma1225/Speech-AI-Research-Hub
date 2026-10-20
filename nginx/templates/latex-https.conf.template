@@ -1,7 +1,3 @@
-map $http_upgrade $latex_connection_upgrade {
-    default upgrade;
-    ''      close;
-}
 server {
     listen 443 ssl;
     http2 on;
