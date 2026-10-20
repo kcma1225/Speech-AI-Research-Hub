@@ -19,7 +19,8 @@ export default defineConfig({
         changeOrigin: false,
         configure: proxy => {
           const origin = process.env.API_ORIGIN;
-          if (origin) proxy.on("proxyReq", req => req.getHeader("origin") && req.setHeader("origin", origin));
+          // Sandboxed deck iframes send `Origin: null` (opaque); leave those alone.
+          if (origin) proxy.on("proxyReq", req => { const o = req.getHeader("origin"); if (o && o !== "null") req.setHeader("origin", origin); });
         },
       },
     },

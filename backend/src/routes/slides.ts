@@ -96,6 +96,9 @@ async function isPdf(path: string) {
   }
 }
 
+/** Upload size limits, so the SPA can reject oversized files before sending them. */
+const uploadLimits = (app: FastifyInstance) => ({ zipBytes: app.config.MAX_SLIDE_ZIP_BYTES, referenceBytes: app.config.MAX_REFERENCE_BYTES });
+
 const slides: FastifyPluginAsync = async app => {
   registerSlideFinalizer(app);
   const secret = app.config.AUTH_SECRET;
@@ -111,9 +114,15 @@ const slides: FastifyPluginAsync = async app => {
               lv.id AS latest_version_id,lv.version AS latest_version,lv.status AS latest_status,lj.status AS latest_job_status,
               COALESCE((SELECT json_agg(json_build_object('id',t.id,'name',t.name) ORDER BY lower(t.name))
                           FROM slide_project_tags j JOIN slide_tags t ON t.id=j.tag_id WHERE j.project_id=p.id),'[]') AS tags,
-              (SELECT count(*)::int FROM slide_references r WHERE r.project_id=p.id) AS reference_count
+              (SELECT count(*)::int FROM slide_references r WHERE r.project_id=p.id) AS reference_count,
+              (SELECT count(*)::int FROM slide_reviews r WHERE r.project_id=p.id) AS review_count,
+              COALESCE(au.name,cu.name) AS author_name,
+              CASE WHEN av.status='published' THEN COALESCE(aj.finished_at,av.created_at) END AS published_at
          FROM slide_projects p
          LEFT JOIN slide_versions av ON av.id=p.active_version_id
+         LEFT JOIN jobs aj ON aj.id=av.job_id
+         LEFT JOIN users au ON au.id=av.created_by
+         LEFT JOIN users cu ON cu.id=p.created_by
          LEFT JOIN LATERAL (SELECT id,version,status,job_id FROM slide_versions WHERE project_id=p.id ORDER BY version DESC LIMIT 1) lv ON true
          LEFT JOIN jobs lj ON lj.id=lv.job_id
         WHERE ($1::text IS NULL OR p.title ILIKE $1 OR p.slug ILIKE $1)
@@ -128,7 +137,7 @@ const slides: FastifyPluginAsync = async app => {
       latest_status: latest_status ? liveStatus({ status: latest_status, job_status: latest_job_status }) : null,
       thumbnailUrl: has_thumbnail ? slideUrls.thumbnail(row.id, row.active_version_id) : null,
     }));
-    return reply.header("Cache-Control", "no-store").send({ slides: rows });
+    return reply.header("Cache-Control", "no-store").send({ slides: rows, limits: uploadLimits(app) });
   });
 
   app.post("/slides", async (request, reply) => {
@@ -181,7 +190,7 @@ const slides: FastifyPluginAsync = async app => {
     const { id } = parse(projectParams, request.params);
     const project = await projectById(app.db, id);
     if (!project) throw notFound(MISSING);
-    return reply.header("Cache-Control", "no-store").send(await slideDetail(app.db, secret, project, user));
+    return reply.header("Cache-Control", "no-store").send({ ...(await slideDetail(app.db, secret, project, user)), limits: uploadLimits(app) });
   });
 
   /** Active version's first-slide PNG. ETag = version id, so a new active version changes it. */

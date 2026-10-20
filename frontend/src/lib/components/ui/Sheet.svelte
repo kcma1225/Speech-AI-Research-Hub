@@ -4,7 +4,7 @@
   import { X } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
 
-  /** Modal panel: a bottom sheet on phones, a side/center panel from `sm` up. */
+  /** Modal panel (the body collapses when `children` renders nothing, e.g. ConfirmDialog): a bottom sheet on phones, a side/center panel from `sm` up. */
   let { open = $bindable(false), title, description, side = "bottom", children, footer, hideTitle = false }: {
     open?: boolean;
     title: string;
@@ -34,7 +34,7 @@
         </div>
         <Dialog.Close class="-mr-2 grid size-9 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("common.close")}><X class="size-4.5" /></Dialog.Close>
       </div>
-      <div class="min-h-0 flex-1 overflow-y-auto px-5 pb-5 sm:px-6">{@render children()}</div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 pb-5 empty:hidden sm:px-6">{@render children()}</div>
       {#if footer}<div class="flex justify-end gap-2 border-t border-line px-5 py-3.5 sm:px-6">{@render footer()}</div>{/if}
     </Dialog.Content>
   </Dialog.Portal>

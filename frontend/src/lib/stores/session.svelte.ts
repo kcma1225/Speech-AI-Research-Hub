@@ -12,8 +12,8 @@ let loaded = $state(false);
 function adopt(next: CurrentUser | null) {
   user = next;
   if (next) {
-    theme.set(next.theme);
-    i18n.set(next.locale ?? "zh-TW");
+    theme.set(next.theme, { animate: false });
+    i18n.set(next.locale ?? "zh-TW", { animate: false });
   }
 }
 

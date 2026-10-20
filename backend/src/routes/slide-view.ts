@@ -116,7 +116,11 @@ const slideView: FastifyPluginAsync = async app => {
       .header("Content-Security-Policy", csp)
       .header("Cache-Control", "private, no-store")
       .header("X-Content-Type-Options", "nosniff")
-      .header("Referrer-Policy", "no-referrer");
+      .header("Referrer-Policy", "no-referrer")
+      .header("Vary", "Origin");
+    // The sandboxed iframe has an opaque origin, so CORS-mode loads (web fonts, module scripts) arrive with
+    // `Origin: null`. The path capability already authorises the request; let that opaque origin read it.
+    if (request.headers.origin === "null") reply.header("Access-Control-Allow-Origin", "null");
     if (isHtml) {
       const chunks: Buffer[] = [];
       for await (const chunk of object.body) chunks.push(Buffer.from(chunk as Uint8Array));

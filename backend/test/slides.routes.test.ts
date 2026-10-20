@@ -96,7 +96,10 @@ run("slides routes", () => {
     await completeJob(deck.versionId);
     const detail = json(await get(`/api/slides/${deck.id}`, member.cookie));
     expect(detail.project.active_version_id).toBe(deck.versionId);
-    expect(detail.versions[0]).toMatchObject({ status: "published", is_active: true, quarto_version: "1.10.19" });
+    expect(detail.versions[0]).toMatchObject({ status: "published", is_active: true, quarto_version: "1.10.19", uploader_name: "Member A" });
+    expect(detail.versions[0].published_at).toBeTruthy();
+    expect(detail.project.creator_name).toBe("Member A");
+    expect(detail.limits).toEqual({ zipBytes: expect.any(Number), referenceBytes: expect.any(Number) });
     expect(detail.viewUrl).toMatch(new RegExp(`^/api/slides/view/week-1/t\\.\\d{10}\\.[\\w-]{43}/${deck.versionId}/index\\.html$`));
     expect(detail.project.share_key).toBeTruthy();
     expect(detail.permissions).toEqual({ manage: true, review: false, reply: false });
@@ -162,6 +165,11 @@ run("slides routes", () => {
     const asset = await get(`${base}index_files/app.js`);
     expect(asset.statusCode).toBe(200);
     expect(asset.headers["content-type"]).toBe("application/javascript; charset=utf-8");
+    expect(asset.headers["access-control-allow-origin"]).toBeUndefined();
+    // Web fonts load in CORS mode from the opaque-origin sandbox (`Origin: null`).
+    const fromSandbox = await get(`${base}index_files/app.js`, undefined, { origin: "null" });
+    expect(fromSandbox.headers["access-control-allow-origin"]).toBe("null");
+    expect((await get(`${base}index_files/app.js`, undefined, { origin: "https://evil.example" })).headers["access-control-allow-origin"]).toBeUndefined();
     const ranged = await get(`${base}index_files/app.js`, undefined, { range: "bytes=0-6" });
     expect(ranged.statusCode).toBe(206);
     expect(ranged.body).toBe("console");
@@ -285,7 +293,9 @@ run("slides routes", () => {
     expect(all.length).toBeGreaterThanOrEqual(2);
     const tagged = json(await get(`/api/slides?tags=${tag}`, member.cookie)).slides;
     expect(tagged.map((s: any) => s.id)).toEqual([deck.id]);
-    expect(tagged[0]).toMatchObject({ title: "Week One", tags: [{ id: tag, name: "Paper" }], active_version: 1, reference_count: 0 });
+    expect(tagged[0]).toMatchObject({ title: "Week One", tags: [{ id: tag, name: "Paper" }], active_version: 1, reference_count: 0, author_name: "Member A" });
+    expect(typeof tagged[0].review_count).toBe("number");
+    expect(tagged[0].published_at).toBeTruthy();
     const untagged = json(await get("/api/slides?tags=none", member.cookie)).slides;
     expect(untagged.some((s: any) => s.id === deck.id)).toBe(false);
     expect(json(await get("/api/slides?tags=", member.cookie)).slides).toEqual([]);

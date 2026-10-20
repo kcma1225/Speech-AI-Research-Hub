@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { Tabs } from "bits-ui";
   import { page } from "$app/state";
-  import { replaceState } from "$app/navigation";
+  import { goto } from "$app/navigation";
   import { Bell, Laptop, Monitor, Moon, PenLine, Smartphone, Sun, SlidersHorizontal, UserRound } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
@@ -33,8 +34,17 @@
   type Tab = (typeof tabs)[number]["value"];
   const fromUrl = page.url.searchParams.get("tab");
   let tab = $state<Tab>(tabs.some(x => x.value === fromUrl) ? (fromUrl as Tab) : "general");
+  // Mirror the tab into ?tab= (shallow) only when it changes; reading page.url here would loop.
+  let syncedTab: string | null = fromUrl;
   $effect(() => {
-    if (page.url.searchParams.get("tab") !== tab) replaceState(`?tab=${tab}`, {});
+    const current = tab;
+    if (current === syncedTab) return;
+    syncedTab = current;
+    untrack(() => {
+      const url = new URL(page.url.href);
+      url.searchParams.set("tab", current);
+      void goto(url, { state: page.state, shallow: true, replace: true });
+    });
   });
 
   async function save(patch: Parameters<typeof session.update>[0], ok = true) {

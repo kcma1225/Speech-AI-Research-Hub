@@ -26,7 +26,7 @@
 </script>
 
 <Sheet bind:open {title} {description} side="center">
-  {#snippet children()}<div></div>{/snippet}
+  {#snippet children()}{/snippet}
   {#snippet footer()}
     <Button variant="ghost" onclick={() => (open = false)}>{t("action.cancel")}</Button>
     <Button variant={danger ? "danger" : "primary"} loading={busy} onclick={confirm}>{confirmLabel}</Button>

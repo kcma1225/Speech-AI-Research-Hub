@@ -148,7 +148,7 @@ All under `/api`. `→` describes the response body. Unless noted, routes need a
 | GET `/users` | owner | all users with role, disabled, last login |
 | PATCH `/users/:id` `{role?, disabled?}` | owner | owner cannot be changed; disabling revokes sessions; audit |
 | GET `/invitations` | owner | with derived state: active / expired / exhausted / revoked |
-| POST `/invitations` `{role, expiresIn: "5m"\|"30m"\|"1h"\|"2h"\|"5h"\|"1d"\|"3d"\|"5d"\|"7d"\|"never", maxUses: 1\|null}` | owner | returns the raw token **once** → `{invitation, token, url}` |
+| POST `/invitations` `{role, expiresIn: "5m"\|"30m"\|"1h"\|"2h"\|"5h"\|"1d"\|"3d"\|"5d"\|"7d"\|"never", maxUses: 1\|null}` | owner | returns the raw token **once** → `{invitation, token, url}` (`url` = `<APP_ORIGIN>/join/<token>`) |
 | DELETE `/invitations/:id` | owner | revoke (soft) |
 | GET `/notifications`, DELETE `/notifications` `{id?}` | user | latest 100 / remove one or all |
 | GET `/notifications/unread` | user | `{count}` |
@@ -195,9 +195,9 @@ notify the uploader (`kind:'media'`, url `/recordings/<id>`; failures link to `/
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET `/slides?tags=&q=` | user | projects with active version, status of latest version, tags, reference count, `thumbnailUrl` (`/api/slides/<id>/thumbnail?v=<activeVersionId>` or null) |
+| GET `/slides?tags=&q=` | user | `{slides, limits}`: projects with active version, status of latest version, tags, `reference_count`, `review_count`, `author_name` (uploader of the active version, fallback deck creator), `published_at` (active version's publish time or null), `thumbnailUrl` (`/api/slides/<id>/thumbnail?v=<activeVersionId>` or null). `limits = {zipBytes, referenceBytes}` (`MAX_SLIDE_ZIP_BYTES`, `MAX_REFERENCE_BYTES`) |
 | POST `/slides` (multipart: `title`, `slug`, `entry?`, `public?`, file `.zip`) | editor | validate ZIP (see below), create project + version 1, upload zip, enqueue render (202) |
-| GET `/slides/:id` | user | detail: project, versions (each with `hasThumbnail`), references, reviews (+ replies, author names), tags, `viewUrl` for active version, `thumbnailUrl` (same format; null for anonymous by-slug viewers) |
+| GET `/slides/:id` | user | detail: project (incl. `creator_name`), versions (each with `hasThumbnail`, `uploader_name`, `published_at`), references, reviews (+ replies, author names), tags, `viewUrl` for active version, `thumbnailUrl` (same format; null for anonymous by-slug viewers), `permissions {manage, review, reply}`, `limits` (as in the list; not in by-slug) |
 | GET `/slides/:id/thumbnail` | user | streams the active version's `_hub-thumbnail.png`: `image/png`, `Cache-Control: private, max-age=300`, `X-Content-Type-Options: nosniff`, `ETag: "<versionId>"` (`If-None-Match` → 304); 404 when there is no active version, no thumbnail or the object is missing |
 | PATCH `/slides/:id` `{title?, slug?, public_view?, tagIds?, rotateShareKey?}` | editor | |
 | DELETE `/slides/:id` | editor | cascade + delete S3 prefixes post-commit |
@@ -276,7 +276,8 @@ Asset rules (ported from v1 `app/app/slides/view/[slug]/[key]/[versionId]/[[...a
 entry HTML; reject `slides.pdf`, `pdf.log`, `offline-assets/licenses/*`, any `..`/`.`/backslash/NUL; HTML gets the
 in-memory Web Storage shim, the `scrollActivationWidth:0` Reveal patch and the 44 px touch-target CSS; every
 response carries the sandbox CSP, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`,
-`Referrer-Policy: no-referrer`.
+`Referrer-Policy: no-referrer`, `Vary: Origin`; requests with `Origin: null` (CORS-mode loads such as web fonts from the
+opaque-origin sandbox) also get `Access-Control-Allow-Origin: null` — the path capability is the authorisation.
 
 ## Behaviour notes (as built)
 

@@ -133,7 +133,7 @@ describe.skipIf(!hasTestDb)("identity", () => {
       const created = await create(owner.cookie, { role: "professor", expiresIn: "1d", maxUses: 1 });
       expect(created.statusCode).toBe(201);
       const { token, url, invitation } = created.json();
-      expect(url).toBe(`${ORIGIN}/join?token=${encodeURIComponent(token)}`);
+      expect(url).toBe(`${ORIGIN}/join/${encodeURIComponent(token)}`);
       expect(invitation.state).toBe("active");
       expect((await inject("GET", `/api/join/${token}`)).json().role).toBe("professor");
 

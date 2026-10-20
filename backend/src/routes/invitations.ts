@@ -56,7 +56,7 @@ const invitations: FastifyPluginAsync = async app => {
     );
     const invitation = result.rows[0];
     await audit(request, user.id, "invitation_created", "invitation", invitation.id, { role: data.role, expiresIn: data.expiresIn, maxUses: data.maxUses });
-    return reply.code(201).send({ invitation, token, url: `${new URL(app.config.APP_ORIGIN).origin}/join?token=${encodeURIComponent(token)}` });
+    return reply.code(201).send({ invitation, token, url: `${new URL(app.config.APP_ORIGIN).origin}/join/${encodeURIComponent(token)}` });
   });
 
   app.delete("/invitations/:id", async request => {

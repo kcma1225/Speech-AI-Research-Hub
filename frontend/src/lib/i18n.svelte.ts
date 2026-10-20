@@ -1,3 +1,4 @@
+import { flushSync } from "svelte";
 import type { Locale } from "./types";
 import { messages, type MessageKey } from "./messages";
 
@@ -15,12 +16,28 @@ export const i18n = {
   get locale() {
     return current;
   },
-  set(locale: Locale) {
-    current = locale;
-    document.documentElement.lang = locale === "en" ? "en" : "zh-Hant";
+  /** `animate: false` for silent sync (adopting the account's value on load). */
+  set(locale: Locale, { animate = true }: { animate?: boolean } = {}) {
     try {
       localStorage.setItem("hub-locale", locale);
     } catch {}
+    const root = document.documentElement;
+    const commit = () => {
+      current = locale;
+      flushSync();
+      root.lang = locale === "en" ? "en" : "zh-Hant";
+    };
+    const still = !animate || locale === current || document.hidden || matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (still) return commit();
+    // Old text lifts and blurs out while the new text settles in (styles: `.vt-locale` in app.css).
+    if (typeof document.startViewTransition !== "function") {
+      root.classList.add("locale-fade");
+      commit();
+      setTimeout(() => root.classList.remove("locale-fade"), 400);
+      return;
+    }
+    root.classList.add("vt-locale");
+    document.startViewTransition(commit).finished.finally(() => root.classList.remove("vt-locale"));
   },
 };
 
