@@ -163,6 +163,11 @@ export const zh = {
   "login.feature2": "研究筆記、錄音與逐字稿同步",
   "login.feature3": "教授評論與回覆集中管理",
 
+  "upload.badType": "檔案類型不符，請選擇 {types}",
+  "upload.tooLarge": "檔案太大，上限 {size}",
+  "upload.remove": "移除檔案",
+  "tags.search": "搜尋或建立標籤",
+  "tags.create": "建立「{name}」",
   "common.loading": "載入中…",
   "common.error": "發生錯誤",
   "common.comingSoon": "這個頁面還在製作中。",
@@ -337,6 +342,11 @@ export const en: Record<keyof typeof zh, string> = {
   "login.feature2": "Research notes with synced recordings and transcripts",
   "login.feature3": "Professor reviews and replies in one place",
 
+  "upload.badType": "Wrong file type; choose {types}",
+  "upload.tooLarge": "File is too large (max {size})",
+  "upload.remove": "Remove file",
+  "tags.search": "Search or create a tag",
+  "tags.create": "Create “{name}”",
   "common.loading": "Loading…",
   "common.error": "Something went wrong",
   "common.comingSoon": "This page is still being built.",
