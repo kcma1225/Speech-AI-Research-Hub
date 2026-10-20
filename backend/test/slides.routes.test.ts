@@ -66,6 +66,7 @@ run("slides routes", () => {
       sourceKey: `slides/${deck.id}/${deck.versionId}/source.zip`,
       entry: "index.qmd",
       outputPrefix: `slides/${deck.id}/${deck.versionId}/output/`,
+      sourceType: "quarto",
     });
     const stored = await ctx.storage.getBuffer(job.payload.sourceKey);
     expect(stored?.subarray(0, 4).toString("hex")).toBe("504b0304");
@@ -99,7 +100,7 @@ run("slides routes", () => {
     expect(detail.versions[0]).toMatchObject({ status: "published", is_active: true, quarto_version: "1.10.19", uploader_name: "Member A" });
     expect(detail.versions[0].published_at).toBeTruthy();
     expect(detail.project.creator_name).toBe("Member A");
-    expect(detail.limits).toEqual({ zipBytes: expect.any(Number), referenceBytes: expect.any(Number) });
+    expect(detail.limits).toEqual({ zipBytes: expect.any(Number), deckBytes: expect.any(Number), deckTypes: [".zip", ".pdf", ".pptx"], referenceBytes: expect.any(Number) });
     expect(detail.viewUrl).toMatch(new RegExp(`^/api/slides/view/week-1/t\\.\\d{10}\\.[\\w-]{43}/${deck.versionId}/index\\.html$`));
     expect(detail.project.share_key).toBeTruthy();
     expect(detail.permissions).toEqual({ manage: true, review: false, reply: false });
@@ -158,7 +159,7 @@ run("slides routes", () => {
     expect(html.headers["x-content-type-options"]).toBe("nosniff");
     expect(html.headers["referrer-policy"]).toBe("no-referrer");
     expect(html.body).toContain("<head><script>(function(){function m()");
-    expect(html.body).toContain("Reveal.initialize({scrollActivationWidth:0,hash:true})");
+    expect(html.body).toContain("Reveal.initialize({scrollActivationWidth:0,postMessage:true,postMessageEvents:true,hash:true})");
 
     const base = viewUrl.replace(/index\.html$/, "");
     expect((await get(base)).body).toContain("scrollActivationWidth");

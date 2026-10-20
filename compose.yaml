@@ -54,6 +54,10 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
       LATEX_URL: ${LATEX_ORIGIN:-}
+      # OIDC provider for Aldine (issuer <APP_ORIGIN>/api/oidc); off unless client id + secret are set.
+      LATEX_OIDC_CLIENT_ID: ${LATEX_OIDC_CLIENT_ID:-}
+      LATEX_OIDC_CLIENT_SECRET: ${LATEX_OIDC_CLIENT_SECRET:-}
+      LATEX_OIDC_REDIRECT_URIS: ${LATEX_OIDC_REDIRECT_URIS:-}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
@@ -180,7 +184,8 @@ services:
       TRUST_PROXY: "1"
       # Root fs is read-only; the default cache dir (/srv/.cache) is not writable (verified: boot fails without this).
       CACHE_DIR: /tmp/aldine-cache
-      # Phase 2 (SSO from the hub): set the OIDC_* values and LATEX_SSO_ONLY=1 so the hub decides who gets in.
+      # SSO from the hub (backend is the OIDC provider): LATEX_OIDC_ISSUER=<APP_ORIGIN>/api/oidc plus the same
+      # client id/secret as the backend; LATEX_SSO_ONLY=1 turns password login/registration off.
       ALDINE_SSO_ONLY: ${LATEX_SSO_ONLY:-}
       OIDC_ISSUER: ${LATEX_OIDC_ISSUER:-}
       OIDC_CLIENT_ID: ${LATEX_OIDC_CLIENT_ID:-}

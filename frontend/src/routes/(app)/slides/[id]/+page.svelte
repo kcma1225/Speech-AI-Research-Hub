@@ -1,23 +1,26 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { Tabs } from "bits-ui";
-  import { ArrowLeft, CircleAlert, Download, Expand, Globe, History, Info, LoaderCircle, MessageSquareQuote, Play, Presentation } from "@lucide/svelte";
+  import { ArrowLeft, CircleAlert, Download, Expand, FileSearch, Globe, History, Info, LoaderCircle, MessageSquareQuote, Play, Presentation, Send, Trash2 } from "@lucide/svelte";
   import { page } from "$app/state";
   import { api, ApiError } from "#lib/api.ts";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
   import Button from "#lib/components/ui/Button.svelte";
   import Card from "#lib/components/ui/Card.svelte";
+  import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
-  import DeckFrame from "#lib/components/slides/DeckFrame.svelte";
+  import { toasts } from "#lib/components/ui/toast.svelte.ts";
+  import { jobsStore } from "#lib/stores/jobs.svelte.ts";
+  import SlidePlayer from "#lib/components/slides/SlidePlayer.svelte";
   import InfoPanel from "#lib/components/slides/InfoPanel.svelte";
   import ReviewsPanel from "#lib/components/slides/ReviewsPanel.svelte";
   import UploadSheet from "#lib/components/slides/UploadSheet.svelte";
   import VersionsPanel from "#lib/components/slides/VersionsPanel.svelte";
-  import type { SlideDetail } from "#lib/slides/types.ts";
+  import type { PageManifest, SlideDetail, SlideReview } from "#lib/slides/types.ts";
   import { isBusy, watchStatus } from "#lib/slides/util.ts";
 
   type Tab = "reviews" | "versions" | "info";
@@ -28,8 +31,13 @@
   let previewId = $state<string | null>(null);
   let uploadOpen = $state(false);
   let highlight = $state<string | null>(null);
-  let frame = $state<ReturnType<typeof DeckFrame> | null>(null);
+  let player = $state<ReturnType<typeof SlidePlayer> | null>(null);
   let panel = $state<HTMLElement | null>(null);
+  let currentPage = $state(1);
+  let manifest = $state<PageManifest | null>(null);
+  let startPage = $state<number | null>(null);
+  /** versionId → jobId of re-index jobs started from this page. */
+  let reindexing = $state<Record<string, string>>({});
 
   async function load() {
     try {
@@ -41,23 +49,95 @@
   }
   $effect(() => {
     void id;
-    detail = null;
-    previewId = null;
-    void load().then(applyHash);
+    untrack(() => {
+      detail = null;
+      previewId = null;
+      reindexing = {};
+      void load().then(() => {
+        // A converted PPTX waits for its uploader: open it for checking right away.
+        const latest = detail?.versions[0];
+        if (latest?.status === "review" && latest.pagesUrl && detail?.permissions.manage && !location.hash) previewId = latest.id;
+        void applyHash();
+      });
+    });
   });
 
-  // The view URL carries a fresh token on every load; keep the iframe on the same URL while the
-  // version is unchanged so reloading the detail (after a review, a save…) doesn't restart the deck.
-  const shownVersion = $derived(detail ? (detail.versions.find(v => v.id === previewId && v.viewUrl) ?? detail.activeVersion) : null);
-  let frameSrc = $state<string | null>(null);
-  let frameVersion: string | null = null;
-  $effect(() => {
-    const v = shownVersion;
-    if ((v?.id ?? null) !== frameVersion || !v) {
-      frameVersion = v?.id ?? null;
-      frameSrc = v?.viewUrl ?? null;
-    }
+  // The player shows a previewed version (published or awaiting review) or else the active one.
+  const shownVersion = $derived(detail ? (detail.versions.find(v => v.id === previewId && (v.viewUrl || v.pagesUrl)) ?? detail.activeVersion) : null);
+  const reviewCounts = $derived.by(() => {
+    const counts: Record<number, number> = {};
+    for (const r of detail?.reviews ?? []) if (r.page !== null && r.versionId === shownVersion?.id) counts[r.page] = (counts[r.page] ?? 0) + 1;
+    return counts;
   });
+
+  /** A version that just finished converting into `review` opens in the player for its uploader to check. */
+  function showReview(versionId: string) {
+    const v = detail?.versions.find(x => x.id === versionId);
+    if (v?.status === "review" && v.pagesUrl && detail?.permissions.manage) previewId = v.id;
+  }
+
+  /** Moves the player to a review's page (switching to its version when that one is not shown). */
+  function jumpTo(review: SlideReview) {
+    if (review.page === null || !detail) return;
+    if (review.versionId && review.versionId !== shownVersion?.id) {
+      const v = detail.versions.find(x => x.id === review.versionId && (x.viewUrl || x.pagesUrl));
+      if (!v) return;
+      startPage = review.page;
+      previewId = v.is_active ? null : v.id;
+      return;
+    }
+    player?.goto(review.page);
+  }
+
+  // Re-index jobs: reload once the job settles (the jobs widget polls /jobs/active while it runs).
+  $effect(() => {
+    const pending = Object.entries(reindexing);
+    if (!pending.length) return;
+    const jobs = jobsStore.jobs;
+    untrack(() => {
+      for (const [versionId, jobId] of pending) {
+        const job = jobs.find(j => j.id === jobId);
+        if (!job || job.status === "queued" || job.status === "running") continue;
+        const { [versionId]: _, ...rest } = reindexing;
+        reindexing = rest;
+        if (job.status === "succeeded") toasts.show(t("slides.versions.reindexDone"), "success");
+        else toasts.show(t("slides.versions.reindexFailed"), "error");
+        void load();
+      }
+    });
+  });
+
+  // Review version shown in the player: publish or discard it from here too.
+  let publishing = $state(false);
+  let discardOpen = $state(false);
+  async function publishShown() {
+    const v = shownVersion;
+    if (!v || v.status !== "review") return;
+    publishing = true;
+    try {
+      const result = await api.post<{ active: boolean }>(`/slides/${id}/versions/${v.id}/publish`);
+      toasts.show(result.active ? t("slides.versions.publishedActive", { n: v.version }) : t("slides.versions.publishedOnly", { n: v.version }), "success");
+      if (result.active) previewId = null;
+      await load();
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    } finally {
+      publishing = false;
+    }
+  }
+  async function discardShown() {
+    const v = shownVersion;
+    if (!v) return;
+    try {
+      await api.del(`/slides/${id}/versions/${v.id}`);
+      toasts.show(t("slides.versions.discarded", { n: v.version }), "success");
+      previewId = null;
+      await load();
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+      throw e;
+    }
+  }
 
   // Follow the latest version while it renders, then reload once it settles.
   const latest = $derived(detail?.versions[0]);
@@ -71,7 +151,7 @@
       v.status = s.status;
       v.stage = s.stage;
       v.progress = s.progress;
-      if (!isBusy(s.status)) void load();
+      if (!isBusy(s.status)) void load().then(() => showReview(s.id));
     });
   });
 
@@ -87,6 +167,8 @@
       if (target) {
         highlight = hash.slice("review-".length);
         setTimeout(() => (highlight = null), 2400);
+        const review = detail.reviews.find(r => r.id === highlight);
+        if (review) jumpTo(review);
       }
     } else if (hash === "versions" || hash === "info") tab = hash;
   }
@@ -103,6 +185,7 @@
   ]);
   const author = $derived(detail ? (detail.activeVersion?.uploader_name ?? detail.project.creator_name ?? null) : null);
   const preview = $derived(previewId && shownVersion?.id === previewId ? shownVersion : null);
+  const canPlay = $derived(Boolean(shownVersion && (shownVersion.viewUrl || shownVersion.pagesUrl)));
 </script>
 
 <svelte:head><title>{detail ? `${detail.project.title} · ` : ""}{t("brand.name")}</title></svelte:head>
@@ -143,7 +226,7 @@
       </div>
     </div>
     <div class="flex shrink-0 flex-wrap items-center gap-2">
-      <Button variant="secondary" disabled={!frameSrc} onclick={() => frame?.fullscreen()}><Expand />{t("slides.fullscreen")}</Button>
+      <Button variant="secondary" disabled={!canPlay} onclick={() => player?.fullscreen()}><Expand />{t("slides.fullscreen")}</Button>
       <Button variant="secondary" href={d.project.playerUrl}><Play />{t("slides.player")}</Button>
       {#if d.pdfUrl}<Button variant="primary" href={d.pdfUrl}><Download />PDF</Button>{/if}
     </div>
@@ -151,7 +234,16 @@
 
   <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_400px]">
     <div class="flex min-w-0 flex-col gap-3 lg:sticky lg:top-6">
-      <DeckFrame bind:this={frame} src={frameSrc} title={d.project.title} class="aspect-[16/10] rounded-[22px] border border-line/70 shadow-card">
+      <SlidePlayer
+        bind:this={player}
+        bind:page={currentPage}
+        bind:manifest
+        version={shownVersion}
+        deck={d.project.slug}
+        title={d.project.title}
+        {startPage}
+        counts={reviewCounts}
+      >
         {#snippet empty()}
           <div class="flex max-w-sm flex-col items-center gap-3">
             {#if latest && isBusy(latest.status)}
@@ -172,8 +264,22 @@
             {/if}
           </div>
         {/snippet}
-      </DeckFrame>
-      {#if preview}
+      </SlidePlayer>
+      {#if preview?.status === "review"}
+        <div class="flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center" style="border-color:var(--pill-lilac-ink);background:var(--pill-lilac)">
+          <span class="hidden size-10 shrink-0 place-items-center rounded-xl bg-surface/70 sm:grid" style="color:var(--pill-lilac-ink)"><FileSearch class="size-5" /></span>
+          <div class="min-w-0 flex-1" style="color:var(--pill-lilac-ink)">
+            <p class="text-sm font-semibold">{t("slides.review.checkTitle", { n: preview.version })}</p>
+            <p class="mt-0.5 text-[12.5px] leading-relaxed opacity-90">{d.permissions.manage ? t("slides.review.checkHint", { n: preview.pageCount ?? 0 }) : t("slides.versions.reviewHintViewer")}</p>
+          </div>
+          {#if d.permissions.manage}
+            <div class="flex shrink-0 flex-wrap gap-2">
+              <Button size="sm" variant="ghost" class="text-danger hover:text-danger" onclick={() => (discardOpen = true)}><Trash2 />{t("slides.versions.discard")}</Button>
+              <Button size="sm" variant="primary" loading={publishing} onclick={publishShown}><Send />{t("slides.versions.publish")}</Button>
+            </div>
+          {/if}
+        </div>
+      {:else if preview}
         <div class="flex items-center justify-between gap-3 rounded-2xl border border-ink/80 bg-surface px-4 py-2.5 text-[13px]">
           <span class="font-medium">{t("slides.previewing", { n: preview.version })}</span>
           <Button size="sm" variant="ghost" class="-mr-2" onclick={() => (previewId = null)}>{t("slides.backToActive")}</Button>
@@ -196,10 +302,29 @@
         </Tabs.List>
         <div class="p-4 sm:p-5">
           <Tabs.Content value="reviews" class="outline-none">
-            <ReviewsPanel projectId={d.project.id} bind:reviews={detail.reviews} canReview={d.permissions.review} canReply={d.permissions.reply} {highlight} />
+            <ReviewsPanel
+              projectId={d.project.id}
+              bind:reviews={detail.reviews}
+              canReview={d.permissions.review}
+              canReply={d.permissions.reply}
+              {highlight}
+              version={shownVersion}
+              versions={d.versions}
+              page={currentPage}
+              onJump={jumpTo}
+            />
           </Tabs.Content>
           <Tabs.Content value="versions" class="outline-none">
-            <VersionsPanel projectId={d.project.id} versions={d.versions} canManage={d.permissions.manage} bind:previewId onUpload={() => (uploadOpen = true)} onChanged={load} />
+            <VersionsPanel
+              projectId={d.project.id}
+              versions={d.versions}
+              canManage={d.permissions.manage}
+              bind:previewId
+              reindexing={Object.keys(reindexing)}
+              onUpload={() => (uploadOpen = true)}
+              onChanged={load}
+              onReindex={(versionId, jobId) => (reindexing = { ...reindexing, [versionId]: jobId })}
+            />
           </Tabs.Content>
           <Tabs.Content value="info" class="outline-none">
             <InfoPanel detail={d} onChanged={load} />
@@ -210,6 +335,19 @@
   </div>
 
   {#if d.permissions.manage}
-    <UploadSheet bind:open={uploadOpen} projectId={d.project.id} limits={d.limits} onUploaded={() => ((tab = "versions"), void load())} onRendered={() => void load()} />
+    <UploadSheet
+      bind:open={uploadOpen}
+      projectId={d.project.id}
+      limits={d.limits}
+      onUploaded={() => ((tab = "versions"), void load())}
+      onRendered={s => void load().then(() => showReview(s.id))}
+    />
+    <ConfirmDialog
+      bind:open={discardOpen}
+      title={t("slides.versions.discardTitle", { n: shownVersion?.version ?? "" })}
+      description={t("slides.versions.discardDescription")}
+      confirmLabel={t("slides.versions.discard")}
+      onConfirm={discardShown}
+    />
   {/if}
 {/if}

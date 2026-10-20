@@ -21,9 +21,12 @@ import slides from "./routes/slides.js";
 import slideReviews from "./routes/slide-reviews.js";
 import slideTags from "./routes/slide-tags.js";
 import slideView from "./routes/slide-view.js";
+import slidePages from "./routes/slide-pages.js";
 import dashboard from "./routes/dashboard.js";
 import search from "./routes/search.js";
 import jobs from "./routes/jobs.js";
+import oidc from "./routes/oidc.js";
+import { OIDC_TOKEN_ROUTE } from "./lib/oidc/index.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -64,6 +67,9 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   const expectedOrigin = new URL(deps.config.APP_ORIGIN).origin;
   app.addHook("onRequest", async (request, reply) => {
     if (!UNSAFE_METHODS.has(request.method)) return;
+    // Aldine's server calls the OIDC token endpoint without our Origin. It authenticates with the client
+    // secret and never reads cookies, so there is nothing to forge; only this exact route is exempt.
+    if (request.method === "POST" && request.routeOptions.url === OIDC_TOKEN_ROUTE) return;
     if (request.headers.origin !== expectedOrigin) return reply.code(403).send({ error: "請從本站重新送出。" });
   });
 
@@ -93,9 +99,11 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(slideReviews, { prefix: "/api" });
   await app.register(slideTags, { prefix: "/api" });
   await app.register(slideView, { prefix: "/api" });
+  await app.register(slidePages, { prefix: "/api" });
   await app.register(dashboard, { prefix: "/api" });
   await app.register(search, { prefix: "/api" });
   await app.register(jobs, { prefix: "/api" });
+  await app.register(oidc, { prefix: "/api" });
 
   return app;
 }

@@ -1,7 +1,8 @@
 import type { TagRef } from "#lib/types.ts";
 
-export type VersionStatus = "queued" | "rendering" | "published" | "failed";
-export type UploadLimits = { zipBytes: number; referenceBytes: number };
+export type VersionStatus = "queued" | "rendering" | "review" | "published" | "failed";
+export type SourceType = "quarto" | "pdf" | "pptx";
+export type UploadLimits = { zipBytes: number; deckBytes?: number; deckTypes?: string[]; referenceBytes: number };
 
 /** Row of GET /slides. */
 export type SlideSummary = {
@@ -28,6 +29,7 @@ export type SlideVersion = {
   id: string;
   version: number;
   status: VersionStatus;
+  sourceType: SourceType;
   stage: string | null;
   progress: number;
   error: string | null;
@@ -41,7 +43,15 @@ export type SlideVersion = {
   viewUrl: string | null;
   pdfUrl: string | null;
   hasThumbnail: boolean;
+  /** Null for renders without a page manifest (older renders, failed quarto capture) and review versions in by-slug. */
+  pageCount: number | null;
+  pagesUrl: string | null;
 };
+
+/** One page of a version's manifest (1-based `index`; `h`/`v` are Reveal indices of quarto decks). */
+export type SlidePage = { index: number; h?: number; v?: number; title?: string; thumb: string; full?: string; notes?: { text: string; html?: string } };
+/** GET …/pages: image URLs must always be taken from here (they may carry `?r=` and `?key=`). */
+export type PageManifest = { version: 1; versionId: string; sourceType: SourceType; width: number; height: number; pageCount: number; pages: SlidePage[] };
 
 export type SlideReference = {
   id: string;
@@ -56,7 +66,17 @@ export type SlideReference = {
 };
 
 export type SlideReply = { id: string; review_id: string; body: string; created_at: string; author: string; author_id: string };
-export type SlideReview = { id: string; body: string; created_at: string; author: string; author_id: string; replies: SlideReply[] };
+export type SlideReview = {
+  id: string;
+  body: string;
+  created_at: string;
+  author: string;
+  author_id: string;
+  /** Page of `versionId` the review is about; null for general reviews. */
+  page: number | null;
+  versionId: string | null;
+  replies: SlideReply[];
+};
 
 /** GET /slides/:id and GET /slides/by-slug/:slug. */
 export type SlideDetail = {

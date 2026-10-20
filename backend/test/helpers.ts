@@ -35,7 +35,8 @@ export type TestContext = {
   close(): Promise<void>;
 };
 
-export async function createTestContext(): Promise<TestContext> {
+/** `env` adds or overrides config variables (e.g. the OIDC client). */
+export async function createTestContext(env: Record<string, string> = {}): Promise<TestContext> {
   const admin = new pg.Client({ connectionString: process.env.TEST_DATABASE_URL });
   await admin.connect();
   const name = `t_${randomBytes(6).toString("hex")}`;
@@ -59,6 +60,7 @@ export async function createTestContext(): Promise<TestContext> {
     S3_BUCKET: `b-${name.replace(/_/g, "-")}`,
     S3_ACCESS_KEY: process.env.TEST_S3_ACCESS_KEY ?? "test",
     S3_SECRET_KEY: process.env.TEST_S3_SECRET_KEY ?? "test",
+    ...env,
   });
   const db = createPool(config);
   const storage = new Storage(config.S3_BUCKET, config);

@@ -30,15 +30,11 @@ describe("hashTree", () => {
   });
 });
 
-describe("thumbnailTarget", () => {
-  const prefix = "slides/p/v/output/";
-  it("uses <outputPrefix>_hub-thumbnail.png when captured", async () => {
-    const { thumbnailTarget } = await import("../src/handlers/slide-render.js");
-    expect(thumbnailTarget(prefix, ["index.html", "img/_hub-thumbnail.png"], true)).toBe(`${prefix}_hub-thumbnail.png`);
-  });
-  it("is omitted when not captured or when the deck serves its own _hub-thumbnail.png", async () => {
-    const { thumbnailTarget } = await import("../src/handlers/slide-render.js");
-    expect(thumbnailTarget(prefix, ["index.html"], false)).toBeUndefined();
-    expect(thumbnailTarget(prefix, ["index.html", "_hub-thumbnail.png"], true)).toBeUndefined();
+describe("assertNoReserved", () => {
+  it("refuses deck output inside the hub's _hub/ directory", async () => {
+    const { assertNoReserved } = await import("../src/handlers/slide-render.js");
+    expect(() => assertNoReserved(["index.html", "img/_hub/x.png", "_hub-thumbnail.png"])).not.toThrow();
+    expect(() => assertNoReserved(["index.html", "_hub/pages.json"])).toThrow(/_hub/);
+    expect(() => assertNoReserved(["_hub"])).toThrow(/_hub/);
   });
 });

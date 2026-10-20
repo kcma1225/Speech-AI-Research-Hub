@@ -35,7 +35,7 @@ export type Dashboard = {
     reviewCount: number;
   } | null;
   activity: { kind: "slide_version" | "note" | "recording" | "review" | "reply"; id: string; title: string; url: string; actor: { id: string; name: string } | null; at: string }[];
-  pendingReviews: { reviewId: string; slideId: string; slideTitle: string; excerpt: string; authorName: string | null; createdAt: string }[];
+  pendingReviews: { reviewId: string; slideId: string; slideTitle: string; excerpt: string; authorName: string | null; createdAt: string; page: number | null }[];
   recentNotes: { id: string; title: string; excerpt: string; updatedAt: string; tags: TagRef[]; hasAudio: boolean }[];
 };
 

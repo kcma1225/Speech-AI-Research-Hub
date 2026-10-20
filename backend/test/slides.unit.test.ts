@@ -118,7 +118,7 @@ describe("asset serving helpers", () => {
   it("refuses unsafe or private paths", () => {
     expect(safeAssetPath("index.html")).toBe("index.html");
     expect(safeAssetPath("index_files/libs/reveal.js")).toBe("index_files/libs/reveal.js");
-    for (const bad of ["", "../x", "a/../../x", "/etc/passwd", "a\\b", "a\0b", "./a", "a//b", "slides.pdf", "pdf.log", "offline-assets/licenses/x.txt"]) {
+    for (const bad of ["", "../x", "a/../../x", "/etc/passwd", "a\\b", "a\0b", "./a", "a//b", "slides.pdf", "pdf.log", "offline-assets/licenses/x.txt", "_hub", "_hub/pages.json", "_hub/pages/1-thumb.webp"]) {
       expect(safeAssetPath(bad), bad).toBeNull();
     }
   });
@@ -126,8 +126,12 @@ describe("asset serving helpers", () => {
   it("patches deck HTML", () => {
     const html = patchDeckHtml('<html><head lang="en"><title>x</title></head><body><script>Reveal.initialize({hash:true})</script></body></html>');
     expect(html).toMatch(/<head lang="en"><script>\(function\(\)\{function m\(\)/);
-    expect(html).toContain("Reveal.initialize({scrollActivationWidth:0,hash:true})");
+    expect(html).toContain("Reveal.initialize({scrollActivationWidth:0,postMessage:true,postMessageEvents:true,hash:true})");
     expect(html).toMatch(/min-height:44px.*<\/style><\/head>/);
+    // Hub bridge: `s` / `f` are posted to the parent instead of reaching Reveal.
+    expect(html).toContain("window.parent.postMessage({namespace:'hub',type:t},'*')");
+    expect(html).toContain("k==='s'?'speaker':k==='f'?'fullscreen'");
+    expect(html.indexOf("namespace:'hub'")).toBeLessThan(html.indexOf("</head>"));
   });
 
   it("builds the sandbox CSP", () => {

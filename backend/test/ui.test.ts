@@ -360,7 +360,7 @@ run("dashboard", () => {
       reviewCount: 1,
     });
     expect(body.pendingReviews).toEqual([
-      { reviewId: reviewA, slideId: deckA.projectId, slideTitle: "Alice deck", excerpt: "Please add baselines", authorName: "Prof Lee", createdAt: expect.any(String) },
+      { reviewId: reviewA, slideId: deckA.projectId, slideTitle: "Alice deck", excerpt: "Please add baselines", authorName: "Prof Lee", createdAt: expect.any(String), page: null },
     ]);
     expect(body.recentNotes[0]).toEqual({ id: noteId, title: "Meeting note", excerpt: "Agenda item", updatedAt: expect.any(String), tags: [], hasAudio: false });
     expect(body.recentNotes[1]).toMatchObject({ title: "Old recording", hasAudio: true });

@@ -85,3 +85,11 @@ export async function userSession(db: Db, role: "owner" | "admin" | "member" | "
 }
 
 export const PDF_BYTES = Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(20_000, 0x20), Buffer.from("\n%%EOF\n")]);
+
+/** Minimal PPTX package (OOXML parts the backend checks). */
+export const pptxBytes = (extra: { name: string; data?: string }[] = [], types = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml") => makeZip([
+  { name: "[Content_Types].xml", data: `<?xml version="1.0"?><Types><Override PartName="/ppt/presentation.xml" ContentType="${types}"/></Types>` },
+  { name: "ppt/presentation.xml", data: "<p:presentation/>" },
+  { name: "ppt/slides/slide1.xml", data: "<p:sld/>" },
+  ...extra,
+]);

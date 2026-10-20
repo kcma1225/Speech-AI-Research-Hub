@@ -9,7 +9,7 @@
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Spinner from "#lib/components/ui/Spinner.svelte";
   import { menuContent } from "#lib/components/ui/menu.ts";
-  import DeckFrame from "#lib/components/slides/DeckFrame.svelte";
+  import SlidePlayer from "#lib/components/slides/SlidePlayer.svelte";
   import type { SlideDetail } from "#lib/slides/types.ts";
 
   // Standalone full-screen player (outside the app shell): signed-in users, public decks, and
@@ -17,7 +17,10 @@
   const slug = $derived(page.params.slug!);
   let detail = $state<SlideDetail | null>(null);
   let error = $state<{ status: number; message: string } | null>(null);
-  let frame = $state<ReturnType<typeof DeckFrame> | null>(null);
+  let player = $state<ReturnType<typeof SlidePlayer> | null>(null);
+  const shareKey = $derived(page.url.searchParams.get("key"));
+  // `?p=3` opens a given page (otherwise the last viewed one).
+  const startPage = $derived(Number(page.url.searchParams.get("p")) || null);
 
   $effect(() => {
     const key = page.url.searchParams.get("key");
@@ -71,7 +74,7 @@
       {#if detail.pdfUrl}
         <Button variant="ghost" size="sm" href={withKey(detail.pdfUrl)} class="px-2.5 sm:px-3" aria-label={t("slides.pdf")}><Download /><span class="hidden sm:inline">PDF</span></Button>
       {/if}
-      <Button variant="secondary" size="sm" disabled={!detail.viewUrl} onclick={() => frame?.fullscreen()} class="px-2.5 sm:px-3" aria-label={t("slides.fullscreen")}>
+      <Button variant="secondary" size="sm" disabled={!detail.activeVersion} onclick={() => player?.fullscreen()} class="px-2.5 sm:px-3" aria-label={t("slides.fullscreen")}>
         <Expand /><span class="hidden sm:inline">{t("slides.fullscreen")}</span>
       </Button>
     {/if}
@@ -93,13 +96,21 @@
     {:else if !detail}
       <div class="grid h-full place-items-center text-ink-3"><Spinner class="size-5" /></div>
     {:else}
-      <div class="absolute inset-0">
-      <DeckFrame bind:this={frame} src={detail.viewUrl} title={detail.project.title} class="size-full">
+      <SlidePlayer
+        bind:this={player}
+        version={detail.activeVersion}
+        deck={detail.project.slug}
+        title={detail.project.title}
+        {startPage}
+        {shareKey}
+        variant="stage"
+        globalKeys
+        class="absolute inset-0"
+      >
         {#snippet empty()}
           <EmptyState title={t("slides.noDeck")} hint={t("slides.noDeck.rendering")}>{#snippet icon()}<Presentation />{/snippet}</EmptyState>
         {/snippet}
-      </DeckFrame>
-      </div>
+      </SlidePlayer>
     {/if}
   </main>
 </div>

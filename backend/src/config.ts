@@ -19,6 +19,11 @@ const schema = z.object({
   S3_ACCESS_KEY: z.string().min(1),
   S3_SECRET_KEY: z.string().min(1),
   LATEX_URL: z.string().default(""),
+  /** OIDC provider for Aldine (routes/oidc.ts); off unless both client id and secret are set. */
+  LATEX_OIDC_CLIENT_ID: z.string().trim().max(200).default(""),
+  LATEX_OIDC_CLIENT_SECRET: z.string().default("").refine(value => value === "" || value.length >= 32, "must be at least 32 characters"),
+  /** Comma-separated exact redirect URIs; default `<LATEX_URL>/api/auth/oauth/oidc/callback`. */
+  LATEX_OIDC_REDIRECT_URIS: z.string().default(""),
   VAPID_PUBLIC_KEY: z.string().default(""),
   VAPID_PRIVATE_KEY: z.string().default(""),
   VAPID_SUBJECT: z.string().default("mailto:admin@example.com"),

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# Worker: Quarto (slide render) + headless Chrome (PDF) + ffmpeg (media) + Node job runner.
+# Worker: Quarto (slide render) + headless Chrome (PDF) + poppler/cwebp (PDF pages) + LibreOffice Impress
+# (PPTX → PDF) + ffmpeg (media) + Node job runner.
 # Quarto upstream image is amd64-only; compose sets platform: linux/amd64.
 
 FROM node:22.23.3-bookworm-slim AS build
@@ -17,8 +18,10 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates python3 ffmpeg fontconfig libnss3 libatk-bridge2.0-0 libgtk-3-0 libasound2 libx11-xcb1 \
       libgbm1 libxss1 libxtst6 fonts-noto-cjk \
+      poppler-utils webp libreoffice-impress fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
     && rm -rf /var/lib/apt/lists/*
 # Noto CJK: decks are mostly Traditional Chinese; without it PDFs/thumbnails render missing glyphs.
+# Liberation/Carlito/Caladea are metric-compatible with Arial/Times, Calibri and Cambria, so converted PPTX keep their layout.
 # Pinned, checksum-verified browser + offline math/fonts (downloaded at build time only).
 COPY scripts/build-assets.py /usr/local/bin/build-assets.py
 RUN python3 /usr/local/bin/build-assets.py && chmod -R a+rX /opt/chrome /opt/slide-assets \
@@ -30,7 +33,8 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY scripts/prepare-pdf.py ./scripts/prepare-pdf.py
 COPY assets ./assets
-RUN chmod -R a+rX /app && node --version && ffmpeg -version > /dev/null && quarto --version
+RUN chmod -R a+rX /app && node --version && ffmpeg -version > /dev/null && quarto --version \
+    && pdftoppm -v 2>&1 | head -1 && cwebp -version > /dev/null && soffice --version
 # Root filesystem is read-only at runtime; Quarto/Deno/Chrome caches and job scratch go to tmpfs /tmp.
 ENV NODE_ENV=production HOME=/tmp XDG_CACHE_HOME=/tmp/.cache XDG_DATA_HOME=/tmp/.local/share \
     XDG_CONFIG_HOME=/tmp/.config DENO_DIR=/tmp/.deno WORK_DIR=/tmp/jobs

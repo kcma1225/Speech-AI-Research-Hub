@@ -1,7 +1,7 @@
 <script lang="ts">
   import { DropdownMenu } from "bits-ui";
-  import { ChevronDown, ChevronUp, CircleCheck, Download, Ellipsis, Eye, RotateCcw, Trash2, Upload } from "@lucide/svelte";
-  import { api } from "#lib/api.ts";
+  import { ChevronDown, ChevronUp, CircleCheck, Download, Ellipsis, Eye, FileSearch, Images, LoaderCircle, RotateCcw, Send, Trash2, Upload } from "@lucide/svelte";
+  import { api, ApiError } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
@@ -15,19 +15,24 @@
   import { isBusy, stripAnsi } from "#lib/slides/util.ts";
   import StatusPill from "./StatusPill.svelte";
 
-  let { projectId, versions, canManage, previewId = $bindable(null), onUpload, onChanged }: {
+  let { projectId, versions, canManage, previewId = $bindable(null), reindexing = [], onUpload, onChanged, onReindex }: {
     projectId: string;
     versions: SlideVersion[];
     canManage: boolean;
     previewId?: string | null;
+    /** Versions whose re-index job is still running. */
+    reindexing?: string[];
     onUpload: () => void;
     onChanged: () => void | Promise<void>;
+    onReindex?: (versionId: string, jobId: string) => void;
   } = $props();
 
   let openError = $state<string | null>(null);
   let confirmDelete = $state<SlideVersion | null>(null);
   let confirmOpen = $state(false);
   const latestId = $derived(versions[0]?.id);
+  // Re-indexing is offered inline only for the active version (other old versions have it in their menu).
+  const activeId = $derived(versions.find(v => v.is_active)?.id);
 
   async function run(action: () => Promise<unknown>, message: string) {
     try {
@@ -50,9 +55,36 @@
   async function remove() {
     const v = confirmDelete;
     if (!v) return;
-    await run(() => api.del(`/slides/${projectId}/versions/${v.id}`), t("slides.versions.deleted", { n: v.version }));
+    const message = v.status === "review" ? t("slides.versions.discarded", { n: v.version }) : t("slides.versions.deleted", { n: v.version });
+    await run(() => api.del(`/slides/${projectId}/versions/${v.id}`), message);
     if (previewId === v.id) previewId = null;
   }
+  let publishing = $state<string | null>(null);
+  async function publish(v: SlideVersion) {
+    publishing = v.id;
+    try {
+      const result = await api.post<{ ok: boolean; active: boolean }>(`/slides/${projectId}/versions/${v.id}/publish`);
+      toasts.show(result.active ? t("slides.versions.publishedActive", { n: v.version }) : t("slides.versions.publishedOnly", { n: v.version }), "success");
+      if (previewId === v.id && result.active) previewId = null;
+      await onChanged();
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    } finally {
+      publishing = null;
+    }
+  }
+  async function reindex(v: SlideVersion) {
+    try {
+      const { jobId } = await api.post<{ versionId: string; jobId: string }>(`/slides/${projectId}/versions/${v.id}/reindex`);
+      toasts.show(t("slides.versions.reindexQueued", { n: v.version }), "success");
+      void jobsStore.refresh();
+      onReindex?.(v.id, jobId);
+    } catch (e) {
+      toasts.show(e instanceof ApiError && e.status === 409 ? t("slides.versions.reindexBusy") : (e as Error).message, "error");
+    }
+  }
+  const confirmDiscard = (v: SlideVersion) => ((confirmDelete = v), (confirmOpen = true));
+  const sourceLabel = (v: SlideVersion) => (v.sourceType === "quarto" ? t("slides.versions.entry", { entry: v.entry_qmd }) : t(`slides.source.${v.sourceType}`));
 </script>
 
 <div class="flex flex-col gap-3">
@@ -78,16 +110,16 @@
               {/if}
               <time class="shrink-0" datetime={v.created_at} title={formatDate(v.created_at, { dateStyle: "medium", timeStyle: "short" })}>{relativeTime(v.published_at ?? v.created_at)}</time>
             </div>
-            <p class="mt-0.5 truncate text-[11.5px] text-ink-3" title={v.source_name}>{v.source_name} · {t("slides.versions.entry", { entry: v.entry_qmd })}</p>
+            <p class="mt-0.5 truncate text-[11.5px] text-ink-3" title={v.source_name}>{v.source_name} · {sourceLabel(v)}</p>
           </div>
-          {#if v.viewUrl || v.pdfUrl || canManage}
+          {#if v.viewUrl || v.pagesUrl || v.pdfUrl || canManage}
             <DropdownMenu.Root>
               <DropdownMenu.Trigger class="-mr-1.5 -mt-1 grid size-9 shrink-0 cursor-pointer place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("slides.versions.more")}>
                 <Ellipsis class="size-4" />
               </DropdownMenu.Trigger>
               <DropdownMenu.Portal>
                 <DropdownMenu.Content align="end" sideOffset={4} class={menuContent}>
-                  {#if v.viewUrl && !v.is_active}
+                  {#if (v.viewUrl || v.pagesUrl) && !v.is_active}
                     <DropdownMenu.Item class={menuItem} onSelect={() => (previewId = v.id)}><Eye />{t("slides.versions.preview")}</DropdownMenu.Item>
                   {/if}
                   {#if v.pdfUrl}
@@ -97,12 +129,18 @@
                     {#if v.status === "published" && !v.is_active}
                       <DropdownMenu.Item class={menuItem} onSelect={() => activate(v)}><CircleCheck />{t("slides.versions.setActive")}</DropdownMenu.Item>
                     {/if}
+                    {#if v.status === "review"}
+                      <DropdownMenu.Item class={menuItem} onSelect={() => publish(v)}><Send />{t("slides.versions.publish")}</DropdownMenu.Item>
+                    {/if}
+                    {#if v.status === "published" && v.pageCount === null}
+                      <DropdownMenu.Item class={menuItem} disabled={reindexing.includes(v.id)} onSelect={() => reindex(v)}><Images />{t("slides.versions.reindex")}</DropdownMenu.Item>
+                    {/if}
                     {#if v.status === "failed" && v.id === latestId}
                       <DropdownMenu.Item class={menuItem} onSelect={retry}><RotateCcw />{t("slides.versions.retry")}</DropdownMenu.Item>
                     {/if}
                     {#if !v.is_active}
                       <DropdownMenu.Separator class={menuSeparator} />
-                      <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => ((confirmDelete = v), (confirmOpen = true))}><Trash2 />{t("slides.versions.delete")}</DropdownMenu.Item>
+                      <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => ((confirmDelete = v), (confirmOpen = true))}><Trash2 />{v.status === "review" ? t("slides.versions.discard") : t("slides.versions.delete")}</DropdownMenu.Item>
                     {/if}
                   {/if}
                 </DropdownMenu.Content>
@@ -110,6 +148,27 @@
             </DropdownMenu.Root>
           {/if}
         </div>
+        {#if v.status === "review"}
+          <div class="mt-3 rounded-xl p-3 text-[12.5px] leading-relaxed" style="background:var(--pill-lilac);color:var(--pill-lilac-ink)">
+            {canManage ? t("slides.versions.reviewHint") : t("slides.versions.reviewHintViewer")}
+          </div>
+          {#if canManage}
+            <div class="mt-2.5 flex flex-wrap gap-2">
+              {#if v.pagesUrl && previewId !== v.id}
+                <Button size="sm" variant="secondary" onclick={() => (previewId = v.id)}><FileSearch />{t("slides.versions.reviewPreview")}</Button>
+              {/if}
+              <Button size="sm" variant="primary" loading={publishing === v.id} onclick={() => publish(v)}><Send />{t("slides.versions.publish")}</Button>
+              <Button size="sm" variant="ghost" class="text-danger hover:text-danger" onclick={() => confirmDiscard(v)}><Trash2 />{t("slides.versions.discard")}</Button>
+            </div>
+          {/if}
+        {/if}
+        {#if reindexing.includes(v.id)}
+          <p class="mt-2.5 inline-flex items-center gap-1.5 text-[12px] text-ink-3"><LoaderCircle class="size-3.5 animate-spin" />{t("slides.versions.reindexing")}</p>
+        {:else if canManage && v.status === "published" && v.pageCount === null && v.id === activeId}
+          <button type="button" class="mt-2 inline-flex cursor-pointer items-center gap-1 text-[12px] font-medium text-ink-2 hover:text-ink hover:underline" onclick={() => reindex(v)}>
+            <Images class="size-3.5" />{t("slides.versions.reindexOffer")}
+          </button>
+        {/if}
         {#if busy}
           <div class="mt-3 flex flex-col gap-1.5">
             <div class="flex justify-between text-[12px] text-ink-3"><span>{v.stage ?? t("slides.status.queued")}</span><span class="tabular-nums">{v.progress}%</span></div>
@@ -135,8 +194,8 @@
 
 <ConfirmDialog
   bind:open={confirmOpen}
-  title={t("slides.versions.deleteTitle", { n: confirmDelete?.version ?? "" })}
-  description={t("slides.versions.deleteDescription")}
-  confirmLabel={t("slides.versions.delete")}
+  title={confirmDelete?.status === "review" ? t("slides.versions.discardTitle", { n: confirmDelete.version }) : t("slides.versions.deleteTitle", { n: confirmDelete?.version ?? "" })}
+  description={confirmDelete?.status === "review" ? t("slides.versions.discardDescription") : t("slides.versions.deleteDescription")}
+  confirmLabel={confirmDelete?.status === "review" ? t("slides.versions.discard") : t("slides.versions.delete")}
   onConfirm={remove}
 />

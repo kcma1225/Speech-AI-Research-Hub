@@ -195,6 +195,7 @@
                 <div class="mt-2.5 flex items-center gap-2 text-[12px] text-ink-3">
                   {#if r.authorName}<Avatar name={r.authorName} size={20} class="ring-0" /><span class="shrink-0 whitespace-nowrap text-ink-2">{r.authorName}</span><span aria-hidden="true">·</span>{/if}
                   <span class="min-w-0 truncate">{t("dash.pending.on", { title: r.slideTitle })}</span>
+                  {#if r.page !== null}<Pill size="sm" tone="lilac" class="shrink-0">{t("dash.pending.page", { n: r.page })}</Pill>{/if}
                   <span class="ml-auto shrink-0">{relativeTime(r.createdAt)}</span>
                 </div>
               </a>

@@ -22,11 +22,21 @@ const CONTENT_TYPES: Record<string, string> = {
 const STORAGE_SHIM = "(function(){function m(){var d=Object.create(null);return{get length(){return Object.keys(d).length},key:function(i){return Object.keys(d)[i]??null},getItem:function(k){k=String(k);return k in d?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d=Object.create(null)}}}['localStorage','sessionStorage'].forEach(function(n){try{window[n].length}catch(e){Object.defineProperty(window,n,{value:m(),configurable:true})}})})();";
 const TOUCH_CSS = "<style>html:not(.print-pdf) .reveal .slide-number{bottom:auto;height:auto;padding:7px 9px;min-width:44px;min-height:44px;box-sizing:border-box;display:grid!important;place-items:center}html:not(.print-pdf) .reveal .slide-menu-button{min-width:44px;min-height:44px;display:grid;place-items:center}html:not(.print-pdf) .reveal .slide-menu-button a{display:grid;place-items:center;min-width:44px;min-height:44px}html:not(.print-pdf) .slide-menu-wrapper .slide-tool-item a{display:flex;align-items:center;min-height:44px}html.print-pdf .annotate-dock,html.print-pdf .slide-menu-button{display:none!important}</style>";
 
-/** Rewrites rendered deck HTML for the sandboxed, cookie-less iframe. */
+/**
+ * Hub bridge (only when embedded): `s` / `f` without modifiers post `{namespace:"hub", type:"speaker"|"fullscreen"}`
+ * to the parent instead of opening Reveal's notes popup / fullscreen. A capture listener on window runs before
+ * Reveal's document listener and stops the event. Keys typed into form fields or contenteditable are left alone.
+ */
+const HUB_BRIDGE = "(function(){if(window.parent===window)return;window.addEventListener('keydown',function(e){if(e.ctrlKey||e.metaKey||e.altKey||e.shiftKey||e.isComposing)return;var k=String(e.key||'').toLowerCase(),t=k==='s'?'speaker':k==='f'?'fullscreen':null;if(!t)return;var g=e.target;if(g&&(g.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(g.tagName||'')))return;e.preventDefault();e.stopImmediatePropagation();window.parent.postMessage({namespace:'hub',type:t},'*')},true)})();";
+
+/**
+ * Rewrites rendered deck HTML for the sandboxed, cookie-less iframe. Reveal gets `postMessage` (the parent can
+ * call the Reveal API) and `postMessageEvents` (Reveal events are posted to the parent as JSON strings).
+ */
 export function patchDeckHtml(html: string) {
   return html
-    .replace(/<head(\s[^>]*)?>/i, match => `${match}<script>${STORAGE_SHIM}</script>`)
-    .replace(/Reveal\.initialize\(\{/, "Reveal.initialize({scrollActivationWidth:0,")
+    .replace(/<head(\s[^>]*)?>/i, match => `${match}<script>${STORAGE_SHIM}${HUB_BRIDGE}</script>`)
+    .replace(/Reveal\.initialize\(\{/, "Reveal.initialize({scrollActivationWidth:0,postMessage:true,postMessageEvents:true,")
     .replace(/<\/head>/i, match => `${TOUCH_CSS}${match}`);
 }
 
@@ -42,6 +52,8 @@ export function safeAssetPath(relative: string): string | null {
   const normalized = path.posix.normalize(relative);
   if (normalized.startsWith("/") || normalized.startsWith("../") || normalized === "..") return null;
   if (normalized === "slides.pdf" || normalized === "pdf.log" || normalized.startsWith("offline-assets/licenses/")) return null;
+  // Hub-owned files (page images, manifest with notes) are served by the page routes only.
+  if (normalized === "_hub" || normalized.startsWith("_hub/")) return null;
   return normalized;
 }
 
@@ -73,7 +85,8 @@ const slideView: FastifyPluginAsync = async app => {
     const { key } = parse(keyQuery, request.query);
     const access = await slideAccess(request, slug, key);
     if (!access) throw notFound("簡報不存在。");
-    return reply.header("Cache-Control", "private, no-store").send(await slideDetail(app.db, secret, access.project, access.user));
+    const context = { mode: "slug" as const, ...(access.viaKey ? { key } : {}) };
+    return reply.header("Cache-Control", "private, no-store").send(await slideDetail(app.db, secret, access.project, access.user, context));
   });
 
   /** Capability URL: remembers the share key in a cookie, then opens the player. */

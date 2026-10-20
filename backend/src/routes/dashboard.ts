@@ -8,7 +8,7 @@ import { slideUrls } from "../lib/slides/access.js";
 /** Monday 00:00 of the current week in Asia/Taipei, as timestamptz. */
 const WEEK_START = "(date_trunc('week', now() AT TIME ZONE 'Asia/Taipei') AT TIME ZONE 'Asia/Taipei')";
 /** When a published version went live: its render job's finish time (falls back to upload time). */
-const PUBLISHED_AT = "COALESCE(j.finished_at, v.created_at)";
+const PUBLISHED_AT = "COALESCE(v.published_at, j.finished_at, v.created_at)";
 
 /**
  * Reviews still waiting for a reply. Only the Owner replies, so the Owner sees every one; others see
@@ -106,8 +106,8 @@ async function activity(db: Queryable) {
 }
 
 async function pendingReviews(db: Queryable, user: CurrentUser) {
-  const rows = (await db.query<{ review_id: string; slide_id: string; slide_title: string; body: string; author_name: string; created_at: string }>(
-    `SELECT r.id AS review_id,p.id AS slide_id,p.title AS slide_title,left(r.body,2000) AS body,u.name AS author_name,r.created_at
+  const rows = (await db.query<{ review_id: string; slide_id: string; slide_title: string; body: string; author_name: string; created_at: string; page: number | null }>(
+    `SELECT r.id AS review_id,p.id AS slide_id,p.title AS slide_title,left(r.body,2000) AS body,u.name AS author_name,r.created_at,r.page
        FROM slide_reviews r JOIN slide_projects p ON p.id=r.project_id JOIN users u ON u.id=r.author_id
       WHERE ${PENDING_REVIEWS_WHERE}
       ORDER BY r.created_at DESC, r.id LIMIT 5`,
@@ -120,6 +120,7 @@ async function pendingReviews(db: Queryable, user: CurrentUser) {
     excerpt: markdownExcerpt(row.body),
     authorName: row.author_name,
     createdAt: row.created_at,
+    page: row.page,
   }));
 }
 

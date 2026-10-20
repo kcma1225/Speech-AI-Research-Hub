@@ -10,12 +10,18 @@
   import TextField from "#lib/components/ui/TextField.svelte";
   import Wordmark from "#lib/components/shell/Wordmark.svelte";
 
+  // Same-origin paths only ("//host" and "/\host" would leave the site).
   const next = $derived.by(() => {
     const value = page.url.searchParams.get("next") ?? "/";
-    return value.startsWith("/") && !value.startsWith("//") ? value : "/";
+    return value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") ? value : "/";
   });
+  /** SPA routes use goto; the OIDC authorize endpoint (Aldine sign-in) is a backend URL and needs a full navigation. */
+  function proceed() {
+    if (next.startsWith("/api/oidc/authorize?")) window.location.replace(next);
+    else void goto(next, { replaceState: true });
+  }
   $effect(() => {
-    if (session.user) void goto(next, { replaceState: true });
+    if (session.user) proceed();
   });
 
   let accounts = $state<{ id: string; name: string }[]>([]);
@@ -48,7 +54,7 @@
     error = null;
     try {
       await session.login(chosen ? { userId: chosen.id, password } : { name: name.trim(), password });
-      await goto(next, { replaceState: true });
+      proceed();
     } catch (err) {
       error = (err as Error).message;
     } finally {

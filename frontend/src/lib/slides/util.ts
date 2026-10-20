@@ -3,7 +3,7 @@ import type { Tone } from "#lib/components/ui/Pill.svelte";
 import type { SlideStatus, VersionStatus } from "./types.ts";
 
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-export const DEFAULT_LIMITS = { zipBytes: 200 * 1024 * 1024, referenceBytes: 50 * 1024 * 1024 };
+export const DEFAULT_LIMITS = { zipBytes: 200 * 1024 * 1024, deckBytes: 200 * 1024 * 1024, deckTypes: [".zip", ".pdf", ".pptx"], referenceBytes: 50 * 1024 * 1024 };
 
 /** ASCII slug from a title; Chinese-only titles fall back to `slides-<date>`. */
 export function slugify(title: string): string {
@@ -47,7 +47,7 @@ export function entryCandidates(message: string): string[] | null {
   return list.split("、").map(s => s.trim()).filter(Boolean);
 }
 
-/** Polls GET /slides/:id/status until the latest version is published or failed. Returns a stop function. */
+/** Polls GET /slides/:id/status until the latest version settles (published, review or failed). Returns a stop function. */
 export function watchStatus(id: string, onUpdate: (status: SlideStatus) => void, intervalMs = 1500): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -56,7 +56,7 @@ export function watchStatus(id: string, onUpdate: (status: SlideStatus) => void,
       const status = await api.get<SlideStatus>(`/slides/${id}/status`);
       if (stopped) return;
       onUpdate(status);
-      if (status.status === "published" || status.status === "failed") return;
+      if (!isBusy(status.status)) return;
     } catch {
       if (stopped) return;
     }
@@ -69,7 +69,7 @@ export function watchStatus(id: string, onUpdate: (status: SlideStatus) => void,
   };
 }
 
-export const statusTone: Record<VersionStatus, Tone> = { queued: "butter", rendering: "sky", published: "mint", failed: "rose" };
+export const statusTone: Record<VersionStatus, Tone> = { queued: "butter", rendering: "sky", review: "lilac", published: "mint", failed: "rose" };
 export const isBusy = (s: VersionStatus | null | undefined) => s === "queued" || s === "rendering";
 
 // eslint-disable-next-line no-control-regex

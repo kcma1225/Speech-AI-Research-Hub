@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CircleAlert, CircleCheck } from "@lucide/svelte";
+  import { CircleAlert, CircleCheck, FileSearch, Info } from "@lucide/svelte";
   import { api, ApiError } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
@@ -14,7 +14,8 @@
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { SlideStatus, UploadLimits } from "#lib/slides/types.ts";
-  import { DEFAULT_LIMITS, entryCandidates, formatBytes, SLUG_RE, slugify, stripAnsi, uploadForm, watchStatus } from "#lib/slides/util.ts";
+  import { DEFAULT_LIMITS, entryCandidates, formatBytes, isBusy, SLUG_RE, slugify, stripAnsi, uploadForm, watchStatus } from "#lib/slides/util.ts";
+  import { FolderError, zipFolder, type Folder } from "#lib/slides/folder.ts";
 
   /**
    * Upload a new deck (`projectId` unset) or a new version of `projectId`, then follow its render.
@@ -29,7 +30,7 @@
   } = $props();
 
   const isVersion = $derived(Boolean(projectId));
-  type Phase = "form" | "uploading" | "rendering" | "done" | "failed";
+  type Phase = "form" | "uploading" | "rendering" | "done" | "review" | "failed";
   let phase = $state<Phase>("form");
   let title = $state("");
   let slug = $state("");
@@ -45,6 +46,30 @@
   let status = $state<SlideStatus | null>(null);
   let created = $state<{ id: string; version: number } | null>(null);
   let stop: (() => void) | undefined;
+  let zipping = $state<number | null>(null);
+  let skipped = $state<string[]>([]);
+
+  const maxBytes = $derived(limits.deckBytes ?? limits.zipBytes);
+  const accept = $derived((limits.deckTypes ?? [".zip", ".pdf", ".pptx"]).join(","));
+  const kind = $derived.by(() => {
+    const name = file?.name.toLowerCase() ?? "";
+    return name.endsWith(".pdf") ? "pdf" : name.endsWith(".pptx") ? "pptx" : name.endsWith(".zip") ? "quarto" : null;
+  });
+
+  async function takeFolder(folder: Folder) {
+    error = null;
+    skipped = [];
+    zipping = 0;
+    try {
+      const result = await zipFolder(folder, limits.zipBytes, f => (zipping = f));
+      file = result.file;
+      skipped = result.unsupported;
+    } catch (e) {
+      error = e instanceof FolderError ? t(`slides.upload.folder.${e.code}`, { size: formatBytes(limits.zipBytes), path: e.detail, n: e.detail }) : (e as Error).message;
+    } finally {
+      zipping = null;
+    }
+  }
 
   $effect(() => {
     if (!slugTouched) slug = title.trim() ? slugify(title) : "";
@@ -74,6 +99,7 @@
     file = null;
     entries = null;
     error = null;
+    skipped = [];
     status = null;
     created = null;
     sent = 0;
@@ -105,15 +131,15 @@
       stop?.();
       stop = watchStatus(id, s => {
         status = s;
-        if (s.status === "published" || s.status === "failed") {
-          phase = s.status === "published" ? "done" : "failed";
+        if (!isBusy(s.status)) {
+          phase = s.status === "published" ? "done" : s.status === "review" ? "review" : "failed";
           void jobsStore.refresh();
           onRendered?.(s);
         }
       });
     } catch (e) {
       phase = "form";
-      const message = e instanceof ApiError && e.status === 413 ? t("slides.upload.tooLarge", { size: formatBytes(limits.zipBytes) }) : (e as Error).message;
+      const message = e instanceof ApiError && e.status === 413 ? t("slides.upload.tooLarge", { size: formatBytes(maxBytes) }) : (e as Error).message;
       const candidates = entryCandidates(message);
       if (candidates?.length) {
         entries = candidates;
@@ -130,6 +156,7 @@
       lastFile = file;
       entries = null;
       entry = "";
+      if (!file) skipped = [];
     }
   });
 
@@ -173,7 +200,33 @@
         </div>
       {/if}
 
-      <FileDrop bind:file accept=".zip" label={t("slides.upload.file")} hint={t("slides.upload.fileHint", { size: formatBytes(limits.zipBytes) })} maxBytes={limits.zipBytes} onError={m => (error = m)} />
+      {#if zipping !== null}
+        <div class="flex flex-col gap-2 rounded-2xl border border-line bg-surface-2 p-4">
+          <p class="text-[13px] font-medium text-ink-2">{t("slides.upload.zipping", { pct: Math.round(zipping * 100) })}</p>
+          <Progress value={zipping * 100} />
+        </div>
+      {:else}
+        <FileDrop
+          bind:file
+          {accept}
+          label={t("slides.upload.file")}
+          hint={t("slides.upload.fileHint", { size: formatBytes(maxBytes) })}
+          {maxBytes}
+          onError={m => (error = m)}
+          onFolder={phase === "uploading" ? undefined : takeFolder}
+          folderLabel={t("slides.upload.folder")}
+        >
+          {#snippet details()}
+            {#if kind}<p class="mt-0.5 text-[12px] text-ink-2">{t(`slides.upload.kind.${kind}`)}</p>{/if}
+          {/snippet}
+        </FileDrop>
+      {/if}
+      {#if kind}
+        <p class="flex items-start gap-2 text-[12.5px] leading-relaxed text-ink-3"><Info class="mt-0.5 size-3.5 shrink-0" />{t(`slides.upload.hint.${kind}`)}</p>
+      {/if}
+      {#if skipped.length}
+        <p class="rounded-xl bg-surface-2 px-3 py-2.5 text-[12.5px] text-ink-2" title={skipped.slice(0, 20).join("\n")}>{t("slides.upload.skipped", { n: skipped.length, list: skipped.slice(0, 3).join("、") })}</p>
+      {/if}
 
       {#if entries}
         <div class="flex flex-col gap-1.5 rounded-2xl border border-line bg-surface-2 p-3.5">
@@ -193,23 +246,26 @@
           <Progress value={sent * 100} />
         </div>
       {/if}
-      <Button type="submit" variant="primary" size="lg" class="mt-1 w-full" disabled={!canSubmit} loading={phase === "uploading"}>{t("slides.upload.submit")}</Button>
+      <Button type="submit" variant="primary" size="lg" class="mt-1 w-full" disabled={!canSubmit || zipping !== null} loading={phase === "uploading"}>{t("slides.upload.submit")}</Button>
     </form>
   {:else}
     <div class="flex flex-col gap-5 pt-4">
       <div class="rounded-2xl border border-line bg-surface-2 p-4">
         <div class="flex items-center gap-3">
-          {#if phase === "done"}
+          {#if phase === "review"}
+            <span class="grid size-10 place-items-center rounded-xl" style="background:var(--pill-lilac);color:var(--pill-lilac-ink)"><FileSearch class="size-5" /></span>
+          {:else if phase === "done"}
             <span class="grid size-10 place-items-center rounded-xl" style="background:var(--pill-mint);color:var(--pill-mint-ink)"><CircleCheck class="size-5" /></span>
           {:else if phase === "failed"}
             <span class="grid size-10 place-items-center rounded-xl" style="background:var(--pill-rose);color:var(--pill-rose-ink)"><CircleAlert class="size-5" /></span>
           {/if}
           <div class="min-w-0 flex-1">
             <p class="text-sm font-medium">
-              {phase === "done" ? t("slides.upload.done") : phase === "failed" ? t("slides.upload.failed") : t("slides.upload.rendering")}
+              {phase === "done" ? t("slides.upload.done") : phase === "review" ? t("slides.upload.review") : phase === "failed" ? t("slides.upload.failed") : t("slides.upload.rendering")}
               {#if created}<span class="ml-1 text-ink-3">{t("slides.version", { n: created.version })}</span>{/if}
             </p>
             {#if phase === "rendering"}<p class="mt-0.5 text-[12.5px] text-ink-3">{renderLabel} · {status?.progress ?? 0}%</p>{/if}
+            {#if phase === "review"}<p class="mt-0.5 text-[12.5px] text-ink-3">{t("slides.upload.reviewHint")}</p>{/if}
           </div>
         </div>
         {#if phase === "rendering"}<Progress class="mt-4" value={status?.progress || null} />{/if}
@@ -220,7 +276,9 @@
       {#if phase === "rendering"}<p class="text-[12.5px] text-ink-3">{t("slides.upload.background")}</p>{/if}
       <div class="flex flex-col gap-2 sm:flex-row-reverse">
         {#if created && !isVersion}
-          <Button variant="primary" href="/slides/{created.id}" onclick={() => (open = false)} class="sm:flex-1">{t("slides.upload.open")}</Button>
+          <Button variant="primary" href="/slides/{created.id}" onclick={() => (open = false)} class="sm:flex-1">{phase === "review" ? t("slides.upload.openReview") : t("slides.upload.open")}</Button>
+        {:else if phase === "review"}
+          <Button variant="primary" onclick={() => (open = false)} class="sm:flex-1">{t("slides.upload.openReview")}</Button>
         {:else}
           <Button variant="primary" onclick={() => (open = false)} class="sm:flex-1">{t("slides.upload.close")}</Button>
         {/if}

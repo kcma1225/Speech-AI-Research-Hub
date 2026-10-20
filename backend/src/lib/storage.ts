@@ -94,8 +94,11 @@ export class Storage {
 export const keys = {
   mediaUpload: (jobId: string) => `media/uploads/${jobId}/source`,
   itemAudio: (itemId: string, jobId: string) => `media/items/${itemId}/${jobId}.m4a`,
-  slideSource: (projectId: string, versionId: string) => `slides/${projectId}/${versionId}/source.zip`,
+  /** `ext`: zip (Quarto), pdf or pptx — see SOURCE_EXTENSIONS in lib/slides/source.ts. */
+  slideSource: (projectId: string, versionId: string, ext: "zip" | "pdf" | "pptx" = "zip") => `slides/${projectId}/${versionId}/source.${ext}`,
   slideOutputPrefix: (projectId: string, versionId: string) => `slides/${projectId}/${versionId}/output/`,
+  /** Output of a re-index render, swapped in for `output/` by the finalizer when it succeeds. */
+  slideReindexPrefix: (projectId: string, versionId: string, suffix: string) => `slides/${projectId}/${versionId}/output-${suffix}/`,
   slideProjectPrefix: (projectId: string) => `slides/${projectId}/`,
   reference: (projectId: string, referenceId: string) => `references/${projectId}/${referenceId}`,
   referenceProjectPrefix: (projectId: string) => `references/${projectId}/`,

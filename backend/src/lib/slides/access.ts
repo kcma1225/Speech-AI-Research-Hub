@@ -67,7 +67,8 @@ export function validCapability(secret: string, token: string, project: SlidePro
   return safeEqual(token, project.share_key);
 }
 
-export type SlideAccess = { project: SlideProject; user: CurrentUser | null };
+/** `viaKey`: access was granted by the `key` query parameter (not a session, public flag or cookie). */
+export type SlideAccess = { project: SlideProject; user: CurrentUser | null; viaKey: boolean };
 
 /**
  * Viewer access to a deck by slug: a signed-in user, a public deck, a `key` (share key) given in the
@@ -77,8 +78,9 @@ export async function slideAccess(request: FastifyRequest, slug: string, key?: s
   const project = await projectBySlug(request.server.db, slug);
   if (!project) return null;
   const user = await currentUser(request);
-  if (user || project.public_view) return { project, user };
-  if (safeEqual(key, project.share_key) || safeEqual(request.cookies[shareCookie(slug)], project.share_key)) return { project, user };
+  if (user || project.public_view) return { project, user, viaKey: false };
+  if (safeEqual(request.cookies[shareCookie(slug)], project.share_key)) return { project, user, viaKey: false };
+  if (safeEqual(key, project.share_key)) return { project, user, viaKey: true };
   return null;
 }
 
@@ -94,4 +96,28 @@ export const slideUrls = {
   player: (slug: string) => `/slides/play/${encodeURIComponent(slug)}`,
   /** Active version's thumbnail (signed-in users); `v` busts caches when the active version changes. */
   thumbnail: (projectId: string, versionId: string) => `/api/slides/${projectId}/thumbnail?v=${versionId}`,
+  /** Page manifest and page images for signed-in users (session routes). */
+  pages: (projectId: string, versionId: string) => `/api/slides/${projectId}/versions/${versionId}/pages`,
+  /** `rev` (re-index revision, see `outputRevision`) busts the immutable cache when a re-index rewrote the pages. */
+  pageImage: (projectId: string, versionId: string, index: number, size: "thumb" | "full", rev?: string) =>
+    `/api/slides/${projectId}/versions/${versionId}/pages/${index}/${size}${query({ r: rev })}`,
+  /** Same for the player (by-slug access rules); `key` is appended when access came from `?key=`. */
+  slugPages: (slug: string, versionId: string, key?: string) => `/api/slides/pages/${encodeURIComponent(slug)}/${versionId}${keyQuery(key)}`,
+  slugPageImage: (slug: string, versionId: string, index: number, size: "thumb" | "full", key?: string, rev?: string) =>
+    `/api/slides/pages/${encodeURIComponent(slug)}/${versionId}/${index}/${size}${query({ r: rev, key })}`,
 };
+
+const keyQuery = (key?: string) => query({ key });
+const query = (params: Record<string, string | undefined>) => {
+  const pairs = Object.entries(params).filter(([, value]) => value).map(([name, value]) => `${name}=${encodeURIComponent(value!)}`);
+  return pairs.length ? `?${pairs.join("&")}` : "";
+};
+
+/** Revision of a version's output: undefined for the original `output/`, the suffix of a re-index `output-<suffix>/`. */
+export const outputRevision = (outputPrefix: string) => /\/output-([a-z0-9]+)\/$/.exec(outputPrefix)?.[1];
+
+/**
+ * How a detail response was requested: `session` (GET /slides/:id) or `slug` (GET /slides/by-slug, the player).
+ * `key` is the share key from the query when that is what granted access (it is then repeated in page URLs).
+ */
+export type SlideContext = { mode: "session" } | { mode: "slug"; key?: string };

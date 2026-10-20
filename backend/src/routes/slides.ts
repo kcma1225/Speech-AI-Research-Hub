@@ -8,12 +8,12 @@ import { requireEditor, requireUser, type CurrentUser } from "../lib/auth.js";
 import { badRequest, conflict, HttpError, isUniqueViolation, notFound, parse } from "../lib/http.js";
 import { keys } from "../lib/storage.js";
 import { newShareKey, projectById, slideUrls, slugPattern, type SlideProject } from "../lib/slides/access.js";
-import { listVersions, liveStatus, slideDetail, VERSION_SELECT } from "../lib/slides/detail.js";
+import { listVersions, liveStatus, slideDetail, VERSION_SELECT, type VersionStatus } from "../lib/slides/detail.js";
 import { parseTagFilter, tagIdsSchema } from "../lib/slides/filters.js";
+import { detectDeck, SOURCE_CONTENT_TYPES, SOURCE_EXTENSIONS, type DetectedDeck } from "../lib/slides/source.js";
 import { receiveUpload, type ReceivedUpload } from "../lib/slides/upload.js";
-import { chooseEntry, scanZip } from "../lib/slides/zip-validate.js";
-import { cancelJob, enqueueJob, type SlideRenderPayload } from "../jobs/queue.js";
-import { registerSlideFinalizer } from "../jobs/slide-finalizer.js";
+import { cancelJob, enqueueJob, type SlideRenderPayload, type SlideSourceType } from "../jobs/queue.js";
+import { activateIfNewest, registerSlideFinalizer } from "../jobs/slide-finalizer.js";
 
 const projectParams = z.object({ id: z.uuid() });
 const versionParams = z.object({ id: z.uuid(), versionId: z.uuid() });
@@ -51,39 +51,47 @@ async function setProjectTags(client: Queryable, projectId: string, tagIds: stri
   );
 }
 
-/** Validates an uploaded deck ZIP and returns its entry QMD. */
-async function validateDeckZip(upload: ReceivedUpload, maxBytes: number) {
+/** Validates an uploaded deck (Quarto ZIP, PDF or PPTX; see lib/slides/source.ts). */
+async function validateDeck(upload: ReceivedUpload, maxBytes: number) {
   const file = upload.file;
-  if (!file || !file.bytes || !/\.zip$/i.test(file.filename)) throw badRequest(`請選擇 ${Math.floor(maxBytes / 1024 / 1024)} MB 以下的 ZIP 檔案。`);
-  const scan = await scanZip(file.path);
-  const entry = chooseEntry(scan.qmd, upload.fields.entry);
-  return { file, scan, entry };
+  if (!file || !file.bytes) throw badRequest(`請選擇 ${Math.floor(maxBytes / 1024 / 1024)} MB 以下的 ZIP、PDF 或 PPTX 檔案。`);
+  return { file, deck: await detectDeck(file, upload.fields.entry, maxBytes) };
 }
 
+const renderPayload = (projectId: string, versionId: string, sourceType: SlideSourceType, entry: string, outputPrefix?: string): SlideRenderPayload => ({
+  projectId,
+  versionId,
+  sourceKey: keys.slideSource(projectId, versionId, SOURCE_EXTENSIONS[sourceType]),
+  entry,
+  outputPrefix: outputPrefix ?? keys.slideOutputPrefix(projectId, versionId),
+  sourceType,
+});
+
 /**
- * Inserts a version row plus its render job. The source ZIP must already be in S3 so a worker never
+ * Inserts a version row plus its render job. The source file must already be in S3 so a worker never
  * claims a job whose input is missing.
  */
-async function insertVersion(client: Queryable, user: CurrentUser, projectId: string, versionId: string, version: number, entry: string, sourceName: string) {
-  const payload: SlideRenderPayload = {
-    projectId,
-    versionId,
-    sourceKey: keys.slideSource(projectId, versionId),
-    entry,
-    outputPrefix: keys.slideOutputPrefix(projectId, versionId),
-  };
+async function insertVersion(client: Queryable, user: CurrentUser, projectId: string, versionId: string, version: number, deck: DetectedDeck, sourceName: string) {
+  const payload = renderPayload(projectId, versionId, deck.sourceType, deck.entry);
   const jobId = await enqueueJob(client, "slide_render", payload, user.id);
   await client.query(
-    `INSERT INTO slide_versions(id,project_id,version,entry_qmd,source_name,source_key,output_prefix,job_id,created_by)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [versionId, projectId, version, entry, sourceName.slice(0, 255), payload.sourceKey, payload.outputPrefix, jobId, user.id],
+    `INSERT INTO slide_versions(id,project_id,version,entry_qmd,source_name,source_key,output_prefix,job_id,created_by,source_type)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [versionId, projectId, version, deck.entry, sourceName.slice(0, 255), payload.sourceKey, payload.outputPrefix, jobId, user.id, deck.sourceType],
   );
   return jobId;
 }
 
-async function uploadSource(app: FastifyInstance, projectId: string, versionId: string, path: string) {
-  await app.storage.put(keys.slideSource(projectId, versionId), createReadStream(path), "application/zip");
+async function uploadSource(app: FastifyInstance, projectId: string, versionId: string, path: string, sourceType: SlideSourceType) {
+  await app.storage.put(keys.slideSource(projectId, versionId, SOURCE_EXTENSIONS[sourceType]), createReadStream(path), SOURCE_CONTENT_TYPES[sourceType]);
 }
+
+/** Upload response fields describing what was detected. */
+const uploadSummary = (deck: DetectedDeck) => ({
+  sourceType: deck.sourceType,
+  entry: deck.sourceType === "quarto" ? deck.entry : null,
+  scan: deck.scan ? { files: deck.scan.files, bytes: deck.scan.bytes, qmd: deck.scan.qmd } : null,
+});
 
 async function isPdf(path: string) {
   const handle = await open(path, "r");
@@ -96,8 +104,16 @@ async function isPdf(path: string) {
   }
 }
 
-/** Upload size limits, so the SPA can reject oversized files before sending them. */
-const uploadLimits = (app: FastifyInstance) => ({ zipBytes: app.config.MAX_SLIDE_ZIP_BYTES, referenceBytes: app.config.MAX_REFERENCE_BYTES });
+/**
+ * Upload size limits, so the SPA can reject oversized files before sending them. `MAX_SLIDE_ZIP_BYTES` applies to
+ * every deck upload (ZIP, PDF, PPTX); `deckBytes` is the same value under a type-neutral name.
+ */
+const uploadLimits = (app: FastifyInstance) => ({
+  zipBytes: app.config.MAX_SLIDE_ZIP_BYTES,
+  deckBytes: app.config.MAX_SLIDE_ZIP_BYTES,
+  deckTypes: [".zip", ".pdf", ".pptx"],
+  referenceBytes: app.config.MAX_REFERENCE_BYTES,
+});
 
 const slides: FastifyPluginAsync = async app => {
   registerSlideFinalizer(app);
@@ -117,7 +133,7 @@ const slides: FastifyPluginAsync = async app => {
               (SELECT count(*)::int FROM slide_references r WHERE r.project_id=p.id) AS reference_count,
               (SELECT count(*)::int FROM slide_reviews r WHERE r.project_id=p.id) AS review_count,
               COALESCE(au.name,cu.name) AS author_name,
-              CASE WHEN av.status='published' THEN COALESCE(aj.finished_at,av.created_at) END AS published_at
+              CASE WHEN av.status='published' THEN COALESCE(av.published_at,aj.finished_at,av.created_at) END AS published_at
          FROM slide_projects p
          LEFT JOIN slide_versions av ON av.id=p.active_version_id
          LEFT JOIN jobs aj ON aj.id=av.job_id
@@ -156,13 +172,13 @@ const slides: FastifyPluginAsync = async app => {
       }
       const tags = tagIdsSchema.safeParse(rawTags);
       if (!parsedTitle.success || !parsedSlug.success || !tags.success) throw badRequest("請確認名稱（1–160 字）、slug（小寫英數與連字號）與標籤。");
-      const { file, scan, entry } = await validateDeckZip(upload, maxBytes);
+      const { file, deck } = await validateDeck(upload, maxBytes);
       const exists = await app.db.query("SELECT 1 FROM slide_projects WHERE slug=$1", [parsedSlug.data]);
       if (exists.rowCount) throw conflict("slug 已被使用。");
 
       const projectId = randomUUID();
       const versionId = randomUUID();
-      await uploadSource(app, projectId, versionId, file.path);
+      await uploadSource(app, projectId, versionId, file.path, deck.sourceType);
       let jobId: string;
       try {
         jobId = await transaction(app.db, async client => {
@@ -170,7 +186,7 @@ const slides: FastifyPluginAsync = async app => {
             "INSERT INTO slide_projects(id,title,slug,public_view,share_key,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$6)",
             [projectId, parsedTitle.data, parsedSlug.data, truthy(fields.public), newShareKey(), user.id],
           );
-          const job = await insertVersion(client, user, projectId, versionId, 1, entry, file.filename);
+          const job = await insertVersion(client, user, projectId, versionId, 1, deck, file.filename);
           if (tags.data.length) await setProjectTags(client, projectId, tags.data);
           return job;
         });
@@ -179,7 +195,7 @@ const slides: FastifyPluginAsync = async app => {
         if (isUniqueViolation(error)) throw conflict("slug 已被使用。");
         throw error;
       }
-      return reply.code(202).send({ id: projectId, slug: parsedSlug.data, versionId, version: 1, jobId, entry, scan: { files: scan.files, bytes: scan.bytes, qmd: scan.qmd } });
+      return reply.code(202).send({ id: projectId, slug: parsedSlug.data, versionId, version: 1, jobId, ...uploadSummary(deck) });
     } finally {
       await upload.cleanup();
     }
@@ -193,7 +209,7 @@ const slides: FastifyPluginAsync = async app => {
     return reply.header("Cache-Control", "no-store").send({ ...(await slideDetail(app.db, secret, project, user)), limits: uploadLimits(app) });
   });
 
-  /** Active version's first-slide PNG. ETag = version id, so a new active version changes it. */
+  /** Active version's first-slide image (PNG for quarto, WebP for pdf/pptx). ETag = version id, so a new active version changes it. */
   app.get("/slides/:id/thumbnail", async (request, reply) => {
     await requireUser(request);
     const { id } = parse(projectParams, request.params, "找不到縮圖。");
@@ -214,7 +230,7 @@ const slides: FastifyPluginAsync = async app => {
       reply.removeHeader("ETag").header("Cache-Control", "no-store");
       throw notFound("找不到縮圖。");
     }
-    reply.header("Content-Type", "image/png");
+    reply.header("Content-Type", row.thumbnail_key.endsWith(".webp") ? "image/webp" : "image/png");
     if (object.contentLength !== undefined) reply.header("Content-Length", object.contentLength);
     return reply.send(object.body);
   });
@@ -275,18 +291,18 @@ const slides: FastifyPluginAsync = async app => {
     const maxBytes = app.config.MAX_SLIDE_ZIP_BYTES;
     const upload = await receiveUpload(request, maxBytes);
     try {
-      const { file, scan, entry } = await validateDeckZip(upload, maxBytes);
+      const { file, deck } = await validateDeck(upload, maxBytes);
       const versionId = randomUUID();
-      await uploadSource(app, id, versionId, file.path);
+      await uploadSource(app, id, versionId, file.path, deck.sourceType);
       try {
         const result = await transaction(app.db, async client => {
           await lockProject(client, id);
           const version = (await client.query<{ next: number }>("SELECT COALESCE(max(version),0)+1 AS next FROM slide_versions WHERE project_id=$1", [id])).rows[0]!.next;
-          const jobId = await insertVersion(client, user, id, versionId, version, entry, file.filename);
+          const jobId = await insertVersion(client, user, id, versionId, version, deck, file.filename);
           await client.query("UPDATE slide_projects SET updated_by=$2,updated_at=now() WHERE id=$1", [id, user.id]);
           return { version, jobId };
         });
-        return reply.code(202).send({ versionId, ...result, entry, scan: { files: scan.files, bytes: scan.bytes, qmd: scan.qmd } });
+        return reply.code(202).send({ versionId, ...result, ...uploadSummary(deck) });
       } catch (error) {
         await app.storage.deletePrefix(`${keys.slideProjectPrefix(id)}${versionId}/`).catch(() => {});
         throw error;
@@ -309,6 +325,48 @@ const slides: FastifyPluginAsync = async app => {
     return { ok: true };
   });
 
+  /** Confirms a converted (PPTX) version waiting in `review`: it becomes published and, by the activation rule, active. */
+  app.post("/slides/:id/versions/:versionId/publish", async request => {
+    const user = await requireEditor(request);
+    const { id, versionId } = parse(versionParams, request.params);
+    return transaction(app.db, async client => {
+      await lockProject(client, id);
+      const version = (await client.query<{ id: string; project_id: string; version: number }>(
+        "UPDATE slide_versions SET status='published',published_at=now() WHERE id=$1 AND project_id=$2 AND status='review' RETURNING id,project_id,version",
+        [versionId, id],
+      )).rows[0];
+      if (!version) throw notFound("沒有待確認的版本。");
+      await activateIfNewest(client, version);
+      await client.query("UPDATE slide_projects SET updated_by=$2,updated_at=now() WHERE id=$1", [id, user.id]);
+      const active = (await client.query<{ active_version_id: string | null }>("SELECT active_version_id FROM slide_projects WHERE id=$1", [id])).rows[0]!;
+      return { ok: true, status: "published", active: active.active_version_id === versionId };
+    });
+  });
+
+  /**
+   * Re-renders a published version into a fresh output prefix to (re)build its pages; the deck keeps being
+   * served from the current output until the job succeeds (see the slide finalizer).
+   */
+  app.post("/slides/:id/versions/:versionId/reindex", async (request, reply) => {
+    const user = await requireEditor(request);
+    const { id, versionId } = parse(versionParams, request.params);
+    const result = await transaction(app.db, async client => {
+      await lockProject(client, id);
+      const version = (await client.query<{ id: string; entry_qmd: string; source_type: SlideSourceType; job_status: string | null }>(
+        `SELECT v.id,v.entry_qmd,v.source_type,j.status AS job_status FROM slide_versions v LEFT JOIN jobs j ON j.id=v.job_id
+          WHERE v.id=$1 AND v.project_id=$2 AND v.status='published' FOR UPDATE OF v`,
+        [versionId, id],
+      )).rows[0];
+      if (!version) throw notFound("版本尚未發布或不存在。");
+      if (version.job_status === "queued" || version.job_status === "running") throw conflict("此版本正在處理中。");
+      const prefix = keys.slideReindexPrefix(id, versionId, Date.now().toString(36));
+      const jobId = await enqueueJob(client, "slide_render", renderPayload(id, versionId, version.source_type, version.entry_qmd, prefix), user.id);
+      await client.query("UPDATE slide_versions SET job_id=$2 WHERE id=$1", [versionId, jobId]);
+      return { versionId, jobId };
+    });
+    return reply.code(202).send(result);
+  });
+
   app.delete("/slides/:id/versions/:versionId", async request => {
     await requireEditor(request);
     const { id, versionId } = parse(versionParams, request.params);
@@ -328,7 +386,7 @@ const slides: FastifyPluginAsync = async app => {
   app.get("/slides/:id/status", async (request, reply) => {
     await requireUser(request);
     const { id } = parse(projectParams, request.params);
-    const row = (await app.db.query<{ id: string; version: number; status: "queued" | "rendering" | "published" | "failed"; error: string | null; job_status: string | null; job_stage: string | null; job_progress: number | null }>(
+    const row = (await app.db.query<{ id: string; version: number; status: VersionStatus; error: string | null; job_status: string | null; job_stage: string | null; job_progress: number | null }>(
       `${VERSION_SELECT} WHERE v.project_id=$1 ORDER BY v.version DESC LIMIT 1`,
       [id],
     )).rows[0];
@@ -339,7 +397,7 @@ const slides: FastifyPluginAsync = async app => {
       status: liveStatus(row),
       error: row.error,
       stage: row.job_stage,
-      progress: row.status === "published" ? 100 : row.job_progress ?? 0,
+      progress: row.status === "published" || row.status === "review" ? 100 : row.job_progress ?? 0,
     });
   });
 
@@ -348,8 +406,8 @@ const slides: FastifyPluginAsync = async app => {
     const { id } = parse(projectParams, request.params);
     const result = await transaction(app.db, async client => {
       await lockProject(client, id);
-      const version = (await client.query<{ id: string; entry_qmd: string; source_key: string; output_prefix: string }>(
-        "SELECT id,entry_qmd,source_key,output_prefix FROM slide_versions WHERE project_id=$1 AND status='failed' ORDER BY version DESC LIMIT 1",
+      const version = (await client.query<{ id: string; entry_qmd: string; source_key: string; output_prefix: string; source_type: SlideSourceType }>(
+        "SELECT id,entry_qmd,source_key,output_prefix,source_type FROM slide_versions WHERE project_id=$1 AND status='failed' ORDER BY version DESC LIMIT 1",
         [id],
       )).rows[0];
       if (!version) throw notFound("沒有可重試的失敗版本。");
@@ -359,6 +417,7 @@ const slides: FastifyPluginAsync = async app => {
         sourceKey: version.source_key,
         entry: version.entry_qmd,
         outputPrefix: version.output_prefix,
+        sourceType: version.source_type,
       }, user.id);
       await client.query("UPDATE slide_versions SET status='queued',error=NULL,job_id=$2 WHERE id=$1", [version.id, jobId]);
       return { versionId: version.id, jobId };
