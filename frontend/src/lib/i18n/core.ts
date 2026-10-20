@@ -1,4 +1,4 @@
-const zh = {
+export const zh = {
   "brand.name": "Speech-AI Hub",
   "brand.tagline": "語音 AI 實驗室的每週組會、研究筆記與錄音，集中在同一個地方。",
 
@@ -172,9 +172,7 @@ const zh = {
   "common.hidePassword": "隱藏密碼",
 } as const;
 
-export type MessageKey = keyof typeof zh;
-
-const en: Record<MessageKey, string> = {
+export const en: Record<keyof typeof zh, string> = {
   "brand.name": "Speech-AI Hub",
   "brand.tagline": "Weekly meetings, research notes and recordings for the speech AI lab, all in one place.",
 
@@ -347,5 +345,3 @@ const en: Record<MessageKey, string> = {
   "common.showPassword": "Show password",
   "common.hidePassword": "Hide password",
 };
-
-export const messages: Record<"zh-TW" | "en", Record<MessageKey, string>> = { "zh-TW": zh, en };
