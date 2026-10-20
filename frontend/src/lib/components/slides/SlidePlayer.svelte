@@ -178,10 +178,13 @@
       // Restore the remembered / requested page once the deck can be driven.
       const target = pages.find(p => p.index === page);
       revealPage = 0;
-      if (page > 1 && target?.h !== undefined) reveal("slide", [target.h, target.v ?? 0]);
-      else if (page > 1 && !manifest) reveal("slide", [page - 1, 0]);
-      else revealPage = page;
+      // The deck then reports the requested slide; its own state here is still the first one.
+      if (page > 1 && target?.h !== undefined) return reveal("slide", [target.h, target.v ?? 0]);
+      if (page > 1 && !manifest) return reveal("slide", [page - 1, 0]);
+      revealPage = page;
     }
+    // Events before `ready` (beforeslidechange to the first slide…) must not overwrite the requested page.
+    if (!ready) return;
     if (state && Number.isInteger(state.indexh)) {
       const h = state.indexh as number;
       const v = Number.isInteger(state.indexv) ? (state.indexv as number) : 0;
@@ -296,7 +299,7 @@
     const el = strip.querySelector<HTMLElement>(`[data-page="${n}"]`);
     if (!el) return;
     const left = el.offsetLeft - strip.clientWidth / 2 + el.clientWidth / 2;
-    strip.scrollTo({ left, behavior: "smooth" });
+    strip.scrollTo({ left, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   });
 
   // In fullscreen the image controls fade out while the pointer rests.
@@ -312,6 +315,9 @@
   const btn =
     "grid size-9 shrink-0 cursor-pointer place-items-center rounded-full text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-4";
   const toggleOn = "bg-surface-3 text-ink";
+  // Edge tap targets over page images: shown on hover or keyboard focus, gone at either end of the deck.
+  const edge =
+    "absolute inset-y-0 hidden w-[18%] cursor-pointer items-center opacity-0 outline-none transition-opacity group-hover/player:opacity-100 focus-visible:opacity-100 disabled:invisible sm:flex [&:focus-visible>span]:ring-2 [&:focus-visible>span]:ring-white";
   const fsBtn = "grid size-10 shrink-0 cursor-pointer place-items-center rounded-full text-white/85 hover:bg-white/15 hover:text-white disabled:opacity-40 [&_svg]:size-[18px]";
 </script>
 
@@ -351,16 +357,17 @@
     {:else if current}
       <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
       <div class="absolute inset-0 select-none" ontouchstart={touchStart} ontouchend={touchEnd} onclick={() => root?.focus()}>
-        <img src={current.thumb} alt="" aria-hidden="true" class="absolute inset-0 size-full scale-105 object-contain opacity-60 blur-sm" draggable="false" />
+        <!-- Soft fill around letterboxed pages; fullscreen letterboxes in plain black like a projector. -->
+        {#if !isFullscreen}<img src={current.thumb} alt="" aria-hidden="true" class="absolute inset-0 size-full scale-105 object-contain opacity-60 blur-sm" draggable="false" />{/if}
         {#key current.index}
           <img src={current.full ?? current.thumb} alt={current.title ?? t("slides.player.pageAlt", { n: current.index })} class="absolute inset-0 size-full object-contain" draggable="false" />
         {/key}
         {#if !isFullscreen}
           <!-- Large tap targets on the image edges (desktop hover shows them). -->
-          <button type="button" class="absolute inset-y-0 left-0 hidden w-[18%] cursor-pointer items-center justify-start pl-3 opacity-0 transition-opacity group-hover/player:opacity-100 sm:flex" aria-label={t("slides.player.prev")} disabled={page <= 1} onclick={() => step(-1)}>
+          <button type="button" class="{edge} left-0 justify-start pl-3" aria-label={t("slides.player.prev")} disabled={page <= 1} onclick={() => step(-1)}>
             <span class="grid size-10 place-items-center rounded-full bg-black/45 text-white backdrop-blur"><ChevronLeft class="size-5" /></span>
           </button>
-          <button type="button" class="absolute inset-y-0 right-0 hidden w-[18%] cursor-pointer items-center justify-end pr-3 opacity-0 transition-opacity group-hover/player:opacity-100 sm:flex" aria-label={t("slides.player.next")} disabled={page >= total} onclick={() => step(1)}>
+          <button type="button" class="{edge} right-0 justify-end pr-3" aria-label={t("slides.player.next")} disabled={page >= total} onclick={() => step(1)}>
             <span class="grid size-10 place-items-center rounded-full bg-black/45 text-white backdrop-blur"><ChevronRight class="size-5" /></span>
           </button>
         {/if}
@@ -405,25 +412,29 @@
         <button type="button" class="{btn} {showThumbs ? toggleOn : ''}" aria-pressed={showThumbs} aria-label={t("slides.player.thumbs")} title={t("slides.player.thumbs")} onclick={() => (showThumbs = !showThumbs)}><GalleryHorizontal /></button>
       {/if}
       {#if canSpeak}
-        <button type="button" class={btn} aria-label={t("slides.player.speaker")} title="{t('slides.player.speaker')} (S)" onclick={speak}><ScreenShare /></button>
+        <!-- A second window means nothing on a phone (S still works with a keyboard). -->
+        <button type="button" class="{btn} max-sm:hidden" aria-label={t("slides.player.speaker")} title="{t('slides.player.speaker')} (S)" onclick={speak}><ScreenShare /></button>
       {/if}
       <button type="button" class={btn} aria-label={t("slides.fullscreen")} title="{t('slides.fullscreen')} (F)" onclick={fullscreen}><Expand /></button>
     </div>
 
     {#if showNotes && pages.some(p => p.notes)}
-      <div class="mt-1 max-h-48 overflow-y-auto rounded-2xl border border-line bg-surface px-4 py-3 text-[13.5px] leading-relaxed text-ink-2 {variant === 'stage' ? 'mx-2 mb-1.5 sm:mx-3' : ''}">
-        {#if notes}
-          <div class="speaker-notes">{@html notes}</div>
-        {:else if current?.notes}
-          <p class="whitespace-pre-wrap">{current.notes.text}</p>
-        {:else}
-          <p class="text-ink-3">{t("slides.player.noNotes")}</p>
-        {/if}
+      <!-- On the stage the notes sit on the toolbar's surface, so toolbar, notes and thumbnails read as one bar. -->
+      <div class={variant === "stage" ? "bg-surface px-2 pb-1 sm:px-3" : "mt-1"}>
+        <div class="overflow-y-auto rounded-2xl px-4 py-3 text-[13.5px] leading-relaxed text-ink-2 {variant === 'stage' ? 'max-h-[30dvh] bg-surface-2' : 'max-h-48 border border-line bg-surface'}">
+          {#if notes}
+            <div class="speaker-notes">{@html notes}</div>
+          {:else if current?.notes}
+            <p class="whitespace-pre-wrap">{current.notes.text}</p>
+          {:else}
+            <p class="text-ink-3">{t("slides.player.noNotes")}</p>
+          {/if}
+        </div>
       </div>
     {/if}
 
     {#if showThumbs && pages.length}
-      <div bind:this={strip} class="flex gap-2 overflow-x-auto overscroll-x-contain scroll-smooth py-2 [scrollbar-width:thin] {variant === 'stage' ? 'bg-surface px-2 sm:px-3' : 'px-0.5'}">
+      <div bind:this={strip} class="flex gap-2 overflow-x-auto overscroll-x-contain scroll-smooth py-2 motion-reduce:scroll-auto [scrollbar-width:thin] {variant === 'stage' ? 'bg-surface px-2 sm:px-3' : 'px-0.5'}">
         {#each pages as p (p.index)}
           {@const n = counts[p.index] ?? 0}
           <button

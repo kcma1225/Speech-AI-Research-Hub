@@ -5,7 +5,7 @@
   import { goto } from "$app/navigation";
   import { Bell, Laptop, Monitor, Moon, PenLine, Smartphone, Sun, SlidersHorizontal, UserRound } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
-  import { relativeTime, t } from "#lib/i18n.svelte.ts";
+  import { i18n, relativeTime, t } from "#lib/i18n.svelte.ts";
   import { theme } from "#lib/theme.svelte.ts";
   import { session } from "#lib/stores/session.svelte.ts";
   import { deviceSubscribed, disablePush, enablePush, pushSupported } from "#lib/push.ts";
@@ -47,18 +47,21 @@
     });
   });
 
+  /** Resolves true when the server accepted the change. */
   async function save(patch: Parameters<typeof session.update>[0], ok = true) {
     try {
       await session.update(patch);
       if (ok) toasts.show(t("settings.saved"), "success");
+      return true;
     } catch (e) {
       toasts.show((e as Error).message, "error");
+      return false;
     }
   }
 
-  // General
-  let themeValue = $state<ThemePref>(theme.pref);
-  let localeValue = $state<Locale>(session.user!.locale);
+  // General (the theme can also change from the user menu, so read it from the store)
+  const themeValue = $derived<ThemePref>(theme.pref);
+  const localeValue = $derived<Locale>(i18n.locale);
 
   // Account
   let name = $state(session.user!.name);
@@ -67,9 +70,8 @@
   let newPassword = $state("");
   let confirmPassword = $state("");
   let savingPassword = $state(false);
-  const passwordError = $derived(
-    newPassword && newPassword.length < 8 ? t("settings.password.short") : confirmPassword && confirmPassword !== newPassword ? t("settings.password.mismatch") : null,
-  );
+  const newPasswordError = $derived(newPassword && newPassword.length < 8 ? t("settings.password.short") : null);
+  const confirmError = $derived(confirmPassword && newPassword.length >= 8 && confirmPassword !== newPassword ? t("settings.password.mismatch") : null);
   async function saveName() {
     savingName = true;
     await save({ name: name.trim() });
@@ -77,9 +79,9 @@
   }
   async function savePassword() {
     savingPassword = true;
-    await save({ currentPassword, newPassword });
+    // Keep what was typed when the server refuses it (e.g. a wrong current password).
+    if (await save({ currentPassword, newPassword })) currentPassword = newPassword = confirmPassword = "";
     savingPassword = false;
-    currentPassword = newPassword = confirmPassword = "";
   }
 
   // Notifications
@@ -111,9 +113,18 @@
   $effect(() => {
     if (tab === "sessions" && !sessions) api.get<{ sessions: SessionRow[] }>("/auth/sessions").then(r => (sessions = r.sessions));
   });
+  let revoking = $state<string | null>(null);
   async function revoke(id: string) {
-    await api.del(`/auth/sessions/${id}`);
-    sessions = sessions?.filter(s => s.id !== id) ?? null;
+    revoking = id;
+    try {
+      await api.del(`/auth/sessions/${id}`);
+      sessions = sessions?.filter(s => s.id !== id) ?? null;
+      toasts.show(t("settings.sessions.revoked"), "success");
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    } finally {
+      revoking = null;
+    }
   }
   function describe(ua: string | null) {
     if (!ua) return { label: t("settings.sessions.unknown"), mobile: false };
@@ -127,8 +138,9 @@
   let layout = $state(session.user!.preferences.editor.layout);
 </script>
 
-{#snippet row(label: string, hint: string | undefined, control: import("svelte").Snippet)}
-  <div class="flex flex-col gap-3 border-b border-line py-5 first:pt-0 last:border-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
+<!-- `inline` keeps small controls (switches) beside their label on phones too. -->
+{#snippet row(label: string, hint: string | undefined, control: import("svelte").Snippet, inline = false)}
+  <div class="flex border-b border-line py-5 first:pt-0 last:border-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-8 {inline ? 'items-center justify-between gap-4' : 'flex-col gap-3'}">
     <div class="min-w-0">
       <p class="text-[14px] font-medium text-ink">{label}</p>
       {#if hint}<p class="mt-0.5 text-[13px] text-ink-3">{hint}</p>{/if}
@@ -140,7 +152,7 @@
 {#snippet themeControl()}
   <Segmented
     label={t("settings.appearance")}
-    bind:value={themeValue}
+    value={themeValue}
     onValueChange={v => save({ theme: v }, false)}
     options={[
       { value: "system", label: t("theme.system"), icon: Monitor },
@@ -152,7 +164,7 @@
 {#snippet localeControl()}
   <Select
     label={t("settings.language")}
-    bind:value={localeValue}
+    value={localeValue}
     onValueChange={v => save({ locale: v }, false)}
     options={[
       { value: "zh-TW", label: "繁體中文" },
@@ -181,6 +193,8 @@
   />
 {/snippet}
 
+<svelte:head><title>{t("settings.title")} · Speech-AI Hub</title></svelte:head>
+
 <PageHeader title={t("settings.title")} subtitle={t("settings.subtitle")} />
 
 <Tabs.Root bind:value={tab} orientation="vertical" class="grid gap-5 lg:grid-cols-[220px_1fr] lg:gap-8">
@@ -205,10 +219,7 @@
         {#each ["system", "light", "dark"] as const as option (option)}
           <button
             type="button"
-            onclick={() => {
-              themeValue = option;
-              void save({ theme: option }, false);
-            }}
+            onclick={() => void save({ theme: option }, false)}
             class="group rounded-[20px] border-2 p-2 text-left transition-colors {themeValue === option ? 'border-ink' : 'border-transparent hover:border-line-2'}"
             aria-pressed={themeValue === option}
           >
@@ -271,9 +282,9 @@
         >
           <input type="text" autocomplete="username" value={user.name} readonly hidden />
           <TextField type="password" label={t("settings.password.current")} bind:value={currentPassword} autocomplete="current-password" />
-          <TextField type="password" label={t("settings.password.new")} bind:value={newPassword} autocomplete="new-password" />
-          <TextField type="password" label={t("settings.password.confirm")} bind:value={confirmPassword} autocomplete="new-password" error={passwordError} />
-          <Button type="submit" variant="primary" class="w-fit" loading={savingPassword} disabled={!currentPassword || !newPassword || newPassword !== confirmPassword || !!passwordError}>
+          <TextField type="password" label={t("settings.password.new")} bind:value={newPassword} autocomplete="new-password" error={newPasswordError} />
+          <TextField type="password" label={t("settings.password.confirm")} bind:value={confirmPassword} autocomplete="new-password" error={confirmError} />
+          <Button type="submit" variant="primary" class="w-fit" loading={savingPassword} disabled={!currentPassword || !newPassword || newPassword !== confirmPassword || !!newPasswordError}>
             {t("settings.password")}
           </Button>
         </form>
@@ -299,7 +310,7 @@
             <Skeleton class="h-10 w-40 rounded-full" />
           {:else if push.enabled && pushSupported()}
             <div class="flex gap-2">
-              {#if push.device}<Button size="md" variant="ghost" onclick={() => api.post("/push/test").catch(e => toasts.show(e.message, "error"))}>{t("settings.push.test")}</Button>{/if}
+              {#if push.device}<Button size="md" variant="ghost" onclick={() => api.post("/push/test").then(() => toasts.show(t("settings.push.testSent"), "success"), e => toasts.show(e.message, "error"))}>{t("settings.push.test")}</Button>{/if}
               <Button size="md" variant={push.device ? "secondary" : "primary"} loading={pushBusy} onclick={() => togglePush(!push!.device)}>
                 {push.device ? t("settings.push.disable") : t("settings.push.enable")}
               </Button>
@@ -310,12 +321,14 @@
       <Card>
         <h2 class="text-[15px] font-semibold">{t("settings.notify.events")}</h2>
         <p class="mt-0.5 mb-5 text-[13px] text-ink-3">{t("settings.notify.eventsHint")}</p>
-        {#each notifyKeys as key (key)}
-          {#snippet toggle()}
-            <Switch label={t(`settings.notify.${key}`)} checked={user.preferences.notify[key]} onCheckedChange={v => setNotify(key, v)} />
-          {/snippet}
-          {@render row(t(`settings.notify.${key}`), undefined, toggle)}
-        {/each}
+        <div>
+          {#each notifyKeys as key (key)}
+            {#snippet toggle()}
+              <Switch label={t(`settings.notify.${key}`)} checked={user.preferences.notify[key]} onCheckedChange={v => setNotify(key, v)} />
+            {/snippet}
+            {@render row(t(`settings.notify.${key}`), undefined, toggle, true)}
+          {/each}
+        </div>
       </Card>
     </Tabs.Content>
 
@@ -340,7 +353,7 @@
                   </p>
                   <p class="mt-0.5 truncate text-[12.5px] text-ink-3">{s.ip ?? ""}{s.ip ? " · " : ""}{t("settings.sessions.lastSeen", { when: relativeTime(s.last_seen_at) })}</p>
                 </div>
-                {#if !s.current}<Button size="sm" variant="secondary" onclick={() => revoke(s.id)}>{t("settings.sessions.revoke")}</Button>{/if}
+                {#if !s.current}<Button size="sm" variant="secondary" loading={revoking === s.id} onclick={() => revoke(s.id)}>{t("settings.sessions.revoke")}</Button>{/if}
               </li>
             {/each}
           </ul>
@@ -351,23 +364,25 @@
     <Tabs.Content value="editor" class="flex flex-col gap-5 outline-none">
       <Card>
         <h2 class="mb-5 text-[15px] font-semibold">{t("settings.editor")}</h2>
-        {@render row(t("settings.editor.fontSize"), undefined, sizeControl)}
-        {@render row(t("settings.editor.layout"), undefined, layoutControl)}
+        <div>
+          {@render row(t("settings.editor.fontSize"), undefined, sizeControl)}
+          {@render row(t("settings.editor.layout"), undefined, layoutControl)}
+        </div>
       </Card>
       <Card>
         <p class="mb-3 text-[12px] font-medium tracking-[0.08em] text-ink-3 uppercase">{t("settings.editor.preview")}</p>
         <div class="grid gap-0 overflow-hidden rounded-2xl border border-line {layout === 'split' ? 'sm:grid-cols-2' : ''}">
           {#if layout !== "preview"}
-            <pre class="m-0 bg-surface-2 p-4 font-mono leading-relaxed whitespace-pre-wrap text-ink-2" style="font-size:{fontSize}px">## 本週進度
-- 完成 **Whisper** fine-tune
-- WER 從 12.4% 降到 9.8%</pre>
+            <pre class="m-0 bg-surface-2 p-4 font-mono leading-relaxed whitespace-pre-wrap text-ink-2" style="font-size:{fontSize}px">## {t("settings.editor.sample.heading")}
+- {t("settings.editor.sample.item1md")}
+- {t("settings.editor.sample.item2")}</pre>
           {/if}
           {#if layout !== "edit"}
             <div class="p-4 leading-relaxed" style="font-size:{fontSize}px">
-              <p class="mb-2 font-semibold" style="font-size:1.2em">本週進度</p>
+              <p class="mb-2 font-semibold" style="font-size:1.2em">{t("settings.editor.sample.heading")}</p>
               <ul class="list-disc pl-5 text-ink-2">
-                <li>完成 <strong class="text-ink">Whisper</strong> fine-tune</li>
-                <li>WER 從 12.4% 降到 9.8%</li>
+                <li>{t("settings.editor.sample.item1a")}<strong class="text-ink">Whisper</strong>{t("settings.editor.sample.item1b")}</li>
+                <li>{t("settings.editor.sample.item2")}</li>
               </ul>
             </div>
           {/if}

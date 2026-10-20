@@ -2,7 +2,7 @@
   import { Globe, MessageSquareQuote, Presentation } from "@lucide/svelte";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone } from "#lib/components/ui/Pill.svelte";
   import type { SlideSummary } from "#lib/slides/types.ts";
   import StatusPill from "./StatusPill.svelte";
 
@@ -14,7 +14,7 @@
 <a href="/slides/{deck.id}" class="group flex flex-col overflow-hidden rounded-[22px] border border-line/70 bg-surface shadow-card transition-[border-color,transform] duration-200 hover:-translate-y-0.5 hover:border-line-2">
   <div class="relative aspect-[16/10] overflow-hidden border-b border-line/70 bg-surface-2">
     {#if deck.thumbnailUrl}
-      <img src={deck.thumbnailUrl} alt="" loading="lazy" class="size-full object-cover transition-transform duration-500 group-hover:scale-[1.02]" />
+      <img src={deck.thumbnailUrl} alt="" loading="lazy" class="size-full object-cover object-top transition-transform duration-500 group-hover:scale-[1.02]" />
     {:else}
       <div class="grid size-full place-items-center hero-gradient opacity-70"><Presentation class="size-9 text-hero-ink opacity-45" /></div>
     {/if}
@@ -41,7 +41,7 @@
     </div>
     <div class="mt-auto flex items-center gap-2">
       <div class="flex min-w-0 flex-1 gap-1.5 overflow-hidden">
-        {#each deck.tags.slice(0, 3) as tag (tag.id)}<Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>{/each}
+        {#each deck.tags.slice(0, 3) as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>{/each}
       </div>
       {#if deck.review_count}
         <span class="inline-flex shrink-0 items-center gap-1 text-[12px] text-ink-3" title={t("slides.reviews", { n: deck.review_count })}>

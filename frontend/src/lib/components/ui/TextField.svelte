@@ -35,7 +35,7 @@
     {/if}
   </div>
   {#if error}
-    <p id="{inputId}-desc" class="text-[12.5px] text-danger">{error}</p>
+    <p id="{inputId}-desc" class="text-[12.5px] text-danger" role="alert">{error}</p>
   {:else if hint}
     <p id="{inputId}-desc" class="text-[12.5px] text-ink-3">{hint}</p>
   {/if}

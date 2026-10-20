@@ -18,7 +18,7 @@
   /** SPA routes use goto; the OIDC authorize endpoint (Aldine sign-in) is a backend URL and needs a full navigation. */
   function proceed() {
     if (next.startsWith("/api/oidc/authorize?")) window.location.replace(next);
-    else void goto(next, { replaceState: true });
+    else void goto(next, { replace: true });
   }
   $effect(() => {
     if (session.user) proceed();
@@ -31,6 +31,7 @@
   let error = $state<string | null>(null);
   let busy = $state(false);
   let passwordInput = $state<HTMLInputElement | null>(null);
+  let nameInput = $state<HTMLInputElement | null>(null);
 
   $effect(() => {
     const ids = rememberedAccounts();
@@ -50,6 +51,9 @@
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
+    // The button stays enabled (password managers may fill the fields without input events); check here instead.
+    if (!chosen && !name.trim()) return nameInput?.focus();
+    if (!password) return passwordInput?.focus();
     busy = true;
     error = null;
     try {
@@ -57,6 +61,7 @@
       proceed();
     } catch (err) {
       error = (err as Error).message;
+      passwordInput?.select();
     } finally {
       busy = false;
     }
@@ -98,7 +103,7 @@
     <div class="lg:hidden"><Wordmark /></div>
     <div class="mx-auto flex w-full max-w-[400px] flex-1 flex-col justify-center py-10">
       <h2 class="font-display text-[42px] leading-none">{t("login.title")}</h2>
-      <p class="mt-3 text-[14px] text-ink-3">{t("login.subtitle")}</p>
+      <p class="mt-3 text-[14px] text-ink-3">{next.startsWith("/api/oidc/authorize?") ? t("login.subtitleLatex") : t("login.subtitle")}</p>
 
       {#if accounts.length && !chosen}
         <p class="mt-8 mb-2.5 text-[13px] font-medium text-ink-2">{t("login.remembered")}</p>
@@ -113,7 +118,7 @@
               <button
                 type="button"
                 onclick={() => forget(a.id)}
-                aria-label="✕ {a.name}"
+                aria-label={t("login.forget", { name: a.name })}
                 class="absolute top-1/2 right-3 grid size-7 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink"><X class="size-3.5" /></button
               >
             </li>
@@ -122,18 +127,20 @@
         <div class="my-6 flex items-center gap-3 text-[12px] text-ink-3"><span class="h-px flex-1 bg-line"></span>{t("login.other")}<span class="h-px flex-1 bg-line"></span></div>
       {/if}
 
-      <form class="flex flex-col gap-4 {accounts.length && !chosen ? '' : 'mt-8'}" onsubmit={submit}>
+      <form class="flex flex-col gap-4 {accounts.length && !chosen ? '' : 'mt-8'}" onsubmit={submit} novalidate>
         {#if chosen}
+          <!-- Lets password managers pair the saved password with the remembered account. -->
+          <input type="text" name="username" autocomplete="username" value={chosen.name} readonly hidden />
           <div class="flex items-center gap-3 rounded-2xl border border-line bg-surface p-3">
             <Avatar name={chosen.name} size={38} class="ring-0" />
             <span class="flex-1 text-[15px] font-medium">{chosen.name}</span>
             <Button size="sm" variant="ghost" onclick={() => choose(null)}>{t("login.other")}</Button>
           </div>
         {:else}
-          <TextField label={t("login.name")} bind:value={name} autocomplete="username" required />
+          <TextField bind:ref={nameInput} label={t("login.name")} name="username" bind:value={name} autocomplete="username" autocapitalize="none" spellcheck={false} required />
         {/if}
-        <TextField bind:ref={passwordInput} type="password" label={t("login.password")} bind:value={password} autocomplete="current-password" required error={error} />
-        <Button type="submit" variant="primary" size="lg" class="mt-2 w-full" loading={busy} disabled={!password || (!chosen && !name.trim())}>
+        <TextField bind:ref={passwordInput} type="password" label={t("login.password")} name="password" bind:value={password} autocomplete="current-password" required error={error} />
+        <Button type="submit" variant="primary" size="lg" class="mt-2 w-full" loading={busy}>
           {busy ? t("login.submitting") : t("login.submit")}
         </Button>
       </form>

@@ -15,7 +15,7 @@
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Kbd from "#lib/components/ui/Kbd.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone, toneFor } from "#lib/components/ui/Pill.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import DatePicker from "#lib/components/notes/DatePicker.svelte";
@@ -89,7 +89,8 @@
         }
       },
       e => {
-        if (target === id) loadError = { status: e instanceof ApiError ? e.status : 0, message: (e as Error).message };
+        // 400 = malformed id in the URL: same as a missing note for the reader.
+        if (target === id) loadError = { status: e instanceof ApiError ? (e.status === 400 ? 404 : e.status) : 0, message: (e as Error).message };
       },
     );
   });
@@ -232,7 +233,7 @@
 </script>
 
 <svelte:window onkeydown={onKeydown} />
-<svelte:head><title>{note?.title ?? t("nav.notes")}</title></svelte:head>
+<svelte:head><title>{note?.title ?? t("nav.notes")} · Speech-AI Hub</title></svelte:head>
 
 {#snippet back()}
   <a href="/notes" class="-ml-2 inline-flex h-9 items-center gap-1 rounded-full pr-3 pl-1.5 text-[14px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink lg:hidden">
@@ -329,7 +330,7 @@
 
         {#if note.tags.length}
           <div class="mt-4 flex flex-wrap gap-1.5">
-            {#each note.tags as tag (tag.id)}<a href="/notes?tags={tag.id}" class="inline-flex hover:brightness-95"><Pill tone={toneFor(tag.name)}>{tag.name}</Pill></a>{/each}
+            {#each note.tags as tag (tag.id)}<a href="/notes?tags={tag.id}" class="inline-flex hover:brightness-95"><Pill tone={tagTone(tag)}>{tag.name}</Pill></a>{/each}
           </div>
         {/if}
 

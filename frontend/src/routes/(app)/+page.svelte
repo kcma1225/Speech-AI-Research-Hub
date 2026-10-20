@@ -10,18 +10,20 @@
   import Card from "#lib/components/ui/Card.svelte";
   import CardHeader from "#lib/components/ui/CardHeader.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
-  import Pill, { toneFor, type Tone } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone, type Tone } from "#lib/components/ui/Pill.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
 
   let data = $state<Dashboard | null>(null);
   let error = $state<string | null>(null);
   const s = $derived(data?.stats);
-  $effect(() => {
+  function load() {
+    error = null;
     api.get<Dashboard>("/dashboard").then(d => (data = d), e => (error = e.message));
-  });
+  }
+  $effect(load);
 
   const hour = Number(new Intl.DateTimeFormat("en", { hour: "numeric", hourCycle: "h23", timeZone: "Asia/Taipei" }).format(new Date()));
-  const greeting: MessageKey = hour < 11 ? "dash.greeting.morning" : hour < 18 ? "dash.greeting.afternoon" : "dash.greeting.evening";
+  const greeting: MessageKey = hour >= 5 && hour < 11 ? "dash.greeting.morning" : hour >= 11 && hour < 18 ? "dash.greeting.afternoon" : "dash.greeting.evening";
 
   const kindMeta: Record<Dashboard["activity"][number]["kind"], { icon: typeof Presentation; tone: Tone }> = {
     slide_version: { icon: Presentation, tone: "peach" },
@@ -31,6 +33,8 @@
     reply: { icon: MessageSquareReply, tone: "butter" },
   };
 </script>
+
+<svelte:head><title>{t("nav.overview")} · Speech-AI Hub</title></svelte:head>
 
 <div class="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
   <div>
@@ -46,9 +50,13 @@
 </div>
 
 {#if error}
-  <Card><EmptyState title={t("common.error")} hint={error} /></Card>
+  <Card>
+    <EmptyState title={t("common.error")} hint={error}>
+      {#snippet action()}<Button variant="secondary" onclick={load}>{t("action.retry")}</Button>{/snippet}
+    </EmptyState>
+  </Card>
 {:else}
-  <div class="grid grid-cols-1 gap-4 sm:gap-5 xl:grid-cols-3">
+  <div class="grid grid-cols-[minmax(0,1fr)] gap-4 sm:gap-5 xl:grid-cols-3">
     <!-- Hero: latest deck -->
     <section class="relative overflow-hidden rounded-[28px] hero-gradient p-5 text-hero-ink sm:p-7 xl:col-span-2">
       {#if !data}
@@ -84,7 +92,7 @@
               <Button variant="primary" href="/slides/{deck.id}">{t("action.open")}<ArrowRight /></Button>
               {#if deck.reviewCount}
                 <a href="/slides/{deck.id}#reviews" class="inline-flex h-10 items-center gap-2 rounded-full bg-white/55 px-4 text-sm font-medium backdrop-blur hover:bg-white/75 dark:bg-black/25 dark:hover:bg-black/35">
-                  <MessageSquareQuote class="size-4" />{t("dash.reviews", { n: deck.reviewCount })}
+                  <MessageSquareQuote class="size-4" />{t(deck.reviewCount === 1 ? "dash.reviews.one" : "dash.reviews", { n: deck.reviewCount })}
                 </a>
               {/if}
             </div>
@@ -114,11 +122,12 @@
           <div>
             {#if value === undefined}<Skeleton class="h-9 w-14" />{:else}<p class="text-[32px] leading-none font-semibold tracking-[-0.03em] tabular-nums">{value}</p>{/if}
             <p class="mt-1.5 text-[13px] text-ink-2">{label}</p>
-            {#if foot}<p class="mt-0.5 text-[12px] text-ink-3">{foot}</p>{/if}
+            <!-- Always one line tall so the numbers line up across tiles. -->
+            <p class="mt-0.5 truncate text-[12px] text-ink-3">{foot ?? "\u00a0"}</p>
           </div>
         </a>
       {/snippet}
-      {@render stat(t("dash.stat.slides"), s?.slides, Presentation, "peach", s ? t("dash.stat.thisWeek", { n: s.slidesThisWeek }) : null, "/slides")}
+      {@render stat(t("dash.stat.slides"), s?.slides, Presentation, "peach", s ? t("dash.stat.versionsThisWeek", { n: s.slidesThisWeek }) : null, "/slides")}
       {@render stat(t("dash.stat.notes"), s?.notes, FileText, "sky", s ? t("dash.stat.thisWeek", { n: s.notesThisWeek }) : null, "/notes")}
       {@render stat(t("dash.stat.recordings"), s?.recordings, Mic, "mint", null, "/recordings")}
       {@render stat(t("dash.stat.pending"), s?.pendingReviews, MessageSquareQuote, "lilac", s && !s.pendingReviews ? t("dash.stat.allClear") : null, "#pending")}
@@ -191,10 +200,10 @@
           {#each data.pendingReviews as r (r.reviewId)}
             <li>
               <a href="/slides/{r.slideId}#review-{r.reviewId}" class="block rounded-2xl border border-line p-3.5 transition-colors hover:border-line-2 hover:bg-surface-2/60">
-                <p class="line-clamp-2 text-[13.5px] leading-relaxed text-ink">“{r.excerpt}”</p>
-                <div class="mt-2.5 flex items-center gap-2 text-[12px] text-ink-3">
-                  {#if r.authorName}<Avatar name={r.authorName} size={20} class="ring-0" /><span class="shrink-0 whitespace-nowrap text-ink-2">{r.authorName}</span><span aria-hidden="true">·</span>{/if}
-                  <span class="min-w-0 truncate">{t("dash.pending.on", { title: r.slideTitle })}</span>
+                <p class="line-clamp-2 text-[13.5px] leading-relaxed [overflow-wrap:anywhere] text-ink">{t("dash.pending.quote", { text: r.excerpt })}</p>
+                <p class="mt-2 truncate text-[12px] text-ink-3">{t("dash.pending.on", { title: r.slideTitle })}</p>
+                <div class="mt-1.5 flex items-center gap-2 text-[12px] text-ink-3">
+                  {#if r.authorName}<Avatar name={r.authorName} size={20} class="ring-0" /><span class="min-w-0 truncate text-ink-2">{r.authorName}</span>{/if}
                   {#if r.page !== null}<Pill size="sm" tone="lilac" class="shrink-0">{t("dash.pending.page", { n: r.page })}</Pill>{/if}
                   <span class="ml-auto shrink-0">{relativeTime(r.createdAt)}</span>
                 </div>
@@ -216,17 +225,17 @@
       {:else if !data.recentNotes.length}
         <Card><EmptyState title={t("dash.recentNotes.empty")}>{#snippet icon()}<FileText />{/snippet}</EmptyState></Card>
       {:else}
-        <div class="grid gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
+        <div class="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
           {#each data.recentNotes as note (note.id)}
             <a href="/notes/{note.id}" class="group flex flex-col rounded-[22px] border border-line/70 bg-surface p-5 shadow-card transition-colors hover:border-line-2">
               <div class="flex items-start justify-between gap-3">
-                <h3 class="line-clamp-2 text-[15px] font-semibold text-ink group-hover:underline">{note.title}</h3>
+                <h3 class="line-clamp-2 text-[15px] font-semibold [overflow-wrap:anywhere] text-ink group-hover:underline">{note.title}</h3>
                 {#if note.hasAudio}<span class="grid size-7 shrink-0 place-items-center rounded-lg" style="background:var(--pill-mint);color:var(--pill-mint-ink)" title={t("dash.hasAudio")}><AudioLines class="size-3.5" /></span>{/if}
               </div>
-              <p class="mt-2 line-clamp-2 flex-1 text-[13px] leading-relaxed text-ink-3">{note.excerpt}</p>
+              <p class="mt-2 line-clamp-2 flex-1 text-[13px] leading-relaxed [overflow-wrap:anywhere] text-ink-3">{note.excerpt}</p>
               <div class="mt-4 flex items-center gap-2">
                 <div class="flex min-w-0 flex-1 gap-1.5 overflow-hidden">
-                  {#each note.tags.slice(0, 2) as tag (tag.id)}<Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>{/each}
+                  {#each note.tags.slice(0, 2) as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>{/each}
                 </div>
                 <span class="shrink-0 text-[12px] text-ink-3">{relativeTime(note.updatedAt)}</span>
               </div>

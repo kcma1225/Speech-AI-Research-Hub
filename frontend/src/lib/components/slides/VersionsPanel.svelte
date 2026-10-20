@@ -12,7 +12,7 @@
   import { menuContent, menuItem, menuSeparator } from "#lib/components/ui/menu.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { SlideVersion } from "#lib/slides/types.ts";
-  import { isBusy, stripAnsi } from "#lib/slides/util.ts";
+  import { isBusy, renderLog } from "#lib/slides/util.ts";
   import StatusPill from "./StatusPill.svelte";
 
   let { projectId, versions, canManage, previewId = $bindable(null), reindexing = [], onUpload, onChanged, onReindex }: {
@@ -181,7 +181,7 @@
             {#if openError === v.id}<ChevronUp class="size-3.5" />{:else}<ChevronDown class="size-3.5" />{/if}
           </button>
           {#if openError === v.id}
-            <pre class="mt-2 max-h-56 overflow-auto rounded-xl bg-surface-2 p-3 text-[11px] leading-relaxed whitespace-pre-wrap break-words text-ink-2">{stripAnsi(v.error)}</pre>
+            <pre class="mt-2 max-h-56 overflow-auto rounded-xl bg-surface-2 p-3 text-[11px] leading-relaxed whitespace-pre-wrap break-words text-ink-2">{renderLog(v.error)}</pre>
           {/if}
           {#if canManage && v.id === latestId}
             <Button size="sm" variant="secondary" class="mt-2.5" onclick={retry}><RotateCcw />{t("slides.versions.retry")}</Button>

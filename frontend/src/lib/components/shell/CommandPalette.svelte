@@ -48,6 +48,13 @@
     if (!searchPalette.open) query = "";
   });
 
+  // ⌘K has no trigger element, so remember what had focus and give it back on close.
+  let returnFocus: HTMLElement | null = null;
+  let navigating = false;
+  $effect.pre(() => {
+    if (searchPalette.open) returnFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+  });
+
   function onKeydown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
@@ -55,8 +62,9 @@
     }
   }
   function go(href: string) {
+    navigating = true;
     searchPalette.open = false;
-    void goto(href);
+    void goto(href).finally(() => (navigating = false));
   }
   const empty = $derived(!!results && !loading && !pages.length && !results.slides.length && !results.notes.length && !results.tags.length);
   const item = "flex h-11 cursor-pointer items-center gap-3 rounded-xl px-3 text-sm text-ink outline-none data-selected:bg-surface-2 [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-ink-3";
@@ -69,6 +77,11 @@
   <Dialog.Portal>
     <Dialog.Overlay class="fixed inset-0 z-50 bg-[var(--overlay)] backdrop-blur-[2px] data-[state=open]:animate-[fade-in_140ms_ease-out]" />
     <Dialog.Content
+      onCloseAutoFocus={e => {
+        // After navigating, SvelteKit manages focus; otherwise return it to where the user was.
+        if (navigating || returnFocus?.isConnected) e.preventDefault();
+        if (!navigating && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+      }}
       class="fixed inset-x-3 top-[max(12px,env(safe-area-inset-top))] z-50 mx-auto max-w-[620px] overflow-hidden rounded-[24px] border border-line bg-surface shadow-pop outline-none data-[state=open]:animate-[pop-in_140ms_ease-out] sm:top-[12vh]"
     >
       <Dialog.Title class="sr-only">{t("search.short")}</Dialog.Title>
@@ -76,7 +89,8 @@
         <div class="flex items-center gap-3 border-b border-line px-4">
           {#if loading}<Spinner class="size-[18px] text-ink-3" />{:else}<Search class="size-[18px] text-ink-3" />{/if}
           <Command.Input bind:value={query} placeholder={t("search.placeholder")} class="h-14 flex-1 bg-transparent text-[16px] text-ink outline-none placeholder:text-ink-3" />
-          <Kbd class="hidden sm:inline-flex">Esc</Kbd>
+          <span class="hidden sm:contents"><Kbd>Esc</Kbd></span>
+          <button type="button" class="-mr-1 h-9 rounded-full px-2.5 text-[14px] font-medium text-ink-2 sm:hidden" onclick={() => (searchPalette.open = false)}>{t("action.cancel")}</button>
         </div>
         <Command.List class="max-h-[min(440px,62dvh)] overflow-y-auto p-2">
           <Command.Viewport>
@@ -88,7 +102,7 @@
                 <Command.GroupHeading class={heading}>{t("search.slides")}</Command.GroupHeading>
                 <Command.GroupItems>
                   {#each results.slides as s (s.id)}
-                    <Command.Item value="slide-{s.id}" onSelect={() => go(`/slides/${s.id}`)} class={item}><Presentation /><span class="flex-1 truncate">{s.title}</span><span class="text-xs text-ink-3">/{s.slug}</span></Command.Item>
+                    <Command.Item value="slide-{s.id}" onSelect={() => go(`/slides/${s.id}`)} class={item}><Presentation /><span class="flex-1 truncate">{s.title}</span><span class="hidden shrink-0 text-xs text-ink-3 sm:inline">/{s.slug}</span></Command.Item>
                   {/each}
                 </Command.GroupItems>
               </Command.Group>

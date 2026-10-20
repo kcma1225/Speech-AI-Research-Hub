@@ -1,4 +1,5 @@
 import type { Tone } from "#lib/components/ui/Pill.svelte";
+import { t } from "#lib/i18n.svelte.ts";
 import type { MessageKey } from "#lib/messages.ts";
 import type { Role } from "#lib/types.ts";
 
@@ -45,3 +46,7 @@ export const tagNamespaces: Record<TagKind, { api: string; list: string; label: 
   note: { api: "/tags", list: "/notes", label: "manage.tags.tab.note", count: "manage.tags.count.note", confirm: "manage.tags.confirmNote" },
   slide: { api: "/slide-tags", list: "/slides", label: "manage.tags.tab.slide", count: "manage.tags.count.slide", confirm: "manage.tags.confirmSlide" },
 };
+
+/** Count message: `<key>.one` when n is 1 (English singular), else `<key>`; `{n}` is filled in. */
+export const tc = (key: MessageKey, n: number, vars: Record<string, string | number> = {}) =>
+  t((n === 1 ? `${key}.one` : key) as MessageKey, { ...vars, n });

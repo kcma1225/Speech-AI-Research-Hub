@@ -5,7 +5,10 @@ import type { SlideStatus, VersionStatus } from "./types.ts";
 export const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const DEFAULT_LIMITS = { zipBytes: 200 * 1024 * 1024, deckBytes: 200 * 1024 * 1024, deckTypes: [".zip", ".pdf", ".pptx"], referenceBytes: 50 * 1024 * 1024 };
 
-/** ASCII slug from a title; Chinese-only titles fall back to `slides-<date>`. */
+/**
+ * ASCII slug from a title. Chinese-only titles fall back to `slides-<date>`; mixed titles keep their
+ * ASCII words plus the date, so "QA 失敗測試" and "QA 多入口測試" don't both become `qa`.
+ */
 export function slugify(title: string): string {
   const base = title
     .normalize("NFKD")
@@ -14,9 +17,10 @@ export function slugify(title: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60)
     .replace(/-+$/, "");
-  if (base) return base;
   const d = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date());
-  return `slides-${d}`;
+  if (!base) return `slides-${d}`;
+  // Letters outside ASCII (CJK…) were dropped: the rest alone is too generic to be unique.
+  return /[^\t\n\r -~]/.test(title.normalize("NFKD").replace(/\p{M}/gu, "")) ? `${base}-${d}` : base;
 }
 
 /** Multipart POST with upload progress (fetch has none). Rejects with ApiError carrying the backend message. */
@@ -74,6 +78,8 @@ export const isBusy = (s: VersionStatus | null | undefined) => s === "queued" ||
 
 // eslint-disable-next-line no-control-regex
 export const stripAnsi = (text: string) => text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, "");
+/** Render log for people: no colour codes, and paths relative to the uploaded project instead of the worker's job dir. */
+export const renderLog = (text: string) => stripAnsi(text).replace(/\/tmp\/jobs\/[0-9a-f-]{36}\/(?:source\/)?/g, "");
 
 /** Clipboard write that also works on plain-http origins (no async clipboard API there). */
 export async function copyText(text: string): Promise<boolean> {

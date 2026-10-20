@@ -12,7 +12,7 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import InviteSheet from "./InviteSheet.svelte";
-  import { roleLabel, roleTone, stateTone, type Invitation } from "./manage.ts";
+  import { roleLabel, roleTone, stateTone, tc, type Invitation } from "./manage.ts";
 
   let invitations = $state<Invitation[] | null>(null);
   let error = $state<string | null>(null);
@@ -22,7 +22,10 @@
     api.get<{ invitations: Invitation[] }>("/invitations").then(r => (invitations = r.invitations), e => (error = e.message));
   });
   const activeCount = $derived(invitations?.filter(i => i.state === "active").length ?? 0);
-  const shown = $derived(filter === "active" ? (invitations ?? []).filter(i => i.state === "active") : (invitations ?? []));
+  // Usable links first; the API already orders each group newest first.
+  const shown = $derived(
+    filter === "active" ? (invitations ?? []).filter(i => i.state === "active") : [...(invitations ?? [])].sort((a, b) => Number(b.state === "active") - Number(a.state === "active")),
+  );
 
   let target = $state<Invitation | null>(null);
   let confirmOpen = $state(false);
@@ -39,6 +42,9 @@
   }
 
   function expiry(invite: Invitation) {
+    // A revoked or used-up link never becomes usable again, so its expiry date is noise.
+    if (invite.state === "revoked" && invite.revoked_at) return t("manage.invites.revokedAt", { time: relativeTime(invite.revoked_at) });
+    if (invite.state === "revoked" || invite.state === "exhausted") return "—";
     if (!invite.expires_at) return t("manage.invites.never");
     const past = new Date(invite.expires_at).getTime() <= Date.now();
     return t(past ? "manage.invites.expiredAt" : "manage.invites.expiresIn", { time: relativeTime(invite.expires_at) });
@@ -97,7 +103,7 @@
         { value: "active", label: t("manage.invites.filter.active") },
       ]}
     />
-    {#if invitations}<p class="hidden text-[13px] text-ink-3 sm:block">{t("manage.invites.activeCount", { n: activeCount })}</p>{/if}
+    {#if invitations}<p class="hidden text-[13px] text-ink-3 sm:block">{tc("manage.invites.activeCount", activeCount)}</p>{/if}
   </div>
   <Button variant="primary" onclick={() => (sheetOpen = true)}><Plus />{t("manage.invites.create")}</Button>
 </div>
@@ -133,7 +139,7 @@
             <td class="py-3 pl-6">{@render statePill(invite)}</td>
             <td class="py-3"><Pill tone={roleTone[invite.role]}>{t(roleLabel(invite.role))}</Pill></td>
             <td class="py-3">{@render uses(invite)}</td>
-            <td class="py-3 whitespace-nowrap" title={invite.expires_at ? fullDate(invite.expires_at) : undefined}>{expiry(invite)}</td>
+            <td class="py-3 whitespace-nowrap" title={invite.state === "revoked" && invite.revoked_at ? fullDate(invite.revoked_at) : invite.expires_at ? fullDate(invite.expires_at) : undefined}>{expiry(invite)}</td>
             <td class="max-w-48 py-3">{@render joined(invite)}</td>
             <td class="py-3 whitespace-nowrap" title={fullDate(invite.created_at)}>{relativeTime(invite.created_at)}</td>
             <td class="py-3 pr-6 text-right">{@render revokeButton(invite)}</td>

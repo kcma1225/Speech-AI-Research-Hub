@@ -7,6 +7,8 @@
     for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
     return tones[h % tones.length]!;
   }
+  /** Tag colour keyed by id, so renaming a tag keeps its colour. */
+  export const tagTone = (tag: { id: string }): Tone => toneFor(tag.id);
 </script>
 
 <script lang="ts">

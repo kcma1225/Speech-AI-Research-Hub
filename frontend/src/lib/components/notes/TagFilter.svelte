@@ -2,7 +2,7 @@
   import { Popover } from "bits-ui";
   import { Check, ListFilter, Tag as TagIcon } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone, toneFor } from "#lib/components/ui/Pill.svelte";
 
   /** Multi-select filter over note tags plus 未分類 (`none`). */
   let { tags, selected, onChange }: { tags: { id: string; name: string; count: number }[]; selected: string[]; onChange: (ids: string[]) => void } = $props();
@@ -39,16 +39,16 @@
       {/if}
       <div class="max-h-72 overflow-y-auto">
         {#each filtered as tag (tag.id)}
-          <button type="button" role="menuitemcheckbox" aria-checked={selected.includes(tag.id)} onclick={() => toggle(tag.id)} class="flex h-9 w-full items-center gap-2.5 rounded-xl px-2 text-left text-sm hover:bg-surface-2">
+          <button type="button" role="checkbox" aria-checked={selected.includes(tag.id)} onclick={() => toggle(tag.id)} class="flex h-9 w-full items-center gap-2.5 rounded-xl px-2 text-left text-sm hover:bg-surface-2">
             {@render check(selected.includes(tag.id))}
-            <Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>
+            <Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>
             <span class="ml-auto text-[12px] text-ink-3 tabular-nums">{tag.count}</span>
           </button>
         {:else}
           {#if query}<p class="px-2 py-2 text-[13px] text-ink-3">{t("notes.filter.noMatch")}</p>{/if}
         {/each}
         <div class="my-1 h-px bg-line"></div>
-        <button type="button" role="menuitemcheckbox" aria-checked={selected.includes("none")} onclick={() => toggle("none")} class="flex h-9 w-full items-center gap-2.5 rounded-xl px-2 text-left text-sm hover:bg-surface-2">
+        <button type="button" role="checkbox" aria-checked={selected.includes("none")} onclick={() => toggle("none")} class="flex h-9 w-full items-center gap-2.5 rounded-xl px-2 text-left text-sm hover:bg-surface-2">
           {@render check(selected.includes("none"))}
           <TagIcon class="size-3.5 text-ink-3" /><span class="text-ink-2">{t("notes.filter.untagged")}</span>
         </button>

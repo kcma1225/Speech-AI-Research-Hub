@@ -8,7 +8,7 @@
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import FileDrop from "#lib/components/ui/FileDrop.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone, toneFor } from "#lib/components/ui/Pill.svelte";
   import Segmented from "#lib/components/ui/Segmented.svelte";
   import Switch from "#lib/components/ui/Switch.svelte";
   import TagPicker from "#lib/components/ui/TagPicker.svelte";
@@ -153,7 +153,7 @@
       <div class="flex flex-col gap-2">
         <span class="text-[13px] font-medium text-ink-2">{t("slides.info.tags")}</span>
         <div class="flex flex-wrap items-center gap-1.5">
-          {#each tagIds as id (id)}{#if tagNames[id]}<Pill tone={toneFor(tagNames[id])} size="sm">{tagNames[id]}</Pill>{/if}{/each}
+          {#each tagIds as id (id)}{#if tagNames[id]}<Pill tone={toneFor(id)} size="sm">{tagNames[id]}</Pill>{/if}{/each}
           <TagPicker endpoint="/slide-tags" bind:selected={tagIds} label={t("slides.info.addTag")} onChange={() => void loadTagNames()} />
         </div>
       </div>
@@ -164,16 +164,16 @@
         </div>
       {/if}
     {:else}
-      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13.5px]">
+      <dl class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-[13.5px]">
         <dt class="text-ink-3">{t("slides.info.name")}</dt><dd class="min-w-0 break-words">{p.title}</dd>
         <dt class="text-ink-3">{t("slides.info.slug")}</dt><dd class="min-w-0 truncate font-mono text-[12.5px]">{p.slug}</dd>
         <dt class="text-ink-3">{t("slides.info.tags")}</dt>
         <dd class="flex flex-wrap gap-1.5">
-          {#each detail.tags as tag (tag.id)}<Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>{:else}<span class="text-ink-3">{t("slides.info.noTags")}</span>{/each}
+          {#each detail.tags as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>{:else}<span class="text-ink-3">{t("slides.info.noTags")}</span>{/each}
         </dd>
       </dl>
     {/if}
-    <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-[13px]">
+    <dl class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-[13px]">
       {#if p.creator_name}
         <dt class="text-ink-3">{t("slides.info.creator")}</dt>
         <dd class="flex min-w-0 items-center gap-1.5"><Avatar name={p.creator_name} size={18} class="ring-0" /><span class="truncate">{p.creator_name}</span></dd>

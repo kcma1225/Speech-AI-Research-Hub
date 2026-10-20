@@ -12,7 +12,7 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import RoleMenu from "./RoleMenu.svelte";
-  import { roleLabel, roleTone, type AdminUser, type GrantableRole } from "./manage.ts";
+  import { roleLabel, roleTone, tc, type AdminUser, type GrantableRole } from "./manage.ts";
 
   let users = $state<AdminUser[] | null>(null);
   let error = $state<string | null>(null);
@@ -27,6 +27,7 @@
   }
 
   async function changeRole(user: AdminUser, role: GrantableRole) {
+    if (busyId) return;
     busyId = user.id;
     try {
       const result = await api.patch<{ user: AdminUser }>(`/users/${user.id}`, { role });
@@ -60,7 +61,7 @@
   const isFixed = (user: AdminUser) => user.role === "owner" || user.id === session.user?.id;
 </script>
 
-{#snippet who(user: AdminUser)}
+{#snippet who(user: AdminUser, compact = false)}
   <div class="flex min-w-0 items-center gap-3">
     <Avatar name={user.name} size={36} class="ring-0 {user.disabled ? 'opacity-50 grayscale' : ''}" />
     <div class="min-w-0">
@@ -68,7 +69,9 @@
         <span class="truncate">{user.name}</span>
         {#if user.id === session.user?.id}<span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-medium text-ink-3">{t("manage.members.you")}</span>{/if}
       </p>
-      <p class="truncate text-[12px] text-ink-3">{t("manage.members.joined", { date: formatDate(user.created_at) })}</p>
+      <p class="truncate text-[12px] text-ink-3">
+        {#if compact}{t("manage.members.col.lastLogin")} · {@render lastLogin(user)}{:else}{t("manage.members.joined", { date: formatDate(user.created_at) })}{/if}
+      </p>
     </div>
   </div>
 {/snippet}
@@ -84,7 +87,6 @@
       role={user.role}
       label={t("manage.members.changeRole", { name: user.name })}
       busy={busyId === user.id}
-      disabled={busyId === user.id}
       onChange={r => changeRole(user, r)}
     />
   {/if}
@@ -119,7 +121,9 @@
 {:else if !users.length}
   <Card><EmptyState title={t("manage.members.empty")}>{#snippet icon()}<Users />{/snippet}</EmptyState></Card>
 {:else}
-  <p class="mb-3 text-[13px] text-ink-3">{t("manage.members.count", { n: users.length, disabled: disabledCount })}</p>
+  <p class="mb-3 text-[13px] text-ink-3">
+    {tc("manage.members.count", users.length)}{#if disabledCount} · {t("manage.members.disabledCount", { n: disabledCount })}{/if}
+  </p>
   <Card padded={false} class="overflow-hidden">
     <table class="hidden w-full text-left text-[13.5px] md:table">
       <thead>
@@ -148,15 +152,11 @@
       {#each users as user (user.id)}
         <li class="flex flex-col gap-3 p-4 {user.role === 'owner' ? 'bg-surface-2/40' : ''}">
           <div class="flex items-start justify-between gap-3">
-            {@render who(user)}
+            {@render who(user, true)}
             {@render status(user)}
           </div>
-          <div class="flex flex-wrap items-center justify-between gap-2 pl-12">
-            <div class="flex items-center gap-2.5 text-[12.5px] text-ink-2">
-              {@render role(user)}
-              <span class="text-ink-3">·</span>
-              {@render lastLogin(user)}
-            </div>
+          <div class="flex min-h-8 items-center justify-between gap-2 pl-12">
+            {@render role(user)}
             {@render action(user)}
           </div>
         </li>

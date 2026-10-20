@@ -6,7 +6,7 @@
   import Button from "#lib/components/ui/Button.svelte";
 </script>
 
-<svelte:head><title>{t("nav.notes")}</title></svelte:head>
+<svelte:head><title>{t("nav.notes")} · Speech-AI Hub</title></svelte:head>
 
 <!-- Desktop-only hint pane (phones show just the list at /notes). -->
 <section class="flex flex-1 flex-col items-center justify-center rounded-[var(--radius-card)] border border-dashed border-line-2 px-8 text-center">

@@ -17,7 +17,8 @@
   ];
   async function logout() {
     await session.logout();
-    await goto("/login");
+    // Overrides the (app) layout's /login?next=… redirect: the next account starts on the overview.
+    await goto("/login", { replace: true });
   }
 </script>
 

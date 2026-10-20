@@ -15,6 +15,7 @@
   <button
     type="button"
     onclick={() => (searchPalette.open = true)}
+    aria-keyshortcuts={mac ? "Meta+K" : "Control+K"}
     class="hidden h-11 w-full max-w-[440px] items-center gap-2.5 rounded-full border border-line bg-surface pr-2 pl-4 text-left text-sm text-ink-3 transition-colors hover:border-line-2 lg:flex"
   >
     <Search class="size-4" />

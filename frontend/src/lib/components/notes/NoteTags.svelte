@@ -34,10 +34,10 @@
     {@const name = names[id] ?? "…"}
     {#if editable}
       <button type="button" class="group inline-flex" onclick={() => set(selected.filter(x => x !== id))} aria-label={t("notes.filter.remove", { name })}>
-        <Pill tone={toneFor(name)}>{name}<X class="-mr-1 size-3 opacity-60 group-hover:opacity-100" /></Pill>
+        <Pill tone={toneFor(id)}>{name}<X class="-mr-1 size-3 opacity-60 group-hover:opacity-100" /></Pill>
       </button>
     {:else}
-      <Pill tone={toneFor(name)}>{name}</Pill>
+      <Pill tone={toneFor(id)}>{name}</Pill>
     {/if}
   {/each}
   {#if editable}

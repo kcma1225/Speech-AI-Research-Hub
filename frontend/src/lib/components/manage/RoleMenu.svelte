@@ -15,6 +15,7 @@
 <DropdownMenu.Root>
   <DropdownMenu.Trigger
     aria-label={label}
+    aria-busy={busy || undefined}
     {disabled}
     class="inline-flex h-7 cursor-pointer items-center gap-1 rounded-full pr-2 pl-2.5 text-xs font-medium transition-[filter] hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60 data-[state=open]:ring-2 data-[state=open]:ring-line-2 dark:hover:brightness-125"
     style="background: var(--pill-{tone}); color: var(--pill-{tone}-ink)"
@@ -23,7 +24,7 @@
     {#if busy}<Spinner class="size-3" />{:else}<ChevronDown class="size-3.5 opacity-70" />{/if}
   </DropdownMenu.Trigger>
   <DropdownMenu.Portal>
-    <DropdownMenu.Content align="start" sideOffset={6} class="{menuContent} w-60">
+    <DropdownMenu.Content align="start" sideOffset={6} class="{menuContent} w-64">
       <DropdownMenu.RadioGroup value={role} onValueChange={v => v !== role && onChange(v as GrantableRole)}>
         {#each grantableRoles as option (option)}
           <DropdownMenu.RadioItem value={option} class="{menuItem} h-auto py-2">

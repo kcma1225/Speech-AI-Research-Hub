@@ -127,8 +127,10 @@
   });
 </script>
 
-<div class="flex flex-col overflow-hidden rounded-2xl border border-line-2 bg-surface focus-within:border-ink {fill ? 'min-h-0 flex-1' : ''}">
-  <div class="flex flex-wrap items-center gap-1 border-b border-line bg-surface-2/70 px-1.5 py-1.5 lg:flex-nowrap">
+<!-- overflow-clip (not hidden) keeps the rounded corners without creating a scroll container, so the toolbar can stick. -->
+<div class="flex flex-col overflow-clip rounded-2xl border border-line-2 bg-surface focus-within:border-ink {fill ? 'min-h-0 flex-1' : ''}">
+  <!-- Phones/tablets: the page scrolls with the growing textarea, so the toolbar sticks below the top bar. -->
+  <div class="flex flex-wrap items-center gap-1 border-b border-line px-1.5 py-1.5 lg:flex-nowrap {fill ? 'bg-surface-2/70' : 'sticky top-[calc(max(12px,env(safe-area-inset-top))+52px)] z-10 bg-surface-2'}">
     <div class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] {effective === 'preview' ? 'pointer-events-none opacity-40' : ''}" role="toolbar" aria-label={t("notes.editor.toolbar")}>
       {#each tools as tool (tool.label)}
         <button

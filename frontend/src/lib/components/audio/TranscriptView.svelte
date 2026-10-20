@@ -137,6 +137,8 @@
         bind:value={query}
         oninput={() => (matchCursor = 0)}
         onkeydown={e => {
+          // Enter also confirms an IME candidate (zhuyin/pinyin); only act on committed text.
+          if (e.isComposing) return;
           if (e.key === "Enter") {
             e.preventDefault();
             step(e.shiftKey ? -1 : 1);
@@ -147,7 +149,7 @@
         }}
         placeholder={t("recordings.transcript.search")}
         aria-label={t("recordings.transcript.search")}
-        class="h-9 w-full rounded-full border border-line-2 bg-surface pr-24 pl-9 text-sm text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] [&::-webkit-search-cancel-button]:hidden"
+        class="h-9 w-full rounded-full border border-line-2 bg-surface pl-9 {needle ? 'pr-28' : 'pr-3'} text-sm text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] [&::-webkit-search-cancel-button]:hidden"
       />
       {#if needle}
         <div class="absolute top-1/2 right-1 flex -translate-y-1/2 items-center">

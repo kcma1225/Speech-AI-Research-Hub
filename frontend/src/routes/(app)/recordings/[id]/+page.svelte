@@ -5,7 +5,7 @@
   import { formatDate, t } from "#lib/i18n.svelte.ts";
   import { viewport } from "#lib/media.svelte.ts";
   import { session } from "#lib/stores/session.svelte.ts";
-  import { formatBytes, formatClock, type RecordingDetail } from "#lib/recordings/types.ts";
+  import { formatBytes, formatClock, stageLabel, type RecordingDetail } from "#lib/recordings/types.ts";
   import AudioPlayer from "#lib/components/audio/AudioPlayer.svelte";
   import TranscriptView from "#lib/components/audio/TranscriptView.svelte";
   import Avatar from "#lib/components/ui/Avatar.svelte";
@@ -16,7 +16,7 @@
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import FileDrop from "#lib/components/ui/FileDrop.svelte";
   import Kbd from "#lib/components/ui/Kbd.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone, toneFor } from "#lib/components/ui/Pill.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
@@ -48,7 +48,9 @@
       error = null;
     } catch (e) {
       if (target !== id) return;
-      error = { status: e instanceof ApiError ? e.status : 0, message: (e as Error).message };
+      // 400 = malformed id in the URL: same as a missing recording for the reader.
+      const status = e instanceof ApiError ? (e.status === 400 ? 404 : e.status) : 0;
+      error = { status, message: (e as Error).message };
     }
   }
 
@@ -138,7 +140,7 @@
         {/if}
         {#if item.tags.length}
           <span aria-hidden="true">·</span>
-          {#each item.tags as tag (tag.id)}<Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>{/each}
+          {#each item.tags as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>{/each}
         {/if}
       </div>
     </div>
@@ -153,7 +155,7 @@
         <div class="min-w-0 flex-1">
           <p class="text-sm font-medium text-ink">{item.audio ? t("recordings.job.replacing") : t("recordings.job.title")}</p>
           <p class="mt-0.5 truncate text-[12.5px] text-ink-3">
-            {[job.stage ?? t("recordings.job.queued"), job.progress != null ? `${Math.round(job.progress)}%` : null, job.file_name].filter(Boolean).join(" · ")}
+            {[stageLabel(job.stage), job.progress != null ? `${Math.round(job.progress)}%` : null, job.file_name].filter(Boolean).join(" · ")}
           </p>
         </div>
       </div>

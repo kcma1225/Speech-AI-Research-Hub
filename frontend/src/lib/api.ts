@@ -1,4 +1,9 @@
-/** Thin JSON client for the backend under /api. Errors carry the backend's 繁中 `error` message. */
+import { t } from "./i18n.svelte.ts";
+
+/**
+ * Thin JSON client for the backend under /api. Errors carry the backend's 繁中 `error` message; responses
+ * without one (nginx 429/502 pages, network failures as status 0) get a localised fallback instead.
+ */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -17,10 +22,23 @@ async function request<T>(method: string, path: string, body?: Body): Promise<T>
     init.body = JSON.stringify(body);
     (init.headers as Record<string, string>)["Content-Type"] = "application/json";
   }
-  const response = await fetch(`/api${path}`, init);
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, init);
+  } catch {
+    throw new ApiError(0, t("common.offline"));
+  }
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!response.ok) throw new ApiError(response.status, data?.error ?? response.statusText);
+  let data: { error?: unknown } | null = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    if (response.ok) throw new ApiError(response.status, t("common.error"));
+  }
+  if (!response.ok) {
+    if (typeof data?.error === "string") throw new ApiError(response.status, data.error);
+    throw new ApiError(response.status, t(response.status === 429 ? "common.rateLimited" : response.status >= 500 ? "common.offline" : "common.error"));
+  }
   return data as T;
 }
 

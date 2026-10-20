@@ -174,7 +174,7 @@ const slides: FastifyPluginAsync = async app => {
       if (!parsedTitle.success || !parsedSlug.success || !tags.success) throw badRequest("請確認名稱（1–160 字）、slug（小寫英數與連字號）與標籤。");
       const { file, deck } = await validateDeck(upload, maxBytes);
       const exists = await app.db.query("SELECT 1 FROM slide_projects WHERE slug=$1", [parsedSlug.data]);
-      if (exists.rowCount) throw conflict("slug 已被使用。");
+      if (exists.rowCount) throw conflict("這個網址代稱已被使用。");
 
       const projectId = randomUUID();
       const versionId = randomUUID();
@@ -192,7 +192,7 @@ const slides: FastifyPluginAsync = async app => {
         });
       } catch (error) {
         await app.storage.deletePrefix(keys.slideProjectPrefix(projectId)).catch(() => {});
-        if (isUniqueViolation(error)) throw conflict("slug 已被使用。");
+        if (isUniqueViolation(error)) throw conflict("這個網址代稱已被使用。");
         throw error;
       }
       return reply.code(202).send({ id: projectId, slug: parsedSlug.data, versionId, version: 1, jobId, ...uploadSummary(deck) });
@@ -252,7 +252,7 @@ const slides: FastifyPluginAsync = async app => {
         return { project: updated };
       });
     } catch (error) {
-      if (isUniqueViolation(error)) throw conflict("slug 已被使用。");
+      if (isUniqueViolation(error)) throw conflict("這個網址代稱已被使用。");
       throw error;
     }
   });

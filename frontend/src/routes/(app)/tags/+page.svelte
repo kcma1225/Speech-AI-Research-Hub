@@ -25,7 +25,12 @@
   let error = $state<string | null>(null);
   $effect(() => {
     for (const kind of ["note", "slide"] as const)
-      api.get<{ tags: ManagedTag[] }>(tagNamespaces[kind].api).then(r => (lists[kind] = r.tags), e => (error = e.message));
+      api.get<{ tags: ManagedTag[] }>(tagNamespaces[kind].api).then(
+        r => {
+          lists[kind] = r.tags;
+        },
+        e => (error = e.message),
+      );
   });
 </script>
 

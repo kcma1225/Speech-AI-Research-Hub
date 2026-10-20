@@ -1,6 +1,8 @@
 import { api, ApiError } from "#lib/api.ts";
 import { i18n } from "#lib/i18n.svelte.ts";
 import { theme } from "#lib/theme.svelte.ts";
+import { jobsStore } from "#lib/stores/jobs.svelte.ts";
+import { notificationsStore } from "#lib/stores/notifications.svelte.ts";
 import type { ClientConfig, CurrentUser, Locale, Preferences, ThemePref } from "#lib/types.ts";
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
@@ -45,6 +47,8 @@ export const session = {
   },
   async logout() {
     await api.post("/auth/logout").catch(() => {});
+    jobsStore.stop();
+    notificationsStore.stop();
     user = null;
   },
   /** PATCH /auth/profile; the server returns the updated user. Optimistic for theme/locale. */
@@ -62,7 +66,7 @@ async function retry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
     try {
       return await fn();
     } catch (e) {
-      if (i + 1 >= attempts || (e instanceof ApiError && e.status < 500 && e.status !== 429)) throw e;
+      if (i + 1 >= attempts || (e instanceof ApiError && e.status !== 0 && e.status < 500 && e.status !== 429)) throw e;
       await new Promise(r => setTimeout(r, 400 * 2 ** i));
     }
   }

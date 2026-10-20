@@ -14,7 +14,7 @@
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { SlideStatus, UploadLimits } from "#lib/slides/types.ts";
-  import { DEFAULT_LIMITS, entryCandidates, formatBytes, isBusy, SLUG_RE, slugify, stripAnsi, uploadForm, watchStatus } from "#lib/slides/util.ts";
+  import { DEFAULT_LIMITS, entryCandidates, formatBytes, isBusy, renderLog, SLUG_RE, slugify, uploadForm, watchStatus } from "#lib/slides/util.ts";
   import { FolderError, zipFolder, type Folder } from "#lib/slides/folder.ts";
 
   /**
@@ -82,7 +82,11 @@
   });
   $effect(() => () => stop?.());
 
-  const slugError = $derived(slug && (!SLUG_RE.test(slug) || slug.length > 80) ? t("slides.upload.slugInvalid") : null);
+  /** Slug the server refused as taken (409); the field shows it until the slug changes. */
+  let takenSlug = $state<string | null>(null);
+  const slugError = $derived(
+    slug && (!SLUG_RE.test(slug) || slug.length > 80) ? t("slides.upload.slugInvalid") : slug && slug === takenSlug ? t("slides.upload.slugTaken") : null,
+  );
   const canSubmit = $derived(Boolean(file) && (isVersion || (title.trim() && slug && !slugError)) && (!entries || entry));
 
   async function loadTagNames() {
@@ -102,6 +106,7 @@
     skipped = [];
     status = null;
     created = null;
+    takenSlug = null;
     sent = 0;
   }
 
@@ -141,7 +146,10 @@
       phase = "form";
       const message = e instanceof ApiError && e.status === 413 ? t("slides.upload.tooLarge", { size: formatBytes(maxBytes) }) : (e as Error).message;
       const candidates = entryCandidates(message);
-      if (candidates?.length) {
+      if (e instanceof ApiError && e.status === 409 && !isVersion) {
+        takenSlug = slug;
+        error = null;
+      } else if (candidates?.length) {
         entries = candidates;
         entry = candidates.find(c => !c.includes("/")) ?? candidates[0]!;
         error = null;
@@ -187,7 +195,7 @@
         <div class="flex flex-col gap-2">
           <span class="text-[13px] font-medium text-ink-2">{t("slides.info.tags")}</span>
           <div class="flex flex-wrap items-center gap-1.5">
-            {#each tagIds as id (id)}{#if tagNames[id]}<Pill tone={toneFor(tagNames[id])} size="sm">{tagNames[id]}</Pill>{/if}{/each}
+            {#each tagIds as id (id)}{#if tagNames[id]}<Pill tone={toneFor(id)} size="sm">{tagNames[id]}</Pill>{/if}{/each}
             <TagPicker endpoint="/slide-tags" bind:selected={tagIds} label={t("slides.info.addTag")} onChange={() => void loadTagNames()} />
           </div>
         </div>
@@ -225,7 +233,7 @@
         <p class="flex items-start gap-2 text-[12.5px] leading-relaxed text-ink-3"><Info class="mt-0.5 size-3.5 shrink-0" />{t(`slides.upload.hint.${kind}`)}</p>
       {/if}
       {#if skipped.length}
-        <p class="rounded-xl bg-surface-2 px-3 py-2.5 text-[12.5px] text-ink-2" title={skipped.slice(0, 20).join("\n")}>{t("slides.upload.skipped", { n: skipped.length, list: skipped.slice(0, 3).join("、") })}</p>
+        <p class="rounded-xl bg-surface-2 px-3 py-2.5 text-[12.5px] text-ink-2" title={skipped.slice(0, 20).join("\n")}>{t("slides.upload.skipped", { n: skipped.length, list: skipped.slice(0, 3).join("、") + (skipped.length > 3 ? "…" : "") })}</p>
       {/if}
 
       {#if entries}
@@ -270,7 +278,7 @@
         </div>
         {#if phase === "rendering"}<Progress class="mt-4" value={status?.progress || null} />{/if}
         {#if phase === "failed" && status?.error}
-          <pre class="mt-3 max-h-48 overflow-auto rounded-xl bg-surface p-3 text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-2">{stripAnsi(status.error)}</pre>
+          <pre class="mt-3 max-h-48 overflow-auto rounded-xl bg-surface p-3 text-[11.5px] leading-relaxed whitespace-pre-wrap break-words text-ink-2">{renderLog(status.error)}</pre>
         {/if}
       </div>
       {#if phase === "rendering"}<p class="text-[12.5px] text-ink-3">{t("slides.upload.background")}</p>{/if}

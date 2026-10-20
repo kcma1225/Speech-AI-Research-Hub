@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { ArrowUpRight, AudioLines, Captions, Mic, RefreshCw, Trash2, Upload, X } from "@lucide/svelte";
+  import { ArrowUpRight, AudioLines, Captions, CircleAlert, Mic, RefreshCw, Trash2, Upload, X } from "@lucide/svelte";
   import { api, ApiError } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
   import { formatDuration, MEDIA_ACCEPT, type MediaJob, type NoteDetail } from "#lib/notes/types.ts";
+  import { stageLabel } from "#lib/recordings/types.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import FileDrop from "#lib/components/ui/FileDrop.svelte";
@@ -23,6 +24,8 @@
   let srtFile = $state<File | null>(null);
   let srtBusy = $state(false);
   let removeOpen = $state(false);
+  /** Last own transcode that failed; stays visible (with a retry) until dismissed or a new upload starts. */
+  let failure = $state<{ fileName: string; error: string } | null>(null);
 
   /** Job being tracked: own upload (status via /media-jobs/:id) or an in-flight job reported by the note. */
   let job = $state<MediaJob | null>(null);
@@ -77,7 +80,10 @@
   async function finish(done: MediaJob) {
     void jobsStore.refresh();
     if (done.status === "completed") toasts.show(t("notes.media.done"), "success");
-    else if (done.status === "failed") toasts.show(done.error || t("notes.media.failed"), "error", 6000);
+    else if (done.status === "failed") {
+      failure = { fileName: done.file_name, error: done.error || t("notes.media.failed") };
+      toasts.show(t("notes.media.failed"), "error");
+    }
     else toasts.show(t("notes.media.cancelled"));
     // The finalizer applies the result shortly after the job finishes; reload twice to catch it.
     await onChanged().catch(() => {});
@@ -109,13 +115,14 @@
     if (!mediaFile) return;
     uploading = true;
     uploadPct = 0;
+    failure = null;
     const fileName = mediaFile.name;
     try {
       const { jobId } = await send(mediaFile);
       mediaOpen = false;
       mediaFile = null;
       ownJob = true;
-      job = { id: jobId, item_id: note.id, status: "processing", stage: "排隊中", progress: 0, duration_seconds: null, error: null, file_name: fileName, created_at: new Date().toISOString() };
+      job = { id: jobId, item_id: note.id, status: "processing", stage: "queued", progress: 0, duration_seconds: null, error: null, file_name: fileName, created_at: new Date().toISOString() };
       void jobsStore.refresh();
       toasts.show(t("notes.media.queued"));
       schedule(jobId, 1200);
@@ -169,7 +176,7 @@
   const sizeLabel = (bytes: number | null) => (bytes ? (bytes >= 1 << 20 ? `${(bytes / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`) : "");
 </script>
 
-{#if note.audio || activeJob || canEdit}
+{#if note.audio || activeJob || failure || canEdit}
   <section class="flex flex-col gap-2" aria-label={t("notes.media.section")}>
     {#if note.audio}
       <div class="flex flex-col gap-0 overflow-hidden rounded-2xl border border-line bg-surface-2/60">
@@ -187,7 +194,7 @@
         <div class="flex flex-wrap items-center gap-2 border-t border-line px-3 py-2 sm:px-3.5">
           <Captions class="size-4 shrink-0 text-ink-3" />
           {#if note.transcript}
-            <span class="min-w-0 flex-1 truncate text-[13px] text-ink-2">{t("notes.transcript.has", { n: note.transcript.length })}{#if note.transcript_name}<span class="text-ink-3"> · {note.transcript_name}</span>{/if}</span>
+            <span class="min-w-0 flex-1 truncate text-[13px] text-ink-2">{t("notes.transcript.has", { n: note.transcript.length })}{#if note.transcript_name}<span class="text-ink-3">&nbsp;· {note.transcript_name}</span>{/if}</span>
           {:else}
             <span class="min-w-0 flex-1 text-[13px] text-ink-3">{t("notes.transcript.none")}</span>
           {/if}
@@ -203,13 +210,27 @@
       </div>
     {/if}
 
+    {#if failure && !activeJob}
+      <div class="flex items-start gap-3 rounded-2xl border border-danger/30 bg-danger-soft p-3 sm:p-3.5" role="alert">
+        <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-surface/70 text-danger"><CircleAlert class="size-[18px]" /></span>
+        <div class="min-w-0 flex-1 pt-0.5">
+          <p class="truncate text-sm font-medium text-ink">{t("notes.media.failedTitle", { name: failure.fileName || t("notes.media.recording") })}</p>
+          <p class="mt-0.5 text-[12.5px] text-ink-2">{failure.error}</p>
+          {#if canEdit}
+            <Button size="sm" variant="secondary" class="mt-2.5" onclick={() => (mediaOpen = true)}><Upload />{t("notes.media.retry")}</Button>
+          {/if}
+        </div>
+        <Button size="icon-sm" variant="ghost" onclick={() => (failure = null)} aria-label={t("notes.media.dismiss")} title={t("notes.media.dismiss")}><X /></Button>
+      </div>
+    {/if}
+
     {#if activeJob}
       <div class="flex items-center gap-3 rounded-2xl border border-line bg-surface p-3 sm:p-3.5" aria-live="polite">
         <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-surface-3 text-ink-2"><Mic class="size-[18px]" /></span>
         <div class="min-w-0 flex-1">
           <div class="flex items-baseline justify-between gap-3">
             <p class="truncate text-sm font-medium">{activeJob.file_name || t("notes.media.recording")}</p>
-            <p class="shrink-0 text-[12px] text-ink-3 tabular-nums">{activeJob.stage}{activeJob.progress ? ` · ${Math.round(activeJob.progress)}%` : ""}</p>
+            <p class="shrink-0 text-[12px] text-ink-3 tabular-nums">{stageLabel(activeJob.stage)}{activeJob.progress ? ` · ${Math.round(activeJob.progress)}%` : ""}</p>
           </div>
           <Progress value={activeJob.progress || null} class="mt-2" />
         </div>
@@ -217,7 +238,7 @@
           <Button size="icon-sm" variant="ghost" onclick={cancelJob} aria-label={t("notes.media.cancel")} title={t("notes.media.cancel")}><X /></Button>
         {/if}
       </div>
-    {:else if canEdit}
+    {:else if canEdit && !failure}
       {#if note.audio}
         <button type="button" onclick={() => (mediaOpen = true)} class="inline-flex w-fit items-center gap-1.5 px-1 text-[12.5px] font-medium text-ink-3 hover:text-ink"><RefreshCw class="size-3.5" />{t("notes.media.replace")}</button>
       {:else}

@@ -1,15 +1,16 @@
 <script lang="ts">
   import { ArrowUpRight, Check, Pencil, Plus, Search, Tag as TagIcon, Trash2, X } from "@lucide/svelte";
+  import { tick } from "svelte";
   import { api, ApiError } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone, toneFor } from "#lib/components/ui/Pill.svelte";
   import Segmented from "#lib/components/ui/Segmented.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
-  import { tagNamespaces, type ManagedTag, type TagKind } from "./manage.ts";
+  import { tagNamespaces, tc, type ManagedTag, type TagKind } from "./manage.ts";
 
   /** One tag namespace (`/tags` or `/slide-tags`): filter, sort, create, rename inline, delete. */
   let { kind, tags = $bindable(null), canEdit }: { kind: TagKind; tags?: ManagedTag[] | null; canEdit: boolean } = $props();
@@ -25,6 +26,13 @@
     return list.sort((a, b) => (sort === "usage" ? b.count - a.count : 0) || collator.compare(a.name, b.name));
   });
   const unused = $derived(tags?.filter(tag => !tag.count).length ?? 0);
+
+  let board = $state<HTMLElement | null>(null);
+  /** Puts focus back on a card's rename button after its inline editor closes (else it falls to <body>). */
+  async function focusRename(id: string) {
+    await tick();
+    board?.querySelector<HTMLElement>(`[data-tag="${id}"] [data-action="rename"]`)?.focus();
+  }
 
   // Create
   let newName = $state("");
@@ -59,8 +67,10 @@
     renameError = null;
   }
   function cancelRename() {
+    const id = editingId;
     editingId = null;
     renameError = null;
+    if (id) void focusRename(id);
   }
   async function commitRename(tag: ManagedTag) {
     const name = draft.trim();
@@ -71,6 +81,7 @@
       const result = await api.patch<{ tag: ManagedTag }>(`${ns.api}/${tag.id}`, { name });
       tags = (tags ?? []).map(x => (x.id === tag.id ? { ...x, name: result.tag.name } : x));
       editingId = null;
+      void focusRename(tag.id);
       toasts.show(t("manage.tags.renamed", { name: result.tag.name }), "success");
     } catch (err) {
       renameError = (err as Error).message;
@@ -89,8 +100,11 @@
     }
   }
   function focusOnMount(node: HTMLInputElement) {
-    node.focus();
-    node.select();
+    // Next frame: the value binding lands after the action and would drop the selection.
+    requestAnimationFrame(() => {
+      node.focus();
+      node.select();
+    });
   }
 
   // Delete
@@ -157,7 +171,7 @@
   </div>
 
   {#if tags}
-    <p class="text-[13px] text-ink-3">{t("manage.tags.summary", { n: tags.length, unused })}</p>
+    <p class="text-[13px] text-ink-3">{tc("manage.tags.summary", tags.length, { unused })}</p>
   {/if}
 
   {#if !tags}
@@ -175,10 +189,11 @@
       </EmptyState>
     </div>
   {:else}
-    <ul class="grid gap-2.5 sm:grid-cols-2 sm:gap-3 xl:grid-cols-3">
+    <ul bind:this={board} class="grid gap-2.5 sm:grid-cols-2 sm:gap-3 xl:grid-cols-3">
       {#each visible as tag (tag.id)}
-        {@const tone = toneFor(tag.name)}
+        {@const tone = tagTone(tag)}
         <li
+          data-tag={tag.id}
           class="group flex min-h-[66px] items-center gap-3 rounded-2xl border bg-surface px-3.5 py-2.5 shadow-card sm:min-h-[74px] sm:px-4 sm:py-3 transition-colors {editingId === tag.id
             ? 'border-ink'
             : 'border-line/70 hover:border-line-2'}"
@@ -210,21 +225,21 @@
             </div>
           {:else}
             <div class="flex min-w-0 flex-1 flex-col items-start gap-1">
-              <Pill {tone}>{tag.name}</Pill>
+              <span class="max-w-full" title={tag.name}><Pill {tone}><span class="truncate">{tag.name}</span></Pill></span>
               {#if tag.count}
                 <a
                   href="{ns.list}?tags={tag.id}"
                   class="inline-flex items-center gap-0.5 rounded px-0.5 text-[12.5px] text-ink-2 tabular-nums hover:text-ink hover:underline"
                 >
-                  {t(ns.count, { n: tag.count })}<ArrowUpRight class="size-3.5 text-ink-3" />
+                  {tc(ns.count, tag.count)}<ArrowUpRight class="size-3.5 text-ink-3" />
                 </a>
               {:else}
                 <span class="px-0.5 text-[12.5px] text-ink-3">{t("manage.tags.unused")}</span>
               {/if}
             </div>
             {#if canEdit}
-              <div class="flex shrink-0 gap-0.5 transition-opacity md:opacity-0 md:group-focus-within:opacity-100 md:group-hover:opacity-100">
-                <Button size="icon-sm" variant="ghost" aria-label="{t('manage.tags.rename')} {tag.name}" onclick={() => startRename(tag)}><Pencil /></Button>
+              <div class="flex shrink-0 gap-0.5 transition-opacity md:pointer-fine:opacity-0 md:pointer-fine:group-focus-within:opacity-100 md:pointer-fine:group-hover:opacity-100">
+                <Button size="icon-sm" variant="ghost" data-action="rename" aria-label="{t('manage.tags.rename')} {tag.name}" onclick={() => startRename(tag)}><Pencil /></Button>
                 <Button size="icon-sm" variant="ghost" class="hover:!text-danger" aria-label="{t('manage.tags.delete')} {tag.name}" onclick={() => askDelete(tag)}><Trash2 /></Button>
               </div>
             {/if}
@@ -238,7 +253,7 @@
 <ConfirmDialog
   bind:open={confirmOpen}
   title={t("manage.tags.confirmTitle", { name: pending?.name ?? "" })}
-  description={pending?.count ? t(ns.confirm, { n: pending.count }) : t("manage.tags.confirmUnused")}
+  description={pending?.count ? tc(ns.confirm, pending.count) : t("manage.tags.confirmUnused")}
   confirmLabel={t("manage.tags.delete")}
   onConfirm={remove}
 />

@@ -85,6 +85,8 @@
   const filtering = $derived(Boolean(q.trim() || selected.length));
 </script>
 
+<svelte:head><title>{t("nav.slides")} · Speech-AI Hub</title></svelte:head>
+
 <PageHeader title={t("slides.title")} subtitle={slides ? t("slides.count", { n: slides.length }) : t("slides.subtitle")}>
   {#snippet actions()}
     {#if session.canEdit}<Button variant="primary" onclick={() => (uploadOpen = true)}><Upload />{t("action.upload")}</Button>{/if}
@@ -112,7 +114,7 @@
     <div class="flex flex-wrap items-center gap-1.5">
       {#each selected as id (id)}
         <button type="button" class="group inline-flex" onclick={() => (selected = selected.filter(x => x !== id))} aria-label="{t('slides.filter.clear')}: {tagName(id)}">
-          <Pill tone={id === "none" ? "stone" : toneFor(tagName(id))} class="pr-1.5">{tagName(id)}<X class="size-3 opacity-60 group-hover:opacity-100" /></Pill>
+          <Pill tone={id === "none" ? "stone" : toneFor(id)} class="pr-1.5">{tagName(id)}<X class="size-3 opacity-60 group-hover:opacity-100" /></Pill>
         </button>
       {/each}
       <button type="button" class="ml-1 text-[12.5px] font-medium text-ink-3 hover:text-ink" onclick={() => (selected = [])}>{t("slides.filter.clear")}</button>

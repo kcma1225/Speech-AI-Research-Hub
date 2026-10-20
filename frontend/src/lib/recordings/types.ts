@@ -1,3 +1,5 @@
+import { t } from "#lib/i18n.svelte.ts";
+import type { MessageKey } from "#lib/messages.ts";
 import type { TagRef } from "#lib/types.ts";
 
 /** One SRT cue; times in seconds. */
@@ -67,4 +69,26 @@ export function cueIndexAt(cues: Cue[], time: number): number {
 export function formatBytes(n: number | null | undefined): string {
   if (!n) return "—";
   return n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+/** Worker/backend stage labels (繁中, or the raw `queued`/`starting` key) → localized label keys. */
+const STAGE_KEYS: Record<string, MessageKey> = {
+  queued: "recordings.stage.queued",
+  排隊中: "recordings.stage.queued",
+  starting: "recordings.stage.starting",
+  準備中: "recordings.stage.starting",
+  分析媒體: "recordings.stage.analyze",
+  音訊轉碼: "recordings.stage.transcode",
+  上傳結果: "recordings.stage.upload",
+  完成: "recordings.stage.done",
+  失敗: "recordings.stage.failed",
+  cancelled: "recordings.stage.cancelled",
+  已取消: "recordings.stage.cancelled",
+};
+
+/** Localized media job stage; unknown stages are shown as sent. */
+export function stageLabel(stage: string | null | undefined): string {
+  if (!stage) return t("recordings.stage.queued");
+  const key = STAGE_KEYS[stage];
+  return key ? t(key) : stage;
 }

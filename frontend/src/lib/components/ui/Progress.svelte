@@ -1,8 +1,8 @@
 <script lang="ts">
-  let { value = null, class: cls = "" }: { value?: number | null; class?: string } = $props();
+  let { value = null, label, class: cls = "" }: { value?: number | null; label?: string; class?: string } = $props();
 </script>
 
-<div class="relative h-1.5 overflow-hidden rounded-full bg-surface-3 {cls}" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={value ?? undefined}>
+<div class="relative h-1.5 overflow-hidden rounded-full bg-surface-3 {cls}" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={value ?? undefined}>
   {#if value === null}
     <div class="absolute inset-y-0 w-1/3 animate-[indeterminate_1.4s_ease-in-out_infinite] rounded-full bg-ink"></div>
   {:else}

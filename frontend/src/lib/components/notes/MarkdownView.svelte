@@ -95,8 +95,14 @@
     list-style: none;
     padding-left: 0.2em;
   }
+  /* Hanging indent: wrapped lines line up with the text after the checkbox (glyph 1.05em + 0.55em gap). */
   .md :global(li.md-task-item) {
     display: block;
+    padding-left: 1.6em;
+    text-indent: -1.6em;
+  }
+  .md :global(li.md-task-item > :is(ul, ol)) {
+    text-indent: 0;
   }
   .md :global(.md-task) {
     position: relative;

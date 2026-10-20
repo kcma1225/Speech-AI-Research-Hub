@@ -5,6 +5,8 @@ let unread = $state(0);
 let items = $state<Notification[]>([]);
 let loading = $state(false);
 let started = false;
+let interval: ReturnType<typeof setInterval> | undefined;
+const onVisible = () => !document.hidden && pollUnread();
 
 async function pollUnread() {
   try {
@@ -26,8 +28,16 @@ export const notificationsStore = {
     if (started) return;
     started = true;
     void pollUnread();
-    setInterval(() => !document.hidden && pollUnread(), 30_000);
-    document.addEventListener("visibilitychange", () => !document.hidden && pollUnread());
+    interval = setInterval(() => !document.hidden && pollUnread(), 30_000);
+    document.addEventListener("visibilitychange", onVisible);
+  },
+  /** On logout: stop polling and forget the previous account's notifications. */
+  stop() {
+    started = false;
+    clearInterval(interval);
+    document.removeEventListener("visibilitychange", onVisible);
+    items = [];
+    unread = 0;
   },
   async load() {
     loading = true;
@@ -41,12 +51,14 @@ export const notificationsStore = {
     const now = new Date().toISOString();
     items = items.map(n => (!ids || ids.includes(n.id) ? { ...n, read_at: n.read_at ?? now } : n));
     unread = items.filter(n => !n.read_at).length;
-    await api.post("/notifications/read", ids ? { ids } : {});
+    await api.post("/notifications/read", ids ? { ids } : {}).catch(() => {});
     void pollUnread();
   },
   async clear() {
+    const before = items;
     items = [];
     unread = 0;
-    await api.del("/notifications", {});
+    // Put the list back if the server refused, so nothing silently disappears.
+    await api.del("/notifications", {}).catch(() => ((items = before), pollUnread()));
   },
 };

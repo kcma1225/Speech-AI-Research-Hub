@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { FileUp, FolderUp, X } from "@lucide/svelte";
-  import { t } from "#lib/i18n.svelte.ts";
+  import { i18n, t } from "#lib/i18n.svelte.ts";
   import { droppedFolder, pickedFolder, type Folder } from "#lib/slides/folder.ts";
 
   /**
@@ -41,7 +41,7 @@
     const next = list?.[0];
     if (!next) return;
     const ok = accept.split(",").some(a => (a.startsWith(".") ? next.name.toLowerCase().endsWith(a.trim().toLowerCase()) : next.type === a.trim()));
-    if (!ok) return onError?.(t("upload.badType", { types: accept }));
+    if (!ok) return onError?.(t("upload.badType", { types: accept.split(",").map(a => a.trim()).join(i18n.locale === "en" ? ", " : "、") }));
     if (maxBytes && next.size > maxBytes) return onError?.(t("upload.tooLarge", { size: formatBytes(maxBytes) }));
     file = next;
   }

@@ -32,7 +32,15 @@ export const zh = {
 
   "recordings.job.title": "錄音轉檔中",
   "recordings.job.replacing": "新的錄音轉檔中，完成後會取代目前的音訊",
-  "recordings.job.queued": "排隊中",
+
+  "recordings.stage.queued": "排隊中",
+  "recordings.stage.starting": "準備中",
+  "recordings.stage.analyze": "分析媒體",
+  "recordings.stage.transcode": "音訊轉碼",
+  "recordings.stage.upload": "儲存音訊",
+  "recordings.stage.done": "完成",
+  "recordings.stage.failed": "失敗",
+  "recordings.stage.cancelled": "已取消",
 
   "recordings.player.label": "播放器",
   "recordings.player.seek": "播放位置",
@@ -118,7 +126,15 @@ export const en: Record<keyof typeof zh, string> = {
 
   "recordings.job.title": "Transcoding recording",
   "recordings.job.replacing": "A new recording is transcoding and will replace the current audio",
-  "recordings.job.queued": "Queued",
+
+  "recordings.stage.queued": "Queued",
+  "recordings.stage.starting": "Starting",
+  "recordings.stage.analyze": "Analyzing",
+  "recordings.stage.transcode": "Transcoding",
+  "recordings.stage.upload": "Saving audio",
+  "recordings.stage.done": "Done",
+  "recordings.stage.failed": "Failed",
+  "recordings.stage.cancelled": "Cancelled",
 
   "recordings.player.label": "Player",
   "recordings.player.seek": "Playback position",

@@ -34,7 +34,7 @@
             </div>
             {#if active}
               <div class="mt-1.5 flex items-center gap-2 pl-8">
-                <Progress value={job.status === "queued" ? null : job.progress} class="flex-1" />
+                <Progress value={job.status === "queued" ? null : job.progress} label={job.label} class="flex-1" />
                 <span class="w-14 truncate text-right text-[11px] text-ink-3">{job.status === "queued" ? t("jobs.queued") : (job.stage ?? "")}</span>
               </div>
             {:else}

@@ -3,7 +3,7 @@
   import { Check, Plus, Tag } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
-  import Pill, { toneFor } from "./Pill.svelte";
+  import Pill, { tagTone } from "./Pill.svelte";
   import { toasts } from "./toast.svelte.ts";
 
   /**
@@ -53,13 +53,14 @@
       <input
         bind:value={query}
         placeholder={t("tags.search")}
+        aria-label={t("tags.search")}
         class="mb-1 h-9 w-full rounded-xl bg-surface-2 px-3 text-sm outline-none placeholder:text-ink-3"
         onkeydown={e => e.key === "Enter" && canCreate && query.trim() && !exact && create()}
       />
       <div class="max-h-60 overflow-y-auto">
         {#each filtered as tag (tag.id)}
-          <button type="button" onclick={() => toggle(tag.id)} class="flex h-9 w-full items-center gap-2 rounded-xl px-2 text-left text-sm hover:bg-surface-2">
-            <Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>
+          <button type="button" onclick={() => toggle(tag.id)} aria-pressed={selected.includes(tag.id)} class="flex h-9 w-full items-center gap-2 rounded-xl px-2 text-left text-sm hover:bg-surface-2">
+            <Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>
             <span class="flex-1"></span>
             {#if selected.includes(tag.id)}<Check class="size-4" />{/if}
           </button>

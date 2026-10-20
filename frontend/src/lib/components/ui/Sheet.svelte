@@ -5,7 +5,7 @@
   import { t } from "#lib/i18n.svelte.ts";
 
   /** Modal panel (the body collapses when `children` renders nothing, e.g. ConfirmDialog): a bottom sheet on phones, a side/center panel from `sm` up. */
-  let { open = $bindable(false), title, description, side = "bottom", children, footer, hideTitle = false }: {
+  let { open = $bindable(false), title, description, side = "bottom", children, footer, hideTitle = false, onOpenAutoFocus, onCloseAutoFocus }: {
     open?: boolean;
     title: string;
     description?: string;
@@ -13,6 +13,9 @@
     children: Snippet;
     footer?: Snippet;
     hideTitle?: boolean;
+    /** Passed to bits-ui; call `preventDefault()` to place focus yourself. */
+    onOpenAutoFocus?: (e: Event) => void;
+    onCloseAutoFocus?: (e: Event) => void;
   } = $props();
 
   const position = {
@@ -25,7 +28,7 @@
 <Dialog.Root bind:open>
   <Dialog.Portal>
     <Dialog.Overlay class="fixed inset-0 z-50 bg-[var(--overlay)] backdrop-blur-[2px] data-[state=open]:animate-[fade-in_160ms_ease-out]" />
-    <Dialog.Content class="fixed z-50 flex flex-col overflow-hidden border border-line bg-surface shadow-pop outline-none {position[side]}">
+    <Dialog.Content {onOpenAutoFocus} {onCloseAutoFocus} class="fixed z-50 flex flex-col overflow-hidden border border-line bg-surface shadow-pop outline-none {position[side]}">
       {#if side !== "center"}<div class="mx-auto mt-2.5 h-1 w-10 shrink-0 rounded-full bg-line-2 sm:hidden" aria-hidden="true"></div>{/if}
       <div class="flex items-center justify-between gap-3 px-5 pt-3 pb-2 sm:px-6 sm:pt-5 {hideTitle ? 'sr-only' : ''}">
         <div>

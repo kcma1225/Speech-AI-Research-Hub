@@ -3,7 +3,7 @@
   import { Check, ListFilter } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone } from "#lib/components/ui/Pill.svelte";
 
   /** Multi-select filter over slide tags; `none` stands for untagged decks (backend `tags=none`). */
   let { selected = $bindable([]), tags = $bindable([]) }: { selected?: string[]; tags?: { id: string; name: string; count?: number }[] } = $props();
@@ -32,7 +32,7 @@
       <div class="max-h-72 overflow-y-auto">
         {#each tags as tag (tag.id)}
           <button type="button" class={row} aria-pressed={selected.includes(tag.id)} onclick={() => toggle(tag.id)}>
-            <Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>
+            <Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>
             {#if tag.count !== undefined}<span class="text-[12px] text-ink-3">{tag.count}</span>{/if}
             <span class="flex-1"></span>
             {#if selected.includes(tag.id)}<Check class="size-4" />{/if}

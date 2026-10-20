@@ -73,7 +73,8 @@
       return;
     }
     if (data?.namespace !== "reveal" || data.eventName !== "ready") return;
-    reveal("configure", [{ fragments: false, controls: false, progress: false, keyboard: false, touch: false, slideNumber: false, overview: false, help: false }]);
+    // slideNumber stays as the deck has it: some themes force the number visible, and it must then stay right.
+    reveal("configure", [{ fragments: false, controls: false, progress: false, keyboard: false, touch: false, overview: false, help: false }]);
     frameReady = true;
     showInFrame(current);
   }
@@ -177,6 +178,7 @@
     if (handled) e.preventDefault();
   }
 
+  const stepBtn = "grid size-7 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-3.5";
   const navBtn = "grid size-11 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-surface text-ink transition-colors hover:bg-surface-2 disabled:pointer-events-none disabled:opacity-40 [&_svg]:size-5";
 </script>
 
@@ -207,10 +209,11 @@
       <EmptyState title={t("slides.noDeck")}>{#snippet icon()}<Presentation />{/snippet}</EmptyState>
     </div>
   {:else}
-    <main class="grid min-h-0 flex-1 gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(320px,1fr)] lg:overflow-hidden">
+    <!-- One scrolling column on narrow or portrait windows; landscape windows from md fit everything in the window and the notes take the leftover height. -->
+    <main class="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4 md:landscape:grid-cols-[minmax(0,1.6fr)_minmax(300px,1fr)] md:landscape:content-stretch md:landscape:overflow-hidden">
       <!-- Current page -->
-      <section class="flex min-h-0 flex-col gap-3">
-        <div class="relative min-h-0 flex-1 overflow-hidden rounded-[22px] border border-line/70 bg-surface-2 shadow-card max-lg:aspect-[var(--r)] max-lg:flex-none" style="--r:{ratio}">
+      <section class="flex flex-col gap-3 md:landscape:min-h-0">
+        <div class="relative overflow-hidden rounded-[22px] border border-line/70 bg-surface-2 shadow-card aspect-[var(--r)] md:landscape:aspect-auto md:landscape:min-h-0 md:landscape:flex-1" style="--r:{ratio}">
           {#if liveSrc}
             <iframe
               bind:this={frame}
@@ -245,11 +248,12 @@
       </section>
 
       <!-- Next page, timer, notes -->
-      <aside class="flex min-h-0 flex-col gap-3 sm:gap-4">
-        <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3 lg:grid-cols-1">
+      <aside class="flex flex-col gap-3 sm:gap-4 md:landscape:min-h-0 md:landscape:overflow-y-auto">
+        <div class="grid gap-3 min-[560px]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] sm:gap-4 md:landscape:grid-cols-1">
           <div class="rounded-[22px] border border-line/70 bg-surface p-3 shadow-card">
             <p class="mb-2 px-1 text-[12px] font-medium text-ink-3">{t("slides.speaker.next")}</p>
-            <div class="relative max-h-[30dvh] overflow-hidden rounded-xl bg-surface-2" style="aspect-ratio:{ratio}">
+            <!-- Height-capped on short windows so the notes keep their room; the width follows the ratio. -->
+            <div class="relative mx-auto max-h-[24dvh] overflow-hidden rounded-xl border border-line/70 bg-surface-2" style="aspect-ratio:{ratio}">
               {#if next}
                 <img src={next.thumb} alt={next.title ?? t("slides.player.pageAlt", { n: next.index })} class="absolute inset-0 size-full object-contain" />
               {:else}
@@ -261,31 +265,35 @@
           <div class="flex flex-col rounded-[22px] border p-4 shadow-card transition-colors {over ? 'border-danger bg-danger-soft' : 'border-line/70 bg-surface'}">
             <div class="flex items-center justify-between gap-2">
               <p class="inline-flex items-center gap-1.5 text-[12px] font-medium {over ? 'text-danger' : 'text-ink-3'}"><Timer class="size-3.5" />{over ? t("slides.speaker.over") : t("slides.speaker.elapsed")}</p>
-              <span class="text-[11px] text-ink-3">T</span>
+              <kbd class="rounded border border-line px-1 font-sans text-[10.5px] leading-4 text-ink-3" title={t("slides.speaker.timerKey")}>T</kbd>
             </div>
-            <p class="mt-1 font-display text-[44px] leading-none tabular-nums sm:text-[52px] {over ? 'text-danger' : nearEnd ? 'text-[var(--pill-butter-ink)]' : 'text-ink'}" role="timer" aria-live="off">{fmt(elapsed)}</p>
-            {#if targetOn}
-              <p class="mt-1.5 text-[12.5px] tabular-nums {over ? 'font-medium text-danger' : 'text-ink-3'}">
-                {over ? t("slides.speaker.overBy", { time: fmt(elapsed - targetMin * 60_000) }) : t("slides.speaker.remaining", { time: fmt(targetMin * 60_000 - elapsed) })}
-              </p>
-            {/if}
-            <div class="mt-3 flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="primary" onclick={toggleTimer}>{#if startedAt}<Pause />{t("slides.speaker.pause")}{:else}<Play />{elapsed ? t("slides.speaker.resume") : t("slides.speaker.start")}{/if}</Button>
-              <Button size="sm" variant="ghost" disabled={!elapsed} onclick={resetTimer}><RotateCcw />{t("slides.speaker.reset")}</Button>
+            <div class="mt-1 flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
+              <div class="min-w-0">
+                <p class="font-display text-[40px] leading-none tabular-nums xl:text-[48px] {over ? 'text-danger' : nearEnd ? 'text-[var(--pill-butter-ink)]' : 'text-ink'}" role="timer" aria-live="off">{fmt(elapsed)}</p>
+                {#if targetOn}
+                  <p class="mt-1 text-[12.5px] tabular-nums {over ? 'font-medium text-danger' : 'text-ink-3'}">
+                    {over ? t("slides.speaker.overBy", { time: fmt(elapsed - targetMin * 60_000) }) : t("slides.speaker.remaining", { time: fmt(targetMin * 60_000 - elapsed) })}
+                  </p>
+                {/if}
+              </div>
+              <div class="flex items-center gap-1.5">
+                <Button size="sm" variant="ghost" disabled={!elapsed} onclick={resetTimer} aria-label={t("slides.speaker.reset")} title={t("slides.speaker.reset")} class="px-2.5"><RotateCcw /></Button>
+                <Button size="sm" variant="primary" onclick={toggleTimer}>{#if startedAt}<Pause />{t("slides.speaker.pause")}{:else}<Play />{elapsed ? t("slides.speaker.resume") : t("slides.speaker.start")}{/if}</Button>
+              </div>
             </div>
-            <div class="mt-3 flex items-center gap-2 border-t border-line pt-3 {over ? 'border-danger/30' : ''}">
+            <div class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t pt-3 {over ? 'border-danger/30' : 'border-line'}">
               <Switch bind:checked={targetOn} label={t("slides.speaker.target")} />
-              <span class="text-[12.5px] text-ink-2">{t("slides.speaker.target")}</span>
+              <span class="text-[12.5px] whitespace-nowrap text-ink-2">{t("slides.speaker.target")}</span>
               <div class="ml-auto flex items-center gap-1 {targetOn ? '' : 'opacity-50'}">
-                <button type="button" class="grid size-7 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 disabled:opacity-40 [&_svg]:size-3.5" aria-label={t("slides.speaker.less")} disabled={!targetOn || targetMin <= 1} onclick={() => (targetMin = Math.max(1, targetMin - (targetMin > 10 ? 5 : 1)))}><Minus /></button>
-                <span class="min-w-[4.5em] text-center text-[12.5px] font-medium tabular-nums">{t("slides.speaker.minutes", { n: targetMin })}</span>
-                <button type="button" class="grid size-7 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 disabled:opacity-40 [&_svg]:size-3.5" aria-label={t("slides.speaker.more")} disabled={!targetOn || targetMin >= 180} onclick={() => (targetMin = Math.min(180, targetMin + (targetMin >= 10 ? 5 : 1)))}><Plus /></button>
+                <button type="button" class={stepBtn} aria-label={t("slides.speaker.less")} disabled={!targetOn || targetMin <= 1} onclick={() => (targetMin = Math.max(1, targetMin - (targetMin > 10 ? 5 : 1)))}><Minus /></button>
+                <span class="min-w-[4.5em] text-center text-[12.5px] font-medium whitespace-nowrap tabular-nums">{t("slides.speaker.minutes", { n: targetMin })}</span>
+                <button type="button" class={stepBtn} aria-label={t("slides.speaker.more")} disabled={!targetOn || targetMin >= 180} onclick={() => (targetMin = Math.min(180, targetMin + (targetMin >= 10 ? 5 : 1)))}><Plus /></button>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="flex min-h-[160px] flex-1 flex-col overflow-hidden rounded-[22px] border border-line/70 bg-surface shadow-card">
+        <div class="flex min-h-[180px] flex-col overflow-hidden rounded-[22px] border border-line/70 bg-surface shadow-card md:landscape:min-h-[140px] md:landscape:flex-1">
           <p class="border-b border-line px-4 py-2.5 text-[12px] font-medium text-ink-3">{t("slides.player.notes")}</p>
           <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-[17px] leading-relaxed text-ink-2">
             {#if notes}

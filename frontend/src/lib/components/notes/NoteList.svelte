@@ -6,7 +6,7 @@
   import { notesList } from "#lib/notes/list.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone, toneFor } from "#lib/components/ui/Pill.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import Spinner from "#lib/components/ui/Spinner.svelte";
   import TagFilter from "./TagFilter.svelte";
@@ -17,6 +17,8 @@
   let search = $state(notesList.q);
   let sentinel = $state<HTMLElement | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** IME composition in progress (zhuyin/pinyin): search only once the text is committed. */
+  let composing = false;
 
   $effect(() => {
     api.get<{ tags: { id: string; name: string; count: number }[] }>("/tags").then(r => (tags = r.tags), () => {});
@@ -68,10 +70,15 @@
       <input
         type="search"
         bind:value={search}
-        oninput={onSearch}
-        onkeydown={e => e.key === "Escape" && search && clearSearch()}
+        oninput={() => !composing && onSearch()}
+        oncompositionstart={() => (composing = true)}
+        oncompositionend={() => {
+          composing = false;
+          onSearch();
+        }}
+        onkeydown={e => !e.isComposing && e.key === "Escape" && search && clearSearch()}
         placeholder={t("notes.search")}
-        class="h-full w-full min-w-0 rounded-full bg-transparent pr-9 pl-10 text-[15px] text-ink outline-none placeholder:text-ink-3 sm:text-sm [&::-webkit-search-cancel-button]:hidden"
+        class="h-full w-full min-w-0 rounded-full bg-transparent pl-10 {search ? 'pr-9' : 'pr-3'} text-[15px] text-ink outline-none placeholder:text-ink-3 sm:text-sm [&::-webkit-search-cancel-button]:hidden"
       />
       {#if search}
         <button type="button" onclick={clearSearch} class="absolute right-1.5 grid size-7 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("notes.search.clear")}><X class="size-3.5" /></button>
@@ -84,7 +91,7 @@
     <div class="flex flex-wrap gap-1.5 px-1 pb-3 lg:px-4">
       {#each notesList.tags as id (id)}
         <button type="button" onclick={() => setTags(notesList.tags.filter(x => x !== id))} class="group inline-flex" aria-label={t("notes.filter.remove", { name: tagName(id) })}>
-          <Pill tone={id === "none" ? "stone" : toneFor(tagName(id))} size="md">{tagName(id)}<X class="-mr-1 size-3 opacity-60 group-hover:opacity-100" /></Pill>
+          <Pill tone={id === "none" ? "stone" : toneFor(id)} size="md">{tagName(id)}<X class="-mr-1 size-3 opacity-60 group-hover:opacity-100" /></Pill>
         </button>
       {/each}
     </div>
@@ -136,7 +143,7 @@
                 {#if note.created_by_name}<span aria-hidden="true">·</span><span class="max-w-[8em] shrink-0 truncate">{note.created_by_name}</span>{/if}
                 {#if note.tags.length}
                   <span class="ml-auto flex min-w-0 justify-end gap-1 overflow-hidden">
-                    {#each note.tags.slice(0, 2) as tag (tag.id)}<Pill tone={toneFor(tag.name)} size="sm" class="shrink">{tag.name}</Pill>{/each}
+                    {#each note.tags.slice(0, 2) as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm" class="shrink">{tag.name}</Pill>{/each}
                     {#if note.tags.length > 2}<Pill size="sm" class="shrink-0">+{note.tags.length - 2}</Pill>{/if}
                   </span>
                 {/if}

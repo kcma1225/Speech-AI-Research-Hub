@@ -1,6 +1,6 @@
 <script lang="ts" generics="T extends string">
   import { Select } from "bits-ui";
-  import { Check, ChevronDown } from "@lucide/svelte";
+  import { Check, ChevronDown, ChevronUp } from "@lucide/svelte";
 
   let { value = $bindable(), options, label, onValueChange, class: cls = "" }: {
     value: T;
@@ -23,9 +23,11 @@
   <Select.Portal>
     <Select.Content
       sideOffset={6}
-      class="z-50 max-h-72 min-w-[var(--bits-select-anchor-width)] overflow-hidden rounded-2xl border border-line bg-surface p-1.5 shadow-pop outline-none data-[state=open]:animate-[pop-in_120ms_ease-out]"
+      class="z-50 flex max-h-[min(18rem,var(--bits-select-content-available-height))] min-w-[var(--bits-select-anchor-width)] flex-col overflow-hidden rounded-2xl border border-line bg-surface p-1.5 shadow-pop outline-none data-[state=open]:animate-[pop-in_120ms_ease-out]"
     >
-      <Select.Viewport>
+      <!-- Shown only while there is more to scroll, so a list opened at the selected item hints at what's above. -->
+      <Select.ScrollUpButton class="flex h-6 shrink-0 items-center justify-center text-ink-3"><ChevronUp class="size-4" /></Select.ScrollUpButton>
+      <Select.Viewport class="min-h-0">
         {#each options as option (option.value)}
           <Select.Item
             value={option.value}
@@ -39,6 +41,7 @@
           </Select.Item>
         {/each}
       </Select.Viewport>
+      <Select.ScrollDownButton class="flex h-6 shrink-0 items-center justify-center text-ink-3"><ChevronDown class="size-4" /></Select.ScrollDownButton>
     </Select.Content>
   </Select.Portal>
 </Select.Root>

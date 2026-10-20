@@ -10,7 +10,7 @@
   import Card from "#lib/components/ui/Card.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone } from "#lib/components/ui/Pill.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
@@ -163,7 +163,7 @@
       tab = "reviews";
       await tick();
       const target = hash.startsWith("review-") ? document.getElementById(hash) : null;
-      (target ?? panel)?.scrollIntoView({ behavior: "smooth", block: target ? "center" : "start" });
+      (target ?? panel)?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: target ? "center" : "start" });
       if (target) {
         highlight = hash.slice("review-".length);
         setTimeout(() => (highlight = null), 2400);
@@ -222,12 +222,12 @@
           <span>{t("slides.noVersion")}</span>
         {/if}
         {#if d.project.public_view}<Pill size="sm"><Globe class="size-3" />{t("slides.public")}</Pill>{/if}
-        {#each d.tags as tag (tag.id)}<Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>{/each}
+        {#each d.tags as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>{/each}
       </div>
     </div>
     <div class="flex shrink-0 flex-wrap items-center gap-2">
       <Button variant="secondary" disabled={!canPlay} onclick={() => player?.fullscreen()}><Expand />{t("slides.fullscreen")}</Button>
-      <Button variant="secondary" href={d.project.playerUrl}><Play />{t("slides.player")}</Button>
+      <Button variant="secondary" href={d.activeVersion ? d.project.playerUrl : undefined} disabled={!d.activeVersion}><Play />{t("slides.player")}</Button>
       {#if d.pdfUrl}<Button variant="primary" href={d.pdfUrl}><Download />PDF</Button>{/if}
     </div>
   </header>
@@ -254,6 +254,11 @@
                 <div class="mb-1.5 flex justify-between text-[12px] text-ink-3"><span>{latest.stage ?? t("slides.status.queued")}</span><span class="tabular-nums">{latest.progress}%</span></div>
                 <Progress value={latest.progress || null} />
               </div>
+            {:else if latest?.status === "review"}
+              <!-- Viewers only: the uploader gets the version itself in the player. -->
+              <span class="grid size-11 place-items-center rounded-2xl" style="background:var(--pill-lilac);color:var(--pill-lilac-ink)"><FileSearch class="size-5" /></span>
+              <p class="text-sm font-medium">{t("slides.noDeck")}</p>
+              <p class="text-[13px] text-ink-3">{t("slides.versions.reviewHintViewer")}</p>
             {:else}
               <span class="grid size-11 place-items-center rounded-2xl" style="background:var(--pill-rose);color:var(--pill-rose-ink)"><CircleAlert class="size-5" /></span>
               <p class="text-sm font-medium">{t("slides.noDeck")}</p>

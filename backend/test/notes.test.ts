@@ -20,6 +20,7 @@ describe("markdownExcerpt", () => {
   it("reduces Markdown to plain text", () => {
     expect(markdownExcerpt("# Title\n\n- **bold** [link](http://x) `code`\n\n```js\nhidden()\n```\n> quote")).toBe("Title bold link code quote");
     expect(markdownExcerpt("a".repeat(500), 10)).toHaveLength(10);
+    expect(markdownExcerpt("- [ ] todo\n- [x] done\n\nArea $x^2$ and\n$$\n\\sum a\n$$")).toBe("todo done Area x^2 and \\sum a");
   });
 });
 

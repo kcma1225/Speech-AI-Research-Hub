@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import { replaceState } from "$app/navigation";
+  import { goto } from "$app/navigation";
+  import { untrack } from "svelte";
   import { AudioLines, Captions, FileText, Mic, Search, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
@@ -10,11 +11,13 @@
   import Card from "#lib/components/ui/Card.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import PageHeader from "#lib/components/ui/PageHeader.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill, { tagTone, toneFor } from "#lib/components/ui/Pill.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
 
   const PAGE = 24;
   let query = $state(page.url.searchParams.get("q") ?? "");
+  /** IME composition in progress (zhuyin/pinyin): wait for the committed text before searching. */
+  let composing = $state(false);
   let items = $state<RecordingSummary[] | null>(null);
   let cursor = $state<string | null>(null);
   let loadingMore = $state(false);
@@ -42,12 +45,15 @@
   const trimmed = $derived(query.trim());
   $effect(() => {
     const q = trimmed;
+    if (composing) return;
     const timer = setTimeout(() => {
       void load(q);
-      const url = new URL(page.url.href);
-      if (q) url.searchParams.set("q", q);
-      else url.searchParams.delete("q");
-      if (url.search !== page.url.search) replaceState(url, {});
+      untrack(() => {
+        const url = new URL(page.url.href);
+        if (q) url.searchParams.set("q", q);
+        else url.searchParams.delete("q");
+        if (url.search !== page.url.search) void goto(url, { state: page.state, shallow: true, replace: true });
+      });
     }, firstLoad ? 0 : 250);
     firstLoad = false;
     return () => clearTimeout(timer);
@@ -78,6 +84,8 @@
       <input
         type="search"
         bind:value={query}
+        oncompositionstart={() => (composing = true)}
+        oncompositionend={() => (composing = false)}
         placeholder={t("recordings.list.search")}
         aria-label={t("recordings.list.search")}
         class="h-10 w-full rounded-full border border-line-2 bg-surface pr-10 pl-10 text-[15px] text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] sm:text-sm [&::-webkit-search-cancel-button]:hidden"
@@ -148,7 +156,7 @@
           <div class="mt-auto flex flex-col gap-3">
             {#if item.tags.length}
               <div class="flex flex-wrap gap-1.5">
-                {#each item.tags.slice(0, 4) as tag (tag.id)}<Pill tone={toneFor(tag.name)} size="sm">{tag.name}</Pill>{/each}
+                {#each item.tags.slice(0, 4) as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>{/each}
                 {#if item.tags.length > 4}<Pill size="sm">+{item.tags.length - 4}</Pill>{/if}
               </div>
             {/if}
