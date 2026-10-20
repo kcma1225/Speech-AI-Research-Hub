@@ -25,7 +25,7 @@ export function registerMediaFinalizer(app: FastifyInstance) {
     if (job.status !== "succeeded") {
       let notice: NotificationPayload | null = null;
       if (job.status === "failed" && job.created_by) {
-        notice = { kind: "media", title: "影音處理失敗", body: payload.fileName, url: `/items/${payload.itemId}` };
+        notice = { kind: "media", title: "影音處理失敗", body: payload.fileName, url: `/notes/${payload.itemId}` };
         await app.notifier.record(client, [job.created_by], notice);
       }
       const cleanup = removeObjects([payload.sourceKey, payload.outputKey]);
@@ -45,7 +45,7 @@ export function registerMediaFinalizer(app: FastifyInstance) {
               updated_by=COALESCE($5,updated_by),updated_at=now() WHERE id=$6`,
       [result.outputKey, payload.fileName.slice(0, 255), result.bytes, result.durationSeconds, job.created_by, payload.itemId, validPeaks(result.peaks)],
     );
-    const notice: NotificationPayload = { kind: "media", title: "影音處理完成", body: payload.fileName, url: `/items/${payload.itemId}` };
+    const notice: NotificationPayload = { kind: "media", title: "影音處理完成", body: payload.fileName, url: `/recordings/${payload.itemId}` };
     if (job.created_by) await app.notifier.record(client, [job.created_by], notice);
     const previous = item.audio_key && item.audio_key !== result.outputKey ? item.audio_key : null;
     const cleanup = removeObjects([previous, payload.sourceKey]);

@@ -173,7 +173,7 @@ finished/failed → `mediaTranscoded`, new review → `reviews`, reply → `repl
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET `/items?tags=&q=&limit=&cursor=` | user | `tags` omitted = all; `tags=` (empty) = none; ids comma-separated, `none` = untagged. `q` searches title + content (ILIKE). Keyset pagination by (event_date, created_at, id). Each item: id, title, excerpt, event_date, tags, has_audio, has_transcript, updated_at, author names |
+| GET `/items?tags=&q=&limit=&cursor=&audio=` | user | `audio=1` = only notes with a transcoded recording. `tags` omitted = all; `tags=` (empty) = none; ids comma-separated, `none` = untagged. `q` searches title + content (ILIKE). Keyset pagination by (event_date, created_at, id). Each item: id, title, excerpt, event_date, tags, has_audio, has_transcript, audio_name, audio_duration_seconds, updated_at, author names |
 | GET `/items/:id` | user | full note incl. content, tags, audio meta, `audio_peaks` (`number[]` or null), transcript cues, active media job |
 | POST `/items` `{title, event_date, content?, tagIds?}` | editor | |
 | PATCH `/items/:id` | editor | partial update; `updated_by`, `updated_at` |
@@ -189,7 +189,7 @@ finished/failed → `mediaTranscoded`, new review → `reviews`, reply → `repl
 
 Finalizer `media_transcode`: on success set `items.audio_*` incl. `audio_peaks` (a new audio replaces the peaks, NULL when the
 result has none or they are invalid; delete the previous audio object post-commit),
-notify the uploader (`kind:'media'`, url `/items/<id>`); on failure/cancel delete the upload + partial output.
+notify the uploader (`kind:'media'`, url `/recordings/<id>`; failures link to `/notes/<id>`); on failure/cancel delete the upload + partial output.
 
 ### Slides (`slides.ts`, `slide-reviews.ts`, `slide-view.ts`)
 

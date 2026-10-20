@@ -17,6 +17,8 @@ const listQuery = z.object({
   q: z.string().max(1000).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().max(500).optional(),
+  /** `audio=1`: only notes with a transcoded recording (the recordings page). */
+  audio: z.enum(["1"]).optional(),
 });
 const createInput = z.object({
   title: z.string().trim().min(1).max(200),
@@ -45,7 +47,7 @@ function decodeCursor(value: string): Cursor {
 
 type ListRow = {
   id: string; title: string; content: string; event_date: string; created_at_key: string; updated_at: string;
-  audio_name: string | null; has_audio: boolean; has_transcript: boolean; tags: Tag[];
+  audio_name: string | null; audio_duration_seconds: number | null; has_audio: boolean; has_transcript: boolean; tags: Tag[];
   created_by_name: string | null; updated_by_name: string | null;
 };
 
@@ -67,7 +69,7 @@ const routes: FastifyPluginAsync = async app => {
     const cursor = query.cursor ? decodeCursor(query.cursor) : null;
     const result = await app.db.query<ListRow>(
       `SELECT i.id,i.title,left(i.content,4000) AS content,to_char(i.event_date,'YYYY-MM-DD') AS event_date,
-              i.created_at::text AS created_at_key,i.updated_at,i.audio_name,
+              i.created_at::text AS created_at_key,i.updated_at,i.audio_name,i.audio_duration_seconds,
               (i.audio_key IS NOT NULL) AS has_audio,(i.transcript IS NOT NULL) AS has_transcript,
               cu.name AS created_by_name,uu.name AS updated_by_name,
               COALESCE((SELECT json_agg(json_build_object('id',t.id,'name',t.name) ORDER BY lower(t.name))
@@ -80,10 +82,11 @@ const routes: FastifyPluginAsync = async app => {
                OR EXISTS (SELECT 1 FROM item_tags x WHERE x.item_id=i.id AND x.tag_id=ANY($3::uuid[]))
                OR ($4::boolean AND NOT EXISTS (SELECT 1 FROM item_tags x WHERE x.item_id=i.id)))
           AND ($5::date IS NULL OR (i.event_date,i.created_at,i.id) < ($5::date,$6::timestamptz,$7::uuid))
+          AND (NOT $9::boolean OR i.audio_key IS NOT NULL)
         ORDER BY i.event_date DESC,i.created_at DESC,i.id DESC
         LIMIT $8`,
       [search ? `%${escapeLike(search)}%` : "", selected === null, ids, selected?.includes(NO_TAG) ?? true,
-        cursor?.[0] ?? null, cursor?.[1] ?? null, cursor?.[2] ?? null, query.limit + 1],
+        cursor?.[0] ?? null, cursor?.[1] ?? null, cursor?.[2] ?? null, query.limit + 1, query.audio === "1"],
     );
     const rows = result.rows.slice(0, query.limit);
     const last = rows.at(-1);
@@ -95,6 +98,8 @@ const routes: FastifyPluginAsync = async app => {
       tags: row.tags,
       has_audio: row.has_audio,
       has_transcript: row.has_transcript,
+      audio_name: row.audio_name,
+      audio_duration_seconds: row.audio_duration_seconds,
       updated_at: row.updated_at,
       created_by_name: row.created_by_name,
       updated_by_name: row.updated_by_name,

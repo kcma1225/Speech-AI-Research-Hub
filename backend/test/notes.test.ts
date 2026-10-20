@@ -256,7 +256,12 @@ describe.skipIf(!hasTestDb)("notes API", () => {
       expect(item.media_job).toBeNull();
       expect((await call(owner, "GET", `/api/media-jobs/${first}`)).json().job).toMatchObject({ status: "completed", duration_seconds: 12.5 });
       const notes = await ctx.db.query("SELECT title,url FROM notifications WHERE user_id=$1 AND kind='media'", [owner.id]);
-      expect(notes.rows).toContainEqual({ title: "影音處理完成", url: `/items/${itemId}` });
+      expect(notes.rows).toContainEqual({ title: "影音處理完成", url: `/recordings/${itemId}` });
+      const silent = await createItem("No audio");
+      const withAudio = (await call(owner, "GET", "/api/items?audio=1")).json().items;
+      expect(withAudio.every((i: { has_audio: boolean }) => i.has_audio)).toBe(true);
+      expect(withAudio.find((i: { id: string }) => i.id === itemId)).toMatchObject({ audio_name: "talk.webm", audio_duration_seconds: 12.5 });
+      expect(withAudio.some((i: { id: string }) => i.id === silent)).toBe(false);
 
       const full = await call(professor, "GET", `/api/media/${itemId}`);
       expect(full.statusCode).toBe(200);
@@ -292,7 +297,7 @@ describe.skipIf(!hasTestDb)("notes API", () => {
       expect(await ctx.storage.get(payload.sourceKey)).toBeNull();
       expect((await call(member, "GET", `/api/media-jobs/${jobId}`)).json().job).toMatchObject({ status: "failed", error: "無法解析媒體檔" });
       expect((await call(owner, "GET", `/api/items/${itemId}`)).json().item.audio).toBeNull();
-      const notes = await ctx.db.query("SELECT title FROM notifications WHERE user_id=$1 AND url=$2", [member.id, `/items/${itemId}`]);
+      const notes = await ctx.db.query("SELECT title FROM notifications WHERE user_id=$1 AND url=$2", [member.id, `/notes/${itemId}`]);
       expect(notes.rows).toEqual([{ title: "影音處理失敗" }]);
     });
 
