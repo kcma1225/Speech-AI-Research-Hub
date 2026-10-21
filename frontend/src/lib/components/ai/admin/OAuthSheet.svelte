@@ -9,6 +9,7 @@
   import Textarea from "#lib/components/ui/Textarea.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import AiErrorPanel from "../AiErrorPanel.svelte";
+  import ProviderIcon from "../ProviderIcon.svelte";
 
   /** Subscription sign-in: ChatGPT device code (polled) or Claude copy-code / setup-token. */
   let { open = $bindable(false), provider, onDone }: { open?: boolean; provider: Provider | null; onDone: () => void } = $props();
@@ -114,6 +115,7 @@
 </script>
 
 <Sheet bind:open side="right" dirty={!done && (start !== null || code.trim() !== "" || token.trim() !== "")} title={t("aiAdmin.oauth.title", { name: provider?.name ?? "" })} description={provider?.label ? (provider.label.zh) : undefined}>
+  {#snippet icon()}{#if provider}<ProviderIcon kind={provider.kind} label={provider.label?.zh ?? ""} size="md" />{/if}{/snippet}
   {#snippet children()}
     {#if provider}
       <div class="flex flex-col gap-4 pt-1">

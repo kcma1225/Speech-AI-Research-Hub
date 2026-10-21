@@ -11,6 +11,7 @@
   import Select from "#lib/components/ui/Select.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import AiErrorPanel from "../AiErrorPanel.svelte";
+  import ProviderIcon from "../ProviderIcon.svelte";
 
   type Win = "1h" | "24h" | "7d" | "30d";
   let win = $state<Win>("24h");
@@ -100,7 +101,7 @@
           {#each rows as r, i (i)}
             <tr class="border-b border-line/60 last:border-0">
               <td class="max-w-72 truncate py-2.5 pr-3">
-                {#if kind === "role"}{roleLabel(r.role)}{:else}<span class="text-ink-3">{r.provider_name ?? r.provider_kind}</span> / <span class="font-mono text-[12px]">{r.model}</span>{/if}
+                {#if kind === "role"}{roleLabel(r.role)}{:else}<span class="inline-flex max-w-full items-center gap-2 align-middle"><ProviderIcon kind={r.provider_kind} label={r.provider_name ?? ""} size="xs" /><span class="truncate"><span class="text-ink-3">{r.provider_name ?? r.provider_kind}</span> / <span class="font-mono text-[12px]">{r.model}</span></span></span>{/if}
               </td>
               <td class="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">{r.calls}</td>
               <td class="px-3 py-2.5">{@render rateBar(r)}</td>
@@ -118,7 +119,7 @@
       {#each rows as r, i (i)}
         <li class="py-3">
           <p class="truncate text-[14px] font-medium">
-            {#if kind === "role"}{roleLabel(r.role)}{:else}{r.provider_name ?? r.provider_kind} / <span class="font-mono text-[12.5px]">{r.model}</span>{/if}
+            {#if kind === "role"}{roleLabel(r.role)}{:else}<span class="inline-flex max-w-full items-center gap-2 align-middle"><ProviderIcon kind={r.provider_kind} label={r.provider_name ?? ""} size="xs" /><span class="truncate">{r.provider_name ?? r.provider_kind} / <span class="font-mono text-[12.5px]">{r.model}</span></span></span>{/if}
           </p>
           <dl class="mt-1.5 grid grid-cols-3 gap-x-3 gap-y-1 text-[12px]">
             <div><dt class="text-ink-3">{t("aiAdmin.traffic.calls")}</dt><dd class="tabular-nums">{r.calls}</dd></div>
@@ -182,7 +183,7 @@
             <div class="min-w-0">
               <p class="truncate">
                 <span class="font-medium">{roleLabel(c.role)}</span>
-                {#if c.provider_name}<span class="text-ink-3"> · {c.provider_name} / </span><span class="font-mono text-[12px]">{c.model}</span>{/if}{#if c.group_name}<span class="text-ink-3"> · {t("aiAdmin.traffic.inGroup", { name: c.group_name })}</span>{/if}
+                {#if c.provider_name}<span class="text-ink-3"> · </span><ProviderIcon kind={c.provider_kind} label={c.provider_name} size="xs" class="mx-0.5 inline-grid align-middle" /><span class="text-ink-3"> {c.provider_name} / </span><span class="font-mono text-[12px]">{c.model}</span>{/if}{#if c.group_name}<span class="text-ink-3"> · {t("aiAdmin.traffic.inGroup", { name: c.group_name })}</span>{/if}
               </p>
               <p class="truncate text-[12px] text-ink-3">
                 <time datetime={c.started_at} title={formatDate(c.started_at)}>{relativeTime(c.started_at)}</time>

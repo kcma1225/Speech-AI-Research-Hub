@@ -145,6 +145,7 @@
 </script>
 
 <Sheet bind:open side="right" title={provider ? t("aiAdmin.sheet.editTitle", { name: provider.name }) : t("aiAdmin.sheet.addTitle")} description={entry ? L(entry.label) : t("aiAdmin.sheet.pickVendor")}>
+  {#snippet icon()}{#if entry}<ProviderIcon kind={entry.id} label={L(entry.label)} size="md" />{/if}{/snippet}
   {#snippet children()}
     {#if !entry}
       <div class="flex flex-col gap-3 pt-1">

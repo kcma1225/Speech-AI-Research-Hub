@@ -12,13 +12,15 @@
    * Esc or the X asks "discard changes?" first. Closing by setting `open = false` (after a save) never asks.
    * Pass `guard={false}` for sheets whose inputs are only filters/search; search inputs and fields under `data-guard-ignore` never count.
    */
-  let { open = $bindable(false), title, description, side = "bottom", children, footer, hideTitle = false, onOpenAutoFocus, onCloseAutoFocus, guard = true, dirty = undefined, busy = false }: {
+  let { open = $bindable(false), title, description, side = "bottom", children, footer, icon, hideTitle = false, onOpenAutoFocus, onCloseAutoFocus, guard = true, dirty = undefined, busy = false }: {
     open?: boolean;
     title: string;
     description?: string;
     side?: "bottom" | "right" | "center";
     children: Snippet;
     footer?: Snippet;
+    /** Optional leading visual (e.g. a vendor tile) beside the title. */
+    icon?: Snippet;
     hideTitle?: boolean;
     /** Passed to bits-ui; call `preventDefault()` to place focus yourself. */
     onOpenAutoFocus?: (e: Event) => void;
@@ -78,9 +80,12 @@
       class="fixed z-50 flex flex-col overflow-hidden border border-line bg-surface shadow-pop outline-none {position[side]}">
       {#if side !== "center"}<div class="mx-auto mt-2.5 h-1 w-10 shrink-0 rounded-full bg-line-2 sm:hidden" aria-hidden="true"></div>{/if}
       <div class="flex items-center justify-between gap-3 px-5 pt-3 pb-2 sm:px-6 sm:pt-5 {hideTitle ? 'sr-only' : ''}">
-        <div>
+        <div class="flex min-w-0 items-center gap-3">
+          {#if icon}{@render icon()}{/if}
+          <div class="min-w-0">
           <Dialog.Title class="text-base font-semibold text-ink">{title}</Dialog.Title>
           {#if description}<Dialog.Description class="mt-0.5 text-[13px] text-ink-3">{description}</Dialog.Description>{/if}
+          </div>
         </div>
         <button
           type="button"
