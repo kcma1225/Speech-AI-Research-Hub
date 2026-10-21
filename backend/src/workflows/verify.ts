@@ -3,6 +3,7 @@
  * output against the step's expected output and the run's acceptance criteria. Structured verdicts only.
  */
 import { runChecks } from "./checks.js";
+import { getSteps } from "./store.js";
 import { dataBlock } from "./llm.js";
 import type { WorkflowEnv } from "./env.js";
 import type { Criterion, Issue, StepOutput, StepRow, Verdict } from "./types.js";
@@ -77,12 +78,25 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
   }
   if (judgeList.length) {
     await env.activity("final", "verifier", "依目標逐條驗收");
+    // The verifier needs what the result is judged against: the approved outline and the researched source material
+    // (otherwise "faithful to sources" / "matches the plan" can only come back as "cannot judge").
+    const outline = env.run.plan?.outline?.length
+      ? env.run.plan.outline.map((o, i) => `${i + 1}. ${o.title}${o.points?.length ? `：${o.points.join("；")}` : ""}`).join("\n")
+      : "";
+    const research = (await getSteps(env.db, env.run.id))
+      .filter((s) => s.role === "researcher" && s.output?.text)
+      .map((s) => s.output!.text!)
+      .join("\n\n")
+      .slice(0, 30_000);
     const user = [
       `目標：${env.run.objective}`,
       `請逐條判斷下列驗收標準是否達成（只根據 <data> 中的最終成果）：\n${judgeList.map((c) => `- [${c.id}] ${c.text}`).join("\n")}`,
       "依序檢查：交付（成果存在且完整）→ 符合確認的計畫／大綱 → 忠於來源（每個數字與主張都找得到依據）→ 前後一致 → 可直接使用 → 沒有佔位文字。通過必須有正面證據：在 evidence 引用成果中的一小段原文；找不到證據就是不通過；無法判斷就給 pass: null。",
       env.guidanceText(),
       '只輸出 JSON：{"results":[{"id":"標準 id","pass":true|false|null,"evidence":"引用成果中的原文（≤ 80 字）","reason":"一句理由；未達成時寫具體缺什麼"}]}',
+      outline ? dataBlock("approved_outline", outline) : "",
+      research ? dataBlock("sources", research) : "",
+      research ? "<sources> 是研究員從原始資料（論文全文、頁面）整理出的內容與數字，用它核對成果中的數字與主張。" : "",
       dataBlock("final", text.slice(0, 40_000)),
     ].filter(Boolean).join("\n\n");
     const { value } = await env.callJson<CriteriaJudgement>({ purpose: "verify_final", role: "verifier", messages: [{ role: "system", content: VERIFIER_SYSTEM }, { role: "user", content: user }], maxTokens: 3000 }, isCriteriaJudgement);
