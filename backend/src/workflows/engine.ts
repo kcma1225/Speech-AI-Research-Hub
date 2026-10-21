@@ -140,7 +140,10 @@ function depsReady(step: StepRow, steps: StepRow[]) {
     const d = steps.find((x) => x.key === k);
     if (!d) return true;
     // Integration and final steps also run after a failed task (they integrate what passed; the report says what did not).
-    return settled(d) || (step.kind !== "task" && (d.status === "failed" || d.status === "cancelled"));
+    if (settled(d) || (step.kind !== "task" && (d.status === "failed" || d.status === "cancelled"))) return true;
+    // A task that failed verification but produced output still feeds later steps (its best attempt, with the issues kept
+    // for the report and for later fix rounds such as visual QA) — one strict check must not leave the user with nothing.
+    return d.status === "failed" && Boolean((d.output as { text?: string } | null)?.text?.trim());
   });
 }
 

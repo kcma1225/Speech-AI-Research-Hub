@@ -19,7 +19,7 @@ export type OutlineItem = { n: number; title: string; points: string[] };
 export type Plan = { summary: string; outline?: OutlineItem[]; writes: { kind: string; label: string }[]; notes?: string };
 
 export type Budget = { max_steps: number; max_calls: number; max_tokens: number; max_minutes: number; max_fix_rounds: number; concurrency: number };
-export const DEFAULT_BUDGET: Budget = { max_steps: 30, max_calls: 60, max_tokens: 800_000, max_minutes: 40, max_fix_rounds: 2, concurrency: 3 };
+export const DEFAULT_BUDGET: Budget = { max_steps: 30, max_calls: 60, max_tokens: 800_000, max_minutes: 40, max_fix_rounds: 3, concurrency: 3 };
 export type Usage = { steps: number; calls: number; tokens_in: number; tokens_out: number; active_ms: number; fix_rounds: number };
 
 export type Artifact = { kind: "deck" | "note" | "latex_project" | "latex_file" | "paper"; id: string; url: string; title: string; role: "draft" | "suggestion" | "primary"; preview_url?: string; revision?: number };
