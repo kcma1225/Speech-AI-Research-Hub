@@ -60,6 +60,7 @@ export const DECK_CSS = `/* Speech-AI Hub generated deck theme (Lab-Hub layout, 
 .reveal .callout-title-container { font-size: 22px; }
 .reveal blockquote { font-size: 30px; border-left: 6px solid ${DECK_PALETTE[1]}; background: #fffbeb; padding: 16px 24px; width: auto; box-shadow: none; font-style: normal; }
 .reveal .katex { font-size: 1.05em; }
+#MathJax_Message { display: none !important; }
 `;
 
 // ---------------------------------------------------------------- charts
@@ -139,13 +140,16 @@ export function niceTicks(min: number, max: number, count = 5): number[] {
   return out;
 }
 
-const fmt = (v: number, unit = "") => `${Math.abs(v) >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 }) : String(Number(v.toPrecision(4)))}${unit}`;
+const tick = (v: number) => (Math.abs(v) >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 }) : String(Number(v.toPrecision(4))));
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 /** Rough text width (px) at `size`: CJK ≈ 1em, Latin ≈ 0.55em. */
 const textWidth = (s: string, size: number) => [...s].reduce((w, ch) => w + (/[　-鿿＀-￯]/.test(ch) ? size : size * 0.56), 0);
 
 /** Standalone SVG (960×540 viewBox, fonts sized for a 1280×800 slide). */
 export function renderDeckChartSvg(spec: DeckChart): string {
+  // Value labels use the data's own precision (4 → "4.00" next to 4.11), at most 3 decimals.
+  const decimals = Math.min(3, Math.max(0, ...[...spec.series.flatMap((s) => s.data.flatMap((d) => (Array.isArray(d) ? [d[1]] : isNum(d) ? [d] : []))), ...(spec.values ?? []).flat().filter(isNum)].map((v) => (String(v).split(".")[1] ?? "").length)));
+  const fmt = (v: number, unit = "") => `${Math.abs(v) >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 }) : v.toFixed(decimals)}${unit}`;
   const W = 960;
   const H = 540;
   const parts: string[] = [];
@@ -167,7 +171,7 @@ export function renderDeckChartSvg(spec: DeckChart): string {
   }
   if (spec.source) parts.push(`<text x="${W - 8}" y="${H - 8}" text-anchor="end" font-size="16" fill="${DECK_MUTED}">${esc(`Source: ${spec.source}`)}</text>`);
 
-  if (spec.type === "heatmap") return wrap(W, H, spec, [...parts, ...heatmap(spec, W, H, top, bottom)]);
+  if (spec.type === "heatmap") return wrap(W, H, spec, [...parts, ...heatmap(spec, W, H, top, bottom, fmt)]);
 
   const values: number[] = [];
   const xs: number[] = [];
@@ -191,7 +195,7 @@ export function renderDeckChartSvg(spec: DeckChart): string {
     lo = xt[0]!;
     const x1 = xt.at(-1)!;
     const x = (v: number) => m.l + ((v - lo) / (x1 - lo || 1)) * pw;
-    for (const v of xt) parts.push(`<line x1="${x(v).toFixed(1)}" x2="${x(v).toFixed(1)}" y1="${m.t}" y2="${m.t + ph}" stroke="${DECK_GRID}"/><text x="${x(v).toFixed(1)}" y="${m.t + ph + 24}" text-anchor="middle" font-size="17" fill="${DECK_MUTED}">${fmt(v)}</text>`);
+    for (const v of xt) parts.push(`<line x1="${x(v).toFixed(1)}" x2="${x(v).toFixed(1)}" y1="${m.t}" y2="${m.t + ph}" stroke="${DECK_GRID}"/><text x="${x(v).toFixed(1)}" y="${m.t + ph + 24}" text-anchor="middle" font-size="17" fill="${DECK_MUTED}">${tick(v)}</text>`);
     const band = ph / Math.max(1, n);
     const k = spec.series.length;
     const bh = Math.min(44, (band * 0.72) / k);
@@ -229,7 +233,7 @@ export function renderDeckChartSvg(spec: DeckChart): string {
   const y0 = yt[0]!;
   const y1 = yt.at(-1)!;
   const y = (v: number) => m.t + ph - ((v - y0) / (y1 - y0 || 1)) * ph;
-  for (const v of yt) parts.push(`<line x1="${m.l}" x2="${W - m.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="${DECK_GRID}"/><text x="${m.l - 10}" y="${(y(v) + 6).toFixed(1)}" text-anchor="end" font-size="17" fill="${DECK_MUTED}">${fmt(v)}</text>`);
+  for (const v of yt) parts.push(`<line x1="${m.l}" x2="${W - m.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="${DECK_GRID}"/><text x="${m.l - 10}" y="${(y(v) + 6).toFixed(1)}" text-anchor="end" font-size="17" fill="${DECK_MUTED}">${tick(v)}</text>`);
   if (spec.y_label) parts.push(`<text transform="translate(20 ${m.t + ph / 2}) rotate(-90)" text-anchor="middle" font-size="18" fill="${DECK_MUTED}">${esc(spec.y_label)}</text>`);
   if (spec.x_label) parts.push(`<text x="${m.l + pw / 2}" y="${m.t + ph + 62}" text-anchor="middle" font-size="18" fill="${DECK_MUTED}">${esc(spec.x_label)}</text>`);
 
@@ -238,7 +242,7 @@ export function renderDeckChartSvg(spec: DeckChart): string {
     const x0 = xt[0]!;
     const x1 = xt.at(-1)!;
     const x = (v: number) => m.l + ((v - x0) / (x1 - x0 || 1)) * pw;
-    for (const v of xt) parts.push(`<text x="${x(v).toFixed(1)}" y="${m.t + ph + 26}" text-anchor="middle" font-size="17" fill="${DECK_MUTED}">${fmt(v)}</text>`);
+    for (const v of xt) parts.push(`<text x="${x(v).toFixed(1)}" y="${m.t + ph + 26}" text-anchor="middle" font-size="17" fill="${DECK_MUTED}">${tick(v)}</text>`);
     spec.series.forEach((s, si) => {
       for (const d of s.data) if (Array.isArray(d)) parts.push(`<circle cx="${x(d[0]).toFixed(1)}" cy="${y(d[1]).toFixed(1)}" r="7" fill="${DECK_PALETTE[si % DECK_PALETTE.length]}" fill-opacity="0.85"/>`);
       // Point labels from `labels` (one per point of the first series).
@@ -292,7 +296,7 @@ function splitTwo(label: string) {
   return at < 0 ? [label] : [label.slice(0, at), label.slice(at + 1)];
 }
 
-function heatmap(spec: DeckChart, W: number, H: number, top: number, bottom: number): string[] {
+function heatmap(spec: DeckChart, W: number, H: number, top: number, bottom: number, fmt: (v: number, unit?: string) => string): string[] {
   const parts: string[] = [];
   const rows = spec.rows ?? [];
   const cols = spec.labels ?? [];

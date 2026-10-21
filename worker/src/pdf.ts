@@ -41,7 +41,7 @@ export const THUMBNAIL_SIZE = { width: 960, height: 540 } as const;
 
 /** Hides Reveal chrome and the annotate toolbar so the thumbnail shows only the slide. */
 export const THUMBNAIL_CSS = `.reveal .controls, .reveal .progress, .reveal .slide-number, .slide-menu-button,
-.slide-chalkboard-buttons, .annotate-dock, .annotate-cursor, .annotate-laser-dot { display: none !important; }`;
+.slide-chalkboard-buttons, .annotate-dock, .annotate-cursor, .annotate-laser-dot, #MathJax_Message { display: none !important; }`;
 
 /** Jumps to the first slide without transitions (a deck may open on a #/hash or restore a position). */
 const FIRST_SLIDE = `(() => {

@@ -127,3 +127,20 @@ describe("visual QA", () => {
     expect(replaceSlides(body, "## B\n\nnew b\n")).toBe("## A\n\nold a\n\n## B\n\nnew b\n\n");
   });
 });
+
+describe("fenced divs", () => {
+  it("nested ::::/::: column layouts are balanced", () => {
+    const body = "## A\n\n:::: {.columns}\n::: {.column width=\"50%\"}\nx\n:::\n::: {.column width=\"50%\"}\ny\n:::\n::::\n\n::: {.notes}\nn\n:::\n";
+    expect(runChecks([{ id: "not_truncated" }], body, null)[0]!.ok).toBe(true);
+    expect(runChecks([{ id: "not_truncated" }], "## A\n\n:::: {.columns}\n::: {.column}\nx\n:::\n", null)[0]!.ok).toBe(false);
+  });
+});
+
+describe("visual QA defects", () => {
+  it("a cut-off figure the verifier reports fails the page even with a passing score", () => {
+    const pages: ShotPage[] = [{ index: 2, title: "Fig", metrics: metrics() }];
+    const v = [{ page: 2, title: "Fig", scores: { readability: 4 }, score: 4, pass: true, issues: ["論文截圖底部被硬切，正文斷在半行"], fix: "重新裁切", source: "vision" as const }];
+    expect(combineScores(pages, v, () => false)[0]!.pass).toBe(false);
+    expect(renderDeckChartSvg(parseDeckChart(JSON.stringify({ labels: ["a", "b"], series: [{ data: [4, 4.11] }] }))!)).toContain(">4.00<");
+  });
+});

@@ -483,7 +483,7 @@ async function visualQa(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
     const user = [
       LABHUB_RULES[modeOf(env)],
       VISUAL_RULES,
-      "下面這些投影片沒有通過逐頁截圖檢查。依每頁的問題與修改指示重寫這幾頁（標題逐字不變、講稿保留或改善、數字只能用研究資料裡的）。只輸出這幾頁（每頁以「## 標題」開頭，含 ::: {.notes}），不要其他文字。",
+      "下面這些投影片沒有通過逐頁截圖檢查。依每頁的問題與修改指示重寫這幾頁（標題逐字不變、講稿保留或改善、數字只能用研究資料裡的）。論文圖被裁切或包含正文時，調整 paper-fig 的 @上緣-下緣（例如下緣改小一點），或改用 ```chart／表格呈現同樣的數字。只輸出這幾頁（每頁以「## 標題」開頭，含 ::: {.notes}），不要其他文字。",
       ...targets.map(({ f, s }) => `### 第 ${f.page} 頁「${s!.title}」\n問題：${f.issues.join("；") || "（未通過）"}\n修改指示：${f.fix || "精簡文字、改用視覺元素"}\n${dataBlock("slide", `## ${s!.title}\n${s!.body}\n\n::: {.notes}\n${s!.notes}\n:::`)}`),
       dataBlock("research", (env.state<string>("brief") ?? "").slice(0, 14_000)),
     ].join("\n\n");

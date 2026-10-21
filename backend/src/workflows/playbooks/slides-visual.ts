@@ -27,6 +27,7 @@ export const VISUAL_RULES = `視覺優先的投影片規則（一定要遵守）
   grouped bar = 多個 series；heatmap 用 "rows":[…],"labels":[欄],"values":[[…],[…]]。
 - 論文的圖或表：![Fig. 2: 一句說明 (p. 4)](paper-fig:<頁碼>@<上緣>-<下緣>)，上下緣是該圖在頁面高度的比例（0–1，例如 0.08-0.52）；只用研究摘要「圖表清單」裡列出的圖。
 - 表格 ≤ 5 列 × 5 欄，最好的數字用 **粗體**。
+- 一般文字不要用 LaTeX 語法（寫 N=1000，不要 N{=}1000 或 $N=1000$）；圖表 JSON 已畫出標題時，下面不要再重複寫一次標題。
 - 需要逐步說明時可用 ::: {.incremental} 包住條列（漸進顯示）。
 - 從下列版型挑一個最適合的（每頁的版型可以不同）：
 
@@ -126,8 +127,9 @@ export async function materializeVisuals(env: WorkflowEnv, deck: DeckRef, body: 
       problems.push("chart JSON 無效");
       return "**（圖表資料格式錯誤）**";
     }
-    const alt = (c.caption ?? c.spec.title ?? "chart").replace(/[[\]]/g, "");
-    return `![${alt}](${chartFileName(c.source)}){fig-align="center" width="88%"}`;
+    // The chart draws its own title; only an explicit caption becomes a figcaption (alt text goes to fig-alt).
+    const alt = (c.spec.title ?? "chart").replace(/["[\]]/g, "");
+    return `![${(c.caption ?? "").replace(/[[\]]/g, "")}](${chartFileName(c.source)}){fig-align="center" width="88%" fig-alt="${alt}"}`;
   });
 
   // Paper figures.
@@ -189,7 +191,7 @@ async function locateFigure(env: WorkflowEnv, pdf: Buffer, f: FigureRef): Promis
   const img = page ? imageFromBuffer(f.page, page) : null;
   if (!img) return null;
   const content: Array<TextBlock | ImageBlock> = [
-    { type: "text", text: `這是論文第 ${f.page} 頁。找出這張圖或表：「${f.caption || "主要的圖"}」（大約在頁面高度 ${f.top.toFixed(2)}–${f.bottom.toFixed(2)} 之間）。回傳它的邊界（包含圖本身與它的圖說 caption，不含正文段落），用頁面寬高的比例 0–1。只輸出 JSON：{"found":true,"top":0.1,"bottom":0.5,"left":0.05,"right":0.95}；找不到就 {"found":false}。` },
+    { type: "text", text: `這是論文第 ${f.page} 頁。找出這張圖或表：「${f.caption || "主要的圖"}」（大約在頁面高度 ${f.top.toFixed(2)}–${f.bottom.toFixed(2)} 之間）。回傳它的邊界，用頁面寬高的比例 0–1：上緣 = 圖的最上方；下緣 = 圖說（Figure N: …／Table N: …）最後一行的下方，絕對不可包含圖說之後的正文段落；左右只包住圖本身（雙欄論文的單欄圖不要包到另一欄）。只輸出 JSON：{"found":true,"top":0.1,"bottom":0.5,"left":0.05,"right":0.95}；找不到就 {"found":false}。` },
     { type: "image", source: { kind: "base64", mediaType: img.mediaType, data: img.data } },
   ];
   const res = await env.call({ purpose: "locate_figure", role: "designer", aiRole: "slides", messages: [{ role: "user", content }], maxTokens: 800 });
@@ -268,6 +270,8 @@ export async function visionScores(env: WorkflowEnv, images: ReviewImage[], page
   return out;
 }
 
+export const DEFECT_RE = /裁切|被切|硬切|截斷|切掉|被截|原始碼|未渲染|未編譯|Syntax error|語法錯誤|超出(投影片|版面|範圍)|cut off|overflow/i;
+
 /** Combines vision scores with the deterministic metric issues: a metric issue always fails the page. */
 export function combineScores(pages: ShotPage[], vision: PageScore[], allowed: (title: string) => boolean): PageScore[] {
   return pages.map((p) => {
@@ -277,7 +281,9 @@ export function combineScores(pages: ShotPage[], vision: PageScore[], allowed: (
     const hard = mi.filter((x) => /原始碼|語法錯誤|超出/.test(x));
     const issues = [...mi, ...(v?.issues ?? [])];
     // Student-owned / title pages only fail on rendering problems, never on missing content.
-    const pass = ok ? hard.length === 0 : mi.length === 0 && (v ? v.pass : true);
+    // Defects the verifier saw that are never acceptable on a slide (cut-off figure/text, raw code, unrendered markup).
+    const defect = (v?.issues ?? []).some((x) => DEFECT_RE.test(x));
+    const pass = ok ? hard.length === 0 : mi.length === 0 && !defect && (v ? v.pass : true);
     return { page: p.index, title: p.title ?? "", scores: v?.scores ?? {}, score: v?.score ?? (mi.length ? 2 : 4), pass, issues: [...new Set(issues)].slice(0, 6), fix: v?.fix ?? (mi.length ? "依量測問題修正：精簡文字、拆頁或縮小圖。" : ""), source: v ? "vision" : "metrics" };
   });
 }
