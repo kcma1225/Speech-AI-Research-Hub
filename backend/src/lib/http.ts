@@ -1,8 +1,11 @@
 import { z } from "zod";
 
-/** Throw from any handler; the error handler replies `{ error: message }` with `status`. */
+/**
+ * Throw from any handler; the error handler replies `{ error: message }` with `status`, plus `code` and `hint`
+ * when given (AI and admin errors: machine-readable code and a 繁中 next step).
+ */
 export class HttpError extends Error {
-  constructor(public readonly status: number, message: string) {
+  constructor(public readonly status: number, message: string, public readonly extra: { code?: string; hint?: string } = {}) {
     super(message);
   }
 }
@@ -16,7 +19,12 @@ export const conflict = (message: string) => new HttpError(409, message);
 /** Parses input with a zod schema, throwing 400 with a user-facing message on failure. */
 export function parse<T extends z.ZodType>(schema: T, input: unknown, message?: string): z.infer<T> {
   const result = schema.safeParse(input);
-  if (!result.success) throw badRequest(message);
+  if (!result.success) {
+    // Schemas may carry their own 繁中 message (e.g. password rules); it is more specific than the route's generic
+    // `message`, so it wins. zod's built-in English messages are never shown.
+    const own = result.error.issues.find(issue => /[\u4e00-\u9fff]/.test(issue.message))?.message;
+    throw badRequest(own ?? message);
+  }
   return result.data;
 }
 

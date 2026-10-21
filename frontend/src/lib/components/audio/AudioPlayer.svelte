@@ -2,7 +2,7 @@
   import { DropdownMenu } from "bits-ui";
   import { Check, Pause, Play, RotateCcw, RotateCw, Volume1, Volume2, VolumeX } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
-  import { formatClock } from "#lib/recordings/types.ts";
+  import { formatClock } from "#lib/audio/time.ts";
   import { menuContent, menuItem, menuLabel } from "#lib/components/ui/menu.ts";
   import Spinner from "#lib/components/ui/Spinner.svelte";
   import Waveform from "./Waveform.svelte";
@@ -229,7 +229,7 @@
     {duration}
     {currentTime}
     onSeek={time => seek(time)}
-    label={t("recordings.player.seek")}
+    label={t("audio.player.seek")}
     height={compact ? 40 : 88}
     barWidth={compact ? 2 : 2.5}
     gap={compact ? 1.5 : 1.75}
@@ -242,15 +242,15 @@
     </p>
 
     <div class="flex items-center {compact ? 'gap-1' : 'gap-2'}">
-      <button type="button" class="{iconBtn} {compact ? 'size-9' : 'size-10'}" aria-label={t("recordings.player.back", { n: SKIP })} title={t("recordings.player.backHint")} onclick={() => skip(-SKIP)}>
+      <button type="button" class="{iconBtn} {compact ? 'size-9' : 'size-10'}" aria-label={t("audio.player.back", { n: SKIP })} title={t("audio.player.backHint")} onclick={() => skip(-SKIP)}>
         <RotateCcw class="size-[22px]" strokeWidth={1.6} />
         <span class="absolute inset-0 grid place-items-center pt-px text-[8.5px] font-bold tabular-nums">{SKIP}</span>
       </button>
       <button
         type="button"
         class="grid place-items-center rounded-full bg-primary text-primary-ink shadow-card transition-[transform,background-color] hover:bg-primary-hover active:scale-95 {compact ? 'size-11' : 'size-14'}"
-        aria-label={playing ? t("recordings.player.pause") : t("recordings.player.play")}
-        title={t("recordings.player.playHint")}
+        aria-label={playing ? t("audio.player.pause") : t("audio.player.play")}
+        title={t("audio.player.playHint")}
         onclick={toggle}
       >
         {#if buffering && playing}
@@ -261,7 +261,7 @@
           <Play class="{compact ? 'size-5' : 'size-6'} translate-x-[1.5px]" fill="currentColor" strokeWidth={0} />
         {/if}
       </button>
-      <button type="button" class="{iconBtn} {compact ? 'size-9' : 'size-10'}" aria-label={t("recordings.player.forward", { n: SKIP })} title={t("recordings.player.forwardHint")} onclick={() => skip(SKIP)}>
+      <button type="button" class="{iconBtn} {compact ? 'size-9' : 'size-10'}" aria-label={t("audio.player.forward", { n: SKIP })} title={t("audio.player.forwardHint")} onclick={() => skip(SKIP)}>
         <RotateCw class="size-[22px]" strokeWidth={1.6} />
         <span class="absolute inset-0 grid place-items-center pt-px text-[8.5px] font-bold tabular-nums">{SKIP}</span>
       </button>
@@ -271,19 +271,19 @@
       <DropdownMenu.Root>
         <DropdownMenu.Trigger
           class="inline-flex h-8 min-w-12 items-center justify-center rounded-full border border-line px-2.5 text-[12.5px] font-semibold text-ink-2 tabular-nums transition-colors hover:border-line-2 hover:text-ink data-[state=open]:border-ink-3 data-[state=open]:text-ink"
-          aria-label={t("recordings.player.speed", { rate: rateLabel(rate) })}
+          aria-label={t("audio.player.speed", { rate: rateLabel(rate) })}
         >
           {rateLabel(rate)}
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
           <DropdownMenu.Content align="end" side="top" sideOffset={8} class="{menuContent} min-w-40">
             <DropdownMenu.Group>
-              <DropdownMenu.GroupHeading class={menuLabel}>{t("recordings.player.speedTitle")}</DropdownMenu.GroupHeading>
+              <DropdownMenu.GroupHeading class={menuLabel}>{t("audio.player.speedTitle")}</DropdownMenu.GroupHeading>
               <DropdownMenu.RadioGroup value={String(rate)} onValueChange={v => setRate(Number(v))}>
                 {#each RATES as option (option)}
                   <DropdownMenu.RadioItem value={String(option)} class={menuItem}>
                     {#snippet children({ checked })}
-                      <span class="flex-1 tabular-nums">{rateLabel(option)}{#if option === 1}<span class="ml-2 text-ink-3">{t("recordings.player.normal")}</span>{/if}</span>
+                      <span class="flex-1 tabular-nums">{rateLabel(option)}{#if option === 1}<span class="ml-2 text-ink-3">{t("audio.player.normal")}</span>{/if}</span>
                       {#if checked}<Check class="!text-ink" />{/if}
                     {/snippet}
                   </DropdownMenu.RadioItem>
@@ -295,15 +295,15 @@
       </DropdownMenu.Root>
 
       <div class="hidden items-center gap-1 lg:flex">
-        <button type="button" class="{iconBtn} size-8" aria-label={muted ? t("recordings.player.unmute") : t("recordings.player.mute")} aria-pressed={muted} onclick={() => (muted = !muted)}>
+        <button type="button" class="{iconBtn} size-8" aria-label={muted ? t("audio.player.unmute") : t("audio.player.mute")} aria-pressed={muted} onclick={() => (muted = !muted)}>
           <VolumeIcon class="size-[18px]" />
         </button>
-        <VolumeSlider value={muted ? 0 : volume} onChange={setVolume} label={t("recordings.player.volume")} class="w-20" />
+        <VolumeSlider value={muted ? 0 : volume} onChange={setVolume} label={t("audio.player.volume")} class="w-20" />
       </div>
     </div>
   </div>
 
   {#if failed}
-    <p class="text-[12.5px] text-danger" role="alert">{t("recordings.player.error")}</p>
+    <p class="text-[12.5px] text-danger" role="alert">{t("audio.player.error")}</p>
   {/if}
 </div>

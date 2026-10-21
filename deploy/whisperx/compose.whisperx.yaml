@@ -1,0 +1,28 @@
+# Optional self-hosted WhisperX (GPU). Not part of the default stack. Use:
+#   docker compose -f compose.yaml -f deploy/whisperx/compose.whisperx.yaml --profile whisperx up -d whisperx
+# Then add an ASR provider of kind "WhisperX" with base URL http://whisperx:8000 in /admin/models.
+# It needs internet once to download models (HF_TOKEN for pyannote); weights are cached in the volume.
+services:
+  whisperx:
+    profiles: ["whisperx"]
+    build:
+      context: deploy/whisperx
+    environment:
+      WHISPERX_MODEL: ${WHISPERX_MODEL:-large-v3}
+      HF_TOKEN: ${WHISPERX_HF_TOKEN:-}
+      API_KEY: ${WHISPERX_API_KEY:-}
+      DEVICE: cuda
+    volumes:
+      - whisperx_cache:/home/app/.cache
+    networks: [internal, edge]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  whisperx_cache:

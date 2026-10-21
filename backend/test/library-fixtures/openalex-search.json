@@ -1,0 +1,73 @@
+{
+  "meta": { "count": 2, "db_response_time_ms": 41, "page": 1, "per_page": 2, "groups_count": null, "cost_usd": 0.001 },
+  "results": [
+    {
+      "id": "https://openalex.org/W3097777922",
+      "doi": "https://doi.org/10.21437/interspeech.2020-3015",
+      "title": "Conformer: Convolution-augmented Transformer for Speech Recognition",
+      "display_name": "Conformer: Convolution-augmented Transformer for Speech Recognition",
+      "publication_year": 2020,
+      "publication_date": "2020-10-25",
+      "ids": { "openalex": "https://openalex.org/W3097777922", "doi": "https://doi.org/10.21437/interspeech.2020-3015", "mag": "3097777922" },
+      "language": "en",
+      "primary_location": {
+        "is_oa": false,
+        "landing_page_url": "https://doi.org/10.21437/interspeech.2020-3015",
+        "pdf_url": null,
+        "source": { "id": "https://openalex.org/S4363604309", "display_name": "Interspeech 2022", "issn_l": null, "is_oa": false, "host_organization_name": "International Speech Communication Association", "type": "conference" },
+        "license": null,
+        "version": "publishedVersion"
+      },
+      "type": "article",
+      "type_crossref": "proceedings-article",
+      "open_access": { "is_oa": true, "oa_status": "green", "oa_url": "https://arxiv.org/pdf/2005.08100", "any_repository_has_fulltext": true },
+      "authorships": [
+        { "author_position": "first", "author": { "id": "https://openalex.org/A5021934387", "display_name": "Anmol Gulati", "orcid": null }, "institutions": [], "raw_author_name": "Anmol Gulati" },
+        { "author_position": "middle", "author": { "id": "https://openalex.org/A5100607777", "display_name": "James Qin", "orcid": null }, "institutions": [], "raw_author_name": "James Qin" },
+        { "author_position": "last", "author": { "id": "https://openalex.org/A5047520153", "display_name": "Ruoming Pang", "orcid": null }, "institutions": [], "raw_author_name": "Ruoming Pang" }
+      ],
+      "biblio": { "volume": null, "issue": null, "first_page": "5036", "last_page": "5040" },
+      "best_oa_location": {
+        "is_oa": true,
+        "landing_page_url": "https://arxiv.org/abs/2005.08100",
+        "pdf_url": "https://arxiv.org/pdf/2005.08100",
+        "source": { "id": "https://openalex.org/S4306400194", "display_name": "arXiv (Cornell University)", "type": "repository" },
+        "license": "other-oa",
+        "version": "submittedVersion"
+      },
+      "locations": [
+        { "is_oa": false, "landing_page_url": "https://doi.org/10.21437/interspeech.2020-3015", "pdf_url": null, "source": { "display_name": "Interspeech 2022", "type": "conference" } },
+        { "is_oa": true, "landing_page_url": "https://arxiv.org/abs/2005.08100", "pdf_url": "https://arxiv.org/pdf/2005.08100", "source": { "display_name": "arXiv (Cornell University)", "type": "repository" } }
+      ],
+      "keywords": [ { "id": "https://openalex.org/keywords/conformer", "display_name": "Conformer", "score": 0.6 } ],
+      "abstract_inverted_index": { "Recently": [0], "Transformer": [1], "and": [2], "Convolution": [3], "neural": [4], "network": [5], "based": [6], "models": [7] },
+      "cited_by_count": 4210
+    },
+    {
+      "id": "https://openalex.org/W4225323055",
+      "doi": "https://doi.org/10.1109/icassp43922.2022.9747077",
+      "title": "Wav2vec-Switch: Contrastive Learning from Original-Noisy Speech Pairs for Robust Speech Recognition",
+      "display_name": "Wav2vec-Switch: Contrastive Learning from Original-Noisy Speech Pairs for Robust Speech Recognition",
+      "publication_year": 2022,
+      "publication_date": "2022-04-27",
+      "ids": { "openalex": "https://openalex.org/W4225323055", "doi": "https://doi.org/10.1109/icassp43922.2022.9747077" },
+      "primary_location": {
+        "is_oa": false,
+        "landing_page_url": "https://doi.org/10.1109/icassp43922.2022.9747077",
+        "pdf_url": null,
+        "source": { "display_name": "ICASSP 2022 - 2022 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)", "host_organization_name": "Institute of Electrical and Electronics Engineers", "type": "conference" }
+      },
+      "type": "article",
+      "open_access": { "is_oa": false, "oa_status": "closed", "oa_url": null },
+      "authorships": [
+        { "author": { "display_name": "Yiming Wang" }, "raw_author_name": "Yiming Wang" },
+        { "author": { "display_name": "Jinyu Li" }, "raw_author_name": "Jinyu Li" }
+      ],
+      "biblio": { "volume": null, "issue": null, "first_page": "7097", "last_page": "7101" },
+      "best_oa_location": null,
+      "locations": [],
+      "abstract_inverted_index": null
+    }
+  ],
+  "group_by": []
+}

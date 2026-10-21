@@ -3,50 +3,81 @@ import type { JobKind, JobStatus } from "../jobs/queue.js";
 import { requireUser } from "../lib/auth.js";
 
 /** Stage values written by the database/backend rather than the worker, shown in 繁中 like the worker's. */
-const STAGE_LABELS: Record<string, string> = { queued: "排隊中", starting: "準備中", cancelled: "已取消" };
+const STAGE_LABELS: Record<string, string> = {
+  queued: "排隊中", starting: "準備中", cancelled: "已取消",
+  // ai-worker jobs report machine stages (`ctx.progress("generating", …)`).
+  context: "整理資料", generating: "AI 撰寫中", writing: "寫入檔案", validating: "檢查格式", fixing: "修正格式",
+  analyzing: "分析中", transcribing: "轉錄中", mapping: "對應語者", saving: "儲存中", downloading: "下載中",
+  fetching_pdfs: "下載全文", done: "完成",
+};
 const displayStage = (stage: string) => STAGE_LABELS[stage] ?? stage;
+
+/** Housekeeping jobs that have their own UI (editor status, preview pane) or none; never shown in the tray. */
+const HIDDEN_KINDS = ["slide_preview", "latex_compile", "ai_search_index"];
 
 type ActiveJobRow = {
   id: string; kind: JobKind; status: JobStatus; stage: string; progress: number; updated_at: string;
-  project_id: string | null; deck_title: string | null; version: number | null;
-  item_id: string | null; item_title: string | null; file_name: string | null;
+  payload: Record<string, unknown>; deck_id: string | null; deck_title: string | null; version: number | null;
+  meeting_id: string | null; study_slug: string | null;
 };
+
+const str = (value: unknown) => (typeof value === "string" && value ? value : null);
+
+/** Tray label and SPA link for each job kind; unknown kinds fall back to the payload's `fileName`. */
+function present(row: ActiveJobRow): { label: string; url: string | null } {
+  const fileName = str(row.payload.fileName);
+  switch (row.kind) {
+    case "slide_render":
+      return row.deck_title ? { label: `${row.deck_title} v${row.version}`, url: `/slides/${row.deck_id}` } : { label: "已刪除的簡報", url: null };
+    case "ai_slides_generate":
+      return { label: fileName ?? "AI 簡報草稿", url: str(row.payload.deckId) ? `/slides/${row.payload.deckId}` : null };
+    case "media_transcode":
+      return { label: fileName ?? "錄音轉檔", url: row.meeting_id ? `/meetings/${row.meeting_id}` : null };
+    case "ai_meeting_transcribe":
+    case "ai_meeting_analyze":
+      return {
+        label: fileName ?? (row.kind === "ai_meeting_transcribe" ? "會議轉錄" : "會議分析"),
+        url: str(row.payload.meetingId) ? `/meetings/${row.payload.meetingId}` : null,
+      };
+    case "ai_library_import":
+      return { label: "下載開放全文", url: row.study_slug ? `/studies/${row.study_slug}?tab=papers` : "/library" };
+    case "ai_embedding_reindex":
+      return { label: "重建語意索引", url: "/admin/models" };
+    default:
+      return { label: fileName ?? "背景工作", url: null };
+  }
+}
 
 const jobs: FastifyPluginAsync = async app => {
   /** The caller's queued/running jobs plus those finished in the last 10 minutes (header job tray). */
   app.get("/jobs/active", async (request, reply) => {
     const user = await requireUser(request);
     const rows = (await app.db.query<ActiveJobRow>(
-      `SELECT j.id,j.kind,j.status,j.stage,j.progress,
+      `SELECT j.id,j.kind,j.status,j.stage,j.progress,j.payload,
               GREATEST(j.created_at,j.started_at,j.heartbeat_at,j.finished_at) AS updated_at,
-              COALESCE(p.id::text,j.payload->>'projectId') AS project_id,p.title AS deck_title,v.version,
-              COALESCE(i.id::text,j.payload->>'itemId') AS item_id,i.title AS item_title,j.payload->>'fileName' AS file_name
+              COALESCE(p.id::text,j.payload->>'projectId') AS deck_id,p.title AS deck_title,v.version,
+              mm.meeting_id::text AS meeting_id,s.slug AS study_slug
          FROM jobs j
          LEFT JOIN slide_versions v ON j.kind='slide_render' AND v.id::text=j.payload->>'versionId'
-         LEFT JOIN slide_projects p ON p.id=v.project_id
-         LEFT JOIN items i ON j.kind='media_transcode' AND i.id::text=j.payload->>'itemId'
-        WHERE j.created_by=$1
+         LEFT JOIN decks p ON p.id=v.deck_id
+         LEFT JOIN meeting_media mm ON j.kind='media_transcode' AND mm.id::text=j.payload->>'itemId'
+         LEFT JOIN import_batches b ON j.kind='ai_library_import' AND b.id::text=j.payload->>'batchId'
+         LEFT JOIN studies s ON s.id=b.study_id
+        WHERE j.created_by=$1 AND j.kind <> ALL($2::text[])
           AND (j.status IN ('queued','running') OR j.finished_at > now() - interval '10 minutes')
         ORDER BY j.created_at DESC, j.id
         LIMIT 10`,
-      [user.id],
+      [user.id, HIDDEN_KINDS],
     )).rows;
-    const result = rows.map(row => {
-      const slide = row.kind === "slide_render";
-      const label = slide
-        ? row.deck_title ? `${row.deck_title} v${row.version}` : "已刪除的簡報"
-        : row.item_title ?? row.file_name ?? "已刪除的筆記";
-      return {
-        id: row.id,
-        kind: row.kind,
-        status: row.status,
-        stage: displayStage(row.stage),
-        progress: row.status === "succeeded" ? 100 : row.progress,
-        label,
-        url: slide ? (row.deck_title ? `/slides/${row.project_id}` : null) : (row.item_title ? `/notes/${row.item_id}` : null),
-        updatedAt: row.updated_at,
-      };
-    });
+    const result = rows.map(row => ({
+      id: row.id,
+      kind: row.kind,
+      status: row.status,
+      stage: displayStage(row.stage),
+      progress: row.status === "succeeded" ? 100 : row.progress,
+      ...present(row),
+      updatedAt: row.updated_at,
+    }));
     return reply.header("Cache-Control", "no-store").send({ jobs: result });
   });
 };

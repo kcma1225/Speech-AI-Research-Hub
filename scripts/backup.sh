@@ -6,7 +6,10 @@ cd "$(dirname "$0")/.."
 [ -f .env ] || { echo "Missing .env" >&2; exit 1; }
 project="${1:-$(basename "$PWD" | tr '[:upper:]' '[:lower:]')}"
 compose() { docker compose -p "$project" "$@"; }
-set -a; . ./.env; set +a
+# Read only the keys we need: .env is a compose env file (unquoted values may contain spaces), not a shell script.
+envval() { sed -n "s/^$1=//p" .env | tail -n 1; }
+DATABASE_NAME=$(envval DATABASE_NAME); DATABASE_USER=$(envval DATABASE_USER); S3_BUCKET=$(envval S3_BUCKET)
+S3_ACCESS_KEY=$(envval S3_ACCESS_KEY); S3_SECRET_KEY=$(envval S3_SECRET_KEY)
 db_name="${DATABASE_NAME:-research_hub}"
 db_user="${DATABASE_USER:-research_hub}"
 bucket="${S3_BUCKET:-hub}"

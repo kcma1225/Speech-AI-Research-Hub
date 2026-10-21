@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { accountLabel } from "#lib/roles.ts";
   import { untrack } from "svelte";
   import { Tabs } from "bits-ui";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
-  import { Bell, Laptop, Monitor, Moon, PenLine, Smartphone, Sun, SlidersHorizontal, UserRound } from "@lucide/svelte";
+  import { Bell, Laptop, Monitor, Moon, PenLine, Smartphone, Sparkles, Sun, SlidersHorizontal, UserRound } from "@lucide/svelte";
+  import MemorySettings from "#lib/components/agent/MemorySettings.svelte";
   import { api } from "#lib/api.ts";
   import { i18n, relativeTime, t } from "#lib/i18n.svelte.ts";
   import { theme } from "#lib/theme.svelte.ts";
@@ -30,10 +32,14 @@
     { value: "notifications", label: "settings.tab.notifications", icon: Bell },
     { value: "sessions", label: "settings.tab.sessions", icon: Laptop },
     { value: "editor", label: "settings.tab.editor", icon: PenLine },
+    { value: "assistant", label: "agent.settings.tab", icon: Sparkles },
   ] as const satisfies readonly { value: string; label: MessageKey; icon: unknown }[];
   type Tab = (typeof tabs)[number]["value"];
+  // Admin accounts are system-only: no assistant (memories) or editor preferences.
+  const tabsFor = (role: string | undefined) => (role === "admin" ? tabs.filter(x => x.value !== "assistant" && x.value !== "editor") : tabs);
+  const shownTabs = $derived(tabsFor(session.user?.role));
   const fromUrl = page.url.searchParams.get("tab");
-  let tab = $state<Tab>(tabs.some(x => x.value === fromUrl) ? (fromUrl as Tab) : "general");
+  let tab = $state<Tab>(tabsFor(session.user?.role).some(x => x.value === fromUrl) ? (fromUrl as Tab) : "general");
   // Mirror the tab into ?tab= (shallow) only when it changes; reading page.url here would loop.
   let syncedTab: string | null = fromUrl;
   $effect(() => {
@@ -103,7 +109,7 @@
     }
     pushBusy = false;
   }
-  const notifyKeys = ["slideRendered", "mediaTranscoded", "reviews", "replies"] as const;
+  const notifyKeys = ["tasks", "slideRendered", "reviews", "replies", "mediaTranscoded"] as const;
   function setNotify(key: keyof Preferences["notify"], value: boolean) {
     void save({ preferences: { notify: { [key]: value } } }, false);
   }
@@ -199,7 +205,7 @@
 
 <Tabs.Root bind:value={tab} orientation="vertical" class="grid gap-5 lg:grid-cols-[220px_1fr] lg:gap-8">
   <Tabs.List class="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 [scrollbar-width:none] sm:-mx-6 sm:px-6 lg:mx-0 lg:flex-col lg:overflow-visible lg:px-0">
-    {#each tabs as item (item.value)}
+    {#each shownTabs as item (item.value)}
       <Tabs.Trigger
         value={item.value}
         class="inline-flex h-10 shrink-0 cursor-pointer items-center gap-2.5 rounded-full px-4 text-[14px] font-medium whitespace-nowrap text-ink-2 transition-colors hover:text-ink data-[state=active]:bg-surface data-[state=active]:text-ink data-[state=active]:shadow-card lg:w-full"
@@ -256,7 +262,7 @@
           <Avatar name={name || user.name} size={56} class="ring-0" />
           <div>
             <p class="text-[17px] font-semibold">{user.name}</p>
-            <div class="mt-1"><Pill tone="lilac" size="sm">{t(`role.${user.role}`)}</Pill></div>
+            <div class="mt-1"><Pill tone="lilac" size="sm">{accountLabel(user)}</Pill></div>
           </div>
         </div>
         <form
@@ -389,5 +395,7 @@
         </div>
       </Card>
     </Tabs.Content>
+
+    <Tabs.Content value="assistant" class="outline-none">{#if tab === "assistant" && session.user?.role !== "admin"}<MemorySettings />{/if}</Tabs.Content>
   </div>
 </Tabs.Root>

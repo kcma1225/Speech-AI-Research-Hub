@@ -1,7 +1,11 @@
-# Architecture (v2)
+# Architecture (v3)
 
-v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf). v1 data is exported with
-`scripts/export-legacy.sh` (run on the v1 host) and is **not** migrated; v2 starts from an empty database and bucket.
+v3 is a study-centred ("研究 / Study") workspace: every deck, note, paper, meeting and thesis belongs to a study
+(product spec: `docs/v3-spec.md`, decisions final). v3 starts from an empty database and bucket — v2 data, accounts
+included, is not migrated; only the initial admin is created by bootstrap (`ADMIN_NAME`, default `admin` / `ADMIN_PASSWORD`; legacy `OWNER_*` fallback) and everyone else joins by invitation.
+Migrations restart at `0001_v3_baseline.sql`. Module migration number ranges: core `0001–0019`, AI platform `0020–0029`,
+notes/collab `0030–0039`, slides `0040–0049`, library `0050–0059`, latex `0060–0069`, agent `0070–0079`,
+meetings `0080–0089`, search/embeddings `0090–0099`, QA fixes `0100+`.
 
 ```
                     :80 / :443  (the only published ports)
@@ -10,21 +14,24 @@ v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf)
                          │     /*      → SvelteKit static build (SPA fallback to index.html)
    ┌─────────────────────┴──────────── network "internal" (no published ports) ─┐
    backend  (Node 22, TypeScript, Fastify 5)                                    │
-     ├── db      (PostgreSQL 17)                                                │
+     ├── db      (PostgreSQL 17 + pgvector)                                     │
      └── rustfs  (S3-compatible object storage, bucket $S3_BUCKET)              │
    worker   (Node 22 + Quarto + Chrome + poppler + LibreOffice + ffmpeg)        │
      └── network "jobs" (internal: true, no internet): db + rustfs only         │
+   latex-runner (TeX Live + Noto CJK, bubblewrap per compile) ── network "jobs" │
    latex-app + latex-compiler (Aldine, profile `latex`, own hostname)           │
      └── network "latex" (internal: true): compiler has no internet             │
 ```
 
 | Service | Dir | Responsibility |
 |---|---|---|
-| nginx | `nginx/` | TLS (or behind a TLS proxy: `TRUSTED_PROXIES` → real client IP from X-Forwarded-For), strict rate limit on `/api/auth/login` and `/api/join` (and 60/min on `/api/oidc/token`), serves `frontend/` build, proxies `/api/` |
+| nginx | `nginx/` | TLS (or behind a TLS proxy: `TRUSTED_PROXIES` → real client IP from X-Forwarded-For), strict rate limit on `/api/auth/login` and `/api/join` (and 60/min on `/api/oidc/token`), serves `frontend/` build, proxies `/api/` (WebSocket upgrade + 1 h timeouts on `/api/collab` and `/api/meetings/<id>/live`; no buffering, 900 s read timeout for SSE on `/api/ai/`, `/api/agent/`, `/api/notes/<id>/ai/`) |
 | frontend | `frontend/` | SvelteKit 2 + Svelte 5, `adapter-static`, SPA (`ssr = false`). Built into the nginx image |
 | backend | `backend/` | All HTTP API, auth, RBAC, migrations, file streaming from S3, job enqueue + finalize |
+| ai-worker | `backend/` (`src/ai-worker/`) | Same image as backend, other command: claims `ai_*` jobs (ASR, analysis, embeddings…), has internet egress + ffmpeg; see "AI platform" |
 | worker | `worker/` | Claims jobs from Postgres, slide render (Quarto → HTML + PDF + page thumbnails; PDF → pages with poppler; PPTX → PDF with LibreOffice → pages), media transcode (ffmpeg) |
-| db | `postgres/` | PostgreSQL 17; `postgres/init/` creates the `hub_worker` role on first init |
+| latex-runner | `latex-runner/` | Claims only `latex_compile` jobs (hub_worker role, network `jobs`: db + rustfs, no internet), runs `latexmk` in a per-compile bubblewrap sandbox (only its own project dir, no network/env/proc), uploads PDF/SyncTeX/log. Image `hub-latex-runner:${HUB_VERSION}` (~3.5 GB); read-only root, `cap_drop: ALL`, custom seccomp (`latex-runner/seccomp.json`), volume `latex_cache` (build caches, safe to delete). See `latex-runner/README.md` and "LaTeX" below |
+| db | `postgres/` | PostgreSQL 17 + pgvector (`pgvector/pgvector:0.8.7-pg17`; extensions `vector`, `pg_trgm` created by migration 0001); `postgres/init/` creates the `hub_worker` role on first init |
 | rustfs | — | `rustfs/rustfs:1.0.1`, S3 API on `:9000`, never published |
 | latex-app, latex-compiler | `deploy/aldine/` | Optional (`--profile latex`): Aldine collaborative LaTeX on `LATEX_HOSTNAME`. Compiler image adds Noto CJK. See `docs/aldine-evaluation.md` |
 
@@ -32,18 +39,23 @@ v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf)
 
 - ESM, `NodeNext` imports with `.js` suffix. Strict TS with `noUncheckedIndexedAccess`.
 - Each feature is a Fastify plugin in `backend/src/routes/<name>.ts`, registered in `app.ts` with prefix `/api`.
-  Paths inside a plugin are written without `/api` (e.g. `app.get("/items", ...)`).
+  Paths inside a plugin are written without `/api` (e.g. `app.get("/studies", ...)`).
 - Access deps via `app.db` (pg Pool), `app.storage` (`lib/storage.ts`), `app.notifier`, `app.config`.
-- Auth helpers in `lib/auth.ts`: `requireUser`, `requireEditor` (not professor), `requireOwner`, `requireRole`.
-  **Every route checks access explicitly.** `createSession` / `clearSession` / `audit` live there too.
+- Auth helpers in `lib/auth.ts`: `requireUser`, `requireAdmin` (`role === 'admin'`), `requireRole` (account role),
+  `workspaceGuard` (global `onRequest` hook: admin sessions get 403 `{error: "管理員帳號只能管理系統設定與使用者。", code:
+  "admin_workspace"}` on every `/api` path outside `ADMIN_ALLOWED`: health, config, auth, users, invitations, join,
+  admin/*, ai/status, library/settings, note-templates, notifications, push, jobs). Study access in `lib/studies/access.ts` (see "Roles"). **Every route checks access explicitly.**
+  `createSession` / `clearSession` / `audit` live in `lib/auth.ts` too.
 - Validate all input with zod via `parse(schema, input)` from `lib/http.ts`; throw `HttpError`
-  (`badRequest`, `notFound`, `forbidden`, `conflict`) — the error handler replies `{ "error": "<繁中訊息>" }`.
+  (`badRequest`, `notFound`, `forbidden`, `conflict`, or `new HttpError(status, message, { code, hint })`) — the error
+  handler replies `{ "error": "<繁中訊息>" }`, plus `code` / `hint` when given (AI and admin errors).
 - Responses are JSON objects (never bare arrays), snake_case columns as returned by SQL are fine.
   List endpoints return `{ <plural>: [...] }`. Set `Cache-Control: no-store` on per-user data.
 - User-facing messages are Traditional Chinese (繁體中文), matching v1 wording where it exists.
 - CSRF: a global `onRequest` hook rejects POST/PUT/PATCH/DELETE whose `Origin` ≠ `APP_ORIGIN` (403). The only
-  exemption is the route `POST /api/oidc/token` (server-to-server from Aldine, client-secret authenticated, never
-  reads cookies); matched on the registered route, so no other path or method is affected.
+  exemptions are the routes `POST /api/oidc/token` (server-to-server from Aldine, client-secret authenticated, never
+  reads cookies) and `POST /api/mcp` (bearer MCP token only, never the cookie; checks `Origin` itself when sent);
+  matched on the registered route, so no other path or method is affected.
 - Uploads use `@fastify/multipart` (`request.file()`), streamed to S3 via `app.storage.put` — never buffer
   whole files in memory. Enforce the `MAX_*_BYTES` config limits (use `limits.fileSize` and check `file.truncated`).
 - Schema changes: add `backend/migrations/NNNN_name.sql` (applied in order at backend start, under an advisory lock).
@@ -53,15 +65,45 @@ v2 replaces the v1 MVP (Next.js full-stack + file-based render queue + Overleaf)
 
 ## Roles
 
-| Role | Notes / tags / media | Slides (create, upload, edit, references, visibility) | Slide reviews | Admin (`/api/users`, `/api/invitations`) |
-|---|---|---|---|---|
-| owner | read/write | read/write | add; **reply** | yes (Owner cannot be demoted/disabled) |
-| admin | read/write | read/write | — | no |
-| member | read/write | read/write | — | no |
-| professor | read only | read only | **add** | no |
+Accounts (`users`): `role ∈ {student, professor, admin}` (migration `0100_admin_role.sql`). **Admin accounts are
+system-only**: accounts, invitations, models/speech, templates, system settings — never the research workspace (no
+studies, notes, decks, meetings, library writes, assistant, LaTeX, tasks; never a study member, advisor, meeting
+participant or task assignee; not listed by `/users/directory`). `is_admin` is kept as a flag that always equals
+`role = 'admin'` (CHECK). `is_owner` marks the initial admin (初始管理員, the bootstrap account: exactly one, always an
+enabled admin, cannot be changed or disabled). Students/professors cannot be granted admin; admin accounts are created
+by an `admin` invitation, and at least one enabled admin always remains.
 
-Anonymous visitors may view a slide deck, its references and reviews when the deck is `public_view` or they
-hold the share key (capability URL); they can never write.
+Study membership (`study_members.role`): `owner` (creator, transferable, exactly one), `member`, `advisor` (must be a
+professor account; a professor can also be owner/member of their own study). Everyone signed in can read every study.
+
+| Action | Signed-in non-member | Study owner / member | Study advisor | Admin account |
+|---|---|---|---|---|
+| Read the study and everything in it | ✅ | ✅ | ✅ | — |
+| Edit content (summary, stages, milestones, tasks; later notes, decks, papers, thesis) | — | ✅ | — | — |
+| Comment / review / feedback | ✅ (slide reviews: professors only) | ✅ | ✅ | — |
+| Reply to slide reviews | — | ✅ | ✅ | — |
+| Manage members, transfer, archive, delete | — | owner only | — | — |
+| System settings, accounts, invitations | — | — | — | ✅ |
+
+Helpers (`backend/src/lib/studies/access.ts`):
+- `loadStudyAccess(db, idOrSlug, user, {forUpdate?})` → `StudyAccess {study, membership: {role}|null, canEdit, canManage,
+  canComment, isOwner, isAdvisor}` (404 `研究不存在。` when missing). `canEdit` = owner/member; `canManage` = study owner.
+- `requireStudyEditor(request, ref)` (403 `只有研究成員可以修改。`), `requireStudyManager(request, ref)`,
+  `requireStudyReader(request, ref)` → `{user, access}`; `permissionsOf(access)` → `{edit, manage, comment, role}` (sent
+  to the SPA); `studyUrl(slug, tab?)` → `/studies/<slug>?tab=<tab>`.
+- `findStudy(db, ref)` accepts a UUID or a slug (slugs are never UUID-shaped).
+- `recordActivity(client, {studyId, actorId, kind, title, url?, targetType?, targetId?, metadata?})`
+  (`lib/studies/activity.ts`) appends to `study_activity` and bumps `studies.activity_at`; call it inside the
+  transaction of the change. Core kinds: `study_created`, `stage_changed`, `milestone_done`, `task_done`,
+  `deck_published`, `member_added`; modules add their own (lower snake case).
+- `registerStudyCleanup(name, hook)` (`lib/studies/cleanup.ts`): modules with S3 objects per study register a hook that
+  runs in the study-delete transaction and returns a post-commit cleanup (slides registers one).
+- `createTask` / `updateTask` (`lib/studies/tasks.ts`) for modules that create tasks (meeting drafts, AI tools:
+  `source: "meeting"|"ai"`, `source_ref`).
+
+AI tools always act with the caller's permissions. Anonymous visitors may view a slide deck, its references and
+reviews when the deck is `public_view` or they hold the share key (capability URL); they can never write and never
+learn the deck's study.
 
 ## Object keys (bucket `$S3_BUCKET`)
 
@@ -69,18 +111,38 @@ Defined in `backend/src/lib/storage.ts` `keys`; the worker receives full keys in
 
 | Key | Content |
 |---|---|
-| `media/uploads/<uploadId>/source` | raw uploaded media (deleted by worker after transcode, or by finalizer on failure). `uploadId` is a fresh UUID, not the job id (the file is streamed before the job row exists) |
-| `media/items/<itemId>/<uploadId>.m4a` | transcoded audio (24 kHz mono 48 kbps AAC, `+faststart`) |
-| `slides/<projectId>/<versionId>/source.zip\|pdf\|pptx` | uploaded deck: Quarto ZIP, PDF or PPTX (`slide_versions.source_type`; validated by backend before enqueue). For PDF decks this file is also the PDF download (`pdf_key`) |
-| `slides/<projectId>/<versionId>/output/…` | rendered deck. Quarto: entry HTML + its own assets and `slides.pdf`; PPTX: `slides.pdf` (LibreOffice). Versions rendered before pages existed may have `_hub-thumbnail.png` at the root |
-| `slides/<projectId>/<versionId>/output/_hub/…` | **reserved, hub-owned** (a deck whose output writes `_hub/` fails): `thumbnail.png` (quarto) / `thumbnail.webp` (pdf/pptx) — 960 px wide first slide, `slide_versions.thumbnail_key`; `pages/<n>-thumb.webp` (480 px wide, every type) and `pages/<n>-full.webp` (longer side 1920 px — 1920 px wide for landscape slides; pdf/pptx only); `pages.json` (page manifest, `slide_versions.manifest_key`). Never served by the deck asset route |
-| `slides/<projectId>/<versionId>/output-<suffix>/…` | output of a re-index render (`POST …/reindex`); on success it becomes the version's `output_prefix` and the previous prefix is deleted |
+| `media/uploads/<mediaId>/source` | meeting media (`meeting_media.id`): an uploaded audio/video file, or part 0 of a browser recording (its chunks concatenated). Deleted by the worker after transcoding, **except** a browser-playable video ≤ 500 MB, which stays as `meeting_media.video_key` |
+| `media/uploads/<mediaId>/part-<n>` | further recorder parts of one browser recording (a reload continues in a new part); concatenated by the worker, then deleted |
+| `media/items/<meetingId>/<mediaId>.m4a` | transcoded meeting audio (24 kHz mono AAC, `meeting_media.audio_key`), streamed with Range by `GET /meetings/:id/media/:mediaId/audio` |
+| `meetings/<meetingId>/rec/<mediaId>/<part>/<seq:06>.webm` | one ~10 s MediaRecorder chunk (WebM/Opus, or fMP4 on Safari) while recording; deleted after `…/finish` assembles the parts |
+| `meetings/<meetingId>/transcripts/<transcriptId>/words.json` | word timestamps of an ASR transcript (`transcripts.words_key`) |
+| `meetings/<meetingId>/feedback/<feedbackId>/file` | uploaded feedback document (text extracted into `meeting_feedback.file_text`) |
+| `slides/<deckId>/<versionId>/source.zip\|pdf\|pptx` | uploaded deck: Quarto ZIP, PDF or PPTX (`slide_versions.source_type`; validated by backend before enqueue). For PDF decks this file is also the PDF download (`pdf_key`) |
+| `slides/<deckId>/<versionId>/output/…` | rendered deck. Quarto: entry HTML + its own assets and `slides.pdf`; PPTX: `slides.pdf` (LibreOffice). Versions rendered before pages existed may have `_hub-thumbnail.png` at the root |
+| `slides/<deckId>/<versionId>/output/_hub/…` | **reserved, hub-owned** (a deck whose output writes `_hub/` fails): `thumbnail.png` (quarto) / `thumbnail.webp` (pdf/pptx) — 960 px wide first slide, `slide_versions.thumbnail_key`; `pages/<n>-thumb.webp` (480 px wide, every type) and `pages/<n>-full.webp` (longer side 1920 px — 1920 px wide for landscape slides; pdf/pptx only); `pages.json` (page manifest, `slide_versions.manifest_key`). Never served by the deck asset route |
+| `slides/<deckId>/<versionId>/output-<suffix>/…` | output of a re-index render (`POST …/reindex`); on success it becomes the version's `output_prefix` and the previous prefix is deleted |
 | `slides/_shared/<hash>/…` | `offline-assets/` (MathJax, KaTeX, fonts) shared by every version rendered with the same assets; `.complete` marker written last. Never deleted per version (`slide_versions.shared_prefix`) |
-| `references/<projectId>/<referenceId>` | reference PDF |
+| `slides/<deckId>/source/<fileId>` | binary file (image, font, PDF…) of the deck's in-app Quarto tree (`deck_sources.s3_key`; text files live in the DB). Keys in `lib/slides/sources.ts` `sourceKeys` |
+| `slides/<deckId>/preview/<previewId>/source.zip`, `…/output/` | quick preview (`slide_preview`): the packed tree (deleted once rendered) and the HTML-only render (`deck_previews.output_prefix`); only the newest ready preview per deck is kept. A preview queued with `shots: true` also has `…/output/_hub/shots/<n>.webp` (1280 px wide, ≤ 20 slides) + `_hub/shots.json` (`{version:1,width,height,total,truncated,pages:[{index,h,v?,title?}]}`) for the AI layout review |
+| `references/<deckId>/<referenceId>` | reference PDF |
+| `latex/<projectId>/blobs/<sha256>` | content-addressed file bytes of a LaTeX project: binary uploads (`latex_files.s3_key`) and every text snapshot taken for a compile or a version (`latex_files.blob_sha256` = last uploaded text hash). Never rewritten; removed with the project |
+| `latex/<projectId>/manifests/<compileId>.json` | runner snapshot manifest (`LatexSnapshotManifest`) of one compile; deleted by the finalizer |
+| `latex/<projectId>/builds/<compileId>/` | compile outputs written by latex-runner: `output.pdf`, `output.synctex.gz`, `output.log`, `output.blg`, `latexmk.txt`; the newest 8 compiles (and the project's preview PDF) are kept, older prefixes are deleted by the finalizer |
+| `latex/<projectId>/versions/<versionId>.json` | named version: every file `{path, key, size, sha256, fileId, kind, role, contentType}` + project settings |
+| `library/papers/<paperId>/<fileId>.pdf` | stored paper PDF (`paper_files.key`; the newest is `papers.pdf_key`). Lab-internal only, streamed by `GET /library/papers/:id/pdf` |
+| `library/imports/<batchId>/upload.pdf` | PDF of an unconfirmed PDF import (moved to `library/papers/…` on confirm, deleted on cancel) |
 
 ## Jobs
 
-Table `jobs` (see `migrations/0001_init.sql`). Producer helpers: `backend/src/jobs/queue.ts`.
+Table `jobs` (see `migrations/0001_v3_baseline.sql`). Producer helpers: `backend/src/jobs/queue.ts`.
+`jobs.kind` is free-form lower snake case (`CHECK kind ~ '^[a-z][a-z0-9_]{1,47}$'`) so modules add kinds without
+touching a shared constraint; each consumer must claim only the kinds it handles (the v2 worker claims any queued job —
+a module adding a kind for another consumer must add a kind filter to the worker's claim). Core kinds: `slide_render`,
+`media_transcode` (meeting media; finalizer in `lib/meetings/media.ts`). Meetings adds `ai_meeting_transcribe` and `ai_meeting_analyze` (ai-worker, see "Meetings"). Slides adds `slide_preview` (worker; claimed
+only when no other claimable job is waiting: `ORDER BY (kind = 'slide_preview'), created_at`) and `ai_slides_generate` (ai-worker).
+Search adds `ai_search_index` (ai-worker, see "Search"). LaTeX adds `latex_compile` (latex-runner only; payload/manifest/result in
+`backend/src/lib/latex/contract.ts` = `latex-runner/README.md` "Job contract"; enqueued with `created_by` NULL and `max_attempts` 2, so it
+stays out of the jobs tray; finalizer `jobs/latex-finalizer.ts`, see "LaTeX").
 
 Lifecycle: `queued → running → succeeded | failed | cancelled`, then the backend **finalizer** applies the
 result to domain tables once (`finalized_at`). The worker only ever touches the `jobs` table (DB role
@@ -114,12 +176,13 @@ Cancellation (backend): `cancelJob(client, jobId)` cancels queued jobs immediate
 ### Payload / result contracts
 
 ```ts
-// kind = "media_transcode"
-type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: string; fileName: string };
-type MediaTranscodeResult  = { outputKey: string; bytes: number; durationSeconds: number | null; peaks?: number[] };
+// kind = "media_transcode" (meetings; backend lib/meetings/media.ts MeetingTranscodePayload ↔ worker/src/types.ts)
+type MediaTranscodePayload = { itemId: string /* meeting_media.id */; sourceKey: string /* media/uploads/<id>/source */; outputKey: string /* media/items/<meetingId>/<id>.m4a */;
+  fileName: string; extraSourceKeys?: string[] /* media/uploads/<id>/part-<n>, concatenated after sourceKey */; keepSource?: boolean };
+type MediaTranscodeResult  = { outputKey: string; bytes: number; durationSeconds: number | null; peaks?: number[]; hasVideo?: boolean; keptSource?: boolean };
 // kind = "slide_render"
 type SlideSourceType = "quarto" | "pdf" | "pptx";
-type SlideRenderPayload = { projectId: string; versionId: string; sourceKey: string; entry: string; outputPrefix: string; sourceType?: SlideSourceType };
+type SlideRenderPayload = { projectId: string /* the deck id */; versionId: string; sourceKey: string; entry: string; outputPrefix: string; sourceType?: SlideSourceType };
 type SlideRenderResult  = { entryHtml: string | null; pdfKey: string; quartoVersion: string | null; fileCount: number; sharedPrefix: string | null;
                             thumbnailKey?: string; pageCount?: number; manifestKey?: string; converter?: string };
 // <outputPrefix>_hub/pages.json (keys relative to outputPrefix)
@@ -145,7 +208,38 @@ slide in order (`h`, `v` only for vertical slides), all fragments shown; `title`
 export them) and notes are dropped when the visible slide count differs from the PDF page count. `peaks` (optional) is the audio waveform: up to 1000 values in [0,1] with 3 decimals; the finalizer
 stores it only when it is an array of ≤ 2000 finite numbers in [0,1] (otherwise NULL).
 
-Media stages (shown to users, 繁中): `排隊中` → `分析媒體` → `音訊轉碼` → `上傳結果` → `完成`.
+```ts
+// kind = "slide_preview" (worker, max_attempts 1, created_by NULL so it stays out of the jobs tray; lib/slides/preview.ts ↔ worker/src/types.ts)
+type SlidePreviewPayload = { deckId: string; previewId: string; sourceKey: string /* slides/<d>/preview/<p>/source.zip */; entry: string; outputPrefix: string /* slides/<d>/preview/<p>/output/ */; shots?: boolean /* AI layout review */ };
+type SlidePreviewResult  = { entryHtml: string; fileCount: number; quartoVersion: string | null;
+  shots?: { count: number; total?: number; width?: number; height?: number; truncated?: boolean; error?: string /* capture failed: count 0 */ } };
+// kind = "ai_slides_generate" (ai-worker, role `slides`, max_attempts 2; src/ai-jobs/slides/generate.ts)
+type SlidesGeneratePayload = { deckId: string; userId: string; mode: "progress" | "paper_report"; instructions?: string; fileName?: string /* jobs-tray label */ };
+type SlidesGenerateResult  = { revision: number; previewId: string | null; valid: boolean | null /* null: preview did not finish in 4 min */; fixed: boolean; pages: number; visualFixes?: number };
+```
+
+`slide_preview` = Quarto → revealjs HTML only (extract + validate the ZIP like `slide_render`, drop `_quarto.yml`, `quarto render
+--no-execute`, upload; no annotate plugin, PDF, pages, thumbnail or offline-asset bundling — math/fonts load from the CDN the
+sandbox CSP allows); 90 s timeout. Finalizer: success → `deck_previews.status='ready'`, `entry_html`; older finished previews of
+the deck are deleted (rows + S3), and this one too when a newer one is already ready; the source ZIP is deleted. Failure/cancel →
+`failed` (`error` = log tail) / `cancelled`, own prefix deleted, the previous ready preview stays served.
+With `shots: true` the worker, after uploading the deck, runs `prepare-pdf.py` on its local copy (offline KaTeX/MathJax/fonts;
+the worker has no internet) and screenshots every slide with puppeteer (`worker/src/shots.ts`: Reveal order, fragments shown,
+1280 px at the deck ratio, WebP q82, ≤ 20 slides / 30 s); a capture failure only sets `shots.error` (the preview stays ready).
+`enqueuePreview(…, {shots})` does not reuse a same-revision preview without shots; a plain request reuses one with shots.
+`ai_slides_generate` stages (`jobs.stage`): `context` → `generating` → `writing` → `validating` → (`fixing` → `validating`) → `done`
+(`waiting_llm` while the role is down). It re-checks that `userId` is still an owner/member of the deck's study (AI acts with the
+caller's permissions), gathers context (`lib/slides/ai-context.ts`), streams `ai.chatStream("slides", …)`, writes the cleaned body
+under the fixed Lab-Hub YAML into the tree's entry file (`origin='ai'`), queues a preview and waits for it; on a render failure it
+feeds the log back to the model **once** and re-validates. When role `slides` has vision the validation previews capture shots and,
+after a successful render, one **visual self-check** (stage `visual_check`, `lib/vision/slides.ts` `visualSelfFix`, ≤ 4000 output
+tokens) applies the verified `find/replace` fixes of high/medium `overflow|crowding|font_size` issues, re-renders, and reverts
+when that render fails (`visualFixes` = fixes kept). Any error skips the check.
+
+Media stages (shown to users, 繁中): `排隊中` → `分析媒體` → `音訊轉碼` → `上傳結果` → `完成`. The worker downloads every source,
+sums the ffprobe durations, probes the first source's streams (`codec_type,attached_pic`; cover art is not video), fails with
+`影片中沒有音軌。` / `媒體檔沒有可用的音訊。` when there is no audio, decodes + concatenates several inputs (`concat` filter) or maps
+`0:a:0` of one, and deletes the sources afterwards except `sourceKey` when `keepSource && hasVideo` (`keptSource: true`).
 Slide stages: quarto `排隊中` → `解壓縮` → `編譯簡報` → `匯出 PDF` → `上傳結果` → (`產生頁面`) → `完成`; pdf `準備檔案` →
 `產生頁面` → `上傳結果` → `完成`; pptx `準備檔案` → `轉換簡報` → `產生頁面` → `上傳結果` → `完成`.
 
@@ -159,18 +253,19 @@ All under `/api`. `→` describes the response body. Unless noted, routes need a
 |---|---|---|
 | GET `/health`, `/health/ready`, `/config` | public | done (`health.ts`) |
 | GET `/auth/accounts?ids=a,b` | public | names for device-remembered account hints → `{accounts:[{id,name}]}` (only enabled users, max 10 ids) |
-| GET `/auth/me` | public | `{user: CurrentUser \| null}`; `CurrentUser = {id, name, role, auth_mode, theme, locale: "zh-TW"\|"en", preferences: Preferences}` (preferences with defaults filled in, see below) |
+| GET `/auth/me` | public | `{user: CurrentUser \| null}`; `CurrentUser = {id, name, role: "student"\|"professor", is_admin, is_owner, auth_mode, theme, locale: "zh-TW"\|"en", preferences: Preferences}` (preferences with defaults filled in, see below) |
 | POST `/auth/login` `{userId?, name?, password}` | public | argon2 verify; 401 on failure; `two_factor` users → 403 (Passkey not implemented); sets session; updates `last_login_at` → `{account:{id,name}}` |
 | POST `/auth/logout` | user | clears session |
 | PATCH `/auth/profile` `{name?, theme?, locale?, preferences?, currentPassword?, newPassword?}` | user | password change requires current password; revokes other sessions. `preferences` is a deep-partial `Preferences` merged into the stored value (unknown keys / out-of-range values → 400) → `{user: CurrentUser}` |
 | GET `/auth/sessions`, DELETE `/auth/sessions/:id` | user | list / revoke own sessions |
 | POST `/join` `{token, name, password}` | public | consume invitation atomically (row lock, `use_count < max_uses`, not expired/revoked), create user, session |
-| GET `/join/:token` | public | validate token → `{role, expiresAt}` or 404 |
-| GET `/users` | owner | all users with role, disabled, last login |
-| PATCH `/users/:id` `{role?, disabled?}` | owner | owner cannot be changed; disabling revokes sessions; audit |
-| GET `/invitations` | owner | with derived state: active / expired / exhausted / revoked |
-| POST `/invitations` `{role, expiresIn: "5m"\|"30m"\|"1h"\|"2h"\|"5h"\|"1d"\|"3d"\|"5d"\|"7d"\|"never", maxUses: 1\|null}` | owner | returns the raw token **once** → `{invitation, token, url}` (`url` = `<APP_ORIGIN>/join/<token>`) |
-| DELETE `/invitations/:id` | owner | revoke (soft) |
+| GET `/join/:token` | public | validate token → `{role, isAdmin, expiresAt}` or 404 |
+| GET `/users/directory` | user | enabled student/professor accounts for pickers (admins never listed) → `{users:[{id,name,role}]}` (by name) |
+| GET `/users` | admin | all users: `id,name,role,is_admin,is_owner,auth_mode,disabled,disabled_at,created_at,last_login_at` (initial admin first) |
+| PATCH `/users/:id` `{role?: "student"\|"professor", disabled?}` | admin | role only between student/professor (admin accounts keep their role → 400; `is_admin` is not accepted → 400); the initial admin and yourself cannot be changed (404/400); disabling the last enabled admin → 409; disabling revokes sessions; demoting a study advisor to student → 409; audit |
+| GET `/invitations` | admin | with derived state: active / expired / exhausted / revoked (a used-up link stays `exhausted` after its expiry), `is_admin` |
+| POST `/invitations` `{role: "student"\|"professor"\|"admin", isAdmin?: boolean (legacy, must equal role === "admin"), expiresIn: "5m"\|"30m"\|"1h"\|"2h"\|"5h"\|"1d"\|"3d"\|"5d"\|"7d"\|"never", maxUses: 1\|null}` | admin | returns the raw token **once** → `{invitation, token, url}` (`url` = `<APP_ORIGIN>/join/<token>`); the joined account gets `role` (`is_admin` = role is admin) |
+| DELETE `/invitations/:id` | admin | revoke (soft) |
 | GET `/notifications`, DELETE `/notifications` `{id?}` | user | latest 100 / remove one or all |
 | GET `/notifications/unread` | user | `{count}` |
 | POST `/notifications/read` `{ids?: uuid[]}` | user | mark some or all read |
@@ -181,60 +276,150 @@ User preferences (`users.preferences`, `backend/src/lib/preferences.ts`; missing
 
 ```ts
 type Preferences = {
-  notify: { slideRendered: boolean; mediaTranscoded: boolean; reviews: boolean; replies: boolean }; // all default true
+  notify: { slideRendered: boolean; mediaTranscoded: boolean; reviews: boolean; replies: boolean; tasks: boolean }; // all default true
   editor: { fontSize: number /* int 12..22, default 15 */; layout: "split" | "edit" | "preview" /* default "split" */ };
 };
 ```
 
 `notify.*` gates **Web Push only**; in-app notifications are always recorded. Every `Notifier.push/notify` call
 names the flag it is gated by (`{ pref, tag }`): slide render finished/failed → `slideRendered`, media transcode
-finished/failed → `mediaTranscoded`, new review → `reviews`, reply → `replies`, `/push/test` → none (`pref: null`).
+finished/failed → `mediaTranscoded`, new review → `reviews`, reply → `replies`, task assigned to you → `tasks`,
+`/push/test` → none (`pref: null`). `notifications.kind` is lower snake case (core: `media`, `slide`, `system`, `study`,
+`task`; modules add their own).
 
-### Notes, tags, media (`items.ts`, `tags.ts`, `slide-tags.ts`, `media.ts`)
+### Studies, stages, milestones, tasks (`studies.ts`, `lib/studies/`)
+
+Tables (baseline): `studies` (`slug` unique, never UUID-shaped; `summary_md`, `summary_format prose|bullets`,
+`status active|paused|completed|archived`, `current_stage_id` → `study_stages`, `activity_at` = last change, `archived_at`),
+`study_members` (PK study+user, `role owner|member|advisor`, one owner), `study_stages` (`position` 0-based, unique per study,
+`started_at`, `completed_at`), `milestones` (`stage_id?`, `due_on date?`, `done_at`, `done_by`), `tasks` (`assignee_id?` must be
+a member, `due_on?`, `status open|done|dropped`, `source manual|meeting|ai`, `source_ref?`, `completed_at/by`),
+`study_activity` (timeline, see "Roles"), `stage_templates` (admin-maintained `[{name, description?}]`, exactly one
+`is_default`; seeded 題目發想 → 文獻探討 → 實驗 → 撰寫 → 投稿/口試), `system_settings` (`key` `<module>.<name>` → `value jsonb`;
+secrets must be encrypted by the owning module; helpers `getSetting` / `setSetting` / `deleteSetting` in `lib/settings.ts`). Dates (`due_on`) are `YYYY-MM-DD` strings in responses; "today" is Asia/Taipei.
+
+`:ref` = study id or slug. Every route needs a session. Lists reply `Cache-Control: no-store`.
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET `/items?tags=&q=&limit=&cursor=&audio=` | user | `audio=1` = only notes with a transcoded recording. `tags` omitted = all; `tags=` (empty) = none; ids comma-separated, `none` = untagged. `q` searches title + content (ILIKE). Keyset pagination by (event_date, created_at, id). Each item: id, title, excerpt, event_date, tags, has_audio, has_transcript, audio_name, audio_duration_seconds, updated_at, author names |
-| GET `/items/:id` | user | full note incl. content, tags, audio meta, `audio_peaks` (`number[]` or null), transcript cues, active media job |
-| POST `/items` `{title, event_date, content?, tagIds?}` | editor | |
-| PATCH `/items/:id` | editor | partial update; `updated_by`, `updated_at` |
-| DELETE `/items/:id` | editor | also cancels its jobs and deletes its S3 objects (post-commit) |
-| PUT `/items/:id/tags` `{tagIds}` | editor | replace tag set |
-| POST `/items/:id/transcript` (multipart `.srt`, ≤5 MB) / DELETE | editor | parse SRT → cues `[{start,end,text}]` |
-| POST `/items/:id/media` (multipart) | editor | stream to `media/uploads/<jobId>/source`, enqueue `media_transcode` → `{jobId}` (202). Max `MAX_MEDIA_BYTES` |
-| GET `/media/:itemId` | user | stream audio from S3 with **Range** support (206), `audio/mp4`, `Accept-Ranges: bytes` |
-| GET `/media-jobs` | user | caller's latest 20 media jobs → `{jobs:[{id,item_id,status,stage,progress,duration_seconds,error,file_name,created_at}]}` (status mapped: queued/running → `processing`, succeeded → `completed`) |
-| GET `/media-jobs/:id`, DELETE `/media-jobs/:id` | owner of job | status / cancel |
-| GET `/tags`, POST `/tags` `{name}`, PATCH `/tags/:id` `{name}`, DELETE `/tags/:id` | GET user, writes editor | names 1–40 chars, unique case-insensitive → 409 on duplicate; deleting a tag never deletes notes. GET includes `count` (usage) |
-| same under `/slide-tags` | same | separate tag set for slides |
+| GET `/studies?member=<uuid>\|me&status=&stage=&q=` | user | `{studies: StudyCard[]}` newest `activity_at` first. `status` omitted = all but archived, `all` = everything; `stage` = current stage name (exact); `q` = title/slug/summary substring (LIKE-escaped) |
+| POST `/studies` `{title, slug?, summary_md?, summary_format?, templateId?, members?: [{userId, role: member\|advisor}]}` | user | creator becomes owner; stages copied from the template (default), the first one current and started; slug from the title when omitted (ASCII words; titles with CJK get `-YYYY-MM-DD`, CJK-only → `study-YYYY-MM-DD`; `-2`, `-3`… when taken; a given slug that is taken → 409); advisors must be professors (400); activity `study_created` → 201 `StudyDetail` |
+| GET `/studies/:ref` | user | `StudyDetail` |
+| PATCH `/studies/:ref` `{title?, slug?, summary_md?, summary_format?, status?}` | editor; `status` to/from `archived`: manager | → `StudyDetail` |
+| DELETE `/studies/:ref` | manager | runs study cleanup hooks (decks: cancel jobs, delete S3 prefixes after commit), cascades everything |
+| GET `/studies/:ref/members` | user | `{members, permissions}` |
+| POST `/studies/:ref/members` `{userId, role: member\|advisor}` | manager | enabled accounts only; advisor must be professor (400); already a member → 409; notifies the added user (`kind:'study'`); activity `member_added` → 201 `{members}` |
+| PATCH `/studies/:ref/members/:userId` `{role: member\|advisor}` | manager | not the owner (use transfer) → `{members}` |
+| DELETE `/studies/:ref/members/:userId` | manager, or the member themself (leave) | never the owner; their open tasks become unassigned → `{members}` |
+| POST `/studies/:ref/transfer` `{userId}` | manager | target must be a `member`; previous owner becomes `member`; notifies the new owner → `{members}` |
+| GET `/studies/:ref/stages` | user | `{stages}` |
+| POST `/studies/:ref/stages` `{name, description?}` | study editor | appended (max 50) → 201 `{stages}` |
+| PUT `/studies/:ref/stages/order` `{ids}` | study editor | must list every stage exactly once → `{stages}` |
+| PATCH `/studies/:ref/stages/:stageId` `{name?, description?}` | study editor | → `{stages}` |
+| POST `/studies/:ref/stages/:stageId/current` | study editor | earlier stages get `completed_at` (if unset), later ones lose it, this one gets `started_at` (first time) and no `completed_at`; activity `stage_changed` `{from,to}` when it changes → `{stages, current_stage_id}` |
+| POST `/studies/:ref/stages/:stageId/complete` `{completed=true}` | study editor | completing the current stage makes the next one current → `{stages, current_stage_id}` |
+| DELETE `/studies/:ref/stages/:stageId` | study editor | not the current stage (409); positions renumbered; milestones keep `stage_id = NULL` → `{stages}` |
+| GET `/studies/:ref/milestones` | user | open first by `due_on` (undated last), then done |
+| POST `/studies/:ref/milestones` `{title, due_on?, stage_id?}` | study editor | → 201 `{milestone}` |
+| PATCH `/studies/:ref/milestones/:milestoneId` `{title?, due_on?, stage_id?, done?}` | study editor | `done:true` records `milestone_done` once → `{milestone}` |
+| DELETE `/studies/:ref/milestones/:milestoneId` | study editor | |
+| GET `/studies/:ref/tasks?status=open\|done\|dropped\|all&assignee=<uuid>\|me\|none` | user | `{tasks, permissions}` open first, by due date |
+| POST `/studies/:ref/tasks` `{title, detail_md?, assignee_id?, due_on?, status?, source?, source_ref?}` | study editor | assignee must be a member (400); notifies the assignee (`kind:'task'`, pref `tasks`, url `/studies/<slug>?tab=tasks`) unless it is you → 201 `{task}` |
+| GET/PATCH/DELETE `/studies/:ref/tasks/:taskId` | GET user; writes editor | PATCH `{title?, detail_md?, assignee_id?, due_on?, status?}`; → `done` sets `completed_at/by` and records `task_done`; reassignment notifies |
+| GET `/tasks?assignee=me\|<uuid>\|none&status=open\|…\|all&study=<ref>&limit=` | user | tasks across studies (default: mine, open), soonest due first, each with `study {id,slug,title}` |
 
-Finalizer `media_transcode`: on success set `items.audio_*` incl. `audio_peaks` (a new audio replaces the peaks, NULL when the
-result has none or they are invalid; delete the previous audio object post-commit),
-notify the uploader (`kind:'media'`, url `/recordings/<id>`; failures link to `/notes/<id>`); on failure/cancel delete the upload + partial output.
+```ts
+type StudyCard = { id, slug, title, status, summary_format, summary_excerpt /* plain text ≤160 */, created_at, updated_at, activity_at,
+  current_stage: {id,name,position} | null, stage_count, stages_done, members: {id,name,role,account_role}[] /* owner, members, advisors */,
+  next_milestone: {id,title,due_on} | null, open_task_count, my_role: "owner"|"member"|"advisor"|null };
+type StudyDetail = { study: {id,slug,title,summary_md,summary_format,status,current_stage_id,created_by,created_at,updated_at,activity_at,archived_at},
+  stages: {id,position,name,description,started_at,completed_at,is_current}[], milestones: Milestone[],
+  members: {id,name,account_role,role,disabled,added_at}[], counts: {openTasks, doneTasks},
+  permissions: {edit, manage, comment, role} };
+type Task = { id, study_id, title, detail_md, assignee_id, assignee: {id,name}|null, due_on, status, source, source_ref,
+  completed_at, completed_by, created_by, creator_name, created_at, updated_at, study? };
+```
+
+### Notes, collaboration, suggestions (`notes.ts` → `note-templates.ts`, `suggestions.ts`; `src/collab/`, `lib/notes/`, `lib/suggestions/`)
+
+Shared editor/collab/suggestion APIs for other modules: **`docs/editor-collab.md`**. `routes/notes.ts` is a root-level
+(fastify-plugin) module: it registers `@fastify/websocket` once, decorates `app.collab` (`CollabServer`, also
+`collabFor(app)`), adds `GET /api/collab` and the route plugins below. WebSocket routes of other modules must be
+registered after it.
+
+Tables (`0030_notes_collab.sql`):
+- `yjs_docs` (PK `name` = `<namespace>:<id>`, `state` bytea = `Y.encodeStateAsUpdate`, `size`): the only source of a
+  collaborative document. Plain-text columns are materialized copies and are **never** used to rebuild a document
+  (only `seed` of a namespace, when no row exists at all; notes write the state at creation).
+- `note_templates` (`scope system|user`, `owner_id` (null for system), `name`, `kind research|experiment|reading|meeting|custom`,
+  `description`, `body_md` skeleton, `ai_prompt` for AI 草擬, `position`); seeded system templates 研究筆記, 實驗筆記
+  (目的/設定/資料集/超參數/結果表格/分析/下一步), 閱讀筆記 (論文資訊/摘要/方法/優缺點/與我研究的關係), 會議筆記 (摘要/回饋/待辦).
+- `notes` (`study_id`, `template_id?` (SET NULL), `kind` copied from the template, `title`, `content_md` = materialized text of
+  `note:<id>`, `event_date?`, `version` = latest version number, `created_by/updated_by`).
+- `note_versions` (`version` per note, `kind initial|auto|manual|suggestion|autopilot|restore`, `label`, `content_md`,
+  `author user|ai`, `actor_id`). `auto` = at most one per 10 min while edited (on store, when the text changed).
+- `suggestions` (`target_type`, `target_id` text, `study_id?`, `doc_name?`, `title`, `source user|ai|autopilot`, `base_version`,
+  `hunks` jsonb `[{id, from, to, before, after, status pending|accepted|rejected, start?, end?, decided_by?, decided_at?}]`,
+  `status pending|applied|partial|rejected`, `created_by`, `created_by_conversation` (agent, no FK), `decided_at`).
+
+**Collaboration** (`src/collab/`): Hocuspocus 4 in the backend process. `GET /api/collab` (WebSocket) → 403 when `Origin` ≠
+`APP_ORIGIN`, 401 without a valid `hub_session`. Each document is authorized by its namespace (`registerCollabNamespace`;
+`note:<id>`: every signed-in user reads, study owner/member write, others get read-only connections whose updates the server
+drops). Every 60 s open sockets are re-checked (session valid, account enabled, same access) and closed when changed; clients
+reconnect with the new rights. Store: debounce 2 s / max 10 s, on unload and on shutdown (`preClose` flushes every document
+before sockets close), in one transaction with the namespace's `materialize` (notes: `content_md`, `updated_by`, study
+`activity_at`, auto version). Server-side edits (`app.collab.edit`) use a direct connection, so clients see them; stateless
+messages `{type:"suggestions"|"meta"}` tell clients to refetch.
+
+| Method & path | Access | Notes |
+|---|---|---|
+| GET `/studies/:ref/notes?q=&template=<uuid>&kind=&author=me\|<uuid>` | user | `{notes: NoteCard[], search_mode: "keyword"\|"semantic"\|null, permissions}`; newest `event_date` (else created) first. `q` = ILIKE on title + content (escaped) unless the search module set a provider (`setNoteSearchProvider`) |
+| POST `/studies/:ref/notes` `{title?, template_id?, event_date? (default today Asia/Taipei, null = none), content_md?}` | study editor | template must be system or yours (400); content defaults to the template body; title defaults to `<template name> <date>`; creates the Yjs state + version 1 (`initial`); activity `note_created` (url `/studies/<slug>/notes/<id>`) → 201 `{note, url}` |
+| GET `/notes/:id` | user | `{note (content_md = live text), doc_name, study {id,slug,title}, template {id,name,kind,scope}\|null, permissions}` |
+| PATCH `/notes/:id` `{title?, event_date?, template_id?}` | study editor | broadcasts `meta` → `{note}` |
+| DELETE `/notes/:id` | study editor | deletes its `yjs_docs` row and suggestions, disconnects editors |
+| GET `/notes/:id/versions` → `{versions:[{id,version,kind,label,author,actor_id,actor_name,created_at,size}]}` · GET `/notes/:id/versions/:versionId` → `{version}` (+ `content_md`) | user | newest first (≤ 200) |
+| POST `/notes/:id/versions` `{label?}` | study editor | manual version of the live text → 201 `{version}` |
+| POST `/notes/:id/versions/:versionId/restore` | study editor | applies the old text as a line diff to the live document, then version `restore` (「還原至第 N 版」) → `{version, note}` |
+| GET `/notes/:id/export` | user | `text/markdown` attachment `<title>.md` (`# title` + live text) |
+| POST `/notes/:id/transcribe` (multipart: `durationSec`, `language?`, file ≤ 30 MB, ≤ 10 min) | study editor | `ai.transcribe` (role `asr`, default `zh-TW`, route's script conversion) → `{text, language, durationSec}`; AI errors carry `code`/`hint` |
+| POST `/notes/:id/ai/draft` `{instruction?}` · `/ai/rewrite` `{from, to, before, mode: rewrite\|bullets\|shorten\|expand\|fix, instruction?}` · `/ai/continue` `{at, instruction?}` | study editor | role `writing`, answered as **SSE**: `delta {text}`…, then `suggestion {suggestion}` or `error {error, code?, hint?}`, then `done`. Draft = full proposed text from template + study summary + current text; rewrite = one hunk replacing the selection (`before` must equal the live text → 409); continue = insertion at `at`. Never writes directly |
+| GET `/note-templates` | user | `{templates (system + mine, with note_count), permissions: {manageSystem}}` |
+| POST `/note-templates` `{name, kind?, description?, body_md?, ai_prompt?, scope?: user\|system, position?}` | user; `system`: admin | → 201 `{template}` |
+| PATCH / DELETE `/note-templates/:id` | own user template, or admin | notes keep content and kind |
+| GET `/suggestions?target_type=&target_id=&status=pending\|applied\|partial\|rejected\|all` | user | `{suggestions: SuggestionView[], permissions: {review}}`; each hunk has live `state` (`pending\|accepted\|rejected\|stale`) and `current {from,to}` |
+| GET `/suggestions/:id` | user | `{suggestion}` |
+| POST `/suggestions` `{target_type, target_id, title?, proposed_text \| hunks:[{from,to,after,before?}]}` | target editor | `source:"user"` → 201; 400 when it changes nothing; 409 when `before` differs |
+| POST `/suggestions/:id/hunks/:hunkId/accept\|reject` · `/suggestions/:id/accept-all\|reject-all` | target editor | → `{suggestion, applied, skipped}`; a single stale hunk → 409 `這段內容已被修改…`; accept-all skips stale hunks (they stay pending, rejectable) |
+
+Suggestion targets registered: `note` (Yjs; accepted hunks add a version `接受 AI 建議 · N 處` / `自動駕駛套用建議 · N 處`),
+`study_summary` (plain text `studies.summary_md`, id = study id; activity `summary_suggestion_applied`); slides registers
+`deck_source`. Study deletion removes note documents and suggestions (study cleanup hook `notes`).
 
 ### Slides (`slides.ts`, `slide-reviews.ts`, `slide-view.ts`)
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET `/slides?tags=&q=` | user | `{slides, limits}`: projects with active version, status of latest version, tags, `reference_count`, `review_count`, `author_name` (uploader of the active version, fallback deck creator), `published_at` (active version's publish time or null), `thumbnailUrl` (`/api/slides/<id>/thumbnail?v=<activeVersionId>` or null). `limits = {zipBytes, deckBytes, deckTypes: [".zip",".pdf",".pptx"], referenceBytes}` (`zipBytes` = `deckBytes` = `MAX_SLIDE_ZIP_BYTES`, the limit for every deck upload; `MAX_REFERENCE_BYTES`). `latest_status` may be `review` |
-| POST `/slides` (multipart: `title`, `slug`, `entry?`, `public?`, `tagIds?`, file `.zip`/`.pdf`/`.pptx`) | editor | detect + validate the deck (see "Deck uploads"), create project + version 1, upload the file, enqueue render (202) → `{id, slug, versionId, version, jobId, sourceType, entry: string\|null, scan: {files,bytes,qmd}\|null}` |
-| GET `/slides/:id` | user | detail: project (incl. `creator_name`), versions (see "Version object"), `activeVersion` (the active **published** version object, also for pdf/pptx decks without a `viewUrl`), references, reviews (see "Review object", + replies, author names), tags, `viewUrl` for active version (null for pdf/pptx), `pdfUrl`, `thumbnailUrl` (same format; null for anonymous by-slug viewers), `permissions {manage, review, reply}`, `limits` (as in the list; not in by-slug) |
+| GET `/slides?studyId=<id\|slug>&q=&kind=progress\|paper_report` | user | `{slides, limits}`: decks (`kind`, `paper_id`, `metadata`, `has_source`, `study_id`, `study {id,slug,title}`) with active version, status of latest version, `reference_count`, `review_count`, `author_name` (uploader of the active version, fallback deck creator), `published_at` (active version's publish time or null), `thumbnailUrl` (`/api/slides/<id>/thumbnail?v=<activeVersionId>` or null). `limits = {zipBytes, deckBytes, deckTypes: [".zip",".pdf",".pptx"], referenceBytes}` (`zipBytes` = `deckBytes` = `MAX_SLIDE_ZIP_BYTES`, the limit for every deck upload; `MAX_REFERENCE_BYTES`). `latest_status` may be `review` |
+| POST `/slides` (multipart: `studyId`, `title`, `slug`, `kind?` `progress`\|`paper_report`, `paperId?`, `paperTitle?`, `paperUrl?`, `entry?`, `public?`, file `.zip`/`.pdf`/`.pptx`) | study editor (of `studyId`; missing → 400, unknown → 404) | detect + validate the deck (see "Deck uploads"), create project + version 1, upload the file, enqueue render (202) → `{id, slug, studyId, versionId, version, jobId, sourceType, entry: string\|null, scan: {files,bytes,qmd}\|null}`. Unknown `paperId` → 400 |
+| POST `/slides` (JSON) `{studyId, title, slug?, kind="progress", paperId?, paper?: {title, url?, abstract?}, public?, source: "editor"\|"ai", template?: progress\|paper_report\|blank}` | study editor | a deck with an in-app source tree from the Lab-Hub template (default by `kind`), no version yet; slug from the title's ASCII words + `-YYMMDD` (`deck-…` when there are none, `-2`… when taken) → 201 `{id, slug, studyId, source, template}`. `source:"ai"` only records intent: the SPA then calls POST `…/ai/generate` |
+| GET `/slides/:id` | user | detail: project (incl. `creator_name`), versions (see "Version object"), `activeVersion` (the active **published** version object, also for pdf/pptx decks without a `viewUrl`), references, reviews (see "Review object", + replies, author names), `study {id,slug,title}` (null for anonymous), `viewUrl` for active version (null for pdf/pptx), `pdfUrl`, `thumbnailUrl` (same format; null for anonymous by-slug viewers), `permissions {manage /* study editor */, review /* professors only */, reply /* any member of the deck's study */}`, `limits` (as in the list; not in by-slug) |
 | GET `/slides/:id/thumbnail` | user | streams the active version's thumbnail (`thumbnail_key`): `image/png` (quarto) or `image/webp` (pdf/pptx), `Cache-Control: private, max-age=300`, `X-Content-Type-Options: nosniff`, `ETag: "<versionId>"` (`If-None-Match` → 304); 404 when there is no active version, no thumbnail or the object is missing |
-| PATCH `/slides/:id` `{title?, slug?, public_view?, tagIds?, rotateShareKey?}` | editor | |
-| DELETE `/slides/:id` | editor | cascade + delete S3 prefixes post-commit |
-| GET `/slides/:id/versions` → `{versions}`, POST `/slides/:id/versions` (multipart `.zip`/`.pdf`/`.pptx`, `entry?`) | GET user, POST editor | new version → render job (202, same body as POST `/slides` minus `id`/`slug`) |
-| PATCH `/slides/:id/versions/:versionId` `{active:true}` | editor | set active (must be published; a `review` version → 404) |
-| POST `/slides/:id/versions/:versionId/publish` | editor (the uploader is always an editor) | confirm a `review` version: status → `published`, `published_at` = now, active by the activation rule → `{ok:true, status:"published", active: boolean}`; 404 when the version is not in `review` |
-| POST `/slides/:id/versions/:versionId/reindex` | editor | re-render a **published** version into `output-<suffix>/` to (re)build pages, e.g. for versions rendered before pages existed → 202 `{versionId, jobId}`; 404 not published, 409 while its job is queued/running. The deck keeps being served from the old output; on success the finalizer swaps `output_prefix`, `entry_html`, `pdf_key`, thumbnail and page fields (status and `published_at` unchanged) and deletes the old prefix; on failure only the new prefix is deleted. No notification |
-| DELETE `/slides/:id/versions/:versionId` | editor | not the active one; deletes S3 objects. Discards a `review` version |
+| PATCH `/slides/:id` `{title?, slug?, public_view?, kind?, paper_id?, paper?: {title,url?,abstract?}\|null, rotateShareKey?}` | study editor | `paper` sets/removes `metadata.paper` |
+| DELETE `/slides/:id` | study editor | cascade + delete S3 prefixes post-commit |
+| GET `/slides/:id/versions` → `{versions}`, POST `/slides/:id/versions` (multipart `.zip`/`.pdf`/`.pptx`, `entry?`) | GET user, POST study editor | new version → render job (202, same body as POST `/slides` minus `id`/`slug`) |
+| PATCH `/slides/:id/versions/:versionId` `{active:true}` | study editor | set active (must be published; a `review` version → 404) |
+| POST `/slides/:id/versions/:versionId/publish` | study editor | confirm a `review` version: status → `published`, `published_at` = now, active by the activation rule → `{ok:true, status:"published", active: boolean}`; 404 when the version is not in `review` |
+| POST `/slides/:id/versions/:versionId/reindex` | study editor | re-render a **published** version into `output-<suffix>/` to (re)build pages, e.g. for versions rendered before pages existed → 202 `{versionId, jobId}`; 404 not published, 409 while its job is queued/running. The deck keeps being served from the old output; on success the finalizer swaps `output_prefix`, `entry_html`, `pdf_key`, thumbnail and page fields (status and `published_at` unchanged) and deletes the old prefix; on failure only the new prefix is deleted. No notification |
+| DELETE `/slides/:id/versions/:versionId` | study editor | not the active one; deletes S3 objects. Discards a `review` version |
 | GET `/slides/:id/status` | user | latest version status `{id,status,version,error,stage,progress}` (`status` may be `review`, then `progress` = 100) |
-| POST `/slides/:id/render` | editor | retry the latest failed version (new job, same source type) |
+| POST `/slides/:id/render` | study editor | retry the latest failed version (new job, same source type) |
 | GET `/slides/:id/versions/:versionId/pages` | user | page manifest (see "Slide pages") of a `published` or `review` version; 404 `此版本沒有頁面資訊。` when it has none |
 | GET `/slides/:id/versions/:versionId/pages/:n/:size` (`size` = `thumb`\|`full`) | user | page image (see "Slide pages"); 404 for `n` outside 1..pageCount, unknown size, `full` of a quarto deck, or a missing object |
-| POST `/slides/:id/references` (multipart PDF ≤ `MAX_REFERENCE_BYTES`, or JSON `{title,url}`) | editor | first reference becomes default |
-| PATCH `/slides/:id/references/:refId` `{title?, isDefault?}`, DELETE | editor | keep exactly one default when any exist |
-| POST `/slides/:id/reviews` `{body, page?, versionId?}` | professor (and owner) | → 201 `{review}` (Review object, `replies: []`). `page` (int ≥ 1) refers to the pages of `versionId`, default the active version; the version must be `published`/`review` of this deck (else 404) and have pages with `page ≤ pageCount` (else 400 `此版本沒有頁面資訊…` / `頁碼超出範圍（共 N 頁）。`); `versionId` alone (no page) is stored as given. Notifies the deck creator (`kind:'slide'`, body `<title> 第 N 頁：<text>` for page reviews), never yourself |
-| POST `/slides/:id/reviews/:reviewId/replies` `{body}` | owner | notify the review author |
+| POST `/slides/:id/references` (multipart PDF ≤ `MAX_REFERENCE_BYTES`, or JSON `{title,url}`) | study editor | first reference becomes default |
+| PATCH `/slides/:id/references/:refId` `{title?, isDefault?}`, DELETE | study editor | keep exactly one default when any exist |
+| POST `/slides/:id/reviews` `{body, page?, versionId?}` | professor (`role === 'professor'`) | → 201 `{review}` (Review object, `replies: []`). `page` (int ≥ 1) refers to the pages of `versionId`, default the active version; the version must be `published`/`review` of this deck (else 404) and have pages with `page ≤ pageCount` (else 400 `此版本沒有頁面資訊…` / `頁碼超出範圍（共 N 頁）。`); `versionId` alone (no page) is stored as given. Notifies the deck creator (`kind:'slide'`, body `<title> 第 N 頁：<text>` for page reviews), never yourself |
+| POST `/slides/:id/reviews/:reviewId/replies` `{body}` | member of the deck's study (any role) | notify the review author |
 | GET `/slides/by-slug/:slug?key=` | public* | player data: project, active version, `viewUrl`, `pdfUrl`, references, reviews. Version `pagesUrl`s point at the by-slug page routes (with `?key=` when the key granted access) and exist only for `published` versions. *Allowed for a user, `public_view`, a valid `key`, or the `slide_share_<slug>` cookie |
 | GET `/slides/pages/:slug/:versionId?key=` | same as by-slug | page manifest of a **published** version; image URLs carry `?key=` when the key granted access |
 | GET `/slides/pages/:slug/:versionId/:n/:size?key=` | same as by-slug | page image of a published version |
@@ -242,6 +427,71 @@ notify the uploader (`kind:'media'`, url `/recordings/<id>`; failures link to `/
 | GET `/slides/view/:slug/:token/:versionId/*` | capability | serve rendered asset from S3 (see "Slide viewing") |
 | GET `/slides/pdf/:slug/:versionId` | same as by-slug | stream `slides.pdf` as attachment `<slug>-v<n>.pdf` |
 | GET `/slides/reference/:slug/:refId` | same as by-slug | stream PDF inline, or 302 to URL references |
+
+Detail (`GET /slides/:id`, by-slug) `project` also carries `metadata` and `source: {revision, published_revision} | null` (signed-in
+viewers only).
+
+### Deck sources: in-app Quarto editing (`slide-sources.ts`, `slide-ai.ts`, `lib/slides/{sources,preview,templates,ai-context,suggest-target}.ts`)
+
+Both plugins are registered by `slides.ts`. Tables (`0040_deck_sources.sql`): `decks.metadata jsonb` (`paper: {title, url?, abstract?}`
+for paper reports not linked to the library; `decks.paper_id` → `papers(id)` FK is added by the library migration),
+`deck_source_trees` (PK `deck_id`; `entry` .qmd path, `origin` progress|paper_report|blank|ai, `revision` bumped on every change,
+`published_revision`), `deck_sources` (`id` = suggestion target id, `path` unique per deck, `kind text|binary`, `content` (text) or
+`s3_key` (binary), `bytes`, `content_type`, `version` (optimistic lock), `updated_by`), `deck_previews` (`revision`,
+`status queued|ready|failed|cancelled`, `job_id`, `entry_html`, `output_prefix`, `error`).
+
+Paths: relative posix, ≤ 200 chars, depth ≤ 8, letters/digits/`._- ` per segment, allowed ZIP extensions only, no `..`, `_hub/`,
+`.env*`, junk dirs. Text: `.qmd .md .css .scss .yml .yaml .bib .csl .json .js .txt .csv` (≤ 512 KB each); everything else is a
+binary upload (≤ 20 MB). ≤ 200 files and 100 MB per tree. Templates (`lib/slides/templates.ts`) follow
+`skills/labhub-report`: fixed revealjs YAML (1280×800, KaTeX, MathML notes fix), progress report 8 fixed slides, paper report 13
+(English slides, Chinese notes, slides 7/12/13 left `〔　〕`), author = the creator, date = today (Asia/Taipei).
+
+| Method & path | Access | Notes |
+|---|---|---|
+| GET `/slides/:id/source` | user | `{source: {entry, origin, revision, published_revision, updated_at, updated_by_name} \| null, files: SourceFile[] /* text with content */, preview: PreviewInfo, permissions: {edit}, limits, templates}` |
+| POST `/slides/:id/source` `{template}` | study editor | start a tree for a deck without one (e.g. an uploaded deck) → 201; 409 when it exists |
+| PATCH `/slides/:id/source` `{entry}` | study editor | entry must be an existing `.qmd` → `{entry, revision}` |
+| PUT `/slides/:id/source/files` `{path, content, baseVersion?}` | study editor | create/replace a text file; `baseVersion` ≠ current → 409 `檔案已被其他人修改…` (`0` = must be new); unchanged content does not bump the revision → `{file, revision}` |
+| POST `/slides/:id/source/files` (multipart `file`, `path?`) | study editor | upload; default path `images/<name>` for images, else `<name>`; text types are stored as text; same path replaces → 201 `{file, revision}` |
+| GET `/slides/:id/source/files/:fileId/raw` | user | the file's bytes, `Content-Security-Policy: …; sandbox`, `nosniff`, `no-store` |
+| PATCH `/slides/:id/source/files/:fileId` `{path}` | study editor | rename (kind cannot change; renaming the entry keeps it the entry, must stay `.qmd`) → `{file, revision}` |
+| DELETE `/slides/:id/source/files/:fileId` | study editor | not the entry (400); removes its suggestions and S3 object → `{ok, revision}` |
+| POST `/slides/:id/source/preview` | study editor | queue a quick preview of the current revision (the SPA calls it ~2 s after the last save); a queued/ready preview of the same revision is reused (200), else 202; older **queued** previews are cancelled → `{preview: PreviewInfo}` |
+| GET `/slides/:id/source/preview` | user | `{preview: PreviewInfo}` |
+| POST `/slides/:id/source/publish` | study editor | 「發布新版本」: packs the tree into a ZIP (`lib/slides/zip-write.ts`), validates it like an upload, stores it as `source.zip` of a new version and enqueues `slide_render` (normal finalizer, activity, notification) → 202 `{versionId, version, jobId, revision, sourceType:"quarto", entry}`; sets `published_revision` |
+| POST `/slides/:id/ai/generate` `{instructions?, mode?, replace?}` | study editor | 503 `code: llm_unavailable` unless role `slides` is ok/degraded; 409 while a draft job is queued/running; 409 `code: confirm_replace` when the tree was edited (revision > 1) and `replace` is not true → 202 `{job}` |
+| GET `/slides/:id/ai/generate` | user | newest draft job `{job: {id,status,stage,progress,error,result,created_at,finished_at} \| null}` |
+| DELETE `/slides/:id/ai/generate` | study editor | cancel it → `{ok, cancelled}` |
+| POST `/slides/:id/source/files/:fileId/ai-edit` `{instruction, selection?: {from,to}}` | study editor | 「請 AI 修改」: `ai.chat("slides")` rewrites the file (or only the selection, with 600 chars of context) and the reply becomes a **suggestion** (`target_type: "deck_source"`, `target_id` = file id, `source: "ai"`) → 201 `{suggestion}`; 503 when the role is down, 413 for files > 60 000 chars without a selection |
+| GET · POST `/slides/:id/ai/layout-review/capture` | study editor | 「AI 檢查排版與設計」 screenshots: GET → `{capture: CaptureState}`; POST (needs a source tree; 422 `vision_unavailable` unless role `slides` has vision) queues a `shots: true` preview of the current revision (200 when reused, 202 new) |
+| GET `/slides/:id/ai/layout-review/shots/:n` | study editor | one WebP screenshot of the newest ready shot preview (`n` ≤ count), sandbox CSP, `private, max-age=300` |
+| POST `/slides/:id/ai/layout-review` `{source:"preview", pages?} \| {source:"version", versionId, pages?}` | study editor | vision review (`lib/vision/slides.ts`): images = the shot preview (409 `capture_required` when none is ready) or a published/review version's `_hub/pages/<n>-full.webp` (pdf/pptx) / `-thumb.webp` (quarto, 480 px, the prompt says so), ≤ 20 pages; plus the entry `.qmd` (and small `.css/.scss`) with line numbers and `LABHUB_RULES` → `{review: LayoutReview, source: {type, preview_id?, revision?, stale?, version_id?, version?, source_type?}}`; 503 role down, 422 `vision_unavailable` |
+| POST `/slides/:id/ai/layout-review/suggest` `{file_id, find, replace, title?}` | study editor | turns a review fix into a `deck_source` suggestion (`source:"ai"`, title `AI 排版：…`); 409 when `find` no longer occurs exactly once → 201 `{suggestion}` |
+
+```ts
+type CaptureState = { state: "none"|"capturing"|"ready"|"failed"; preview_id; revision /* shown */; current_revision; count; total; truncated; stage; progress; error };
+type LayoutReview = { summary: string; pages: number[]; truncated: boolean; created_at: string;
+  issues: { id; page: number | null; severity: "high"|"medium"|"low"; category /* slides: overflow|crowding|contrast|alignment|font_size|consistency|other;
+            LaTeX: overfull|figure|table|spacing|cjk|margins|consistency|other */; title; detail; suggestion; path: string | null; line: number | null;
+            fix: { file_id; path; find; replace; line } | null /* only when `find` occurs exactly once in the live file */ }[] };
+```
+Reviews are not stored (`routes/vision-review.ts`). The model must answer one JSON object (`lib/vision/review.ts`; fences/prose
+tolerated, a non-JSON reply becomes the summary). Page images are sniffed (PNG/JPEG/WebP magic), ≤ 2 MB each, ≤ 12 MB per request.
+
+```ts
+type PreviewInfo = {
+  latest: { id, revision, status: "queued"|"rendering"|"ready"|"failed"|"cancelled", error, stage, progress, created_at } | null;
+  ready:  { id, revision, finished_at, viewUrl /* /api/slides/view/<slug>/p.<exp>.<hmac>/preview/<previewId>/<entry>.html */ } | null };
+```
+
+Suggestion target `deck_source` (`lib/slides/suggest-target.ts`, plain text): readers = everyone signed in, decide = study
+owner/member; accepting writes `deck_sources.content`, bumps the file `version` and the tree `revision`; `url` =
+`/studies/<slug>/decks/<deckId>/edit?file=<fileId>`. Deleting a file or deck deletes its suggestions.
+AI context (`ai-context.ts`): progress = study title/summary/current stage, stages, milestones (open + done in 30 days), tasks
+done in 21 days + open, the 5 latest notes (when `notes` exists), the 6 latest reviews of the study's other decks; paper = the
+library paper (`papers` + `record.authors`, abstract, PDF text of `pdf_key`) or `metadata.paper`, plus the deck's first reference
+PDF's text (pdf.js, 12 pages). Data goes in a `<資料>` block marked as data, not instructions; prompts carry the compact Lab-Hub
+rules (`LABHUB_RULES`).
 
 ZIP validation (backend, before upload, from a temp file using yauzl; the worker re-validates while
 extracting): only these extensions `.qmd .md .css .scss .yml .yaml .png .jpg .jpeg .gif .svg .webp .pdf .bib
@@ -266,7 +516,7 @@ are skipped (see "Behaviour notes"). Entry: explicit `entry` if given and presen
 
 Finalizer `slide_render`: on success set `entry_html`, `pdf_key`, `quarto_version`, `shared_prefix`, `thumbnail_key`,
 `page_count`, `manifest_key`; quarto/pdf → `published` (`published_at` = now) and active unless a newer version is already
-active, notify uploader `簡報編譯完成`; **pptx → `review`** (not active, no `published_at`), notify uploader
+active, study activity `deck_published` (`<title> v<n>`, also on POST …/publish), notify uploader `簡報編譯完成`; **pptx → `review`** (not active, no `published_at`), notify uploader
 `簡報轉換完成，請確認` (`kind:'slide'`, pref `slideRendered`). On failure set `status='failed'`, `error`, clear thumbnail/page
 fields; delete the partial output prefix post-commit. Re-index jobs (job `outputPrefix` ≠ version `output_prefix`): see `…/reindex`.
 
@@ -299,42 +549,565 @@ render are never reused — always take image URLs from the manifest), `X-Conten
 page number (`<output_prefix>_hub/pages/<n>-<size>.webp`), never from client input. Images cached while a deck was public stay
 in that browser's cache after it is made private.
 
-### UI support (`dashboard.ts`, `search.ts`, `jobs.ts`)
+### Library (`papers.ts` → child plugins `library-study.ts`, `library-imports.ts`; `lib/library/`)
 
-All three need a session and reply with `Cache-Control: no-store`.
+Pure helpers (parsers, export, dedupe, cite keys, search clients, PDF metadata) are documented in `docs/library.md`;
+the DB layer is `lib/library/store.ts`, imports `imports.ts`, files `files.ts`, settings `settings.ts`, AI `ai.ts`.
+
+Tables (migration `0050_library`):
+- `papers`: lab-wide, one row per work. `record jsonb` = the canonical `PaperRecord` (CSL-JSON semantics; no cite key);
+  copies for filtering/indexes: `type, title, title_norm` (`normalizeTitle`, GIN `pg_trgm`), `authors_text` (GIN trgm),
+  `year, venue, doi, doi_key` (lower-case, **unique**), `arxiv_id` (**unique**), `s2_id`/`openalex_id` (unique when set),
+  `abstract`, `bibtex` (original imported entry, cleared when the record is edited), `oa_url`/`oa_source`, `pdf_key`
+  (newest stored PDF), `added_by`, `updated_by`.
+- `paper_files`: stored PDFs (`source upload|open_access|import`, `sha256` dedupes re-uploads, `source_url`, `file_name`).
+- `study_papers` (PK study+paper): `cite_key` (pinned, unique per study **case-insensitively**, `^[A-Za-z0-9_:.-]{1,100}$`),
+  `reading_status unread|reading|read`, `tags text[]` (≤ 30), `notes_md` (≤ 200 000), `notes_updated_by/at`, `added_by`.
+- `import_batches`: `source file|zotero|pdf`, `status preview|done|cancelled`, `items` (preview rows, see `ImportItem`),
+  `warnings`, `counts {added, linked, skipped, total}`, `file_key` (PDF import, until confirm), `job_id`.
+  Unconfirmed previews older than a day are purged on the next import.
+- `library_zotero_accounts`: per-user Zotero key (AES-GCM with `PROVIDER_TOKEN_KEY`, AAD `<userId>:zotero`).
+- `decks.paper_id` → `papers(id) ON DELETE SET NULL` (paper reports).
+
+Dedupe: `findPaperMatches(db, record)` = identifier hits (`same`) + `title_norm % $1` candidates confirmed by
+`compareRecords` (`likely` / `possible`). `same` is merged automatically (fills missing fields, never steals another
+row's identifier); `likely`/`possible` are always the user's choice. Cite keys: the source key when free, else
+`generateCiteKey` made unique in the study (`chooseCiteKey`).
+
+Permissions: every route needs a session; everyone reads everything. Study reading lists are written by study editors
+(owner/member). A lab paper's metadata/PDF may be changed by admins, the user who added it, and editors of any study
+using it (`paperPermissions` → `{edit, delete}`); delete = admin, or the adder when no study uses it (409 otherwise).
+
+Settings (`system_settings`, admin, `GET/PUT /library/settings`): `library.contact_email` (Crossref mailto/User-Agent —
+the only address sent to external APIs; never a user's email), `library.unpaywall_email`, `library.grobid_url`,
+`library.openalex_api_key`, `library.s2_api_key`, `library.zotero_api_key` (encrypted `{enc, last4}`, AAD
+`system_settings:<key>`, responses show `{set, last4}` only), `library.zotero_library {type, id}` (the lab library).
+`libraryService(db)` builds the `LibraryService` from them (cached by config; rate limiters are process-wide).
+
+| Method & path | Access | Notes |
+|---|---|---|
+| GET `/library/papers?q=&venue=&year=&yearFrom=&yearTo=&study=<ref>&has_pdf=true\|false&sort=recent\|year\|title&limit≤100&offset=` | user | → `{papers: (PaperSummary & {studies:[{id,slug,title}]})[], total, facets: {venues:[{value,count}], years:[{value,count}]}}`. `q` matches normalized title (substring or trigram), authors, exact DOI/arXiv, venue |
+| GET `/library/papers/:id` | user | → `{paper: PaperDetail}` |
+| POST `/library/resolve` `{identifier}` | user | DOI / arXiv / ACL / OpenAlex / S2 / ISCA id or URL → `{record, sources, identifier, matches:[{level, reason, paper}]}`; writes nothing. 400 unknown format, 404 not found |
+| POST `/library/papers` `{identifier? \| record?, study?, citeKey?, tags?, onDuplicate: ask\|link\|add, paperId?}` | user; `study` needs study editor | resolves `identifier` online; a `same` match is merged into the existing paper (200, `created:false`); with `ask` (default) a likely/possible match → **409** `{error, code:"duplicate", record, duplicates:[{level, reason, paper}]}`; `link` + `paperId` merges into that paper; `add` creates. New → 201. Adds to `study` (activity `paper_added`) → `{paper, created, study: {id, cite_key, added} \| null}` |
+| PATCH `/library/papers/:id` `{record}` | paper editor | replaces the record (clears the original BibTeX); identifier clash → 409 → `{paper}` |
+| DELETE `/library/papers/:id` | admin, or adder when unused | 409 while a study uses it; deletes `library/papers/<id>/` |
+| GET `/library/papers/:id/pdf[?download=1]` | user | streams the newest PDF with Range (`206`), `inline` (or attachment), `private, no-store`, `nosniff` |
+| POST `/library/papers/:id/pdf` (multipart `file`) | paper editor | ≤ 50 MB, `%PDF-` checked (415) → 201 `{paper}` |
+| DELETE `/library/papers/:id/pdf/:fileId` | paper editor | the previous file becomes primary → `{paper}` |
+| POST `/library/papers/:id/fetch-pdf` | paper editor | `findOpenAccessPdf` + download now (≤ 90 s) → `{outcome:{status:"stored",source,url,bytes}, paper}`; 404 `code:no_open_access`; 502 `code:download_failed` (+`url`) |
+| POST `/library/pdf` (multipart `file`, `study?`) | user; `study` needs editor | PDF → metadata (`extractPdfRecord`: DOI → arXiv → Crossref title → GROBID → title guess) → 201 `{batch (source pdf, 1 item), extraction:{method, identifiers, titleGuess}}`; confirm stores the PDF on the resulting paper |
+| POST `/library/papers/:id/ai/summary` | user | role **`analysis`** (abstract + first 3 PDF pages, ≤ 12 000 chars) → `{markdown, usedPdf}`; 422 `code:no_text` when there is neither; AI errors `{error, code, hint}` (503 `llm_unavailable`) |
+| GET `/library/search?q=&sources=openalex,s2,arxiv,crossref,isca&yearFrom=&yearTo=&limit≤50&study=<ref>` | user | `searchPapers` → `{hits:[{record, sources, existing: {paperId, level, inStudy} \| null}], errors, skipped}` (`existing` = same/likely lab match). 20 searches/min/user (429; shared with resolve and fetch-pdf) |
+| GET/PUT `/library/settings` | admin | see Settings; PUT fields `contact_email, unpaywall_email, grobid_url, openalex_api_key, s2_api_key, zotero_api_key, zotero_library` (omit = keep, `null`/`""` = remove) → `{settings}` |
+| GET `/studies/:ref/papers?status=unread\|reading\|read\|all&tag=&q=` | user | → `{papers: StudyPaper[], tags:[{tag,count}], counts:{unread,reading,read,total}, permissions}` newest first |
+| POST `/studies/:ref/papers` `{paperId, citeKey?, tags?}` | study editor | 409 when already there or the key is taken → 201 `{studyPaper, cite_key}` |
+| GET `/studies/:ref/papers/:paperId` | user | → `{studyPaper, paper: PaperDetail, permissions}` (404 not in study) |
+| PATCH `/studies/:ref/papers/:paperId` `{reading_status?, tags?, notes_md?, cite_key?}` | study editor | cite key taken → 409 `這個引用鍵在此研究已被使用。`; → `read` records `paper_read` → `{studyPaper}` |
+| DELETE `/studies/:ref/papers/:paperId` | study editor | the lab paper stays |
+| GET `/studies/:ref/papers/export?format=bibtex\|ris\|csl-json&ids=<uuid,…>&abstract=1` | user | attachment `<slug>-library.bib\|ris\|json` (study cite keys) |
+| POST `/studies/:ref/papers/:paperId/ai/relevance` | study editor | role `analysis`, uses the study summary (422 when empty) → `{markdown, usedPdf}` |
+| POST `/studies/:ref/imports` (multipart `file` [+`format`], or JSON `{text, format?, filename?}`) | study editor | ≤ 20 MB; `importAny` (BibTeX/BibLaTeX, RIS, EndNote XML, CSL-JSON, Zotero RDF; `.enl` → 400 with instructions) → 201 `{batch}`; 422 `code:empty` |
+| POST `/studies/:ref/imports/zotero` `{source: mine\|lab\|key, apiKey?, library?:{type,id}, collectionKey?, remember?}` | study editor | Zotero Web API (≤ 2000 items) → 201 `{batch}`; bad key 400 `code:zotero_auth` |
+| GET `/studies/:ref/imports` | user | last 20 confirmed imports with job status |
+| GET / DELETE `/library/imports/:id` | the importing user | preview / cancel (deletes the uploaded PDF) |
+| POST `/library/imports/:id/confirm` `{decisions:[{index, action: add\|link\|skip, paperId?, citeKey?, record?}], fetchPdfs?}` | the importing user (+ study editor) | one transaction; items without a decision use their suggested action; activity `papers_imported`; `fetchPdfs` enqueues `ai_library_import` for imported papers without a PDF (≤ 300) → `{batch, result:{added, linked, skipped, papers:[{index,paperId,citeKey,created}], resolved}, jobId, pdfFetch: "queued"\|"none"\|null}` |
+| GET / PUT `{apiKey}` / DELETE `/library/zotero` | user | own Zotero connection → `{account:{username, zotero_user_id, key_last4} \| null, lab:{library} \| null}`; PUT verifies the key → `{account, groups}` |
+| POST `/library/zotero/browse` `{source, apiKey?, library?}` | user | → `{libraries:[{type,id,name}], collections:[{key,name,parent?}]}` |
+
+```ts
+type PaperSummary = { id, type, title, authors: PaperAuthor[], year, venue, container_title, doi, arxiv_id, url, has_pdf, oa_url, created_at, updated_at };
+type PaperDetail = PaperSummary & { record: PaperRecord, abstract, bibtex_original, oa_source, added_by: {id,name}|null,
+  files: {id,bytes,source,file_name,created_at,added_by}[], studies: {id,slug,title,cite_key,reading_status,can_edit}[],
+  citations: {apa, ieee, bibtex}, permissions: {edit, delete} };
+type StudyPaper = { paper: PaperSummary, cite_key, reading_status, tags: string[], notes_md, added_by: {id,name}|null,
+  created_at, updated_at, notes_updated_at, notes_updated_by /* name */ };
+type ImportItem = { index, record: PaperRecord, citeKey /* "" when inStudy */, match: {level: "same"|"likely"|"possible", reason, score, paper: PaperSummary}|null,
+  inStudy, duplicateOf: number|null /* earlier record in the same file */, action: "add"|"link"|"skip" /* suggestion */ };
+// batch = { id, study_id, source, format, file_name, status, items, warnings:[{index,key?,message}], counts, summary:{total,new,same,likely,possible,inStudy,inFile}, job_id, created_at, confirmed_at }
+```
+
+**For other modules** (`lib/library/study-export.ts`):
+- `exportStudyBibtex(db, studyId, {paperIds?, abstract?, ascii?, useOriginal = true})` → `{bibtex, keys, count}`: the study's
+  `refs.bib` (UTF-8, CJK kept → XeLaTeX/LuaLaTeX; entries ordered by cite key; `""` when empty). LaTeX uses it for `refs.bib`.
+- `studyBibEntries(db, studyId)` → `[{paperId, citeKey, record}]`; `exportStudyLibrary(db, studyId, format)` → `{body, contentType, ext, count}`.
+- `getPaper`, `findPaperMatches`, `addPaperToStudy` (`store.ts`) for agent tools (`list_papers`, `get_paper`, `import_paper`, `attach_paper_pdf`, `remove_paper`).
+- Study delete: `study_papers` and import batches cascade (cleanup hook `library` removes preview PDFs); lab papers stay.
+
+Job `ai_library_import` (ai-worker, `backend/src/ai-jobs/library/`, roles none, concurrency 1): payload
+`{batchId, paperIds, userId}` → for each paper still without a PDF: `fetchOpenAccessPdf` → result
+`{stored, notFound, failed, skipped, total}`; one paper failing never fails the job; checkpoint per paper; stage `fetching_pdfs`.
+
+### Search (`search.ts`, `lib/search/`)
+
+Hybrid search over the whole lab: **keyword** (always) + **semantic** (pgvector, when the `embedding` role is bound and a
+space is active), fused per result type with Reciprocal Rank Fusion (k = 60). Everyone can read every study, so results are
+not filtered by membership; `setSearchAccessFilter(fn)` (`lib/search/service.ts`) is the hook if that ever changes
+(`fn(db, user) → {studyIds} | null`; lab-wide content without a study — papers, meetings — stays visible).
+
+- **Result types** (`lib/search/sources.ts`, group order): `study` (title + summary), `note` (title + `content_md`), `paper`
+  (title, authors, venue, abstract + every study's reading notes; `study_ids` = studies whose library has it), `meeting`
+  (title, notes, non-dismissed AI drafts, the shown transcript; `study_ids` = `meeting_studies`), `task` (title + detail),
+  `milestone`, `deck` (titles only). Modules add types with `registerSearchSource({type, corpus, url, markdown?, embeddings?})`:
+  `corpus` is a SELECT of `id, study_id, study_ids, title, body, author_id, at, meta`; `embeddings` lists owner types
+  `{ownerType, count, ids, load}` (registered with the AI platform's `registerEmbeddingSource`). The file must be imported by
+  both the backend and the ai-worker (`lib/search/index-job.ts` imports `sources.ts`).
+- **Keyword** (CJK-aware): the query is NFKC-normalised, lower-cased and split on spaces/punctuation (≤ 8 words). Strict hit =
+  every word is an ILIKE substring of title or body. Relaxed hit (only when it differs) = ≥ 60 % of the query's grams, where a
+  CJK run of ≥ 3 characters contributes its overlapping bigrams (「語音情緒辨識」 finds 「情緒的語音辨識」). pg_trgm `similarity()`
+  is not used: it treats a CJK run as one word. Score: strict 10 + 3/title word + 4·gram fraction + whole query in title 5 +
+  exact title 10; ties by `at`.
+- **Semantic**: the query is embedded (`ai.embed(…, "query")`, cached 5 min per space) and searched with `searchSpace` over the
+  owner types of the requested result types (k = max(30, 3·limit·types) ≤ 200); neighbours with cosine distance > 0.75 or
+  > best + 0.3 are dropped; an owner's best chunk gives the snippet when the body has no keyword match. Semantic hits pass the
+  same filters and access hook as keyword hits.
+- **Degradation**: `search_mode: "keyword_only"` + `notice_zh` (the reason only, e.g. 「尚未設定語意搜尋。」; the UI prefixes
+  「目前使用關鍵字搜尋」) when there is no active space, the `embedding` role is unbound
+  (`unconfigured`) or unavailable, or embedding the query fails. Search itself never fails because of the AI platform.
+- **Enabling semantic search**: `/admin/models` → add an account with an embedding model (e.g. OpenAI
+  `text-embedding-3-small`, a local TEI/Ollama `bge-m3`, Voyage, Jina…) → a route with capability `embedding` → bind the
+  `embedding` role. The first binding creates the active space and runs `ai_embedding_reindex` over every source; changing
+  the model later goes through the switch wizard. Unbinding the role turns semantic search off (vectors stay).
+- **Notes list**: `setNoteSearchProvider` returns the hybrid note ranking in semantic mode, else null (notes keep their own ILIKE).
+- **Agent**: `setAgentSearchProvider` (`lib/search/agent.ts`) feeds the `search` tool from this service in both modes:
+  `mode: "hybrid"` when semantic, else `mode: "keyword"` (CJK substrings + relaxed bigrams); the tool's own ILIKE search is only the
+  fallback when no provider is set or it throws.
+
+| Method & path | Access | Notes |
+|---|---|---|
+| GET `/search?q=&types=a,b&studyId=<id\|slug>&author=me\|<uuid>&from=YYYY-MM-DD&to=YYYY-MM-DD&limit=1..50&mode=auto\|keyword` | user | `SearchResponse` (below); `limit` per type (default 5); `studyId` also matches papers/meetings linked to the study; dates are inclusive, Asia/Taipei, on `at` (notes: event date; meetings: held at; others: last update); unknown type → 400, unknown study → 404; `no-store` |
+| GET `/search/status` | user | `{search_mode, notice_zh, types}` |
+
+```ts
+type SearchResponse = { q /* normalized */, search_mode: "semantic" | "keyword_only", notice_zh: string | null, total: number,
+  groups: { type, has_more, results: SearchHit[] }[] /* non-empty groups, type order */ };
+type SearchHit = { type, id, title, title_highlights: [start,end][], snippet /* plain text ≤ 160, may start/end with … */,
+  highlights: [start,end][] /* offsets into snippet */, url /* SPA path */, study: {id,slug,title} | null, author: {id,name} | null,
+  at, meta /* study {status}; note {kind,event_date}; paper {year,venue,authors}; meeting {status,held_at}; task {status,due_on,assignee_id}; milestone {due_on,done}; deck {kind} */,
+  matched: ("keyword"|"semantic")[], score /* RRF */ };
+```
+
+URLs: study `/studies/<slug>`, note `/studies/<slug>/notes/<id>`, paper `/library/<id>` (with a study filter
+`/studies/<slug>?tab=papers&paper=<id>`), meeting `/meetings/<id>`, task `/studies/<slug>?tab=tasks&task=<id>`, milestone
+`/studies/<slug>`, deck `/studies/<slug>/decks/<id>`.
+
+**Indexing** (migrations `0090_search.sql`, `0091_search_meetings.sql`). Embedding owner types: `study`, `note`, `paper`,
+`study_paper` (owner id = `search_study_paper_id(study, paper)` = md5 uuid; only links with notes), `meeting`, `transcript`
+(the meeting's shown transcript; result = its meeting). Chunks (`lib/search/chunk.ts`): Markdown split by headings and
+paragraphs into ~800-char chunks (max 1200, 100-char overlap, ≤ 200 per owner), each prefixed with the title and heading path; a
+title without body is one chunk. `content_hash` per chunk → unchanged chunks are never re-embedded.
+- Full builds: `ai_embedding_reindex` (AI platform) walks every registered source when the role is first bound or a switch
+  builds a new space.
+- Incremental: AFTER triggers on `notes` (title, content_md), `studies` (title, summary_md), `papers` (title, abstract,
+  authors_text, venue), `study_papers` (notes_md), `meetings` (title, notes, transcript_id), `transcripts` (segments) and
+  `meeting_study_drafts` call `search_enqueue(type, id)`: no-op while no space is live; else upsert into
+  `search_index_queue(owner_type, owner_id, enqueued_at)` and insert one queued `ai_search_index` job (run_after +15 s) unless
+  one is waiting. Deletes call `search_forget(type, id)` (vectors removed at once). Modules without triggers use
+  `enqueueSearchIndex(client, type, id)` / `forgetSearchOwner`.
+- `ai_search_index` (ai-worker, role `embedding`, concurrency 1, max_attempts 5, `created_by` NULL so it stays out of the jobs
+  tray): takes queue entries quiet for ≥ 10 s, loads each owner, re-embeds changed chunks into **every live space** and trims
+  extra chunks, deletes the entry only if `enqueued_at` is unchanged, then queues a follow-up job for fresher entries. Result
+  `{owners, chunks, skipped}`. `llm_unavailable` waits like any ai job (entries stay queued). Finished jobs of this kind older
+  than a day are deleted by the job.
+
+Frontend: ⌘K palette (`components/shell/CommandPalette.svelte`: pages + studies, notes, papers, meetings, tasks, 4 each, and
+「查看全部結果」 → `/search?q=`; a 「目前使用關鍵字搜尋」 line in keyword-only mode), page `/search` (`routes/(app)/search`, URL
+state `q, type, study, author, from, to`; per-type 「更多…」 switches to one type with 20 → 50 results), shared
+`components/search/{Highlighted,SearchResultRow}.svelte`, `lib/search/{types,meta}.ts`, strings `i18n/search.ts`.
+
+### Meetings (`meetings.ts` → `meetings-media.ts`, `meetings-live.ts`; `lib/meetings/`, `ai-jobs/meetings/`)
+
+Cross-study lab meetings (spec §0/§3): a meeting can include several studies of different owners; record in the browser,
+upload audio/video (audio extracted) or a transcript, add feedback; AI splits it into per-study drafts that only members of
+THAT study confirm (advisors/professors cannot, spec §13.3). Confirming writes a 會議筆記 and tasks into the study.
+
+Tables (`0080_meetings.sql`): `meetings` (`title`, `held_at`, `status`, `notes`, `language` (default `zh-TW`, or `auto`),
+`transcript_id` = transcript shown/analysed, `analysis` jsonb `{other_md, other_evidence, speaker_guesses[{label,user_id,name,reason}],
+model, analyzed_at, chunks, warnings}`, `analysis_error`, `transcribe_job_id`, `analyze_job_id`, `created_by`), `meeting_participants`,
+`meeting_studies` (`position`; study delete cascades), `meeting_decks` (`deck_id`, `version_id?`), `meeting_media` (`kind recording|upload`,
+`status recording|processing|ready|failed`, `parts` jsonb `{<part>: lastSeq}`, `bytes`, `has_video`, `video_key?`, `audio_key`, `duration_sec`,
+`peaks`, `job_id`, `error`), `transcripts` (`source asr|upload|live`, `segments` jsonb `[{id,start,end,text,speaker?}]` seconds, `speakers`
+`[{id,label}]`, `words_key`, `warnings`, `model`, `file_name`, `media_id?`), `speaker_map` (PK meeting+`speaker_label` → `user_id` **or** `name`),
+`meeting_feedback` (`author_id`, `body_md`, `file_name`, `file_key`, `file_text`), `meeting_study_drafts` (UNIQUE meeting+study; `summary_md`,
+`feedback_md`, `proposed_tasks` `[{id,title,detail,assignee_id?,due?}]`, `evidence` `[{start,end,quote}]`, `status pending|confirmed|dismissed`,
+`origin ai|edited`, `edited_by`, `confirmed_by/at` (also who dismissed), `note_id`, `task_ids`).
+
+**Status** is derived (`refreshStatus`, called in every change's transaction): analysis job active → `analyzing`; else drafts exist →
+`review` (any pending) / `done` (all confirmed or dismissed); else media processing or ASR job active without a transcript → `processing`;
+transcript → `transcribed`; media (incl. a recording in progress) → `recorded`; else `draft`. The current transcript is the newest
+`asr`/`upload` one, else the newest `live` one (`pickCurrentTranscript`, on upload/live/delete), unless chosen with PUT
+`/meetings/:id/transcript`. A finished ASR transcript becomes current only when the current one is not a user upload
+(`adoptAsrTranscript`); otherwise the upload stays current and the ASR one is an alternative (UI: transcript switcher + 「改用語音轉錄」).
+
+**Permissions**: everyone signed in reads every meeting. *Meeting editor* (details, media, recordings, transcripts, speakers, start/cancel
+jobs) = admin, creator, participant, or owner/member of an included study. Delete = creator or admin. Feedback = anyone; edit/delete own
+(admin any). Drafts (edit/confirm/dismiss/reopen) = owner/member of the draft's study only (403 `只有該研究的成員可以處理這份草稿。`).
+Detail `permissions = {edit, delete, feedback, studies: <study ids the caller may confirm>}`; each draft carries `can_edit`.
+
+| Method & path | Access | Notes |
+|---|---|---|
+| GET `/meetings?when=upcoming\|past\|all&study=<ref>&person=me\|<uuid>&q=&status=&limit≤300` | user | `{meetings: MeetingCard[]}`; upcoming = `held_at ≥ now−1h` (soonest first), otherwise newest first; `person` = creator or participant |
+| GET `/studies/:ref/meetings` | user | meetings including the study → `{meetings, permissions}` (study permissions); each card's `studies[].draft_status` |
+| GET `/meetings/deck-options?studies=<id\|slug,…>` | user | `{decks:[{id,title,slug,kind,study_id,study_title,active_version_id,versions:[{id,version,status,published_at}]}]}` (published/review versions) |
+| POST `/meetings` `{title ≤160, held_at ISO, notes?, language?, study_ids: (id\|slug)[] 1..20, participant_ids?: uuid[], decks?: [{deck_id, version_id?}]}` | user | the creator is always a participant; unknown/disabled users, unknown studies, decks of other studies or non-published versions → 400 → 201 `MeetingDetail` |
+| GET `/meetings/:id` | user | `MeetingDetail` (below), `no-store` |
+| PATCH `/meetings/:id` (same fields, all optional) | editor | replacing `study_ids` deletes unconfirmed drafts and decks of removed studies → `MeetingDetail` |
+| DELETE `/meetings/:id` | creator, admin | cancels its jobs; deletes `meetings/<id>/`, `media/items/<id>/`, `media/uploads/<mediaId>/` after commit; confirmed notes/tasks stay |
+| POST `/meetings/:id/media` (multipart, one file ≤ `MAX_MEDIA_BYTES`; mp4 mkv webm mov m4v m4a mp3 wav ogg oga opus flac aac) | editor | streamed to `media/uploads/<mediaId>/source`, `media_transcode` queued with `keepSource` = playable container (mp4/webm/mov/m4v) and ≤ 500 MB → 202 `{media}` |
+| POST `/meetings/:id/recordings` `{mime?, file_name?}` | editor | starts a browser recording (`status recording`) → 201 `{media}` |
+| PUT `/meetings/:id/recordings/:mediaId/chunks/:part/:seq` (raw body ≤ 8 MB; `audio/webm\|audio/ogg\|audio/mp4\|video/webm\|application/octet-stream`) | editor | idempotent per part/seq (retries overwrite); part 0–19, seq ≤ 99999; 409 once finished → `{ok, part, seq}` |
+| POST `/meetings/:id/recordings/:mediaId/finish` `{duration_sec?}` | editor | claims the recording, concatenates each part's chunks into `…/source`, `…/part-<n>`, queues `media_transcode`, deletes the chunks; no chunks → 400 and the media row is removed; second call → 409 → 202 `{media}` |
+| DELETE `/meetings/:id/media/:mediaId` | editor | cancels its job, deletes objects; transcripts stay |
+| GET `/meetings/:id/media/:mediaId/audio` · `/video` | user | S3 stream with `Range` (206) |
+| POST `/meetings/:id/transcripts` (multipart file .srt/.vtt/.txt/.docx ≤ 20 MB, field `analyze=0` to skip analysis) | editor | parsed (VTT `<v Name>`, `名字：…` prefixes when ≥ 50 % of cues have one, `[hh:mm:ss] …` text, untimed text → estimated times + warning `no_timestamps`); speaker labels equal to an account name map automatically; becomes current; queues analysis when the meeting has studies → 201 `MeetingDetail` |
+| POST `/meetings/:id/transcripts/live` `{segments:[{start,end,text,speaker?}], media_id?}` | editor | live captions collected while recording (fallback until the ASR transcript) → 201 |
+| GET `/meetings/:id/transcripts` · PUT `/meetings/:id/transcript {transcript_id}` · DELETE `/meetings/:id/transcripts/:tid` | user / editor / editor | list, choose current, delete (words.json too) |
+| GET `/meetings/:id/transcripts/:tid/export` | user | SRT attachment, speakers as `名字：` (mapped name, else `語者 N`) |
+| PUT `/meetings/:id/speakers` `{speakers:[{label, user_id?, name?}]}` | editor | upsert; neither → delete the mapping → `{speaker_map}` |
+| POST `/meetings/:id/transcribe` `{media_id?}` | editor | queue ASR for the given/newest ready media; 409 while one runs → 202 `MeetingDetail` |
+| POST `/meetings/:id/analyze` | editor | needs ≥ 1 study and a transcript or feedback; 409 while one runs → 202 |
+| POST `/meetings/:id/jobs/transcribe\|analyze/cancel` | editor | 409 when nothing runs |
+| POST `/meetings/:id/feedback` (JSON `{body_md}` or multipart `body_md` + file .txt/.md/.docx/.pdf/.srt/.vtt ≤ 30 MB) · PATCH / DELETE `…/feedback/:fid` · GET `…/feedback/:fid/file` | user (author/admin for writes) | text extracted (DOCX `word/document.xml`, PDF via pdfjs ≤ 40 pages) for the analysis |
+| PATCH `/meetings/:id/drafts/:draftId` `{summary_md?, feedback_md?, proposed_tasks?}` | member of that study | pending only (409); assignees must be members (400); `origin = edited` |
+| POST `/meetings/:id/drafts/:draftId/confirm` `{summary_md?, feedback_md?, tasks?, note_title?}` | member of that study | pending only (409). In one transaction: note (`createNote`, system template kind `meeting`, title `會議筆記 <YYYY-MM-DD> <meeting>`, event date = meeting day) with 摘要 / 回饋 / 待辦 / 逐字稿片段 (links `/meetings/<id>?t=<s>`), tasks via `createTask` (`source: meeting`, `source_ref: <meeting id>`, assignees notified), activity `meeting_confirmed` (url = note), notification `kind: meeting` to the study's other members (pref `tasks`) → `MeetingDetail & {confirmed: {note_id, note_url, task_ids}}` |
+| POST `…/drafts/:draftId/dismiss` · `…/reopen` | member of that study | pending ↔ dismissed |
+| GET `/meetings/:id/live?rate=16000\|24000\|48000` (WebSocket) | editor; Origin = APP_ORIGIN | live captions via `ai.liveTranscribe` (role `asr_live`): client sends binary PCM16 mono frames + `{type:"commit"\|"stop"}`; server sends `ready {provider}`, `partial {itemId,text}`, `final {itemId,text,start?,end?,speaker?}`, `speech {state}`, `error {code, error, hint}` (then closes 1011 when the session could not start, e.g. `llm_unavailable`), `closed`. 4 h limit. nginx: `location ~ ^/api/meetings/<id>/live$` with the WebSocket snippet |
+
+```ts
+type MeetingCard = { id, title, held_at, status, created_by, creator_name, created_at, updated_at, has_transcript, duration_sec, media_count,
+  studies: {id, slug, title, owner: {id,name}|null, draft_status: "pending"|"confirmed"|"dismissed"|null}[], participants: {id,name,role}[],
+  drafts: {pending, confirmed, dismissed} };
+type MeetingDetail = { meeting: {id,title,held_at,status,notes,language,created_by,creator_name,created_at,updated_at,transcript_id},
+  studies: {id,slug,title,status,current_stage,owner,members:{id,name,role,account_role}[],can_edit}[], participants, decks: {deck_id,title,slug,kind,study_id,version_id,version}[],
+  media: {id,kind,status,file_name,mime,bytes,has_video,has_audio,video,duration_sec,peaks,error,parts,created_by,created_at,audio_url,video_url}[],
+  transcript: {id,source,language,segments,speakers,warnings,model,file_name,duration_sec,media_id,created_at,has_words} | null,
+  transcripts: {id,source,language,model,file_name,duration_sec,media_id,created_at,segment_count}[], speaker_map: {speaker_label,user_id,name,user_name}[],
+  feedback: {id,author_id,author_name,author_role,body_md,file_name,has_file,has_text,file_url,created_at,updated_at,can_edit}[],
+  drafts: (DraftRow & {study_slug, study_title, confirmed_by_name, edited_by_name, can_edit})[], analysis: {…, error} | null,
+  jobs: {transcribe: JobInfo|null, analyze: JobInfo|null} /* {id,status,stage,progress,error,run_after,attempts} */, permissions };
+// ai-worker jobs (lib/meetings/media.ts)
+type TranscribePayload = { meetingId: string; mediaId: string; userId: string | null; fileName?: string /* jobs tray label */ };
+type TranscribeResult  = { transcriptId, segments, durationSec, speakers, model, warnings, analyzeJobId: string | null };
+type AnalyzePayload    = { meetingId: string; userId: string | null; fileName?: string };
+type AnalyzeResult     = { drafts, tasks, chunks, model, repaired: boolean, warnings: number };
+```
+
+Pipeline: upload/finish → `media_transcode` (worker) → finalizer: media `ready` (+ duration, peaks ≤ 2000 values in [0,1], kept video) and,
+when the meeting has no `asr`/`upload` transcript and no ASR job running, `ai_meeting_transcribe` (max_attempts 4) is queued; failure →
+media `failed`, sources deleted, creator notified (pref `mediaTranscoded`).
+
+- **`ai_meeting_transcribe`** (ai-worker, role `asr`, concurrency 1, 3 h): downloads the m4a, `ai.transcribe` with the meeting language
+  (default zh-TW), `diarize: true` (speakers min 1 / max participants+2 when ≥ 2 participants), `durationSec`, glossary = study titles,
+  participant + member names, deck titles, ≤ 30 recent paper titles of the studies (≤ 60 terms); the route's `convert_script` applies.
+  `onCheckpoint` → `saveCheckpoint` and the saved checkpoint is passed back as `resume` (same member only), so a retry reuses finished
+  chunks/vendor jobs. Writes `transcripts` (`source asr`, model `<kind>/<model>`), words.json, becomes the current transcript unless the
+  user uploaded the current one, queues `ai_meeting_analyze` only when it became current, the meeting has studies and there is no
+  analysis or study draft yet (`hasAnalysisOrDrafts`; otherwise re-analysis is the user's explicit POST `/analyze`), notifies the requester. Stages `downloading → transcribing → saving → done`;
+  `asr` down → `llm_unavailable` → waits (`waiting_llm`) and resumes by itself (UI 「轉錄維護中」, the recording stays saved).
+- **`ai_meeting_analyze`** (role `analysis`, concurrency 2, 30 min, max_attempts 3): input = transcript lines `[mm:ss] #n 名字：…` (mapped
+  names only; ids never reach the model: studies `R1…`, people `P1…`, speakers `#1…`), feedback texts (≤ 8000 chars each), the studies'
+  owner, current stage, summary (≤ 600 chars), members (assignable = owner/member) and advisors, deck titles. Output JSON (`FINAL_SCHEMA`):
+  per study `{study, summary_md, feedback_md, tasks[{title,detail,assignee,due}], evidence[{time,quote}]}`, `other_md` (「其他」, not about a
+  study), `speakers[{speaker, person, reason}]` (speaker guesses shown in the speaker sheet). Response format `json_schema` → `json_object`
+  → none, degrading on `bad_request`; zod validation; one repair turn; still invalid → retryable error. Post-validation: unknown study refs
+  dropped, assignees not owner/member of THAT study → unassigned, impossible dates → null, evidence snapped to real segments; every meeting
+  study gets a draft (empty when not discussed). Transcripts over 14 000 chars are map-reduced in ≤ 9 000-char windows (`MAP_SCHEMA` notes
+  per window, checkpointed per window) and the final call gets the notes. Saving replaces only `pending` drafts with `origin ai` (edited,
+  confirmed and dismissed drafts stay), stores `meetings.analysis`, notifies owner/member of studies with content (「會議草稿待確認」,
+  pref `tasks`). `analysis` down → waits; UI 「分析維護中」.
+
+Agent tools (`lib/meetings/agent-tools.ts`, read, `untrusted`): `list_meetings {study?, person?, when?, limit?}`, `get_meeting {meeting_id}`,
+`get_transcript_excerpt {meeting_id, from?, to?, q?, max_chars?}`. Search: the search module indexes `meeting` and the current transcript
+(`lib/search/sources.ts`, triggers in its migration).
+
+Frontend: `/meetings` (upcoming/past/all, study + person filters, search), `/meetings/new` (wizard 基本資料 → 研究 → 參與者 → 簡報;
+`?study=<slug>` preselects; studies show their owner), `/meetings/<id>` (pipeline bar with 「轉錄維護中」/「分析維護中」, sources panel:
+browser recorder / upload audio-video with progress / upload transcript, player (audio waveform or kept video) + `TranscriptView` with
+speaker colours (`meta` snippet), speaker sheet with AI guesses, per-study `DraftCard`s (edit, confirm, dismiss, evidence chips seek the
+player), 「其他」, feedback; `?t=<s>` seeks; phones switch sections with a segmented control, sections stay mounted). Recorder
+(`lib/meetings/recorder.svelte.ts`): MediaRecorder Opus/WebM (MP4 on Safari) with a 10 s timeslice, chunks PUT immediately with retry
+(never dropped), `localStorage hub-rec:<meetingId>` `{mediaId, part, elapsed, mime}` to continue after a reload in a new part, level
+meter, pause/resume, wake lock, `beforeunload` guard; live captions only when `asr_live` is available: AudioWorklet
+(`pcm-worklet.js`, same-origin asset because of the CSP) → PCM16 16 kHz 100 ms frames → `/api/meetings/:id/live`; finals are posted as a
+`live` transcript after stopping. Study tab 會議 = `components/meetings/MeetingsTab.svelte`.
+
+### LaTeX (`latex.ts` → child plugins `latex-compile.ts`, `latex-ai.ts`; helpers `latex-shared.ts`; `lib/latex-projects/`, `jobs/latex-finalizer.ts`)
+
+Spec §3/§10/§13 #14. A study has any number of projects (one per article/thesis). **Split-file convention:** the root file
+(`main.tex`) is the index (preamble, packages, the ordered `\input{sections/<name>}` list) and each chapter is its own file; the
+editor's tabs are the root file plus the sections in `\input` order. `\input` lines are edited only through
+`lib/latex/inputs.ts` (managed = an input alone on its body line; lines between entries, comments and inline inputs stay put).
+Templates (`lib/latex/templates.ts`): `zh-thesis` 中文碩士論文 (ctexbook, XeLaTeX, biblatex/biber), `ieee-conference` (IEEEtran,
+pdfLaTeX, BibTeX), `article-zh`, `article-en`; each creates `main.tex` + `sections/*.tex` + `refs.bib`. Author/advisor come from
+the creator / the study's first advisor (left as placeholders for pdfLaTeX templates when the name is not ASCII).
+
+Tables (`0060_latex.sql`): `latex_projects` (`study_id`, `title`, `kind paper|thesis|other`, `template`, `root_file`, `compiler
+xelatex|pdflatex|lualatex`, `bib_mode auto|manual`, `settings {bibFile?, sectionCommand?, haltOnError?}`, `last_compile_id`,
+`last_pdf_compile_id`), `latex_files` (`path` unique per project, `kind text|binary`, `role main|section|bib|style|asset|other`,
+`position` = cached `\input` order, `content` = materialized text, `s3_key` (binary), `bytes`, `sha256`, `blob_sha256`),
+`latex_compiles` (`job_id`, `status queued|running|success|partial|failure|timeout|failed|cancelled`, `manifest_key`,
+`output_prefix`, `result` = runner result (errors ≤ 100, warnings ≤ 200, counts), output keys, `file_map` path → file id at
+snapshot time, `triggered_by`), `latex_versions` (`kind manual|restore|backup|import`, `label`, `manifest_key`, counts).
+
+Collaboration: every text file is the Yjs document `latex:<projectId>:<fileId>` (state created with the file; materialize copies
+the text into `latex_files.content`, re-caches section positions when the root changed, bumps `updated_*` and study activity).
+Authorize: study owner/member write; everyone else signed in reads (read-only connection). The generated bib file of an `auto`
+project is read-only for everyone (rewritten before each compile). Server-side changes (sections, restore, bib, accepted
+suggestions) go through `app.collab.edit` with a line diff, so open editors see them. Stateless messages on the project's docs:
+`{type:"latex_compiled", compileId, status}` (finalizer), `{type:"latex_meta"}` (settings changed), `{type:"suggestions"}`.
+
+Compile (`requestCompile`): `auto` → `refs.bib` (settings.bibFile) is regenerated from `exportStudyBibtex` (unchanged when the
+library is empty; the file is created when missing) → snapshot (live text of every text file → blob, uploaded only when the hash
+changed; binaries are blobs already) → manifest → `latex_compile` job. Queued compiles of the project are cancelled
+(「已由較新的編譯取代。」); a running one finishes (the runner serializes a project). Finalizer: result status (a LaTeX error is a
+successful job with `failure`/`partial`; diagnostics without a zh hint get one from the backend's `hints.ts`), output keys only when below the compile's own prefix; a PDF becomes
+`last_pdf_compile_id` unless a newer one already is; failed/cancelled jobs → `failed` (job error) / `cancelled`; post-commit the
+manifest is deleted, compiles beyond the newest 8 (except the preview PDF) are pruned with their outputs, and the docs get
+`latex_compiled`.
+
+Isolation (latex-runner/README.md): kpathsea always allows reading (`openin_any = a`), so isolation is at the filesystem level —
+each compile runs in bubblewrap with new user/mount/pid/ipc/uts/cgroup/network namespaces, sees only its own project dir
+(`/work`, rw) plus the read-only TeX tree and fonts, no `/proc`, no environment (DB/S3 credentials never reach TeX), shell escape
+off, `prlimit` (2 GiB AS, 150 s CPU, 200 MB files, 256 procs) and a 120 s wall clock. This also fixes Aldine's cross-project read.
+
+Paths: runner rules (`isSafeProjectPath`) + no hidden segments, no spaces/quotes/TeX specials, depth ≤ 8 (`validProjectPath`).
+Text extensions `.tex .ltx .sty .cls .bst .bib .bbx .cbx .lbx .dbx .cfg .def .clo .dtx .ins .txt .md .csv .tsv .dat .tikz .pgf .lua
+.json .yaml .yml .bbl` (≤ 2 MB, UTF-8) are Yjs documents; everything else is a binary blob (≤ 50 MB). ≤ 500 files per project.
+Executables and web documents (`.exe .dll .msi .bat .cmd .com .scr .ps1 .vbs .js .mjs .html .htm .xhtml .php .jar .apk .dmg .app`)
+are refused on upload (400) and skipped on import; an uploaded text-type file ≤ 2 MB that is not UTF-8 is refused (400) instead of
+becoming an uneditable blob.
+
+| Method & path | Access | Notes |
+|---|---|---|
+| GET `/studies/:ref/latex` | user | `{projects: ProjectCard[] (counts, last compile status, pdf_url of the preview PDF), permissions, templates (`name_zh/en`, `description_zh/en`)}` |
+| POST `/studies/:ref/latex` `{title, kind?, template?, compiler?, bib_mode?, author?, advisor?, institution?}` | study editor | from a template → 201 `{project, url}`; activity `latex_project_created` |
+| POST `/studies/:ref/latex/import` (multipart `title?`, `kind?`, file `.zip` ≤ 300 MB) | study editor | Overleaf/Aldine/any ZIP, files kept as-is: junk (`__MACOSX`, `.git`, build products `.aux .log .synctex.gz …`) skipped, one wrapping folder stripped, unsafe/hidden paths skipped (`skipped`), root = `\documentclass` + `\begin{document}` (conventional names first), compiler from `% !TEX program` or ctex/xeCJK/fontspec (XeLaTeX) / luatexja, `bib_mode manual`, version `import` → 201 `{project, url, files, skipped}`; 400 without a root |
+| GET `/latex/:id` | user | `ProjectDetail {project (+bib_file), study, files: FileView[] (no content; `title` = first heading of .tex files, `generated` = auto bib), root_file_id, sections: [{file_id \| null (missing file), path, title, position, disabled (commented out), managed, command}], permissions, latest_compile, pdf_compile, limits}` |
+| PATCH `/latex/:id` `{title?, kind?, compiler?, bib_mode?, root_file?, bib_file?, halt_on_error?, section_command?}` | study editor | root must be a text `.tex`; bib-mode change reconnects the bib file's editors → `{project}` |
+| DELETE `/latex/:id` | study editor | cancels running compiles, deletes docs/suggestions/rows and the `latex/<id>/` prefix |
+| POST `/latex/:id/files` JSON `{path, content?}` · multipart file (`?path=`; default `figures/<name>` for images/PDF) | study editor | new text file (409 when taken) or upload (text types become documents; binaries are blobs, same path replaces) → 201 `{file}` |
+| GET `/latex/:id/files/:fileId/raw` | user | live text or blob, `Content-Security-Policy: …; sandbox`, `nosniff`, `no-store` |
+| PATCH `/latex/:id/files/:fileId` `{path}` · DELETE | study editor | rename (inputs of the root follow; the root/bib settings follow) · delete (never the root; a `.tex` loses its `\input`) |
+| POST `/latex/:id/sections` `{title, name?, after?: fileId}` | study editor | creates `sections/<name>.tex` (`\chapter`/`\section` + label; name defaults to `section-N`) and inserts its `\input` after `after` (else after the last section) → 201 `{file, ...ProjectDetail}` |
+| PATCH `/latex/:id/sections/:fileId` `{title?, name?}` | study editor | retitles the first heading in the file / renames the file and its input → `ProjectDetail` |
+| PUT `/latex/:id/sections/order` `{order: fileId[]}` | study editor | tab drag: rewrites the managed `\input` lines in this order (atomic on the live root) → `ProjectDetail` |
+| GET `/latex/:id/symbols` | user | completion data: `{labels:[{key,file_id,path,line}], citations:[{key,title,year,authors,source: "library"\|<bib path>}], files:[{path,kind}]}` |
+| POST `/latex/:id/bib/refresh` | study editor | regenerate the auto bib now → `{changed, count}` |
+| GET `/latex/:id/export.zip` | user | every file (live text) as a ZIP |
+| POST `/latex/:id/compile` `{draft?}` | study editor | → 202 `{compile: CompileView}` (see above) |
+| GET `/latex/:id/compiles` · `/compiles/:compileId` · DELETE `/compiles/:compileId` | user · user · editor | `CompileView {id, status, stage (繁中), progress, error, errors, warnings, warning_count, badbox_count, duration_ms, file_map, pdf_url, synctex_url, log_url, triggered_by, …}`; DELETE cancels a queued/running job |
+| GET `/latex/:id/compiles/:compileId/pdf[?download=1]` · `/synctex` · `/log[?file=blg]` | user | streamed from S3 with Range (206), `Cache-Control: private, max-age=3600`, sandbox CSP |
+| GET / POST `/latex/:id/versions` `{label?}` · POST `/latex/:id/versions/:versionId/restore` | user / study editor | restore = backup version 「還原前自動備份」, then text files through their live docs, missing files recreated, binaries re-pointed, extra files deleted, settings restored, version 「還原至〈label〉」 → `{version, ...ProjectDetail}` |
+| POST `/latex/:id/files/:fileId/ai/rewrite` `{from, to, before, mode: rewrite\|polish\|shorten\|expand\|translate_en\|translate_zh, instruction?}` | study editor | role `writing` (503 `llm_unavailable` when down); `before` must equal the live text (409) → 201 `{suggestion}` (one hunk) |
+| POST `/latex/:id/files/:fileId/ai/draft` `{instruction?}` | study editor | 「AI 依筆記草擬本節」 (section files only): study summary + 8 newest notes + ≤ 60 library entries (cite keys) + the heading → full-file suggestion |
+| POST `/latex/:id/compiles/:compileId/ai/fix` `{index, severity?}` | study editor | 「解釋/修正編譯錯誤」: the diagnostic + hint + ±4 lines of the offending file (`file_map`) → `{explanation, suggestion \| null, file_id, line}`; no suggestion for TeX-tree/generated files or when the model proposes no change; the window's trailing newlines are kept. All three AI routes retry once with thinking off and twice the budget when a reasoning model used the whole budget without text |
+| POST `/latex/:id/ai/layout-review` `{compile_id, pages: [{page, image /* data:image/png\|jpeg\|webp;base64 or bare base64 */, sources?: [{path, from, to}]}] (1–6)}` | study editor | 「AI 檢查排版」 (role `writing` with vision; route body limit ≈ 17 MB): the editor renders the pages with pdf.js (≈ 1600 px JPEG) and gets `sources` from SyncTeX (`pageSources`, line ranges per file); the backend sends numbered excerpts (±8 lines, ≤ 24 000 chars), the compile's bad-box/float warnings of those files, and verifies fixes against every text `.tex/.cls/.sty` (never the auto bib) → `{review: LayoutReview}` (see Deck sources); 400 bad image / > 6 pages, 422 `vision_unavailable` |
+| POST `/latex/:id/ai/layout-review/suggest` `{file_id, find, replace, title?}` | study editor | review fix → `latex_file` suggestion (one hunk on the live text); 409 when `find` is not unique any more |
+
+Suggestion target `latex_file` (id = file id, Yjs doc): readers everyone, decide = study owner/member; accepting copies the text
+into `latex_files.content`; url `/studies/<slug>/latex/<projectId>?file=<fileId>`. AI never writes directly.
+Agent tools (`lib/latex-projects/agent-tools.ts`): read `latex_list_projects` (study → projects; project → files with roles,
+section order, headings, latest compile), `latex_read_file` (live text, paged, optional line numbers), `latex_get_compile_log`
+(parsed errors/warnings); write `latex_suggest_edit` (one file per suggestion; full text or exact `before`/`after` edits; the auto
+bib is refused; autopilot → `applySuggestionNow`), `latex_compile`. Study cleanup hook `latex` (docs, suggestions, S3 prefixes).
+
+Frontend: study tab 論文 (`components/latex/LatexTab.svelte`: cards with a pdf.js first-page thumbnail and the compile status,
+`CreateProjectSheet` template | ZIP), editor `/studies/<slug>/latex/<id>[?file=<fileId>]` (`LatexEditor` → `SectionTabs` (pointer
+drag + Alt+←/→, phone picker sheet with move buttons), `LatexFileEditor` (shared `CodeEditor`, MIT `stex` legacy mode,
+completion of commands/environments, `\cite` keys, `\ref` labels and paths from `/symbols`, presence, `SuggestionReview`), `PdfViewer`
+(pdfjs-dist 6, lazy pages, text layer, zoom, SyncTeX highlights), `CompileLog`, `FilesSheet`, `VersionsSheet`, `SettingsSheet`).
+SyncTeX runs in a Web Worker (`lib/latex/synctex.worker.ts`: fetch + `DecompressionStream('gzip')` + own parser in
+`lib/latex/synctex.ts`): forward = records of the cursor line grouped per baseline; inverse = smallest line box under the point,
+then the nearest record on that baseline (line boxes are often attributed to where a paragraph ended). The pdf.js worker is a
+Vite worker chunk (`.js`). Keys: ⌘S/⌘Enter compile, ⌘⌥J show in PDF (also ⌃⌥J: Chrome on macOS keeps ⌘⌥J for its console; labels are per platform), double-click PDF → source. Phones: editor / PDF / log
+are switched with a segmented control, never side by side.
+
+### Agent (`agent.ts` → child plugins `memories.ts`, `mcp.ts`; `src/agent/`)
+
+Spec §5/§9, research `docs/research/agent-harness.md`. The loop runs **in the backend process** (`src/agent/runtime.ts`,
+`agentFor(app)`), persists every step, and streams through an event log, so a reload or restart never loses state.
+
+Tables (`0070_agent.sql`):
+- `agent_settings` (per user: `memory_enabled` default **false**, `autopilot_default` default false, `autopilot_explained`).
+- `conversations` (`user_id`, `title` + `title_source auto|user`, `mode chat|interview`, `context` = latest page context,
+  `study_id` (scope for study memories), `autopilot`, `memory_enabled`, `summary` + `summary_until` = compaction).
+- `agent_messages` (`seq` global order; `role user|assistant|tool|notice|compaction`; `content` = unified `ChatMessage`
+  blocks the model sees, `text` = what the UI shows; `provider_state` replayed to the vendor; `status complete|cancelled`).
+  The transcript is always valid: every assistant `tool_use` gets one `tool` message with a result per call.
+- `agent_runs` (`status running|awaiting_approval|awaiting_llm|done|cancelled|failed`, `step`/`max_steps` 25, `tainted` +
+  `taint_sources` (provenance labels), `autopilot_writes`, tokens, `active_ms`, `stop_reason
+  limit_steps|limit_time|limit_tokens|repeat|expired|cancelled|superseded`, `error {error,code,hint}`, `llm_waits`,
+  `next_retry_at`, lease `lease_owner/lease_expires_at`).
+- `tool_calls` (`message_id`+`position`, `provider_call_id`, `tool`, `args`, `edited_args`, `risk read|write|destructive`,
+  `status pending_approval|approved|denied|running|done|failed|cancelled|expired`, `approved_via user|conversation_grant|autopilot`,
+  `approval_reason write|destructive|memory|tainted|outbound|autopilot_limit`, `summary`, `target {studyId,label,url}`,
+  `result {data,links,source,untrusted}`, `result_text` (what the model saw), `error`, `deny_reason`).
+- `conversation_grants (conversation_id, tool, scope = study id | '*')`, `memories` (`scope global|study`, `content` ≤ 300,
+  `source agent|user`, `source_conversation_id` kept after the chat is deleted), `memory_uses (message_id, memory_id)`,
+  `agent_events` (SSE replay log, `seq` = event id, pruned a day after the conversation has no active run),
+  `mcp_tokens` (sha256 `token_hash`, `prefix`, `scopes read|suggest`, `expires_at`, `revoked_at`).
+
+**Loop** (`execute(runId)`, claimed with a lease renewed every ≈10 s; the 5 s ticker resumes orphaned `running` runs, due
+`awaiting_llm` runs, expires 24 h-old approvals (`expired`, run `done`) and prunes events):
+1. Open step (last assistant message with `tool_use` and no tool message): run its `approved` calls in order; if any call is
+   `pending_approval` → run `awaiting_approval` and the executor ends (no open model request); otherwise append the tool message.
+2. Limits: 25 steps, 10 min active time, 400 k tokens per run, 20 autopilot writes, the same tool + args 3× → stop with a
+   `notice` message (`kind` = stop reason; the UI offers 「繼續」 = `POST …/continue`).
+3. Model call: role **`assistant`** (`ai.chatStream`), system prompt (+ memories block when on) + transcript + tools of the
+   conversation mode. Page context is a `<page_context trust="hint">` text block **in the user message**. Deltas are
+   batched into `agent_events` (~100 ms). `llm_unavailable` / retryable AI errors → `awaiting_llm` (backoff 20 s, 40 s, 80 s,
+   160 s, 300 s; then `failed`; `ai.onStatus` → retry at once). Non-retryable → `failed` with `{error, code, hint}`.
+4. Tool calls of the step: unknown tool / invalid JSON / zod failure → `failed` (the model sees the error, no card); a call
+   identical to one the user denied in this run → auto-`denied`. **Reads run first** (so the taint they cause applies to the
+   writes of the same step), then each write: `precheck` → `target()` (403/404 here fail the call without asking) → policy.
+5. Policy (`src/agent/policy.ts`, deny-first): `alwaysAsk` (memory) and `destructive` always ask in every mode; open-world
+   tools ask once the run is tainted (`outbound`); reads run; a grant for (tool, target study) runs (`conversation_grant`);
+   autopilot runs writes unless tainted (`tainted`) or over the cap (`autopilot_limit`); otherwise ask (`write`).
+6. Taint: a result with `untrusted: true` (content the caller did not author: other members' notes/tasks/summaries, papers,
+   search hits, web) or any open-world call sets `agent_runs.tainted` and appends its `source` label (shown on later cards as
+   「依據：〈…〉」). Study reads (`get_study`, `list_studies`) are untrusted only when a listed study was created by someone
+   else or has another owner/member (advisors cannot edit, so a student + advisor study does not taint autopilot).
+7. Tool results go back as `<tool_result tool=… trust="untrusted|user" source=…>` with an injection notice; closing tags are
+   escaped, zero-width/bidi characters stripped (`scrub`), results capped at 12 000 chars (tools page with `offset`).
+8. Context: > 24 k estimated tokens → tool results older than the last 2 tool messages become placeholders; > 40 k → messages
+   before the last 2 user turns are summarised with role **`fast`** into `conversations.summary` (a `compaction` row marks it;
+   the UI keeps the full history; fallback when `fast` fails: older turns dropped with a note).
+9. Title: role `fast` after the first step (fallback: first 24 chars of the message).
+
+Decisions (`POST /agent/tool-calls/:id/decision`): row lock, must be `pending_approval` (else 409). `approve` (+ optional
+`edited_args`, re-validated with zod — the memory card's edited text) → `approved`; `approve_conversation` also inserts the
+grant (write tools only; never destructive/memory) and approves other pending calls of the step covered by it; `deny` →
+result 「使用者拒絕了這個操作…」. When no call of the step is pending, the run flips to `running` and resumes. Approvals do not
+need the LLM: the tool runs, then the run waits in `awaiting_llm` if the model is down. Authorization is re-checked at
+execution time by the tool itself. A new user message while cards are pending denies them (「使用者改提其他要求」); while
+`running` it is a 409. Cancel: status `cancelled` first, then the local executor is aborted (streamed text is kept as an
+assistant message with `status: cancelled`); unresolved calls get synthetic results (「已被使用者中止」).
+
+Suggestions: `suggest_*` tools call `createSuggestion({source:"ai", conversationId})`; when the call was auto-approved by
+**autopilot** they call `applySuggestionNow` (versions tagged 自動駕駛, restorable). Approved by the user or a grant → a pending
+suggestion the user reviews in the editor (link 「在筆記中檢視建議」).
+
+Memory: injected only when the user setting **and** the conversation toggle are on (global + the conversation's study, newest
+50). `remember` is `alwaysAsk`: never auto-approved, never granted, not on MCP; its `precheck` refuses secrets and, in a
+tainted run, text that is not substantially in the user's own messages (bigram overlap < 0.5). The model cites memories as
+〔記憶 N〕; cited or strongly overlapping (≥ 0.6) ones are stored in `memory_uses` and shown as 「用到 N 則記憶」 (markers are
+stripped from the text).
+
+| Method & path | Access | Notes |
+|---|---|---|
+| GET / PATCH `/agent/settings` `{memory_enabled?, autopilot_default?, autopilot_explained?}` | user | → `{settings}` |
+| GET `/agent/tools` | user | `{tools:[{name,title,titleEn,risk,alwaysAsk,grantable,openWorld,suggests}]}` |
+| GET `/agent/pending` | user | pending approvals across my conversations → `{count, conversations:[{id,title,mode,n}]}` (badges) |
+| GET `/agent/conversations?mode=chat\|interview&q=&limit=` | user (own) | `{conversations: (Conversation & {last_text, run_status, pending})[]}` newest first |
+| POST `/agent/conversations` `{mode?, context?, autopilot?, title?}` | user | autopilot / memory default from settings (interview: both off) → 201 `{conversation}` |
+| GET `/agent/conversations/:id` | owner | `{conversation, messages (user/assistant/notice/compaction, each with memories), toolCalls, run (latest), grants, settings, resumeFrom}` |
+| PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?}` | owner | memory needs the user setting (409); emits `conversation` |
+| DELETE `/agent/conversations/:id` | owner | cancels the active run first; memories stay |
+| POST `/agent/conversations/:id/messages` `{text ≤ 20000, context?: PageContext}` | owner | 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; 409 while running → 202 `{message, run}` |
+| POST `/agent/conversations/:id/cancel` · `/continue` | owner | stop the active run · retry now (`awaiting_llm`) or start a new run on the same transcript → `{run}` |
+| POST `/agent/tool-calls/:id/decision` `{decision: approve\|approve_conversation\|deny, reason?, edited_args?}` | conversation owner | 409 when already decided → `{toolCall, resumed}` |
+| POST `/agent/tool-calls/:id/undo` | conversation owner | 「復原」 a `done` call that ran **without a card** (`approved_via` autopilot / conversation_grant) and carries an undo recipe (`tool_calls.result.undo`, never sent to the model): `create_task` / `create_note` → delete the object, only if the caller created it and its `updated_at` (+ note `version`) is unchanged since the call; `suggest_study_summary` under autopilot → put back the previous summary, only if the text is still what the AI wrote. Sets `result.undone_at`, emits `tool_call`; refused → 409 `內容在那之後已被修改…` / `這個操作已經復原過了。` → `{toolCall}` |
+| GET `/agent/conversations/:id/events` | owner | **SSE**; replays rows after `Last-Event-ID` (or `?after=`), then live (`LISTEN agent_events`, 5 s poll fallback, `: ping` 15 s); `?once=1` replays and closes |
+| GET `/memories?scope=&study=&q=` · GET `/memories/export` | user (own) | `{memories: Memory[], enabled}` · JSON attachment |
+| POST `/memories` `{content, scope?, study?, conversation_id?}` · PATCH `/memories/:id` · DELETE `/memories/:id` · DELETE `/memories` | user (own) | a user action is consent (no card); secrets refused (400); ≤ 500 per user |
+| GET / POST `/agent/mcp-tokens` `{name, scopes?: ["read","suggest"], expires_in_days?: 1–365 \| null}` · DELETE `/agent/mcp-tokens/:id` | user (own) | POST returns the raw `secret` (`hubmcp_…`) **once** + `endpoint`; ≤ 10 active; audited |
+| POST `/mcp` (JSON-RPC 2.0, single or batch) · GET/DELETE `/mcp` → 405 | Bearer MCP token | see MCP below |
+
+SSE event types (data = JSON): `run {run}`, `conversation {conversation}`, `message {message}`, `tool_call {toolCall}`,
+`step_start {runId, step}` (GET's `resumeFrom` points before the current step's start so a reload replays its deltas),
+`text {runId, text}`, `reasoning {runId, text}`, `tool_input {runId, index, name, title}`, `step_discarded {runId}`.
+
+```ts
+type PageContext = { path?, studyId?, studySlug?, noteId?, deckId?, page?, meetingId?, paperId? }; // server resolves studyTitle
+type ToolCallView = { id, run_id, message_id, step, position, tool, title, title_en, risk, always_ask, grantable, open_world, status,
+  approved_via, approval_reason, decided_at, deny_reason, summary, target, args /* edited if edited */, edited,
+  result: {data, links: {label,url,kind?}[], source} | null, error, undo: "available" | "done" | null, undone_at,
+  provenance: string[] /* pending only */, created_at, finished_at };
+```
+
+**Tool registry — contract for other modules** (`backend/src/agent/tools/registry.ts`; core tools in `tools/*.ts`):
+
+```ts
+import { z } from "zod";
+import { registerAgentTool } from "../agent/tools/registry.js";
+registerAgentTool({
+  name: "get_meeting",              // ^[a-z][a-z0-9_]{1,63}$; registering an existing name replaces it
+  title: "讀取會議", titleEn: "Read meeting",
+  description: "…for the model (English, stable)…",
+  input: z.object({ meeting_id: z.string().describe("Meeting id (uuid)") }),   // must be z.object; → JSON Schema (cached)
+  risk: "read" | "write" | "destructive",   // static; split tools instead of a delete flag
+  alwaysAsk?, grantable? /* default write && !alwaysAsk */, openWorld? /* sends data out: asks when tainted */,
+  idempotent?, suggests? /* produces a suggestion → MCP may expose it */, mcp? /* override exposure */,
+  modes?: ["chat"] /* or "interview" */,
+  target?: async (args, ctx) => ({ studyId, studySlug?, label, url? }) | null,   // throw 403/404 to fail without asking
+  precheck?: (args, { tainted, userText, ctx }) => string | null,               // 繁中 refusal, no card
+  summarize: (args) => "一句繁中摘要",
+  execute: async (args, ctx) => ({ data, text?, untrusted?, source?, links? }),
+});
+// ctx = { app, db, user /* the caller */, source: "agent"|"mcp", conversationId, runId, autopilot /* apply suggestions now */, signal }
+```
+Rules: `execute` uses the module's domain helpers with `ctx.user`'s permissions (never more than HTTP allows) and re-checks
+access itself; writes to existing content produce suggestions (`createSuggestion`, or `applySuggestionNow` when
+`ctx.autopilot && ctx.source === "agent"`); return `untrusted: true` for content the caller did not write; keep results small
+(page with `offset`). Import the file once from the module's route plugin so it registers at startup. Hooks:
+`setAgentSearchProvider(fn)` (`tools/search.ts`; `fn(ctx, {query, studyId, types, limit}) → {hits:[{type,id,title,excerpt?,study?,url?,authorId?}], mode} | null`,
+null = keyword fallback) or replace `search` entirely; meetings register `get_meeting` / `get_transcript_excerpt`; slides register
+`suggest_deck_edit` (`lib/slides/agent-tools.ts`: one text file of the Quarto tree, `content` or exact `edits`; always a pending
+suggestion, also under autopilot, because deck sources keep no version history; on MCP with the `suggest` scope); LaTeX `latex_read_file` / `latex_suggest_edit`.
+
+Core tools: read `list_studies`, `get_study`, `get_study_progress`, `list_notes`, `get_note`, `list_tasks`, `list_papers`,
+`get_paper`, `search_papers_online` (open-world; query stripped of URLs/opaque tokens, ≤ 300 chars, 20/min/user), `search`,
+`list_decks`, `get_deck`; write `create_note`, `suggest_note_edit` (full text or exact `before`/`after` edits),
+`suggest_study_summary`, `create_task`, `update_task`, `add_milestone`, `set_stage`, `import_paper` (open-world: resolves
+the identifier online, reuses a same/likely lab copy), `add_paper_to_study`, `remember` (memory); destructive `delete_task`,
+`delete_note`, `remove_paper_from_study`; interview-only `propose_study_plan` (read, no side effects).
+
+**MCP** (`routes/mcp.ts`, Streamable HTTP with JSON responses; no sessions, no server stream; protocol `2025-11-25`,
+`2025-06-18`, `2025-03-26`): `Authorization: Bearer hubmcp_…` only — the cookie is never accepted, so `POST /api/mcp` is the
+second Origin-check exemption in `app.ts`; an `Origin` header must still equal `APP_ORIGIN` (403). Methods `initialize`,
+`notifications/*` (202), `ping`, `tools/list`, `tools/call` (unknown method −32601, bad params −32602). Exposed tools
+(`isMcpTool`): reads, plus suggestion tools with the `suggest` scope; never destructive tools, `remember`, plain creates or
+interview tools. MCP writes never autopilot (suggestions only) and are audited (`mcp_tool_call`). Annotations come from the
+risk class (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint` always all set). Results:
+`{content:[{type:"text", text: <tool_result envelope>}], structuredContent, isError}`; 120 calls/min per token. OAuth for MCP
+(the kept OIDC provider) is not wired yet.
+
+Frontend: `/assistant[/<id>]` (`components/agent/AssistantWorkspace`), the global slide-over (`AskAiButton` in the topbar from
+`sm`, a floating button above the tab bar on phones; full-screen sheet on phones; page context from the URL via
+`lib/agent/context.ts`), `ChatView` (shared by page, panel and interview), `ConsentCard`, `ToolTimeline`/`ToolRow`,
+`Composer`, `MemorySettings` + `McpTokens` (settings tab 「AI 助理」), `StudyInterview` (`/studies/new` 「AI 訪談」:
+`interview` conversation → `propose_study_plan` → editable plan → `POST /studies` + stage/milestone API calls).
+State: `lib/agent/chat.svelte.ts` (`ChatSession`: load, SSE with replay, rAF-batched deltas), `lib/agent/panel.svelte.ts`.
+The composer's context chip names the page (「目前頁面：研究「…」」, from `<title>`); after an answer the composer gets focus
+back (not on touch devices); `ToolRow` shows 「復原」 for calls with `undo: "available"`. On phones `/studies/new` shows the
+interview first. Tool results carry `*_label` fields (task/study status, member role, deck kind) and the system prompt maps
+the remaining codes to 繁中, so answers never show raw enum values. Locale without an account or a stored choice
+(anonymous deck viewers) follows the browser (`en*` before any `zh*` → English).
+
+### UI support (`dashboard.ts`, `jobs.ts`)
+
+Both need a session and reply with `Cache-Control: no-store`. (v2 `/search` is gone; the search module adds v3 search.)
 
 **GET `/dashboard`** →
 ```ts
-{ stats: { slides, notes, recordings, pendingReviews, slidesThisWeek, notesThisWeek },   // ints
-  latestSlide: { id, title, slug, version, authorName, publishedAt, tags: {id,name}[], thumbnailUrl, reviewCount } | null,
-  activity: { kind: "slide_version"|"note"|"recording"|"review"|"reply", id, title, url, actor: {id,name} | null, at }[],
-  pendingReviews: { reviewId, slideId, slideTitle, excerpt, authorName, createdAt }[],
-  recentNotes: { id, title, excerpt, updatedAt, tags: {id,name}[], hasAudio }[] }
+{ myStudies: StudyCard[],            // studies I belong to (not archived), newest activity first, max 50
+  myTasks: (Task & { study })[],     // open tasks assigned to me in non-archived studies, soonest due first (undated last), max 10
+  activity: { id, kind, title, url, at, metadata, actor: {id,name} | null, study: {id,slug,title} }[], // latest 20, lab-wide
+  counts: { myStudies /* active */, labStudies /* active */, openTasks, overdueTasks, dueThisWeek /* today..+6, Asia/Taipei */ } }
 ```
-- `recordings` = notes with audio. "This week" = since Monday 00:00 Asia/Taipei: `slidesThisWeek` counts versions
-  published this week, `notesThisWeek` notes created this week.
-- A version's publish time is `slide_versions.published_at` (set when it becomes `published`; fallback: its job's `finished_at`, then upload time). `latestSlide` = the project whose
-  active version was published most recently; `authorName` = uploader of that version (fallback: deck creator).
-- `pendingReviews` items also carry `page: number | null` (the review's page). `pendingReviews` (max 5, newest first) and `stats.pendingReviews` = reviews without any reply: for the Owner (the only
-  one who replies) all of them, for everyone else those on decks they created. `excerpt` = plain text, ≤ 120 chars.
-- `activity`: latest 10 across kinds, newest first. `id` is the event row's own id (version, note, transcode job, review,
-  reply); `url` is the SPA path: `/slides/<projectId>` (slide_version, review, reply; `title` = deck title, plus
-  ` v<n>` for slide_version), `/notes/<id>` (note created), `/recordings/<itemId>` (successful transcode).
-- `recentNotes`: 6 most recently updated notes.
+Activity `url` is the SPA path recorded with the event (`/studies/<slug>[?tab=…]`, `/slides/<deckId>`); the dashboard
+shows unknown kinds generically, so modules may record their own.
 
-**GET `/search?q=`** (`q` trimmed, 1–100 chars, else 400) → `{ slides: {id,title,slug}[], notes: {id,title,excerpt,hasAudio}[],
-tags: {id,name,kind:"note"|"slide"}[] }`. Case-insensitive substring match (ILIKE with `\`, `%`, `_` escaped) on deck
-title/slug, note title/content, and tag names of both namespaces; max 6 per list, newest first (`updated_at` for decks and
-notes, `created_at` for tags).
-
-**GET `/jobs/active`** → `{ jobs: { id, kind:"slide_render"|"media_transcode", status:"queued"|"running"|"succeeded"|"failed"|"cancelled",
+**GET `/jobs/active`** → `{ jobs: { id, kind /* any job kind */, status:"queued"|"running"|"succeeded"|"failed"|"cancelled",
 stage, progress, label, url, updatedAt }[] }`: the caller's jobs that are queued/running or finished in the last 10 minutes,
 max 10, newest first. `stage` is the worker's 繁中 stage; the raw values `queued`/`starting`/`cancelled` written by the
-database/backend are shown as `排隊中`/`準備中`/`已取消`. `progress` is 100 once succeeded. `label` = `<deck title> v<n>`
-or the note title (fallback: upload file name, `已刪除的簡報`/`已刪除的筆記`); `url` = `/slides/<projectId>` or
-`/notes/<itemId>`, null when the target was deleted. `updatedAt` = latest of created/started/heartbeat/finished.
+database/backend are shown as `排隊中`/`準備中`/`已取消`, and the ai-worker's machine stages (`generating`, `validating`, …) get 繁中 labels too. `progress` is 100 once succeeded. `label` = `<deck title> v<n>`
+(`已刪除的簡報` when gone), else the payload's `fileName` or the kind; `url` = `/slides/<deckId>`, null otherwise (modules
+with their own kinds extend this route). `updatedAt` = latest of created/started/heartbeat/finished.
 
-### OIDC provider for Aldine (`oidc.ts`, `lib/oidc/`)
+### OIDC provider (`oidc.ts`, `lib/oidc/`)
+
+Kept in v3 for the MCP endpoint's OAuth authorization (spec §13.2); today its only client is Aldine.
 
 The hub is the OpenID Connect provider for one first-party client, Aldine (authorization code flow, no consent
 screen). Off (every route 404) unless `LATEX_OIDC_CLIENT_ID` and `LATEX_OIDC_CLIENT_SECRET` (≥ 32 chars) are set and a
@@ -374,6 +1147,10 @@ capability `:token`, one of:
 - `public` when the project is `public_view`;
 - the project's share key.
 
+Quick previews (`/slides/view/:slug/:token/preview/:previewId/*`) accept only `p.<unixExpiry>.<hmac>` =
+HMAC-SHA256(`AUTH_SECRET`, `slide-preview|<deckId>|<previewId>|<expiry>`) (12 h, issued by the source/preview routes) — never
+`public` or the share key — and serve only `ready` previews, with the same asset rules, HTML patching and headers.
+
 Asset rules (ported from v1 `app/app/slides/view/[slug]/[key]/[versionId]/[[...asset]]/route.ts`): empty path →
 entry HTML; reject `slides.pdf`, `pdf.log`, `offline-assets/licenses/*`, `_hub/*`, any `..`/`.`/backslash/NUL; HTML gets the
 in-memory Web Storage shim, the hub bridge (below), the `scrollActivationWidth:0,postMessage:true,postMessageEvents:true`
@@ -392,6 +1169,14 @@ Parent ↔ deck messaging (quarto decks only; pdf/pptx decks have no HTML deck a
 - The deck's origin is opaque (`event.origin === "null"`), so the parent cannot authenticate messages by origin: it must
   check `event.source === iframe.contentWindow` and treat every message as untrusted input (the deck is user-authored).
 
+Frontend (slides): decks live at `/studies/<slug>/decks/<id>` (player, reviews, versions, info) and
+`/studies/<slug>/decks/<id>/edit` (Quarto editor: file tree, shared `CodeEditor` with markdown/yaml/css modes, autosave 0.8 s after
+typing with `baseVersion`, preview ~2 s after a save in the sandboxed iframe following the slide under the cursor, AI draft and
+「請 AI 修改」 inline suggestion review — editing pauses while hunks are pending, 「發布新版本」). The study tab 簡報
+(`components/slides/DecksTab.svelte`, `?tab=decks&kind=`) lists both kinds and opens `CreateDeckSheet` (kind, source: editor /
+AI / upload → `UploadSheet`). The v2 app route `/slides/<id>` (still used by notifications, activity and the jobs tray) redirects
+to the study deck page; `/slides` stays as the lab-wide list.
+
 Frontend player (`frontend/src/lib/components/slides/SlidePlayer.svelte`): pdf/pptx versions are drawn from the manifest's
 page images, quarto decks in the iframe above; both get the same counter, thumbnails (review counts per page), keyboard,
 swipe, fullscreen and a remembered position (`localStorage` `hub-slide-pos:<slug>:<versionId>`). `S` opens the speaker
@@ -402,22 +1187,208 @@ fragments), `{type:"hello"}` and `{type:"bye"}`, each carrying `from: "player"|"
 decks in a second sandboxed iframe with `?receiver` (the annotate plugin stays off) and Reveal reconfigured to no
 fragments/controls/keyboard.
 
+## AI platform (`backend/src/ai/`, routes `ai-status.ts` + `ai-admin.ts`, `ai-worker/`)
+
+Three layers (spec §3/§4/§8): **provider accounts → routes → role bindings**. Code asks for a *role*
+(`assistant|writing|slides|analysis|fast|embedding|asr|asr_live`), never a model. Vendor libraries:
+`docs/ai-providers.md` (chat/embedding codecs + registry), `docs/ai-asr-oauth.md` (ASR, subscription OAuth).
+
+| Dir | Contents |
+|---|---|
+| `ai/router/` | `resolveRoute`/`resolveRole` (tree, nested child routes, cycle + depth check), strategies, `runRoute` (retry + fallback) |
+| `ai/platform/` | `AiPlatform` (public API), DB store + snapshot cache, AES-GCM crypto, call log + stats, health/status, param whitelist, subscription entries + OAuth token store, admin service |
+| `ai/embedding/` | identity fingerprint, vector spaces (`embeddings` + per-space HNSW), switch wizard, content-source registry, `ai_embedding_reindex` job |
+| `ai-worker/` | entrypoint `main.ts`, job runner, `registerAiJob`, `handlers.ts` (one import line per module) |
+
+**Tables** (migrations `0020_ai_platform.sql`, `0021_embedding_spaces.sql`):
+- `ai_providers` — `family` (`llm`\|`asr` registry), `kind` (registry id; plus `chatgpt`, `claude-oauth`, `claude-cli`),
+  `category` (`external`\|`local`\|`subscription`), `name` (unique per family), `config` jsonb (non-secret form fields),
+  `secrets` bytea + `secret_keys`, `oauth_tokens` bytea + `oauth_meta` (`status none|connected|needs_reauth`, email,
+  plan, expiry), `enabled`, `last_probe` (`{ok, latencyMs, detail_zh, code?, hint_zh?, modelCount?}`; the test endpoints return the same shape as `probe`). Ciphertexts: AES-256-GCM, key env `PROVIDER_TOKEN_KEY` (32 B base64,
+  never `AUTH_SECRET`), AAD `<provider id>:secrets` / `:oauth`. API responses only expose `secrets_set: {key: bool}`.
+- `ai_routes` (`capability chat|embedding|asr`, `strategy single|fallback|round_robin|load_balance`),
+  `ai_route_members` (`position`; `provider_id+model` **or** `child_route_id`; `weight`; `params` validated against
+  the entry whitelist + platform knobs `timeout_ms`, `max_retries`, `temperature`, `top_p`, `max_tokens`,
+  `reasoning_effort`, `dimensions`, ASR `language`/`diarization`/`convert_script`/`prompt_template`…; `enabled`).
+- `ai_role_routes` (role → route), `ai_role_status` (derived health cache), `ai_call_log`, `ai_oauth_sessions`
+  (pending device-code / PKCE logins, encrypted, 10–15 min), `ai_job_state` (ai-worker checkpoint + backoff step).
+- `embedding_spaces` (one per model identity: `provider_kind`, `model`, `dims ≤ 4000`, `route_id`,
+  `status building|ready|active|retired|failed`, progress), `embedding_fingerprints`, `embedding_identity`
+  (singleton `active_space_id`), `embeddings(space_id, owner_type, owner_id, chunk_index, content_hash, vec halfvec)`.
+  Each space has a partial index `embeddings_hnsw_<id>` on `(vec::halfvec(<dims>)) halfvec_cosine_ops WHERE space_id=…`;
+  queries must filter `space_id` and cast to the space's dims (`searchSpace()` does).
+
+**Routing.** Strategy order, then failover: `single` = first member only; `fallback` = position order;
+`round_robin` = rotating start (per process); `load_balance` = weighted random, rest weighted. A member is retried
+(`max_retries`, default 1; ASR 0) on `rate_limited|overloaded|unavailable`, honouring Retry-After (≤ 8 s). It falls
+back on pre-stream `rate_limited|overloaded|unavailable|timeout|auth_failed|quota_exhausted|model_not_found|unsupported`
+(an `error` event before any content counts as pre-stream); `bad_request|context_too_long|content_filtered|cancelled`
+are thrown as-is. All members failed / role unbound → `PlatformError` **`llm_unavailable`** (503,
+`detail.attempts[{providerKind, model, code}]`, `detail.reason unconfigured|all_failed`). Mid-stream errors arrive as
+the final `{type:"error"}` event (no fallback). Disabled accounts and dead OAuth logins are skipped. Member params
+override the caller (except `max_tokens`: the smaller wins). Child routes must have the same capability.
+
+**Vision** (`ai/platform/vision.ts`, migration `0022_ai_model_hints.sql`: `ai_model_hints(provider_id, model, hints jsonb)` +
+`ai_providers.model_hints_at`). A chat member accepts images when its param `vision` (`yes`\|`no`, admin override; absent = auto)
+says so, else detection: `claude-cli` / registry `capabilities.vision=false` → no; the vendor's model listing hint
+(`ModelInfo.hints.vision`, e.g. the gateway's `capabilities.vision`) → that; a model-name heuristic (gpt-4o/4.1/5, o3/o4-mini,
+claude, gemini, `-vl`, llava, pixtral, glm-…v…) → yes; Anthropic/Gemini codecs → yes; otherwise unknown = no. Hints are refreshed by
+the probe leader for bound accounts at most every 6 h (cheap listing) and by the admin 「測試」 button. **Image requests**
+(`hasImages`: image blocks in user content or tool results) skip members without vision (skip code `no_vision`, not logged); when no
+member with vision is left the call throws `PlatformError` **`vision_unavailable`** (422), never `llm_unavailable`, so the role
+is not marked down and ai-worker does not wait. Images are never stripped silently (a layout review without them would be
+invented). Role flag: `detail.vision` = some member that is not down accepts images; public status and `ai.capabilities(role)`
+report it. Codecs map `image` blocks (base64 PNG/JPEG/WebP): openai-chat/cohere `image_url` data URLs, responses `input_image`,
+anthropic `image` base64 source, gemini `inlineData`, bedrock `image.source.bytes` (base64 only), ollama `images[]` (base64 only).
+
+**Public API** (`import { ai, aiFor } from "../ai/platform/index.js"`; `aiFor(app)` = the instance bound to the pool):
+```ts
+ai.chat(role: ChatRole, req: Omit<ChatRequest,"model">, ctx?: { userId?, jobId?, signal?, onRoute? }) → ChatResult & { route }
+ai.chatStream(role, req, ctx) → AsyncGenerator<ChatEvent>          // SSE passthrough; ctx.onRoute(info) before the first event
+ai.embed(inputs, "query"|"document", { spaceId?, userId?, jobId?, signal? }) → { vectors, dims, model, spaceId }  // active space by default
+ai.embedForIndex(texts, ctx) → [{ space, vectors }]                   // every live space (active + one being built)
+ai.embeddingState() → { mode: "semantic"|"keyword_only", space, reason_zh? }
+ai.transcribe(req: TranscribeRequest minus resume/onCheckpoint, { role?: "asr", jobId, signal, glossary?, resume?, onCheckpoint? }) → Transcript & { route }
+ai.liveTranscribe(opts: LiveOptions, { role?: "asr_live" }) → LiveSession & { route }
+ai.status() → { roles: {<role>: { state: ok|degraded|unavailable|unconfigured, message_zh, vision }}, search_mode, updated_at }
+ai.capabilities(role) → { vision: boolean }                          // an image request would be served now
+ai.onStatus(listener) → unsubscribe
+```
+Embedding helpers for the search module (`ai/embedding/spaces.ts`): `upsertVectors`, `deleteOwnerVectors`,
+`searchSpace`, `chunkHashes`, `contentHash`; `registerEmbeddingSource(ownerType, {count, iterate})` feeds re-indexing.
+ASR checkpoints: `onCheckpoint` gives `{memberId, model, asr}`; save it (e.g. `saveCheckpoint` in ai-worker) and pass it
+back as `resume` — it is reused only on the same member.
+
+**Call log** (`ai_call_log`): one row per member attempt (after its retries), never prompt/response content. Rows
+of one logical call share `call_id`; `final` marks the outcome (an extra final row without a member when every member
+failed: `error_code llm_unavailable`). Columns: role, capability, route/provider/kind/model, stream, started_at,
+latency_ms, ttft_ms, tokens in/out, ok, error_code, retries, fallback_index, job_id, user_id. Buffered inserts;
+kept 90 days. Stats: per role (final rows) and per provider/model (all rows): calls, success rate, p50/p95, TTFT p50,
+tokens, retries, fallbacks; error distribution; time series.
+
+**Health.** Member health: account disabled / needs re-login → down; the latest call of that provider+model within
+10 min (if newer than the probe) decides (down only for infra codes); else the probe (≤ 5 min old); else unknown.
+Role: `unconfigured` (no route), `ok` (first member usable), `degraded` (serving from a fallback; for
+round-robin/load-balance: some member down), `unavailable` (none usable, or the latest real call ended
+`llm_unavailable` < 2 min ago with no newer success). Probes (cheap listing/health endpoints, never paid
+generations) run every 60 s only in the process holding advisory lock `473931`; recompute writes `ai_role_status`
+and `NOTIFY ai_status`; every process `LISTEN`s `ai_status` / `ai_config` (config change → cache drop). The backend
+starts this runtime in `routes/ai-status.ts` `onReady` (not when `NODE_ENV=test` or `AI_PLATFORM_BACKGROUND=0`).
+
+**Subscription logins (EXPERIMENTAL).** `chatgpt` (openai-responses codec → `chatgpt.com/backend-api/codex`, device
+code), `claude-oauth` (anthropic codec, copy-code PKCE or pasted setup-token), `claude-cli` (runs `claude` in
+ai-worker with the setup-token secret; text only, no tools). A fetch wrapper decorates each request with fresh
+tokens from `getTokens()`: `SELECT … FOR UPDATE` → `refreshIfNeeded` → `UPDATE` (single flight, never aborted);
+permanent refresh failure → `oauth_meta.status = needs_reauth`. UI shows the `*_WARNINGS_ZH` texts.
+
+**Embedding identity.** Probe set v1 (8 fixed zh/en sentences). A model/deployment has the same identity when every
+probe vector has cosine ≥ 0.95 with the stored fingerprint (same dims). Binding the `embedding` role or editing a route
+inside its tree is checked: members of one embedding route must agree with each other (`route_invalid` otherwise);
+no active space → the route's model becomes the active space at once (empty) + `ai_embedding_reindex` job; same
+identity → rebind; different → 409 **`embedding_model_change_requires_switch`** (`detail.comparison`). Switch wizard:
+precheck → `switch` builds a `building` space with its own route (job fills it from all sources; indexers write to
+both live spaces via `embedForIndex`) → `ready` → `flip` (old → `retired`, identity + role binding move) → retired
+spaces can be deleted. Semantic search is `keyword_only` without an active space or while `embedding` is unavailable.
+
+### API
+
+All `/api/admin/ai/*` require `requireAdmin`; every error is `{ error, code, hint }` 繁中 (+ `detail` with
+`issues[{key|index, message_zh}]`, fingerprint scores, cycle path…). Non-AI HTTP errors get codes
+`invalid_input|unauthorized|forbidden|not_found|conflict`.
+
+| Method & path | Notes |
+|---|---|
+| `GET /api/ai/status` | any signed-in user; `{roles: {<role>: {state, message_zh, vision}}, search_mode, updated_at}` — no providers/models/errors |
+| `GET /api/ai/status/stream` | SSE `event: status` (same body) on change, `: ping` every 25 s, `retry: 5000` |
+| `GET /admin/ai/registry` | `{llm[], asr[], roles[], platform_params{chat,embedding,asr}, live_kinds[], secrets_key_configured}` (public registry entries: form fields, capabilities, param whitelist, warnings) |
+| `GET/POST /admin/ai/providers`, `PATCH/DELETE /admin/ai/providers/:id` | create `{family, kind, name, config, secrets, enabled?}`; patch `secrets` only lists changed keys (`null` clears); delete 409 `provider_in_use` |
+| `POST /admin/ai/providers/:id/test` · `POST /admin/ai/providers/test` | probe + model list (+ optional `{model, capability}` 1-shot check); the second tests an unsaved form (`base_id` reuses stored secrets) |
+| `POST /admin/ai/providers/:id/oauth/start` | ChatGPT `{session_id, flow:"chatgpt_device", user_code, verification_url, interval_sec, expires_at}`; Claude `{session_id, flow:"claude_pkce", authorize_url, expires_at}` |
+| `POST /admin/ai/oauth/sessions/:id/poll` · `…/complete {code}` | ChatGPT polling → `{status: pending}` or `{status: complete, oauth}`; Claude pasted `code#state` |
+| `POST /admin/ai/providers/:id/oauth/token {token}` · `…/oauth/logout` | Claude setup-token; sign out (ChatGPT revoke, best effort) |
+| `GET /admin/ai/vision?provider_id=&model=` | `{detected, source: override\|model_list\|name\|vendor\|unknown}` (re-reads a stale model list first). Also: `GET /admin/ai/routes` chat members carry `vision {vision, detected, source, overridden}`; account tests return `models[].vision` and store the hints; role status members carry `vision`, `vision_source`, the role `detail.vision` |
+| `GET/POST /admin/ai/routes`, `PUT/DELETE /admin/ai/routes/:id` | body `{name, capability, strategy, description?, members[{provider_id+model \| child_route_id, weight?, params?, enabled?}]}` (PUT replaces members) → `{route, warnings[]}`; `route_cycle`, `route_invalid`, `capability_mismatch`, `embedding_model_change_requires_switch`, delete 409 `route_in_use` |
+| `GET /admin/ai/roles` · `PUT /admin/ai/roles/:role {route_id \| null}` | bindings with health detail (members up/down/unknown, active index); embedding bind may return `created_space` |
+| `GET /admin/ai/health` · `POST /admin/ai/health/probe` | detailed role status; probe now |
+| `GET /admin/ai/calls` | filters `role, provider_id, model, ok, error_code, from, to, final, probes`, cursor `before`, `limit ≤ 200` → `{calls, next}` |
+| `GET /admin/ai/stats?window=1h\|24h\|7d\|30d` | `{roles[], members[], errors[], series[]}` |
+| `GET /admin/ai/embedding` · `POST …/embedding/precheck {route_id}` · `POST …/embedding/switch {route_id}` · `POST …/embedding/spaces/:id/flip` · `…/cancel` · `DELETE …/embedding/spaces/:id` | identity overview; fingerprint comparison (`action bind\|switch`); switch wizard steps |
+| `GET /admin/ai/export?include_secrets=0\|1` | `{format:"speech-ai-hub.ai-settings", version:1, secret, exported_at, providers, routes, roles}`; secrets (and OAuth tokens) only with `1` (file name `…-SECRET.json`); audited |
+| `POST /admin/ai/import {file, include_secrets}` | upsert by name (accounts per family, routes); secrets used only when the file says `secret:true` and the flag is set; the `embedding` binding is never imported (warning) |
+
+### ai-worker
+
+Same image as the backend, command `node dist/ai-worker/main.js`, the backend's env + `AI_WORKER_CONCURRENCY`
+(default 2); DB role = the main app role (reads/writes domain tables), internet egress, ffmpeg/ffprobe (ASR
+chunking), optional `claude` CLI. It runs the platform runtime too (status notifications; it may hold the probe lock).
+- Claims only registered `ai_*` kinds (`AND kind = ANY($2)`), same lease/heartbeat/reaper SQL as `worker/` (reaper
+  limited to `kind LIKE 'ai\_%'`).
+- `registerAiJob(kind, { roles, concurrency?, timeoutMs?, run(ctx) })` in a module file imported from
+  `ai-worker/handlers.ts`. `ctx = { job{id,kind,payload,attempts,maxAttempts,createdBy}, db, storage, ai, log, signal,
+  progress(stage, pct), checkpoint, saveCheckpoint(v) }`. Return value → `jobs.result`; handlers may write domain rows
+  directly; backend finalizers stay optional.
+- Errors: `llm_unavailable` (from any `ai.*` call) → requeued **without consuming an attempt**, `stage='waiting_llm'`,
+  `run_after = now + 2 min · 2^waits` (max 30 min, counted in `ai_job_state.llm_waits`), and the role is paused (kinds
+  using it are not claimed) until the backoff ends or `ai.onStatus` reports the role `ok|degraded` (then waiting jobs
+  get `run_after=now()`). Only this code auto-resumes. `AiJobInputError` → failed (message shown). Retryable `AiError`
+  / unknown errors → requeue with 30 s · 2^(attempt-1) (≤ 15 min) until `max_attempts`; non-retryable → failed with
+  `message_zh + hint_zh`. Cancel → `signal` aborts → `cancelled`.
+- Built-in kind `ai_embedding_reindex {spaceId}` (concurrency 1): walks every registered embedding source, skips
+  unchanged chunks (content hash), checkpoints every 20 owners; `building` → `ready`. Failures mark the space `failed`
+  (backend finalizer).
+
+### Frontend
+
+`lib/ai/status.svelte.ts` (`aiStatus`: `watch()` ref-counted SSE + 30 s poll, `of(role)`, `available(role)` = ok|degraded, `vision(role)`,
+`all`, `searchMode`); every AI entry point is wrapped in `<AiGate role=…>` (shows 「維護中」 otherwise);
+`AiStatusBadge` (topbar dot + role list); admin UI `/admin/models` (`lib/components/ai/admin/*`, client `lib/ai/admin.ts`
+keeps `{error, code, hint, detail}`; errors render as 發生什麼事 / 建議怎麼做 / 技術細節 via `AiErrorPanel`).
+Vision UI (`lib/components/vision/`, i18n `vision.*`): `VisionBadge` 「視覺」 on route members (override param `vision` =
+自動偵測/支援/不支援 in the params form) and role bindings; `SlideLayoutReview` (deck editor toolbar: preview shots; deck page:
+the shown version) and `LatexLayoutReview` (LaTeX toolbar, pdf.js + `SyncClient.pageSources`) render only when
+`aiStatus.vision(role)`, else the hint 「目前的模型不支援影像，無法檢查排版」; results in `ReviewResults` (fix → suggestion).
+
+## Frontend shell (v3)
+
+- Navigation (`frontend/src/lib/nav.ts`): workspace 總覽 `/` · 研究 `/studies` · 會議 `/meetings` · 文獻庫 `/library` · 助理
+  `/assistant`; manage: LaTeX (external, only when configured) · 管理 `/admin` (`admin: true` → `is_admin` only) · 設定.
+  `canSee(item, user, config)` decides visibility everywhere (sidebar, bottom tabs, more drawer, ⌘K). Modules append one entry.
+- i18n: one file per module `frontend/src/lib/i18n/<module>.ts` (`zh` `as const` + `en` with the same keys), imported and
+  spread in both lists of `lib/messages.ts`. Shared component strings: `i18n/shared.ts` (`md.*`, `date.*`, `audio.*`).
+- Study page `/studies/<slug>?tab=<key>`: tabs come from `frontend/src/lib/components/study/tabs/registry.ts`
+  (`studyTabs: StudyTab[]`, `StudyTab = {key, label, icon, load: () => import("…Tab.svelte"), count?}`; tab components get
+  `StudyTabProps = {detail: StudyDetail, reload, tab}`). Placeholder entries (`StudyTabPlaceholder.svelte`) are replaced by
+  their module: notes, papers, decks, meetings, latex. Edit UI only when `detail.permissions.edit`.
+  筆記 (`notes`) is `components/notes/NotesTab.svelte` (list, search, template/author filters, `?tab=notes&new=1` opens the
+  template picker; own templates can be deleted there); the editor page is `/studies/<slug>/notes/<id>` (`components/notes/NoteEditor.svelte`;
+  「存成我的範本」 in its menu posts the current text as a `user` template).
+- AI entry points are wrapped in `<AiGate role="assistant|writing|…">` (`lib/components/ai/AiGate.svelte`, store
+  `lib/ai/status.svelte.ts`): it polls `GET /api/ai/status` every 30 s and shows 「維護中」 unless the role is `ok`/`degraded`
+  (accepted body: `{roles: {<role>: {status, message_zh?, hint_zh?}}}`; 404/errors = unavailable).
+- Reusable pieces: `components/markdown/MarkdownEditor|MarkdownView`, `components/audio/*` (`lib/audio/time.ts`), slides
+  components, `ui/DatePicker` (`clearable`), `ui/CheckCircle`, `study/{StudyCard,StageBar,AvatarStack,DueLabel,TaskRow,TaskSheet}`.
+- Shared editor stack (`docs/editor-collab.md`): `lib/editor/` (CodeMirror 6 `CodeEditor.svelte`, theme, Markdown commands,
+  `ToolbarButton`, `MarkdownTools`), `lib/collab/` (`openCollab` → `CollabSession`, `ConnectionStatus`, `PresenceAvatars`,
+  `userColor`), `components/suggest/` (`SuggestionReview`, `suggestionReview()` CodeMirror extension, `SuggestionPanel`,
+  `WordDiff`), `components/notes/ai-stream.ts` (`postAiStream` for SSE AI actions).
+
 ## Behaviour notes (as built)
 
 - A deck has no active version until its first render publishes; a newer published version becomes active
   unless an even newer one already is. Failed/cancelled renders notify the uploader too.
-- `POST /items`: `event_date` optional (defaults to today in Asia/Taipei); list returns `nextCursor`.
 - Invitation revoke is soft (`revoked_at`); logout always clears the cookie, even without a valid session.
 - ZIP junk (`__MACOSX`, `.DS_Store`, `Thumbs.db`, `.git`, `node_modules`, `_site`, `.quarto`) is skipped by both the
   backend validator and the worker (Finder-made ZIPs work); `.env*`, symlinks, unsafe paths, encrypted entries,
   duplicate names (worker) and disallowed types are rejected.
 - `GET /api/config` → `{ latexUrl, pushPublicKey }` (`latexUrl` = `LATEX_ORIGIN`, null when unset).
-- Migrations: `0001_init` (schema), `0002_slide_shared_assets` (`slide_versions.shared_prefix`), `0003_ui_prefs`
-  (`users.locale` `zh-TW`|`en`, `users.preferences` jsonb, `slide_versions.thumbnail_key`, `items.audio_peaks` jsonb array),
-  `0004_oidc` (`oidc_signing_keys`, `oidc_codes`, `oidc_access_tokens`), `0005_slide_pages` (`slide_versions.source_type`,
-  `page_count`, `manifest_key`, `published_at` (backfilled), status `review`; `slide_reviews.page`, `version_id`).
-- There is no "remove audio" route: audio (and its peaks) only changes when a new transcode replaces it or the note is
-  deleted. A failed render clears the version's `thumbnail_key`, `page_count` and `manifest_key`.
+- Migrations: `0001_v3_baseline` (identity, jobs, system settings, stage templates, studies, decks/slide tables, notifications,
+  audit, OIDC; extensions `vector`, `pg_trgm`; `hub_worker` grants). v2 tables `items`, `tags`, `item_tags`, `slide_tags`,
+  `slide_project_tags` are gone; `slide_projects` is `decks` (FK columns `project_id` → `deck_id`). `0040_deck_sources` (slides: `decks.metadata`, `deck_source_trees`, `deck_sources`, `deck_previews`).
+  `0030_notes_collab` (yjs_docs, note_templates + seeds, notes, note_versions, suggestions). `0070_agent` (agent settings, conversations, agent_messages, agent_runs, tool_calls, grants, memories, memory_uses, agent_events, mcp_tokens).
+  `0090_search` / `0091_search_meetings` (search_index_queue, `search_enqueue` / `search_forget` / `search_study_paper_id`, triggers).
+- Staging: `scripts/staging.sh` runs compose project `hubv3` (`compose.yaml` + `compose.staging.yaml`, env `.env.staging`) on
+  `http://127.0.0.1:18090` with its own volumes; it never touches `hubv2`.
+- A failed render clears the version's `thumbnail_key`, `page_count` and `manifest_key`.
 
 ## Aldine (LaTeX) security model
 

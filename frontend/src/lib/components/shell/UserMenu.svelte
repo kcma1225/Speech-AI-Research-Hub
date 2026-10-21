@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { accountLabel } from "#lib/roles.ts";
   import { DropdownMenu } from "bits-ui";
   import { goto } from "$app/navigation";
   import { Check, LogOut, Monitor, Moon, Settings, Sun } from "@lucide/svelte";
@@ -30,7 +31,7 @@
     <Avatar name={user.name} size={32} class="ring-0" />
     <span class="hidden text-left leading-tight lg:block">
       <span class="block max-w-32 truncate text-[13px] font-semibold text-ink">{user.name}</span>
-      <span class="block text-[11.5px] text-ink-3">{t(`role.${user.role}`)}</span>
+      <span class="block text-[11.5px] text-ink-3">{accountLabel(user)}</span>
     </span>
   </DropdownMenu.Trigger>
   <DropdownMenu.Portal>
@@ -39,7 +40,7 @@
         <Avatar name={user.name} size={36} class="ring-0" />
         <div class="min-w-0">
           <p class="truncate text-sm font-semibold">{user.name}</p>
-          <p class="text-xs text-ink-3">{t(`role.${user.role}`)}</p>
+          <p class="text-xs text-ink-3">{accountLabel(user)}</p>
         </div>
       </div>
       <DropdownMenu.Separator class={menuSeparator} />

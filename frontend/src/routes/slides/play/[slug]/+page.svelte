@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { deckUrl } from "#lib/slides/util.ts";
   import { Popover } from "bits-ui";
   import { ArrowLeft, BookOpen, Download, Expand, FileText, Link2, LogIn, Presentation, Star } from "@lucide/svelte";
   import { page } from "$app/state";
@@ -45,7 +46,7 @@
 <div class="flex h-dvh flex-col bg-canvas">
   <header class="flex h-[calc(56px+env(safe-area-inset-top))] shrink-0 items-center gap-2 border-b border-line bg-surface px-2 pt-[env(safe-area-inset-top)] sm:gap-3 sm:px-4">
     {#if signedIn}
-      <Button variant="ghost" size="sm" href={detail ? `/slides/${detail.project.id}` : "/slides"} class="px-2.5 sm:px-3" aria-label={t("slides.play.back")}>
+      <Button variant="ghost" size="sm" href={detail?.study ? deckUrl(detail.study.slug, detail.project.id) : detail ? `/slides/${detail.project.id}` : "/slides"} class="px-2.5 sm:px-3" aria-label={t("slides.play.back")}>
         <ArrowLeft /><span class="hidden sm:inline">{t("slides.play.back")}</span>
       </Button>
     {:else}
@@ -89,7 +90,7 @@
         <EmptyState title={error.status === 404 ? t("slides.notFound") : t("slides.loadError")} hint={error.status === 404 ? undefined : error.message}>
           {#snippet icon()}<Presentation />{/snippet}
           {#snippet action()}
-            {#if signedIn}<Button variant="secondary" href="/slides">{t("slides.back")}</Button>{:else}<Button variant="primary" href={loginHref}>{t("slides.play.login")}</Button>{/if}
+            {#if signedIn}<Button variant="secondary" href="/studies">{t("slides.backToStudies")}</Button>{:else}<Button variant="primary" href={loginHref}>{t("slides.play.login")}</Button>{/if}
           {/snippet}
         </EmptyState>
       </div>

@@ -40,7 +40,7 @@ export type PrintResult = {
 export const THUMBNAIL_SIZE = { width: 960, height: 540 } as const;
 
 /** Hides Reveal chrome and the annotate toolbar so the thumbnail shows only the slide. */
-const THUMBNAIL_CSS = `.reveal .controls, .reveal .progress, .reveal .slide-number, .slide-menu-button,
+export const THUMBNAIL_CSS = `.reveal .controls, .reveal .progress, .reveal .slide-number, .slide-menu-button,
 .slide-chalkboard-buttons, .annotate-dock, .annotate-cursor, .annotate-laser-dot { display: none !important; }`;
 
 /** Jumps to the first slide without transitions (a deck may open on a #/hash or restore a position). */
@@ -140,7 +140,7 @@ const THUMBNAIL_TIMEOUT_MS = 30_000;
  * Lists the deck's slides in Reveal order with title and notes, and shows all fragments. Runs in the page,
  * so it returns plain data only; the notes tree is serialised (and filtered) in Node by pages.ts.
  */
-const SLIDE_LIST = `(() => {
+export const SLIDE_LIST = `(() => {
   const reveal = window.Reveal;
   if (!reveal || !reveal.getSlides || !reveal.getIndices) return null;
   reveal.configure({ transition: "none", backgroundTransition: "none", fragments: false, autoSlide: 0 });
@@ -172,7 +172,7 @@ const SLIDE_LIST = `(() => {
   });
 })()`;
 
-const GOTO_SLIDE = (h: number, v: number) => `new Promise(resolve => {
+export const GOTO_SLIDE = (h: number, v: number) => `new Promise(resolve => {
   window.Reveal.slide(${h}, ${v});
   requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => resolve(true), 40)));
 })`;
@@ -207,8 +207,8 @@ async function captureSlides(view: Page, size: { width: number; height: number }
   }
   return { pages, pagesTruncated: truncated, pagesMs: Date.now() - started };
 }
-const DECK_SIZE = `(() => { const c = window.Reveal?.getConfig?.() ?? {}; return { width: Number(c.width) || 0, height: Number(c.height) || 0 }; })()`;
-const RELAYOUT = `new Promise(r => { window.Reveal?.layout?.(); setTimeout(r, 200); })`;
+export const DECK_SIZE = `(() => { const c = window.Reveal?.getConfig?.() ?? {}; return { width: Number(c.width) || 0, height: Number(c.height) || 0 }; })()`;
+export const RELAYOUT = `new Promise(r => { window.Reveal?.layout?.(); setTimeout(r, 200); })`;
 
 /** 960 px wide at the deck's aspect ratio; falls back to 16:9 and clamps to 4:3 … 21:9. */
 export function thumbnailSize(deck: { width: number; height: number }): { width: number; height: number } {
@@ -223,7 +223,7 @@ export function thumbnailSize(deck: { width: number; height: number }): { width:
  * Opens `url` in a new offline page and waits until it is fully laid out (fonts, images, Reveal,
  * MathJax). `setup` runs before navigation (e.g. to set the viewport).
  */
-async function openSettled(browser: Browser, url: string, timeoutMs: number, setup?: (page: Page) => Promise<void>): Promise<Page> {
+export async function openSettled(browser: Browser, url: string, timeoutMs: number, setup?: (page: Page) => Promise<void>): Promise<Page> {
   const page = await browser.newPage();
   // A deck calling alert()/confirm() would block the page (and its load event) until the timeout.
   page.on("dialog", dialog => void dialog.dismiss().catch(() => {}));

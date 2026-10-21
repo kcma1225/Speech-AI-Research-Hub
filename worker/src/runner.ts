@@ -7,11 +7,12 @@ import { JobAbortedError, JobInputError } from "./errors.js";
 import type { Handler } from "./handlers/context.js";
 import { cleanupMedia, mediaTranscode } from "./handlers/media-transcode.js";
 import { cleanupSlides, slideRender } from "./handlers/slide-render.js";
+import { cleanupPreview, slidePreview } from "./handlers/slide-preview.js";
 import { Queue } from "./queue.js";
 import type { Storage } from "./storage.js";
 import type { ClaimedJob, JobKind } from "./types.js";
 
-const HANDLERS: Record<JobKind, Handler> = { media_transcode: mediaTranscode, slide_render: slideRender };
+const HANDLERS: Record<JobKind, Handler> = { media_transcode: mediaTranscode, slide_render: slideRender, slide_preview: slidePreview };
 
 export type RunnerTimings = { pollMs: number; heartbeatMs: number; reapMs: number; staleSeconds: number; shutdownGraceMs: number };
 const DEFAULT_TIMINGS: RunnerTimings = { pollMs: 2000, heartbeatMs: 5000, reapMs: 30_000, staleSeconds: 60, shutdownGraceMs: 20_000 };
@@ -98,7 +99,7 @@ export class Runner {
       let claimed = false;
       if (this.active.size < this.config.WORKER_CONCURRENCY) {
         try {
-          const job = await this.queue.claim();
+          const job = await this.queue.claim(Object.keys(HANDLERS));
           if (job) {
             claimed = true;
             this.startJob(job);
@@ -220,6 +221,7 @@ export class Runner {
   private async cleanup(job: ClaimedJob) {
     try {
       if (job.kind === "slide_render") await cleanupSlides(job.payload, prefix => this.storage.deletePrefix(prefix));
+      if (job.kind === "slide_preview") await cleanupPreview(job.payload, prefix => this.storage.deletePrefix(prefix));
       if (job.kind === "media_transcode") await cleanupMedia(job.payload, key => this.storage.delete(key));
     } catch (error) {
       this.log.warn({ err: error, jobId: job.id }, "cleanup of partial output failed");

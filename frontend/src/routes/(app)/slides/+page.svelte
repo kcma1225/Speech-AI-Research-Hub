@@ -5,23 +5,25 @@
   import { goto } from "$app/navigation";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
-  import { session } from "#lib/stores/session.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import Card from "#lib/components/ui/Card.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import PageHeader from "#lib/components/ui/PageHeader.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
+  import Select from "#lib/components/ui/Select.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import DeckCard from "#lib/components/slides/DeckCard.svelte";
-  import TagFilter from "#lib/components/slides/TagFilter.svelte";
   import UploadSheet from "#lib/components/slides/UploadSheet.svelte";
   import type { SlideSummary, UploadLimits } from "#lib/slides/types.ts";
   import { DEFAULT_LIMITS, isBusy } from "#lib/slides/util.ts";
 
   const params = page.url.searchParams;
   let q = $state(params.get("q") ?? "");
-  let selected = $state<string[]>(params.get("tags")?.split(",").filter(Boolean) ?? []);
-  let tags = $state<{ id: string; name: string }[]>([]);
+  /** Study filter: a study id, or "" for all studies. */
+  let study = $state(params.get("study") ?? "");
+  let studies = $state<{ id: string; title: string }[]>([]);
+  $effect(() => {
+    api.get<{ studies: { id: string; title: string }[] }>("/studies?status=all").then(r => (studies = r.studies), () => {});
+  });
   let slides = $state<SlideSummary[] | null>(null);
   let limits = $state<UploadLimits>(DEFAULT_LIMITS);
   let error = $state<string | null>(null);
@@ -32,7 +34,7 @@
     const id = ++seq;
     const query = new URLSearchParams();
     if (q.trim()) query.set("q", q.trim());
-    if (selected.length) query.set("tags", selected.join(","));
+    if (study) query.set("studyId", study);
     try {
       const result = await api.get<{ slides: SlideSummary[]; limits?: UploadLimits }>(`/slides${query.size ? `?${query}` : ""}`);
       if (id !== seq) return;
@@ -46,16 +48,16 @@
 
   // Reload (debounced for typing) whenever the filters change, and mirror them in the URL.
   $effect(() => {
-    const key = `${q.trim()}|${selected.join(",")}`;
+    const key = `${q.trim()}|${study}`;
     const timer = setTimeout(() => {
       void load();
       const url = new URL(page.url.href);
-      for (const [name, value] of [["q", q.trim()], ["tags", selected.join(",")]] as const) {
+      for (const [name, value] of [["q", q.trim()], ["study", study]] as const) {
         if (value) url.searchParams.set(name, value);
         else url.searchParams.delete(name);
       }
       if (url.search !== page.url.search) untrack(() => void goto(url, { shallow: true, replace: true }));
-    }, key && slides ? 220 : 0);
+    }, key && untrack(() => slides) ? 220 : 0);
     return () => clearTimeout(timer);
   });
 
@@ -66,14 +68,14 @@
     return () => clearInterval(timer);
   });
 
-  // Links such as `/slides?upload=1` (dashboard) or `/slides?tags=<id>` (⌘K) can arrive while this page is open.
+  // Links such as `/slides?upload=1` or `/slides?study=<id>` can arrive while this page is open.
   $effect(() => {
     const url = page.url;
     untrack(() => {
-      const fromUrl = url.searchParams.get("tags");
-      if (fromUrl !== null && fromUrl !== selected.join(",")) selected = fromUrl.split(",").filter(Boolean);
+      const fromUrl = url.searchParams.get("study");
+      if (fromUrl !== null && fromUrl !== study) study = fromUrl;
       if (url.searchParams.get("upload") === "1") {
-        if (session.canEdit) uploadOpen = true;
+        uploadOpen = true;
         const next = new URL(url.href);
         next.searchParams.delete("upload");
         void goto(next, { shallow: true, replace: true });
@@ -81,15 +83,15 @@
     });
   });
 
-  const tagName = (id: string) => (id === "none" ? t("slides.filter.untagged") : (tags.find(tag => tag.id === id)?.name ?? ""));
-  const filtering = $derived(Boolean(q.trim() || selected.length));
+  const filtering = $derived(Boolean(q.trim() || study));
+  const studyOptions = $derived([{ value: "", label: t("slides.filter.allStudies") }, ...studies.map(s => ({ value: s.id, label: s.title }))]);
 </script>
 
 <svelte:head><title>{t("nav.slides")} · Speech-AI Hub</title></svelte:head>
 
 <PageHeader title={t("slides.title")} subtitle={slides ? t("slides.count", { n: slides.length }) : t("slides.subtitle")}>
   {#snippet actions()}
-    {#if session.canEdit}<Button variant="primary" onclick={() => (uploadOpen = true)}><Upload />{t("action.upload")}</Button>{/if}
+    <Button variant="primary" onclick={() => (uploadOpen = true)}><Upload />{t("action.upload")}</Button>
   {/snippet}
 </PageHeader>
 
@@ -108,18 +110,8 @@
         <button type="button" class="absolute top-1/2 right-1.5 grid size-8 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("slides.filter.clear")} onclick={() => (q = "")}><X class="size-4" /></button>
       {/if}
     </label>
-    <TagFilter bind:selected bind:tags />
+    <Select bind:value={study} label={t("slides.filter.study")} options={studyOptions} class="max-w-[46vw] sm:max-w-64" />
   </div>
-  {#if selected.length}
-    <div class="flex flex-wrap items-center gap-1.5">
-      {#each selected as id (id)}
-        <button type="button" class="group inline-flex" onclick={() => (selected = selected.filter(x => x !== id))} aria-label="{t('slides.filter.clear')}: {tagName(id)}">
-          <Pill tone={id === "none" ? "stone" : toneFor(id)} class="pr-1.5">{tagName(id)}<X class="size-3 opacity-60 group-hover:opacity-100" /></Pill>
-        </button>
-      {/each}
-      <button type="button" class="ml-1 text-[12.5px] font-medium text-ink-3 hover:text-ink" onclick={() => (selected = [])}>{t("slides.filter.clear")}</button>
-    </div>
-  {/if}
 </div>
 
 {#if error}
@@ -139,8 +131,8 @@
       {#snippet icon()}<Presentation />{/snippet}
       {#snippet action()}
         {#if filtering}
-          <Button variant="secondary" onclick={() => ((q = ""), (selected = []))}>{t("slides.filter.clear")}</Button>
-        {:else if session.canEdit}
+          <Button variant="secondary" onclick={() => ((q = ""), (study = ""))}>{t("slides.filter.clear")}</Button>
+        {:else}
           <Button variant="primary" onclick={() => (uploadOpen = true)}><Upload />{t("action.upload")}</Button>
         {/if}
       {/snippet}
@@ -152,6 +144,4 @@
   </div>
 {/if}
 
-{#if session.canEdit}
-  <UploadSheet bind:open={uploadOpen} {limits} onUploaded={() => void load()} onRendered={() => void load()} />
-{/if}
+<UploadSheet bind:open={uploadOpen} {limits} studyId={study || undefined} onUploaded={() => void load()} onRendered={() => void load()} />

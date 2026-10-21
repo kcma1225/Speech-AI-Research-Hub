@@ -6,7 +6,7 @@ import { audit, clearSession, createSession, CURRENT_USER_COLUMNS, currentUser, 
 import { badRequest, conflict, forbidden, idParams, isUniqueViolation, notFound, parse, unauthorized } from "../lib/http.js";
 import { mergePreferences, preferencesPatchSchema } from "../lib/preferences.js";
 
-const password = z.string().max(4096).refine(value => value.trim().length > 0);
+const password = z.string().max(4096).refine(value => value.trim().length >= 8, { message: "密碼至少需要 8 個字元。" });
 const loginInput = z
   .object({ userId: z.uuid().optional(), name: z.string().trim().min(1).max(80).optional(), password: z.string().min(1).max(4096) })
   .refine(data => Boolean(data.userId) !== Boolean(data.name));

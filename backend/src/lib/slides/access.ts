@@ -1,10 +1,18 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyRequest } from "fastify";
-import { currentUser, type CurrentUser } from "../auth.js";
+import { currentUser, requireUser, type CurrentUser } from "../auth.js";
 import type { Queryable } from "../../db.js";
+import { forbidden, notFound } from "../http.js";
+import { loadStudyAccess, type StudyAccess } from "../studies/access.js";
 
+/** A deck (table `decks`; "project" is the v2 name kept in code). */
 export type SlideProject = {
   id: string;
+  study_id: string;
+  kind: "progress" | "paper_report";
+  paper_id: string | null;
+  /** Free-form deck metadata (`paper`: {title, url?, abstract?} for paper reports not linked to the library). */
+  metadata: Record<string, unknown>;
   title: string;
   slug: string;
   public_view: boolean;
@@ -15,19 +23,19 @@ export type SlideProject = {
   updated_at: string;
 };
 
-const PROJECT_COLUMNS = "id,title,slug,public_view,share_key,active_version_id,created_by,created_at,updated_at";
+const PROJECT_COLUMNS = "id,study_id,kind,paper_id,metadata,title,slug,public_view,share_key,active_version_id,created_by,created_at,updated_at";
 export const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const shareCookie = (slug: string) => `slide_share_${slug}`;
 export const newShareKey = () => randomBytes(24).toString("base64url");
 
 export async function projectBySlug(db: Queryable, slug: string): Promise<SlideProject | null> {
   if (!slugPattern.test(slug) || slug.length > 80) return null;
-  const result = await db.query<SlideProject>(`SELECT ${PROJECT_COLUMNS} FROM slide_projects WHERE slug=$1`, [slug]);
+  const result = await db.query<SlideProject>(`SELECT ${PROJECT_COLUMNS} FROM decks WHERE slug=$1`, [slug]);
   return result.rows[0] ?? null;
 }
 
 export async function projectById(db: Queryable, id: string): Promise<SlideProject | null> {
-  const result = await db.query<SlideProject>(`SELECT ${PROJECT_COLUMNS} FROM slide_projects WHERE id=$1`, [id]);
+  const result = await db.query<SlideProject>(`SELECT ${PROJECT_COLUMNS} FROM decks WHERE id=$1`, [id]);
   return result.rows[0] ?? null;
 }
 
@@ -84,7 +92,32 @@ export async function slideAccess(request: FastifyRequest, slug: string, key?: s
   return null;
 }
 
-export const isEditorRole = (user: CurrentUser | null) => Boolean(user && user.role !== "professor");
+/**
+ * Deck edit access (upload, versions, references, settings, delete): members of the deck's study who may edit it.
+ * 404 when the deck is missing, 403 for everyone else.
+ */
+export async function requireDeckEditor(request: FastifyRequest, deckId: string): Promise<{ user: CurrentUser; project: SlideProject; access: StudyAccess }> {
+  const user = await requireUser(request);
+  const project = await projectById(request.server.db, deckId);
+  if (!project) throw notFound("簡報不存在。");
+  const access = await loadStudyAccess(request.server.db, project.study_id, user);
+  if (!access.canEdit) throw forbidden("只有研究成員可以修改簡報。");
+  return { user, project, access };
+}
+
+/** Deck permissions of a signed-in or anonymous viewer (anonymous: none). */
+export async function deckPermissions(db: Queryable, project: SlideProject, user: CurrentUser | null) {
+  if (!user) return { manage: false, review: false, reply: false, access: null };
+  const access = await loadStudyAccess(db, project.study_id, user);
+  return {
+    manage: access.canEdit,
+    // Reviews (incl. per-page): professors only (user decision 2026-10-21; the admin/owner account is system-only).
+    review: user.role === "professor",
+    // Replies: members of the deck's study (any member role).
+    reply: access.membership !== null,
+    access,
+  };
+}
 
 /** URLs handed to the SPA. */
 export const slideUrls = {

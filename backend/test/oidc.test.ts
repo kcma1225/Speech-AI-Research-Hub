@@ -80,7 +80,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
   });
 
   it("runs the code flow with PKCE and issues a verifiable ID token", async () => {
-    const member = await t.login("member", "陳冠宇");
+    const member = await t.login("student", "陳冠宇");
     const { verifier, challenge } = pkce();
     const params = await codeFor(member.cookie, { code_challenge: challenge, code_challenge_method: "S256" });
     expect(params.get("state")).toBe("st-1");
@@ -124,7 +124,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
   });
 
   it("rejects a wrong client secret and does not burn the code", async () => {
-    const member = await t.login("member");
+    const member = await t.login("student");
     const { verifier, challenge } = pkce();
     const code = (await codeFor(member.cookie, { code_challenge: challenge, code_challenge_method: "S256" })).get("code")!;
     const form = { grant_type: "authorization_code", code, redirect_uri: REDIRECT, code_verifier: verifier };
@@ -137,7 +137,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
   });
 
   it("rejects a reused code", async () => {
-    const member = await t.login("member");
+    const member = await t.login("student");
     const code = (await codeFor(member.cookie)).get("code")!;
     const form = { grant_type: "authorization_code", code, redirect_uri: REDIRECT };
     expect((await token(form)).statusCode).toBe(200);
@@ -147,14 +147,14 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
   });
 
   it("rejects an expired code", async () => {
-    const member = await t.login("member");
+    const member = await t.login("student");
     const code = (await codeFor(member.cookie)).get("code")!;
     await t.db.query("UPDATE oidc_codes SET expires_at=now() - interval '1 second'");
     expect((await token({ grant_type: "authorization_code", code, redirect_uri: REDIRECT })).json().error).toBe("invalid_grant");
   });
 
   it("enforces PKCE: wrong, missing and downgraded verifiers", async () => {
-    const member = await t.login("member");
+    const member = await t.login("student");
     const { challenge } = pkce();
     for (const verifier of [pkce().verifier, undefined]) {
       const code = (await codeFor(member.cookie, { code_challenge: challenge, code_challenge_method: "S256" })).get("code")!;
@@ -170,7 +170,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
   });
 
   it("rejects an unknown redirect_uri or client without redirecting", async () => {
-    const member = await t.login("member");
+    const member = await t.login("student");
     const cases: Record<string, string>[] = [{ redirect_uri: "https://evil.test/cb" }, { redirect_uri: `${REDIRECT}/x` }, { client_id: "other" }];
     for (const params of cases) {
       const response = await authorize(member.cookie, params);
@@ -183,7 +183,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
   });
 
   it("returns protocol errors to the client", async () => {
-    const member = await t.login("member");
+    const member = await t.login("student");
     expect((await codeFor(member.cookie, { scope: "email" })).get("error")).toBe("invalid_scope");
     expect((await codeFor(member.cookie, { response_type: "token" })).get("error")).toBe("unsupported_response_type");
     const code = (await codeFor(member.cookie)).get("code")!;
@@ -201,7 +201,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
   });
 
   it("gives disabled users no code and no tokens", async () => {
-    const member = await t.login("member");
+    const member = await t.login("student");
     const code = (await codeFor(member.cookie)).get("code")!;
     await t.db.query("UPDATE users SET disabled_at=now() WHERE id=$1", [member.id]);
     expect((await token({ grant_type: "authorization_code", code, redirect_uri: REDIRECT })).json().error).toBe("invalid_grant");

@@ -9,11 +9,15 @@
   import BottomTabs from "#lib/components/shell/BottomTabs.svelte";
   import CommandPalette from "#lib/components/shell/CommandPalette.svelte";
   import { t } from "#lib/i18n.svelte.ts";
+  import { ADMIN_HOME, adminMayOpen } from "#lib/nav.ts";
 
   let { children } = $props();
 
+  // Admin accounts are system-only: workspace pages send them to the admin home.
+  const adminElsewhere = $derived(session.user?.role === "admin" && !adminMayOpen(page.url.pathname));
   $effect(() => {
     if (!session.user) void goto(`/login?next=${encodeURIComponent(page.url.pathname + page.url.search)}`, { replace: true });
+    else if (adminElsewhere) void goto(ADMIN_HOME, { replace: true });
     else {
       jobsStore.start();
       notificationsStore.start();
@@ -21,7 +25,7 @@
   });
 </script>
 
-{#if session.user}
+{#if session.user && !adminElsewhere}
   <a href="#main" class="sr-only z-[70] rounded-full bg-primary px-4 py-2 text-sm font-medium text-primary-ink focus:not-sr-only focus:fixed focus:top-3 focus:left-3">{t("nav.skip")}</a>
   <div class="flex min-h-dvh">
     <Sidebar />
@@ -33,5 +37,5 @@
     </div>
   </div>
   <BottomTabs />
-  <CommandPalette />
+  {#if session.user.role !== "admin"}<CommandPalette />{/if}
 {/if}

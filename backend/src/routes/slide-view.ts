@@ -5,6 +5,7 @@ import { secureCookies } from "../config.js";
 import { notFound, parse } from "../lib/http.js";
 import { projectBySlug, safeEqual, shareCookie, slideAccess, slideUrls, validCapability } from "../lib/slides/access.js";
 import { slideDetail } from "../lib/slides/detail.js";
+import { validPreviewToken } from "../lib/slides/preview.js";
 import type { StoredObject } from "../lib/storage.js";
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -18,8 +19,9 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 // Opaque-origin sandbox throws on Web Storage access, which aborts Reveal init.
-// Replace both stores with in-memory shims before any deck script runs.
-const STORAGE_SHIM = "(function(){function m(){var d=Object.create(null);return{get length(){return Object.keys(d).length},key:function(i){return Object.keys(d)[i]??null},getItem:function(k){k=String(k);return k in d?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d=Object.create(null)}}}['localStorage','sessionStorage'].forEach(function(n){try{window[n].length}catch(e){Object.defineProperty(window,n,{value:m(),configurable:true})}})})();";
+// Replace both stores with in-memory shims before any deck script runs. The annotate toolbar starts collapsed in
+// narrow frames (phone, embedded player), since its prefs can never persist here (T or its fold button opens it).
+const STORAGE_SHIM = "(function(){function m(){var d=Object.create(null);return{get length(){return Object.keys(d).length},key:function(i){return Object.keys(d)[i]??null},getItem:function(k){k=String(k);return k in d?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d=Object.create(null)}}}['localStorage','sessionStorage'].forEach(function(n){try{window[n].length}catch(e){Object.defineProperty(window,n,{value:m(),configurable:true});if(n==='localStorage'&&window.innerWidth<900)window.localStorage.setItem('annotate:prefs',JSON.stringify({collapsed:true}))}})})();";
 const TOUCH_CSS = "<style>html:not(.print-pdf) .reveal .slide-number{bottom:auto;height:auto;padding:7px 9px;min-width:44px;min-height:44px;box-sizing:border-box;display:grid!important;place-items:center}html:not(.print-pdf) .reveal .slide-menu-button{min-width:44px;min-height:44px;display:grid;place-items:center}html:not(.print-pdf) .reveal .slide-menu-button a{display:grid;place-items:center;min-width:44px;min-height:44px}html:not(.print-pdf) .slide-menu-wrapper .slide-tool-item a{display:flex;align-items:center;min-height:44px}html.print-pdf .annotate-dock,html.print-pdf .slide-menu-button{display:none!important}</style>";
 
 /**
@@ -68,6 +70,7 @@ function sendObject(reply: FastifyReply, object: StoredObject, contentType: stri
 }
 
 const viewParams = z.object({ slug: z.string().min(1).max(80), token: z.string().min(1).max(200), versionId: z.uuid(), "*": z.string().max(1024).optional() });
+const previewParams = z.object({ slug: z.string().min(1).max(80), token: z.string().min(1).max(200), previewId: z.uuid(), "*": z.string().max(1024).optional() });
 const slugParams = z.object({ slug: z.string().min(1).max(80) });
 const pdfParams = z.object({ slug: z.string().min(1).max(80), versionId: z.uuid() });
 const referenceParams = z.object({ slug: z.string().min(1).max(80), referenceId: z.uuid() });
@@ -107,11 +110,33 @@ const slideView: FastifyPluginAsync = async app => {
     // Opaque-origin sandbox sends no cookies: authorise by path capability only.
     if (!project || !validCapability(secret, token, project, versionId)) return deny();
     const version = (await app.db.query<{ entry_html: string; output_prefix: string; shared_prefix: string | null }>(
-      "SELECT entry_html,output_prefix,shared_prefix FROM slide_versions WHERE project_id=$1 AND id=$2 AND status='published' AND entry_html IS NOT NULL",
+      "SELECT entry_html,output_prefix,shared_prefix FROM slide_versions WHERE deck_id=$1 AND id=$2 AND status='published' AND entry_html IS NOT NULL",
       [project.id, versionId],
     )).rows[0];
     if (!version) return deny();
-    const relative = safeAssetPath(params.data["*"] || version.entry_html);
+    return sendAsset(request, reply, params.data["*"] || version.entry_html, relative => assetKey(version, relative));
+  };
+
+  /** Quick preview of an in-app source tree: `p.<exp>.<hmac>` token only (never public or the share key). */
+  const servePreview = async (request: FastifyRequest, reply: FastifyReply) => {
+    const deny = () => reply.code(404).header("Cache-Control", "no-store").type("text/plain; charset=utf-8").send("Not found");
+    const params = previewParams.safeParse(request.params);
+    if (!params.success) return deny();
+    const { slug, token, previewId } = params.data;
+    const project = await projectBySlug(app.db, slug);
+    if (!project || !validPreviewToken(secret, token, project.id, previewId)) return deny();
+    const preview = (await app.db.query<{ entry_html: string; output_prefix: string }>(
+      "SELECT entry_html,output_prefix FROM deck_previews WHERE id=$1 AND deck_id=$2 AND status='ready' AND entry_html IS NOT NULL",
+      [previewId, project.id],
+    )).rows[0];
+    if (!preview) return deny();
+    return sendAsset(request, reply, params.data["*"] || preview.entry_html, relative => preview.output_prefix + relative);
+  };
+
+  /** Streams one deck asset with the sandbox headers; HTML is patched for the cookie-less iframe. */
+  const sendAsset = async (request: FastifyRequest, reply: FastifyReply, requested: string, keyFor: (relative: string) => string) => {
+    const deny = () => reply.code(404).header("Cache-Control", "no-store").type("text/plain; charset=utf-8").send("Not found");
+    const relative = safeAssetPath(requested);
     if (!relative) return reply.code(400).type("text/plain; charset=utf-8").send("Invalid path");
 
     const extension = path.posix.extname(relative).toLowerCase();
@@ -119,7 +144,7 @@ const slideView: FastifyPluginAsync = async app => {
     const isHtml = extension === ".html" || extension === ".htm";
     let object: StoredObject | null;
     try {
-      object = await app.storage.get(assetKey(version, relative), isHtml ? undefined : request.headers.range);
+      object = await app.storage.get(keyFor(relative), isHtml ? undefined : request.headers.range);
     } catch (error) {
       if (s3Status(error) === 416) return reply.code(416).send();
       throw error;
@@ -143,6 +168,8 @@ const slideView: FastifyPluginAsync = async app => {
   };
   app.get("/slides/view/:slug/:token/:versionId", serveAsset);
   app.get("/slides/view/:slug/:token/:versionId/*", serveAsset);
+  app.get("/slides/view/:slug/:token/preview/:previewId", servePreview);
+  app.get("/slides/view/:slug/:token/preview/:previewId/*", servePreview);
 
   app.get("/slides/pdf/:slug/:versionId", async (request, reply) => {
     const { slug, versionId } = parse(pdfParams, request.params);
@@ -150,7 +177,7 @@ const slideView: FastifyPluginAsync = async app => {
     const access = await slideAccess(request, slug, key);
     if (!access) throw notFound("簡報不存在。");
     const version = (await app.db.query<{ version: number; pdf_key: string | null }>(
-      "SELECT version,pdf_key FROM slide_versions WHERE id=$1 AND project_id=$2 AND status='published'",
+      "SELECT version,pdf_key FROM slide_versions WHERE id=$1 AND deck_id=$2 AND status='published'",
       [versionId, access.project.id],
     )).rows[0];
     const object = version?.pdf_key ? await app.storage.get(version.pdf_key, request.headers.range) : null;
@@ -168,7 +195,7 @@ const slideView: FastifyPluginAsync = async app => {
     const access = await slideAccess(request, slug, key);
     if (!access) throw notFound("參考資料不存在。");
     const reference = (await app.db.query<{ url: string | null; file_key: string | null; file_name: string | null }>(
-      "SELECT url,file_key,file_name FROM slide_references WHERE id=$1 AND project_id=$2",
+      "SELECT url,file_key,file_name FROM slide_references WHERE id=$1 AND deck_id=$2",
       [referenceId, access.project.id],
     )).rows[0];
     if (!reference) throw notFound("參考資料不存在。");

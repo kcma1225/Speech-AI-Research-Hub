@@ -4,7 +4,9 @@ import type { Config } from "../config.js";
 import type { Db, Queryable } from "../db.js";
 import type { NotifyPref } from "./preferences.js";
 
-export type NotificationPayload = { kind: "media" | "slide" | "system"; title: string; body: string; url: string };
+/** `kind`: lower snake case (DB CHECK); core uses media, slide, system, study, task — modules may add their own. */
+export type NotificationKind = "media" | "slide" | "system" | "study" | "task" | (string & {});
+export type NotificationPayload = { kind: NotificationKind; title: string; body: string; url: string };
 /**
  * `pref`: the `preferences.notify` flag that gates the Web Push (users who turned it off get no push).
  * `null` = always push (e.g. the explicit push test). In-app notifications are recorded regardless.

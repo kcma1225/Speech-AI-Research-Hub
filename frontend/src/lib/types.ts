@@ -1,9 +1,13 @@
-export type Role = "owner" | "admin" | "member" | "professor";
+/**
+ * Account kind. `admin` accounts are system-only (users, invitations, models, system settings) and never use the
+ * research workspace; `is_admin` always equals `role === "admin"`; `is_owner` marks the initial admin (bootstrap account).
+ */
+export type Role = "student" | "professor" | "admin";
 export type ThemePref = "system" | "light" | "dark";
 export type Locale = "zh-TW" | "en";
 
 export type Preferences = {
-  notify: { slideRendered: boolean; mediaTranscoded: boolean; reviews: boolean; replies: boolean };
+  notify: { slideRendered: boolean; mediaTranscoded: boolean; reviews: boolean; replies: boolean; tasks: boolean };
   editor: { fontSize: number; layout: "split" | "edit" | "preview" };
 };
 
@@ -11,6 +15,8 @@ export type CurrentUser = {
   id: string;
   name: string;
   role: Role;
+  is_admin: boolean;
+  is_owner: boolean;
   auth_mode: "either" | "two_factor";
   theme: ThemePref;
   locale: Locale;
@@ -19,43 +25,20 @@ export type CurrentUser = {
 
 export type ClientConfig = { latexUrl: string | null; pushPublicKey: string | null };
 
-export type TagRef = { id: string; name: string };
-
-export type Dashboard = {
-  stats: { slides: number; notes: number; recordings: number; pendingReviews: number; slidesThisWeek: number; notesThisWeek: number };
-  latestSlide: {
-    id: string;
-    title: string;
-    slug: string;
-    version: number;
-    authorName: string | null;
-    publishedAt: string;
-    tags: TagRef[];
-    thumbnailUrl: string | null;
-    reviewCount: number;
-  } | null;
-  activity: { kind: "slide_version" | "note" | "recording" | "review" | "reply"; id: string; title: string; url: string; actor: { id: string; name: string } | null; at: string }[];
-  pendingReviews: { reviewId: string; slideId: string; slideTitle: string; excerpt: string; authorName: string | null; createdAt: string; page: number | null }[];
-  recentNotes: { id: string; title: string; excerpt: string; updatedAt: string; tags: TagRef[]; hasAudio: boolean }[];
-};
+/** Minimal study reference embedded in other objects. */
+export type StudyRef = { id: string; slug: string; title: string };
 
 export type ActiveJob = {
   id: string;
-  kind: "slide_render" | "media_transcode";
+  kind: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   stage: string | null;
   progress: number | null;
   label: string;
-  url: string;
+  url: string | null;
   updatedAt: string;
 };
 
-export type Notification = { id: string; kind: "media" | "slide" | "system"; title: string; body: string; url: string; read_at: string | null; created_at: string };
-
-export type SearchResult = {
-  slides: { id: string; title: string; slug: string }[];
-  notes: { id: string; title: string; excerpt: string; hasAudio: boolean }[];
-  tags: { id: string; name: string; kind: "note" | "slide" }[];
-};
+export type Notification = { id: string; kind: string; title: string; body: string; url: string; read_at: string | null; created_at: string };
 
 export type SessionRow = { id: string; user_agent: string | null; ip: string | null; created_at: string; last_seen_at: string; expires_at: string; current: boolean };

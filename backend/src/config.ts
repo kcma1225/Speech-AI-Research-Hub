@@ -10,9 +10,15 @@ const schema = z.object({
   DATABASE_NAME: z.string().default("research_hub"),
   DATABASE_USER: z.string().default("research_hub"),
   POSTGRES_PASSWORD: z.string().min(1),
-  OWNER_NAME: z.string().min(1).default("Owner"),
-  OWNER_PASSWORD: z.string().min(8),
+  /** Initial admin (bootstrap account). OWNER_NAME / OWNER_PASSWORD are accepted as legacy fallbacks (see loadConfig). */
+  ADMIN_NAME: z.string().trim().min(1).max(80).default("admin"),
+  ADMIN_PASSWORD: z.string().min(8, "ADMIN_PASSWORD (or legacy OWNER_PASSWORD) must be set, at least 8 characters"),
   AUTH_SECRET: z.string().min(32),
+  /** AES-256-GCM key (32 bytes, base64) for AI provider secrets / OAuth tokens (ai/platform/crypto.ts). Empty = secrets can't be stored. */
+  PROVIDER_TOKEN_KEY: z
+    .string()
+    .default("")
+    .refine(v => v === "" || Buffer.from(v, "base64").length === 32, "must be 32 bytes, base64"),
   S3_ENDPOINT: z.url().default("http://rustfs:9000"),
   S3_REGION: z.string().default("us-east-1"),
   S3_BUCKET: z.string().min(3).default("hub"),
@@ -38,7 +44,12 @@ const schema = z.object({
 export type Config = z.infer<typeof schema>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const parsed = schema.safeParse(env);
+  const blank = (value: string | undefined) => (value && value.trim() ? value : undefined);
+  const parsed = schema.safeParse({
+    ...env,
+    ADMIN_NAME: blank(env.ADMIN_NAME) ?? blank(env.OWNER_NAME),
+    ADMIN_PASSWORD: blank(env.ADMIN_PASSWORD) ?? blank(env.OWNER_PASSWORD) ?? "",
+  });
   if (!parsed.success) {
     const issues = parsed.error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`).join("\n");
     throw new Error(`Invalid configuration:\n${issues}`);

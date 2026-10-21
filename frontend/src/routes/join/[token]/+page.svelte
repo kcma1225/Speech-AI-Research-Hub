@@ -17,7 +17,7 @@
 
   const token = $derived(page.params.token ?? "");
 
-  type Invite = { role: Exclude<Role, "owner">; expiresAt: string | null };
+  type Invite = { role: Role; isAdmin?: boolean; expiresAt: string | null };
   let status = $state<"loading" | "ready" | "invalid" | "error">("loading");
   let invite = $state<Invite | null>(null);
   let loadError = $state<string | null>(null);

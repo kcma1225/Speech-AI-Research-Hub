@@ -1,8 +1,8 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { requireRole } from "../lib/auth.js";
-import { badRequest, forbidden, HttpError, notFound, parse } from "../lib/http.js";
-import { slideUrls } from "../lib/slides/access.js";
+import { requireUser } from "../lib/auth.js";
+import { badRequest, forbidden, notFound, parse } from "../lib/http.js";
+import { deckPermissions, projectById, slideUrls } from "../lib/slides/access.js";
 
 const reviewParams = z.object({ id: z.uuid() });
 const replyParams = z.object({ id: z.uuid(), reviewId: z.uuid() });
@@ -10,15 +10,14 @@ const body = z.object({ body: z.string().trim().min(1).max(10000) });
 const reviewInput = body.extend({ page: z.number().int().min(1).max(1000).optional(), versionId: z.uuid().optional() });
 
 const slideReviews: FastifyPluginAsync = async app => {
-  /** Professor (and Owner) review of a deck; notifies the deck creator. */
+  /** Review (optionally on a page) by a professor; notifies the deck creator. */
   app.post("/slides/:id/reviews", async (request, reply) => {
-    const user = await requireRole(request, ["professor", "owner"]).catch(error => {
-      throw error instanceof HttpError && error.status === 403 ? forbidden("只有 Professor 或 Owner 可以新增審閱。") : error;
-    });
+    const user = await requireUser(request);
+    if (user.role !== "professor") throw forbidden("只有教授可以新增審閱。");
     const { id } = parse(reviewParams, request.params);
     const input = parse(reviewInput, request.body, "審閱內容須為 1–10000 字，頁碼須為正整數。");
     const project = (await app.db.query<{ id: string; created_by: string; slug: string; title: string; active_version_id: string | null }>(
-      "SELECT id,created_by,slug,title,active_version_id FROM slide_projects WHERE id=$1",
+      "SELECT id,created_by,slug,title,active_version_id FROM decks WHERE id=$1",
       [id],
     )).rows[0];
     if (!project) throw notFound("簡報不存在。");
@@ -27,7 +26,7 @@ const slideReviews: FastifyPluginAsync = async app => {
     if (input.page !== undefined && !versionId) throw badRequest("簡報尚無已發布的版本，無法指定頁碼。");
     if (versionId) {
       const version = (await app.db.query<{ page_count: number | null }>(
-        "SELECT page_count FROM slide_versions WHERE id=$1 AND project_id=$2 AND status IN ('published','review')",
+        "SELECT page_count FROM slide_versions WHERE id=$1 AND deck_id=$2 AND status IN ('published','review')",
         [versionId, id],
       )).rows[0];
       if (!version) throw notFound("版本不存在。");
@@ -36,7 +35,7 @@ const slideReviews: FastifyPluginAsync = async app => {
     }
     const page = input.page ?? null;
     const row = (await app.db.query<{ id: string; created_at: string }>(
-      "INSERT INTO slide_reviews(project_id,author_id,body,page,version_id) VALUES($1,$2,$3,$4,$5) RETURNING id,created_at",
+      "INSERT INTO slide_reviews(deck_id,author_id,body,page,version_id) VALUES($1,$2,$3,$4,$5) RETURNING id,created_at",
       [id, user.id, input.body, page, versionId],
     )).rows[0]!;
     if (project.created_by !== user.id) {
@@ -47,16 +46,17 @@ const slideReviews: FastifyPluginAsync = async app => {
     return reply.code(201).send({ review: { id: row.id, body: input.body, created_at: row.created_at, author: user.name, author_id: user.id, page, versionId, replies: [] } });
   });
 
-  /** Owner reply to a review; notifies the review author. */
+  /** Reply by a member of the deck's study; notifies the review author. */
   app.post("/slides/:id/reviews/:reviewId/replies", async (request, reply) => {
-    const user = await requireRole(request, ["owner"]).catch(error => {
-      throw error instanceof HttpError && error.status === 403 ? forbidden("只有 Owner 可以回覆審閱。") : error;
-    });
+    const user = await requireUser(request);
     const { id, reviewId } = parse(replyParams, request.params);
+    const deck = await projectById(app.db, id);
+    if (!deck) throw notFound("簡報不存在。");
+    if (!(await deckPermissions(app.db, deck, user)).reply) throw forbidden("只有研究成員可以回覆審閱。");
     const input = parse(body, request.body, "回覆內容須為 1–10000 字。");
     const result = await app.db.query<{ id: string; created_at: string; author_id: string; slug: string; title: string }>(
       `WITH review AS (
-         SELECT r.id,r.author_id,p.slug,p.title FROM slide_reviews r JOIN slide_projects p ON p.id=r.project_id WHERE r.id=$2 AND r.project_id=$1
+         SELECT r.id,r.author_id,p.slug,p.title FROM slide_reviews r JOIN decks p ON p.id=r.deck_id WHERE r.id=$2 AND r.deck_id=$1
        ), inserted AS (
          INSERT INTO slide_review_replies(review_id,author_id,body) SELECT id,$3,$4 FROM review RETURNING id,created_at
        )

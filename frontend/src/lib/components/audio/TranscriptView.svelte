@@ -2,7 +2,7 @@
   import type { Snippet } from "svelte";
   import { ChevronDown, ChevronUp, Copy, CopyCheck, LocateFixed, Search, X } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
-  import { cueIndexAt, formatClock, type Cue } from "#lib/recordings/types.ts";
+  import { cueIndexAt, formatClock, type Cue } from "#lib/audio/time.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
 
   /**
@@ -20,6 +20,7 @@
     scroll = "self",
     insetTop = 0,
     insetBottom = 0,
+    meta,
   }: {
     cues: Cue[];
     currentTime: number;
@@ -35,6 +36,8 @@
     /** Page mode: px hidden behind fixed bars at the top/bottom of the viewport. */
     insetTop?: number;
     insetBottom?: number;
+    /** Optional line above a cue's text (e.g. the speaker), given the cue index. */
+    meta?: Snippet<[number]>;
   } = $props();
 
   let list = $state<HTMLOListElement | null>(null);
@@ -114,10 +117,10 @@
     try {
       await navigator.clipboard.writeText(text);
       copied = true;
-      toasts.show(t("recordings.transcript.copied"), "success");
+      toasts.show(t("audio.transcript.copied"), "success");
       setTimeout(() => (copied = false), 1600);
     } catch {
-      toasts.show(t("recordings.transcript.copyFailed"), "error");
+      toasts.show(t("audio.transcript.copyFailed"), "error");
     }
   }
 </script>
@@ -147,18 +150,18 @@
             query = "";
           }
         }}
-        placeholder={t("recordings.transcript.search")}
-        aria-label={t("recordings.transcript.search")}
+        placeholder={t("audio.transcript.search")}
+        aria-label={t("audio.transcript.search")}
         class="h-9 w-full rounded-full border border-line-2 bg-surface pl-9 {needle ? 'pr-28' : 'pr-3'} text-sm text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] [&::-webkit-search-cancel-button]:hidden"
       />
       {#if needle}
         <div class="absolute top-1/2 right-1 flex -translate-y-1/2 items-center">
           <span class="px-1 text-[11.5px] text-ink-3 tabular-nums" aria-live="polite">
-            {matches.length ? t("recordings.transcript.matchOf", { i: Math.min(matchCursor, matches.length - 1) + 1, n: matches.length }) : t("recordings.transcript.noMatch")}
+            {matches.length ? t("audio.transcript.matchOf", { i: Math.min(matchCursor, matches.length - 1) + 1, n: matches.length }) : t("audio.transcript.noMatch")}
           </span>
-          <button type="button" class="grid size-7 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-40" aria-label={t("recordings.transcript.prevMatch")} disabled={!matches.length} onclick={() => step(-1)}><ChevronUp class="size-4" /></button>
-          <button type="button" class="grid size-7 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-40" aria-label={t("recordings.transcript.nextMatch")} disabled={!matches.length} onclick={() => step(1)}><ChevronDown class="size-4" /></button>
-          <button type="button" class="grid size-7 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("recordings.transcript.clear")} onclick={() => (query = "")}><X class="size-4" /></button>
+          <button type="button" class="grid size-7 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-40" aria-label={t("audio.transcript.prevMatch")} disabled={!matches.length} onclick={() => step(-1)}><ChevronUp class="size-4" /></button>
+          <button type="button" class="grid size-7 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-40" aria-label={t("audio.transcript.nextMatch")} disabled={!matches.length} onclick={() => step(1)}><ChevronDown class="size-4" /></button>
+          <button type="button" class="grid size-7 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("audio.transcript.clear")} onclick={() => (query = "")}><X class="size-4" /></button>
         </div>
       {/if}
     </div>
@@ -168,7 +171,7 @@
         class="inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink"
         onclick={copyAll}
       >
-        {#if copied}<CopyCheck class="size-4" />{:else}<Copy class="size-4" />{/if}{t("recordings.transcript.copy")}
+        {#if copied}<CopyCheck class="size-4" />{:else}<Copy class="size-4" />{/if}{t("audio.transcript.copy")}
       </button>
       {@render actions?.()}
     </div>
@@ -178,7 +181,7 @@
     <ol
       bind:this={list}
       class="relative -mx-2 px-2 {scroll === 'self' ? `overflow-y-auto overscroll-contain py-2 [mask-image:linear-gradient(to_bottom,transparent,black_14px,black_calc(100%-14px),transparent)] ${listClass}` : ''}"
-      aria-label={t("recordings.transcript.title")}
+      aria-label={t("audio.transcript.title")}
       onwheel={() => scroll === "self" && (follow = false)}
       ontouchmove={() => scroll === "self" && (follow = false)}
       onscroll={() => scroll === "self" && userScrolled()}
@@ -193,11 +196,12 @@
               {current ? 'bg-surface-3' : 'hover:bg-surface-2'}
               {i === focusedMatch ? 'ring-1 ring-ink-3' : ''}"
             aria-current={current ? "true" : undefined}
-            aria-label={t("recordings.transcript.seekTo", { time: formatClock(cue.start) })}
+            aria-label={t("audio.transcript.seekTo", { time: formatClock(cue.start) })}
             onclick={() => seekTo(i)}
           >
             <span class="text-[12px] font-medium tabular-nums {current ? 'text-ink' : 'text-ink-3 group-hover:text-ink-2'}">{formatClock(cue.start)}</span>
             <span class="text-[14.5px] leading-relaxed {current ? 'text-ink' : 'text-ink-2'} {hit || !needle ? '' : 'opacity-55'}">
+              {#if meta}<span class="mb-0.5 block">{@render meta(i)}</span>{/if}
               {#each parts(cue.text) as part, k (k)}{#if part.hit}<mark class="rounded-[4px] px-0.5" style="background:var(--pill-butter);color:var(--pill-butter-ink)">{part.text}</mark>{:else}{part.text}{/if}{/each}
             </span>
           </button>
@@ -212,7 +216,7 @@
         style={scroll === "page" ? `bottom:${insetBottom + 12}px` : undefined}
         onclick={resume}
       >
-        <LocateFixed class="size-4" />{t("recordings.transcript.resume")}
+        <LocateFixed class="size-4" />{t("audio.transcript.resume")}
       </button>
     {/if}
   </div>

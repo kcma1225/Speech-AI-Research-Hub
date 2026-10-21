@@ -1,0 +1,46 @@
+[
+  {
+    "key": "X42A7DEE",
+    "version": 1203,
+    "library": { "type": "user", "id": 475425, "name": "labmember", "links": {} },
+    "links": {},
+    "meta": { "creatorSummary": "Gulati et al.", "parsedDate": "2020", "numChildren": 1 },
+    "data": {
+      "key": "X42A7DEE", "version": 1203, "itemType": "conferencePaper",
+      "title": "Conformer: Convolution-augmented Transformer for Speech Recognition",
+      "creators": [ { "creatorType": "author", "firstName": "Anmol", "lastName": "Gulati" } ],
+      "proceedingsTitle": "Proc. Interspeech 2020", "date": "2020", "DOI": "10.21437/Interspeech.2020-3015",
+      "extra": "Citation Key: gulati2020conformer\narXiv: 2005.08100",
+      "tags": [ { "tag": "ASR" }, { "tag": "to-read", "type": 1 } ],
+      "collections": ["BCDE1234"], "relations": {}, "dateAdded": "2024-01-01T00:00:00Z", "dateModified": "2024-02-01T00:00:00Z"
+    },
+    "csljson": {
+      "id": "475425/X42A7DEE",
+      "type": "paper-conference",
+      "title": "Conformer: Convolution-augmented Transformer for Speech Recognition",
+      "container-title": "Proc. Interspeech 2020",
+      "page": "5036-5040",
+      "DOI": "10.21437/Interspeech.2020-3015",
+      "author": [ { "family": "Gulati", "given": "Anmol" }, { "family": "Qin", "given": "James" } ],
+      "issued": { "date-parts": [["2020"]] }
+    }
+  },
+  {
+    "key": "N0TE0001",
+    "version": 1204,
+    "data": { "key": "N0TE0001", "version": 1204, "itemType": "note", "note": "<p>standalone note</p>" }
+  },
+  {
+    "key": "ZH000001",
+    "version": 1205,
+    "data": { "key": "ZH000001", "version": 1205, "itemType": "thesis", "title": "多語者語音合成", "tags": [] },
+    "csljson": {
+      "id": "475425/ZH000001",
+      "type": "thesis",
+      "title": "多語者語音合成",
+      "publisher": "國立清華大學",
+      "author": [ { "family": "黃", "given": "子軒" } ],
+      "issued": { "date-parts": [[2024, 7]] }
+    }
+  }
+]

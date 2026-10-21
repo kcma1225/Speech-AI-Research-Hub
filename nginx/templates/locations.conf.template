@@ -17,6 +17,29 @@
         limit_req zone=oidc_limit burst=20 nodelay;
         include /etc/nginx/snippets/proxy-backend.conf;
     }
+    # Real-time collaboration WebSocket (Yjs). The backend checks Origin and the session cookie itself.
+    location = /api/collab {
+        limit_req zone=api_limit burst=50 nodelay;
+        include /etc/nginx/snippets/proxy-websocket.conf;
+    }
+    # Live captions while recording a meeting (WebSocket: PCM16 up, captions down). The backend checks Origin and session.
+    location ~ ^/api/meetings/[0-9a-f-]+/live$ {
+        limit_req zone=api_limit burst=20 nodelay;
+        include /etc/nginx/snippets/proxy-websocket.conf;
+    }
+    # Streaming responses (SSE): AI status/chat/agent runs and the note editor's AI actions.
+    location /api/ai/ {
+        limit_req zone=api_limit burst=200 nodelay;
+        include /etc/nginx/snippets/proxy-sse.conf;
+    }
+    location /api/agent/ {
+        limit_req zone=api_limit burst=200 nodelay;
+        include /etc/nginx/snippets/proxy-sse.conf;
+    }
+    location ~ ^/api/notes/[0-9a-f-]+/ai/ {
+        limit_req zone=api_limit burst=50 nodelay;
+        include /etc/nginx/snippets/proxy-sse.conf;
+    }
     location /api/ {
         limit_req zone=api_limit burst=200 nodelay;
         include /etc/nginx/snippets/proxy-backend.conf;

@@ -4,16 +4,24 @@ import { open } from "node:fs/promises";
 import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { transaction, type Queryable } from "../db.js";
-import { requireEditor, requireUser, type CurrentUser } from "../lib/auth.js";
+import { requireUser } from "../lib/auth.js";
 import { badRequest, conflict, HttpError, isUniqueViolation, notFound, parse } from "../lib/http.js";
 import { keys } from "../lib/storage.js";
-import { newShareKey, projectById, slideUrls, slugPattern, type SlideProject } from "../lib/slides/access.js";
+import { newShareKey, projectById, requireDeckEditor, slideUrls, slugPattern, type SlideProject } from "../lib/slides/access.js";
 import { listVersions, liveStatus, slideDetail, VERSION_SELECT, type VersionStatus } from "../lib/slides/detail.js";
-import { parseTagFilter, tagIdsSchema } from "../lib/slides/filters.js";
 import { detectDeck, SOURCE_CONTENT_TYPES, SOURCE_EXTENSIONS, type DetectedDeck } from "../lib/slides/source.js";
 import { receiveUpload, type ReceivedUpload } from "../lib/slides/upload.js";
-import { cancelJob, enqueueJob, type SlideRenderPayload, type SlideSourceType } from "../jobs/queue.js";
-import { activateIfNewest, registerSlideFinalizer } from "../jobs/slide-finalizer.js";
+import { cancelJob, enqueueJob, type SlideSourceType } from "../jobs/queue.js";
+import { insertVersion, nextVersionNumber, renderPayload } from "../lib/slides/versions.js";
+import { activateIfNewest, recordDeckPublished, registerSlideFinalizer } from "../jobs/slide-finalizer.js";
+import { findStudy, requireStudyEditor } from "../lib/studies/access.js";
+import { registerStudyCleanup } from "../lib/studies/cleanup.js";
+import { registerSlidePreviewFinalizer } from "../jobs/slide-preview-finalizer.js";
+import { freeSlug, paperMeta, withPaper } from "../lib/slides/create.js";
+import { DECK_TEMPLATES, taipeiToday, type DeckTemplate } from "../lib/slides/templates.js";
+import slideSources, { initSource } from "./slide-sources.js";
+import slideAi from "./slide-ai.js";
+import "../lib/slides/agent-tools.js";
 
 const projectParams = z.object({ id: z.uuid() });
 const versionParams = z.object({ id: z.uuid(), versionId: z.uuid() });
@@ -26,29 +34,40 @@ const patchInput = z.object({
   title: title.optional(),
   slug: slug.optional(),
   public_view: z.boolean().optional(),
-  tagIds: tagIdsSchema.optional(),
+  kind: z.enum(["progress", "paper_report"]).optional(),
+  paper_id: z.uuid().nullable().optional(),
+  paper: paperMeta.nullable().optional(),
   rotateShareKey: z.boolean().optional(),
 });
-const listQuery = z.object({ tags: z.string().optional(), q: z.string().max(200).optional() });
+const deckKind = z.enum(["progress", "paper_report"]);
+const listQuery = z.object({ studyId: z.string().min(1).max(80).optional(), q: z.string().max(200).optional(), kind: deckKind.optional() });
+/** JSON create (no upload): a deck edited in the platform (`source: "editor"`) or drafted by AI (`"ai"`, then POST …/ai/generate). */
+const createInput = z.object({
+  studyId: z.string().min(1).max(80),
+  title,
+  slug: slug.optional(),
+  kind: deckKind.default("progress"),
+  paperId: z.uuid().nullable().optional(),
+  paper: paperMeta.nullable().optional(),
+  public: z.boolean().optional(),
+  source: z.enum(["editor", "ai"]).default("editor"),
+  template: z.enum(DECK_TEMPLATES as [DeckTemplate, ...DeckTemplate[]]).optional(),
+});
 const referenceUrlInput = z.object({ title: z.string().trim().min(1).max(300), url: z.string().trim().max(2000) });
 const referencePatch = z.object({ title: z.string().trim().min(1).max(300).optional(), isDefault: z.literal(true).optional() });
 const versionPatch = z.object({ active: z.literal(true) });
+
+/** Postgres foreign_key_violation (an unknown `paper_id`). */
+const isForeignKeyViolation = (error: unknown) => (error as { code?: string })?.code === "23503";
+const PAPER_MISSING = "找不到這篇論文；請從研究的文獻庫選擇。";
 
 const truthy = (value: string | undefined) => value === "true" || value === "1" || value === "on";
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, match => `\\${match}`);
 
 async function lockProject(client: Queryable, id: string) {
-  const row = (await client.query<SlideProject>("SELECT * FROM slide_projects WHERE id=$1 FOR UPDATE", [id])).rows[0];
+  const row = (await client.query<SlideProject>("SELECT * FROM decks WHERE id=$1 FOR UPDATE", [id])).rows[0];
   if (!row) throw notFound(MISSING);
   return row;
-}
-
-async function setProjectTags(client: Queryable, projectId: string, tagIds: string[]) {
-  await client.query("DELETE FROM slide_project_tags WHERE project_id=$1", [projectId]);
-  await client.query(
-    "INSERT INTO slide_project_tags(project_id,tag_id) SELECT $1,t.id FROM slide_tags t WHERE t.id=ANY($2::uuid[]) ON CONFLICT DO NOTHING",
-    [projectId, [...new Set(tagIds)]],
-  );
 }
 
 /** Validates an uploaded deck (Quarto ZIP, PDF or PPTX; see lib/slides/source.ts). */
@@ -56,30 +75,6 @@ async function validateDeck(upload: ReceivedUpload, maxBytes: number) {
   const file = upload.file;
   if (!file || !file.bytes) throw badRequest(`請選擇 ${Math.floor(maxBytes / 1024 / 1024)} MB 以下的 ZIP、PDF 或 PPTX 檔案。`);
   return { file, deck: await detectDeck(file, upload.fields.entry, maxBytes) };
-}
-
-const renderPayload = (projectId: string, versionId: string, sourceType: SlideSourceType, entry: string, outputPrefix?: string): SlideRenderPayload => ({
-  projectId,
-  versionId,
-  sourceKey: keys.slideSource(projectId, versionId, SOURCE_EXTENSIONS[sourceType]),
-  entry,
-  outputPrefix: outputPrefix ?? keys.slideOutputPrefix(projectId, versionId),
-  sourceType,
-});
-
-/**
- * Inserts a version row plus its render job. The source file must already be in S3 so a worker never
- * claims a job whose input is missing.
- */
-async function insertVersion(client: Queryable, user: CurrentUser, projectId: string, versionId: string, version: number, deck: DetectedDeck, sourceName: string) {
-  const payload = renderPayload(projectId, versionId, deck.sourceType, deck.entry);
-  const jobId = await enqueueJob(client, "slide_render", payload, user.id);
-  await client.query(
-    `INSERT INTO slide_versions(id,project_id,version,entry_qmd,source_name,source_key,output_prefix,job_id,created_by,source_type)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-    [versionId, projectId, version, deck.entry, sourceName.slice(0, 255), payload.sourceKey, payload.outputPrefix, jobId, user.id, deck.sourceType],
-  );
-  return jobId;
 }
 
 async function uploadSource(app: FastifyInstance, projectId: string, versionId: string, path: string, sourceType: SlideSourceType) {
@@ -117,36 +112,62 @@ const uploadLimits = (app: FastifyInstance) => ({
 
 const slides: FastifyPluginAsync = async app => {
   registerSlideFinalizer(app);
+  registerSlidePreviewFinalizer(app);
+  await app.register(slideSources);
+  await app.register(slideAi);
+  // Deleting a study cascades to its decks; their S3 objects go after commit.
+  registerStudyCleanup("slides", async (client, studyId) => {
+    const decks = (await client.query<{ id: string }>("SELECT id FROM decks WHERE study_id=$1", [studyId])).rows.map(row => row.id);
+    if (!decks.length) return;
+    const live = await client.query<{ job_id: string }>(
+      "SELECT v.job_id FROM slide_versions v JOIN jobs j ON j.id=v.job_id WHERE v.deck_id=ANY($1::uuid[]) AND j.status IN ('queued','running')",
+      [decks],
+    );
+    for (const job of live.rows) await cancelJob(client, job.job_id);
+    const previews = await client.query<{ job_id: string }>("SELECT job_id FROM deck_previews WHERE deck_id=ANY($1::uuid[]) AND job_id IS NOT NULL", [decks]);
+    for (const job of previews.rows) await cancelJob(client, job.job_id);
+    return async () => {
+      for (const id of decks) {
+        await Promise.all([app.storage.deletePrefix(keys.slideProjectPrefix(id)), app.storage.deletePrefix(keys.referenceProjectPrefix(id))])
+          .catch(error => app.log.warn({ err: error, deckId: id }, "deck storage cleanup failed"));
+      }
+    };
+  });
   const secret = app.config.AUTH_SECRET;
 
   app.get("/slides", async (request, reply) => {
     await requireUser(request);
     const query = parse(listQuery, request.query);
-    const filter = parseTagFilter(query.tags);
+    let studyId: string | null = null;
+    if (query.studyId) {
+      const study = await findStudy(app.db, query.studyId);
+      if (!study) throw notFound("研究不存在。");
+      studyId = study.id;
+    }
     const q = query.q?.trim() ? `%${escapeLike(query.q.trim())}%` : null;
     const result = await app.db.query(
-      `SELECT p.id,p.title,p.slug,p.public_view,p.created_at,p.updated_at,p.active_version_id,
+      `SELECT p.id,p.title,p.slug,p.kind,p.paper_id,p.metadata,p.study_id,p.public_view,(t.deck_id IS NOT NULL) AS has_source,p.created_at,p.updated_at,p.active_version_id,
+              json_build_object('id',s.id,'slug',s.slug,'title',s.title) AS study,
               av.version AS active_version,(av.thumbnail_key IS NOT NULL AND av.status='published') AS has_thumbnail,
               lv.id AS latest_version_id,lv.version AS latest_version,lv.status AS latest_status,lj.status AS latest_job_status,
-              COALESCE((SELECT json_agg(json_build_object('id',t.id,'name',t.name) ORDER BY lower(t.name))
-                          FROM slide_project_tags j JOIN slide_tags t ON t.id=j.tag_id WHERE j.project_id=p.id),'[]') AS tags,
-              (SELECT count(*)::int FROM slide_references r WHERE r.project_id=p.id) AS reference_count,
-              (SELECT count(*)::int FROM slide_reviews r WHERE r.project_id=p.id) AS review_count,
+              (SELECT count(*)::int FROM slide_references r WHERE r.deck_id=p.id) AS reference_count,
+              (SELECT count(*)::int FROM slide_reviews r WHERE r.deck_id=p.id) AS review_count,
               COALESCE(au.name,cu.name) AS author_name,
               CASE WHEN av.status='published' THEN COALESCE(av.published_at,aj.finished_at,av.created_at) END AS published_at
-         FROM slide_projects p
+         FROM decks p
+         JOIN studies s ON s.id=p.study_id
          LEFT JOIN slide_versions av ON av.id=p.active_version_id
          LEFT JOIN jobs aj ON aj.id=av.job_id
          LEFT JOIN users au ON au.id=av.created_by
          LEFT JOIN users cu ON cu.id=p.created_by
-         LEFT JOIN LATERAL (SELECT id,version,status,job_id FROM slide_versions WHERE project_id=p.id ORDER BY version DESC LIMIT 1) lv ON true
+         LEFT JOIN LATERAL (SELECT id,version,status,job_id FROM slide_versions WHERE deck_id=p.id ORDER BY version DESC LIMIT 1) lv ON true
          LEFT JOIN jobs lj ON lj.id=lv.job_id
+         LEFT JOIN deck_source_trees t ON t.deck_id=p.id
         WHERE ($1::text IS NULL OR p.title ILIKE $1 OR p.slug ILIKE $1)
-          AND (NOT $2::boolean
-               OR EXISTS (SELECT 1 FROM slide_project_tags j WHERE j.project_id=p.id AND j.tag_id=ANY($3::uuid[]))
-               OR ($4::boolean AND NOT EXISTS (SELECT 1 FROM slide_project_tags j WHERE j.project_id=p.id)))
+          AND ($2::uuid IS NULL OR p.study_id=$2)
+          AND ($3::text IS NULL OR p.kind=$3)
         ORDER BY p.updated_at DESC, p.id`,
-      [q, filter.mode === "set", filter.mode === "set" ? filter.ids : [], filter.mode === "set" && filter.untagged],
+      [q, studyId, query.kind ?? null],
     );
     const rows = result.rows.map(({ latest_job_status, latest_status, has_thumbnail, ...row }) => ({
       ...row,
@@ -157,23 +178,46 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.post("/slides", async (request, reply) => {
-    const user = await requireEditor(request);
+    await requireUser(request);
+    if (!request.isMultipart()) {
+      const input = parse(createInput, request.body, "請確認名稱（1–160 字）、研究與簡報類型。");
+      const { user, access } = await requireStudyEditor(request, input.studyId);
+      const deckSlug = input.slug ?? (await freeSlug(app.db, input.title, taipeiToday()));
+      const template = input.template ?? (input.kind === "paper_report" ? "paper_report" : "progress");
+      const projectId = randomUUID();
+      try {
+        await transaction(app.db, async client => {
+          const project = (await client.query<SlideProject>(
+            `INSERT INTO decks(id,study_id,kind,paper_id,metadata,title,slug,public_view,share_key,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+             RETURNING *`,
+            [projectId, access.study.id, input.kind, input.paperId ?? null, JSON.stringify(withPaper({}, input.paper ?? undefined)), input.title, deckSlug, input.public ?? false, newShareKey(), user.id],
+          )).rows[0]!;
+          await initSource(app, client, project, template, user);
+          await client.query("UPDATE studies SET activity_at=now() WHERE id=$1", [access.study.id]);
+        });
+      } catch (error) {
+        if (isUniqueViolation(error)) throw conflict("這個網址代稱已被使用。");
+        if (isForeignKeyViolation(error)) throw badRequest(PAPER_MISSING);
+        throw error;
+      }
+      return reply.code(201).send({ id: projectId, slug: deckSlug, studyId: access.study.id, source: input.source, template });
+    }
     const maxBytes = app.config.MAX_SLIDE_ZIP_BYTES;
     const upload = await receiveUpload(request, maxBytes);
     try {
       const fields = upload.fields;
+      if (!fields.studyId) throw badRequest("請選擇簡報所屬的研究。");
+      const { user, access } = await requireStudyEditor(request, fields.studyId);
+      const parsedKind = deckKind.safeParse(fields.kind || "progress");
+      const parsedPaper = z.uuid().optional().safeParse(fields.paperId || undefined);
+      if (!parsedKind.success || !parsedPaper.success) throw badRequest("簡報類型不正確。");
+      // Paper of a paper report not linked to the library (multipart fields paperTitle / paperUrl).
+      const paperField = paperMeta.safeParse(fields.paperTitle ? { title: fields.paperTitle, url: fields.paperUrl || undefined } : null);
       const parsedTitle = title.safeParse(fields.title ?? "");
       const parsedSlug = slug.safeParse(fields.slug ?? "");
-      let rawTags: unknown = [];
-      try {
-        rawTags = JSON.parse(fields.tagIds || "[]");
-      } catch {
-        throw badRequest("標籤格式不正確。");
-      }
-      const tags = tagIdsSchema.safeParse(rawTags);
-      if (!parsedTitle.success || !parsedSlug.success || !tags.success) throw badRequest("請確認名稱（1–160 字）、slug（小寫英數與連字號）與標籤。");
+      if (!parsedTitle.success || !parsedSlug.success) throw badRequest("請確認名稱（1–160 字）與 slug（小寫英數與連字號）。");
       const { file, deck } = await validateDeck(upload, maxBytes);
-      const exists = await app.db.query("SELECT 1 FROM slide_projects WHERE slug=$1", [parsedSlug.data]);
+      const exists = await app.db.query("SELECT 1 FROM decks WHERE slug=$1", [parsedSlug.data]);
       if (exists.rowCount) throw conflict("這個網址代稱已被使用。");
 
       const projectId = randomUUID();
@@ -183,19 +227,21 @@ const slides: FastifyPluginAsync = async app => {
       try {
         jobId = await transaction(app.db, async client => {
           await client.query(
-            "INSERT INTO slide_projects(id,title,slug,public_view,share_key,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$6)",
-            [projectId, parsedTitle.data, parsedSlug.data, truthy(fields.public), newShareKey(), user.id],
+            "INSERT INTO decks(id,study_id,kind,paper_id,title,slug,public_view,share_key,created_by,updated_by,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9,$10)",
+            [projectId, access.study.id, parsedKind.data, parsedPaper.data ?? null, parsedTitle.data, parsedSlug.data, truthy(fields.public), newShareKey(), user.id,
+              JSON.stringify(withPaper({}, paperField.success ? paperField.data : undefined))],
           );
-          const job = await insertVersion(client, user, projectId, versionId, 1, deck, file.filename);
-          if (tags.data.length) await setProjectTags(client, projectId, tags.data);
+          const job = await insertVersion(client, user.id, projectId, versionId, 1, deck, file.filename);
+          await client.query("UPDATE studies SET activity_at=now() WHERE id=$1", [access.study.id]);
           return job;
         });
       } catch (error) {
         await app.storage.deletePrefix(keys.slideProjectPrefix(projectId)).catch(() => {});
         if (isUniqueViolation(error)) throw conflict("這個網址代稱已被使用。");
+        if (isForeignKeyViolation(error)) throw badRequest(PAPER_MISSING);
         throw error;
       }
-      return reply.code(202).send({ id: projectId, slug: parsedSlug.data, versionId, version: 1, jobId, ...uploadSummary(deck) });
+      return reply.code(202).send({ id: projectId, slug: parsedSlug.data, studyId: access.study.id, versionId, version: 1, jobId, ...uploadSummary(deck) });
     } finally {
       await upload.cleanup();
     }
@@ -214,7 +260,7 @@ const slides: FastifyPluginAsync = async app => {
     await requireUser(request);
     const { id } = parse(projectParams, request.params, "找不到縮圖。");
     const row = (await app.db.query<{ id: string; thumbnail_key: string | null }>(
-      `SELECT v.id,v.thumbnail_key FROM slide_projects p JOIN slide_versions v ON v.id=p.active_version_id
+      `SELECT v.id,v.thumbnail_key FROM decks p JOIN slide_versions v ON v.id=p.active_version_id
         WHERE p.id=$1 AND v.status='published'`,
       [id],
     )).rows[0];
@@ -236,38 +282,43 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.patch("/slides/:id", async request => {
-    const user = await requireEditor(request);
     const { id } = parse(projectParams, request.params);
+    const { user } = await requireDeckEditor(request, id);
     const input = parse(patchInput, request.body);
     try {
       return await transaction(app.db, async client => {
-        await lockProject(client, id);
+        const current = await lockProject(client, id);
+        const metadata = withPaper(current.metadata ?? {}, input.paper);
         const updated = (await client.query<SlideProject>(
-          `UPDATE slide_projects SET title=COALESCE($2,title),slug=COALESCE($3,slug),public_view=COALESCE($4,public_view),
-                  share_key=CASE WHEN $5::boolean THEN $6 ELSE share_key END,updated_by=$7,updated_at=now()
-            WHERE id=$1 RETURNING id,title,slug,public_view,share_key,active_version_id,updated_at`,
-          [id, input.title ?? null, input.slug ?? null, input.public_view ?? null, input.rotateShareKey ?? false, newShareKey(), user.id],
+          `UPDATE decks SET metadata=$11,title=COALESCE($2,title),slug=COALESCE($3,slug),public_view=COALESCE($4,public_view),
+                  share_key=CASE WHEN $5::boolean THEN $6 ELSE share_key END,updated_by=$7,updated_at=now(),
+                  kind=COALESCE($8,kind),paper_id=CASE WHEN $9::boolean THEN $10::uuid ELSE paper_id END
+            WHERE id=$1 RETURNING id,study_id,kind,paper_id,metadata,title,slug,public_view,share_key,active_version_id,updated_at`,
+          [id, input.title ?? null, input.slug ?? null, input.public_view ?? null, input.rotateShareKey ?? false, newShareKey(), user.id,
+            input.kind ?? null, input.paper_id !== undefined, input.paper_id ?? null, JSON.stringify(metadata)],
         )).rows[0]!;
-        if (input.tagIds) await setProjectTags(client, id, input.tagIds);
         return { project: updated };
       });
     } catch (error) {
       if (isUniqueViolation(error)) throw conflict("這個網址代稱已被使用。");
+        if (isForeignKeyViolation(error)) throw badRequest(PAPER_MISSING);
       throw error;
     }
   });
 
   app.delete("/slides/:id", async request => {
-    await requireEditor(request);
     const { id } = parse(projectParams, request.params);
+    await requireDeckEditor(request, id);
     await transaction(app.db, async client => {
       await lockProject(client, id);
       const jobs = await client.query<{ job_id: string }>(
-        "SELECT v.job_id FROM slide_versions v JOIN jobs j ON j.id=v.job_id WHERE v.project_id=$1 AND j.status IN ('queued','running')",
+        "SELECT v.job_id FROM slide_versions v JOIN jobs j ON j.id=v.job_id WHERE v.deck_id=$1 AND j.status IN ('queued','running')",
         [id],
       );
       for (const job of jobs.rows) await cancelJob(client, job.job_id);
-      await client.query("DELETE FROM slide_projects WHERE id=$1", [id]);
+      for (const preview of (await client.query<{ job_id: string }>("SELECT job_id FROM deck_previews WHERE deck_id=$1 AND job_id IS NOT NULL", [id])).rows) await cancelJob(client, preview.job_id);
+      await client.query("DELETE FROM suggestions WHERE target_type='deck_source' AND target_id IN (SELECT id::text FROM deck_sources WHERE deck_id=$1)", [id]);
+      await client.query("DELETE FROM decks WHERE id=$1", [id]);
     });
     await Promise.all([
       app.storage.deletePrefix(keys.slideProjectPrefix(id)),
@@ -285,8 +336,8 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.post("/slides/:id/versions", async (request, reply) => {
-    const user = await requireEditor(request);
     const { id } = parse(projectParams, request.params);
+    const { user } = await requireDeckEditor(request, id);
     if (!(await projectById(app.db, id))) throw notFound(MISSING);
     const maxBytes = app.config.MAX_SLIDE_ZIP_BYTES;
     const upload = await receiveUpload(request, maxBytes);
@@ -297,9 +348,9 @@ const slides: FastifyPluginAsync = async app => {
       try {
         const result = await transaction(app.db, async client => {
           await lockProject(client, id);
-          const version = (await client.query<{ next: number }>("SELECT COALESCE(max(version),0)+1 AS next FROM slide_versions WHERE project_id=$1", [id])).rows[0]!.next;
-          const jobId = await insertVersion(client, user, id, versionId, version, deck, file.filename);
-          await client.query("UPDATE slide_projects SET updated_by=$2,updated_at=now() WHERE id=$1", [id, user.id]);
+          const version = await nextVersionNumber(client, id);
+          const jobId = await insertVersion(client, user.id, id, versionId, version, deck, file.filename);
+          await client.query("UPDATE decks SET updated_by=$2,updated_at=now() WHERE id=$1", [id, user.id]);
           return { version, jobId };
         });
         return reply.code(202).send({ versionId, ...result, ...uploadSummary(deck) });
@@ -313,12 +364,12 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.patch("/slides/:id/versions/:versionId", async request => {
-    const user = await requireEditor(request);
     const { id, versionId } = parse(versionParams, request.params);
+    const { user } = await requireDeckEditor(request, id);
     parse(versionPatch, request.body);
     const result = await app.db.query(
-      `UPDATE slide_projects SET active_version_id=$1,updated_by=$3,updated_at=now()
-        WHERE id=$2 AND EXISTS (SELECT 1 FROM slide_versions WHERE id=$1 AND project_id=$2 AND status='published') RETURNING id`,
+      `UPDATE decks SET active_version_id=$1,updated_by=$3,updated_at=now()
+        WHERE id=$2 AND EXISTS (SELECT 1 FROM slide_versions WHERE id=$1 AND deck_id=$2 AND status='published') RETURNING id`,
       [versionId, id, user.id],
     );
     if (!result.rowCount) throw notFound("版本尚未發布或不存在。");
@@ -327,18 +378,19 @@ const slides: FastifyPluginAsync = async app => {
 
   /** Confirms a converted (PPTX) version waiting in `review`: it becomes published and, by the activation rule, active. */
   app.post("/slides/:id/versions/:versionId/publish", async request => {
-    const user = await requireEditor(request);
     const { id, versionId } = parse(versionParams, request.params);
+    const { user } = await requireDeckEditor(request, id);
     return transaction(app.db, async client => {
       await lockProject(client, id);
-      const version = (await client.query<{ id: string; project_id: string; version: number }>(
-        "UPDATE slide_versions SET status='published',published_at=now() WHERE id=$1 AND project_id=$2 AND status='review' RETURNING id,project_id,version",
+      const version = (await client.query<{ id: string; deck_id: string; version: number }>(
+        "UPDATE slide_versions SET status='published',published_at=now() WHERE id=$1 AND deck_id=$2 AND status='review' RETURNING id,deck_id,version",
         [versionId, id],
       )).rows[0];
       if (!version) throw notFound("沒有待確認的版本。");
       await activateIfNewest(client, version);
-      await client.query("UPDATE slide_projects SET updated_by=$2,updated_at=now() WHERE id=$1", [id, user.id]);
-      const active = (await client.query<{ active_version_id: string | null }>("SELECT active_version_id FROM slide_projects WHERE id=$1", [id])).rows[0]!;
+      await recordDeckPublished(client, version, user.id);
+      await client.query("UPDATE decks SET updated_by=$2,updated_at=now() WHERE id=$1", [id, user.id]);
+      const active = (await client.query<{ active_version_id: string | null }>("SELECT active_version_id FROM decks WHERE id=$1", [id])).rows[0]!;
       return { ok: true, status: "published", active: active.active_version_id === versionId };
     });
   });
@@ -348,13 +400,13 @@ const slides: FastifyPluginAsync = async app => {
    * served from the current output until the job succeeds (see the slide finalizer).
    */
   app.post("/slides/:id/versions/:versionId/reindex", async (request, reply) => {
-    const user = await requireEditor(request);
     const { id, versionId } = parse(versionParams, request.params);
+    const { user } = await requireDeckEditor(request, id);
     const result = await transaction(app.db, async client => {
       await lockProject(client, id);
       const version = (await client.query<{ id: string; entry_qmd: string; source_type: SlideSourceType; job_status: string | null }>(
         `SELECT v.id,v.entry_qmd,v.source_type,j.status AS job_status FROM slide_versions v LEFT JOIN jobs j ON j.id=v.job_id
-          WHERE v.id=$1 AND v.project_id=$2 AND v.status='published' FOR UPDATE OF v`,
+          WHERE v.id=$1 AND v.deck_id=$2 AND v.status='published' FOR UPDATE OF v`,
         [versionId, id],
       )).rows[0];
       if (!version) throw notFound("版本尚未發布或不存在。");
@@ -368,12 +420,12 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.delete("/slides/:id/versions/:versionId", async request => {
-    await requireEditor(request);
     const { id, versionId } = parse(versionParams, request.params);
+    await requireDeckEditor(request, id);
     await transaction(app.db, async client => {
       const project = await lockProject(client, id);
       if (project.active_version_id === versionId) throw conflict("無法刪除目前版本；請先切換版本。");
-      const removed = await client.query<{ job_id: string | null }>("DELETE FROM slide_versions WHERE id=$1 AND project_id=$2 RETURNING job_id", [versionId, id]);
+      const removed = await client.query<{ job_id: string | null }>("DELETE FROM slide_versions WHERE id=$1 AND deck_id=$2 RETURNING job_id", [versionId, id]);
       if (!removed.rowCount) throw notFound("版本不存在。");
       const jobId = removed.rows[0]!.job_id;
       if (jobId) await cancelJob(client, jobId);
@@ -387,7 +439,7 @@ const slides: FastifyPluginAsync = async app => {
     await requireUser(request);
     const { id } = parse(projectParams, request.params);
     const row = (await app.db.query<{ id: string; version: number; status: VersionStatus; error: string | null; job_status: string | null; job_stage: string | null; job_progress: number | null }>(
-      `${VERSION_SELECT} WHERE v.project_id=$1 ORDER BY v.version DESC LIMIT 1`,
+      `${VERSION_SELECT} WHERE v.deck_id=$1 ORDER BY v.version DESC LIMIT 1`,
       [id],
     )).rows[0];
     if (!row) throw notFound(MISSING);
@@ -402,12 +454,12 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.post("/slides/:id/render", async (request, reply) => {
-    const user = await requireEditor(request);
     const { id } = parse(projectParams, request.params);
+    const { user } = await requireDeckEditor(request, id);
     const result = await transaction(app.db, async client => {
       await lockProject(client, id);
       const version = (await client.query<{ id: string; entry_qmd: string; source_key: string; output_prefix: string; source_type: SlideSourceType }>(
-        "SELECT id,entry_qmd,source_key,output_prefix,source_type FROM slide_versions WHERE project_id=$1 AND status='failed' ORDER BY version DESC LIMIT 1",
+        "SELECT id,entry_qmd,source_key,output_prefix,source_type FROM slide_versions WHERE deck_id=$1 AND status='failed' ORDER BY version DESC LIMIT 1",
         [id],
       )).rows[0];
       if (!version) throw notFound("沒有可重試的失敗版本。");
@@ -426,8 +478,8 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.post("/slides/:id/references", async (request, reply) => {
-    await requireEditor(request);
     const { id } = parse(projectParams, request.params);
+    await requireDeckEditor(request, id);
     if (!(await projectById(app.db, id))) throw notFound(MISSING);
     const maxBytes = app.config.MAX_REFERENCE_BYTES;
     const hint = `請填名稱，並提供 PDF（${Math.floor(maxBytes / 1024 / 1024)} MB 以下）或 HTTP(S) 連結。`;
@@ -474,9 +526,9 @@ const slides: FastifyPluginAsync = async app => {
     try {
       const reference = await transaction(app.db, async client => {
         await lockProject(client, id);
-        const count = (await client.query<{ count: number }>("SELECT count(*)::int AS count FROM slide_references WHERE project_id=$1", [id])).rows[0]!.count;
+        const count = (await client.query<{ count: number }>("SELECT count(*)::int AS count FROM slide_references WHERE deck_id=$1", [id])).rows[0]!.count;
         return (await client.query(
-          `INSERT INTO slide_references(id,project_id,title,url,file_key,file_name,file_bytes,is_default) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+          `INSERT INTO slide_references(id,deck_id,title,url,file_key,file_name,file_bytes,is_default) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
            RETURNING id,title,url,file_name,file_bytes,is_default,created_at`,
           [referenceId, id, refTitle, url, fileKey, fileName, fileBytes, count === 0],
         )).rows[0];
@@ -489,17 +541,17 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.patch("/slides/:id/references/:referenceId", async request => {
-    await requireEditor(request);
     const { id, referenceId } = parse(referenceParams, request.params);
+    await requireDeckEditor(request, id);
     // v1 clients sent no body to mean "make default".
     const input = parse(referencePatch, request.body ?? { isDefault: true });
     await transaction(app.db, async client => {
       await lockProject(client, id);
-      const found = await client.query("SELECT id FROM slide_references WHERE id=$1 AND project_id=$2", [referenceId, id]);
+      const found = await client.query("SELECT id FROM slide_references WHERE id=$1 AND deck_id=$2", [referenceId, id]);
       if (!found.rowCount) throw notFound("參考資料不存在。");
       if (input.title) await client.query("UPDATE slide_references SET title=$2 WHERE id=$1", [referenceId, input.title]);
       if (input.isDefault) {
-        await client.query("UPDATE slide_references SET is_default=false WHERE project_id=$1 AND is_default", [id]);
+        await client.query("UPDATE slide_references SET is_default=false WHERE deck_id=$1 AND is_default", [id]);
         await client.query("UPDATE slide_references SET is_default=true WHERE id=$1", [referenceId]);
       }
     });
@@ -507,19 +559,19 @@ const slides: FastifyPluginAsync = async app => {
   });
 
   app.delete("/slides/:id/references/:referenceId", async request => {
-    await requireEditor(request);
     const { id, referenceId } = parse(referenceParams, request.params);
+    await requireDeckEditor(request, id);
     const removed = await transaction(app.db, async client => {
       await lockProject(client, id);
       const result = await client.query<{ file_key: string | null; is_default: boolean }>(
-        "DELETE FROM slide_references WHERE id=$1 AND project_id=$2 RETURNING file_key,is_default",
+        "DELETE FROM slide_references WHERE id=$1 AND deck_id=$2 RETURNING file_key,is_default",
         [referenceId, id],
       );
       const row = result.rows[0];
       if (!row) throw notFound("參考資料不存在。");
       if (row.is_default) {
         await client.query(
-          "UPDATE slide_references SET is_default=true WHERE id=(SELECT id FROM slide_references WHERE project_id=$1 ORDER BY created_at,id LIMIT 1)",
+          "UPDATE slide_references SET is_default=true WHERE id=(SELECT id FROM slide_references WHERE deck_id=$1 ORDER BY created_at,id LIMIT 1)",
           [id],
         );
       }

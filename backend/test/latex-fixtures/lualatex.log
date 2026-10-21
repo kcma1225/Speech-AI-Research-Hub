@@ -1,0 +1,709 @@
+This is LuaHBTeX, Version 1.24.0 (TeX Live 2026)  (format=lualatex 2026.10.20)  21 OCT 2026 00:22
+ file:line:error style messages enabled.
+**./main.tex
+(./main.tex
+LaTeX2e <2026-06-01>
+L3 programming layer <2026-09-09>
+Lua module: luaotfload 2024-12-03 v3.29 Lua based OpenType font support
+Lua module: lualibs 2023-07-13 v2.76 ConTeXt Lua standard libraries.
+Lua module: lualibs-extended 2023-07-13 v2.76 ConTeXt Lua libraries -- extended collection.
+luaotfload | conf : Root cache directory is "/tmp/texmf-var/luatex-cache/generic/names".
+luaotfload | init : Loading fontloader "fontloader-2023-12-28.lua" from kpse-resolved path "/usr/local/texlive/2026/texmf-dist/tex/luatex/luaotfload/fontloader-2023-12-28.lua".
+Lua-only attribute luaotfload@noligature = 1
+luaotfload | init : Context OpenType loader version 3.134
+Inserting `luaotfload.node_processor' in `pre_linebreak_filter'.
+Inserting `luaotfload.node_processor' in `hpack_filter'.
+Inserting `luaotfload.glyph_stream' in `glyph_stream_provider'.
+Inserting `luaotfload.define_font' in `define_font'.
+Lua-only attribute luaotfload_color_attribute = 2
+luaotfload | conf : Root cache directory is "/tmp/texmf-var/luatex-cache/generic/names".
+Inserting `luaotfload.harf.strip_prefix' in `find_opentype_file'.
+Inserting `luaotfload.harf.strip_prefix' in `find_truetype_file'.
+Removing  `luaotfload.glyph_stream' from `glyph_stream_provider'.
+Inserting `luaotfload.harf.glyphstream' in `glyph_stream_provider'.
+Inserting `luaotfload.harf.finalize_vlist' in `post_linebreak_filter'.
+Inserting `luaotfload.harf.finalize_hlist' in `hpack_filter'.
+Inserting `luaotfload.cleanup_files' in `wrapup_run'.
+Inserting `luaotfload.harf.finalize_unicode' in `finish_pdffile'.
+Inserting `luaotfload.glyphinfo' in `glyph_info'.
+Lua-only attribute luaotfload.letterspace_done = 3
+Inserting `luaotfload.aux.set_sscale_dimens' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_font_index' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.patch_cambria_domh' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.fixup_fontdata' in `luaotfload.patch_font_unsafe'.
+Inserting `luaotfload.aux.set_capheight' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_xheight' in `luaotfload.patch_font'.
+Inserting `luaotfload.rewrite_fontname' in `luaotfload.patch_font'.
+Inserting `tracingstacklevels' in `input_level_string'. (/usr/local/texlive/2026/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2025/01/22 v1.4n Standard LaTeX document class
+(/usr/local/texlive/2026/texmf-dist/tex/latex/base/size10.clo
+File: size10.clo 2025/01/22 v1.4n Standard LaTeX file (size option)
+luaotfload | db : Font names database loaded from /tmp/texmf-var/luatex-cache/generic/names/luaotfload-names.luc.gz)
+\c@part=\count274
+\c@section=\count275
+\c@subsection=\count276
+\c@subsubsection=\count277
+\c@paragraph=\count278
+\c@subparagraph=\count279
+\c@figure=\count280
+\c@table=\count281
+\abovecaptionskip=\skip49
+\belowcaptionskip=\skip50
+\bibindent=\dimen149
+) (/usr/local/texlive/2026/texmf-dist/tex/latex/fontspec/fontspec.sty
+Package: fontspec 2026/08/11 v2.9h Font selection for XeLaTeX and LuaLaTeX
+Lua module: fontspec 2026/08/11 v2.9h Font selection for XeLaTeX and LuaLaTeX (/usr/local/texlive/2026/texmf-dist/tex/latex/fontspec/fontspec-luatex.sty
+Package: fontspec-luatex 2026/08/11 v2.9h Font selection for XeLaTeX and LuaLaTeX
+\l__fontspec_script_int=\count282
+\l__fontspec_language_int=\count283
+\l__fontspec_strnum_int=\count284
+\l__fontspec_tmp_int=\count285
+\l__fontspec_tmpa_int=\count286
+\l__fontspec_tmpb_int=\count287
+\l__fontspec_tmpc_int=\count288
+\l__fontspec_em_int=\count289
+\l__fontspec_emdef_int=\count290
+\l__fontspec_strong_int=\count291
+\l__fontspec_strongdef_int=\count292
+\l__fontspec_tmpa_dim=\dimen150
+\l__fontspec_tmpb_dim=\dimen151
+\l__fontspec_tmpc_dim=\dimen152
+ (/usr/local/texlive/2026/texmf-dist/tex/latex/base/fontenc.sty
+Package: fontenc 2025/07/18 v2.1d Standard LaTeX package
+) (/usr/local/texlive/2026/texmf-dist/tex/latex/fontspec/fontspec.cfg))) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/addons/luatexja-fontspec.sty
+Package: luatexja-fontspec 2025-09-30 fontspec support of LuaTeX-ja
+ (/usr/local/texlive/2026/texmf-dist/tex/latex/l3packages/l3keys2e/l3keys2e.sty (/usr/local/texlive/2026/texmf-dist/tex/latex/l3kernel/expl3.sty
+Package: expl3 2026-09-09 L3 programming layer (loader) 
+ (/usr/local/texlive/2026/texmf-dist/tex/latex/l3kernel/l3backend-luatex.def
+File: l3backend-luatex.def 2026-09-09 L3 backend support: PDF output (LuaTeX)
+\l__color_backend_stack_int=\count293
+Inserting `l3color' in `luaotfload.parse_color'.))
+Package: l3keys2e 2025-10-09 LaTeX2e option processing using LaTeX3 keys
+) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/luatexja.sty
+Package: luatexja 2026-10-17 Japanese Typesetting with Lua(La)TeX
+ (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/luatexja-core.sty
+Package: luatexja-core 2023-10-07 Core of LuaTeX-ja
+ (/usr/local/texlive/2026/texmf-dist/tex/generic/infwarerr/infwarerr.sty
+Package: infwarerr 2019/12/03 v1.5 Providing info/warning/error messages (HO)
+) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexbase/luatexbase.sty
+Package: luatexbase 2015/10/04 v1.3 luatexbase interface to LuaTeX 
+ (/usr/local/texlive/2026/texmf-dist/tex/luatex/ctablestack/ctablestack.sty
+Package: ctablestack 2015/10/01 v1.0 Catcode table stable support
+\@catcodetablestackcnt=\count294
+)
+\CatcodeTableOther=\catcodetable14
+\CatcodeTableExpl=\catcodetable15
+) (/usr/local/texlive/2026/texmf-dist/tex/generic/ltxcmds/ltxcmds.sty
+Package: ltxcmds 2023-12-04 v1.26 LaTeX kernel commands for general use (HO)
+) (/usr/local/texlive/2026/texmf-dist/tex/generic/pdftexcmds/pdftexcmds.sty
+Package: pdftexcmds 2020-06-27 v0.33 Utility functions of pdfTeX for LuaTeX (HO)
+ (/usr/local/texlive/2026/texmf-dist/tex/generic/iftex/iftex.sty
+Package: iftex 2024/12/12 v1.0g TeX engine tests
+)
+Package pdftexcmds Info: \pdf@primitive is available.
+Package pdftexcmds Info: \pdf@ifprimitive is available.
+Package pdftexcmds Info: \pdfdraftmode found.
+\pdftexcmds@toks=\toks17
+) (/usr/local/texlive/2026/texmf-dist/tex/latex/xkeyval/xkeyval.sty
+Package: xkeyval 2025/11/04 v2.10 package option processing (HA)
+ (/usr/local/texlive/2026/texmf-dist/tex/generic/xkeyval/xkeyval.tex (/usr/local/texlive/2026/texmf-dist/tex/generic/xkeyval/xkvutils.tex
+\XKV@toks=\toks18
+\XKV@tempa@toks=\toks19
+\XKV@tempb@toks=\toks20
+ (/usr/local/texlive/2026/texmf-dist/tex/generic/xkeyval/keyval.tex))
+\XKV@depth=\count295
+File: xkeyval.tex 2014/12/03 v2.7a key=value parser (HA)
+)) (/usr/local/texlive/2026/texmf-dist/tex/latex/etoolbox/etoolbox.sty
+Package: etoolbox 2025/10/02 v2.5m e-TeX tools for LaTeX (JAW)
+\etb@tempcnta=\count296
+) (/usr/local/texlive/2026/texmf-dist/tex/latex/everyhook/everyhook.sty (/usr/local/texlive/2026/texmf-dist/tex/latex/svn-prov/svn-prov.sty
+Package: svn-prov 2010/04/24 v3.1862 Package Date/Version from SVN Keywords
+)
+Package: everyhook 2014/11/26 v1.2 (SVN Rev: 12)\ Hooks for low level TeX everyX primitives.
+\everypar=\toks21
+\frozen@everymath=\toks22
+\frozen@everydisplay=\toks23
+\everyhbox=\toks24
+\everyvbox=\toks25
+\everycr=\toks26
+)
+\ltjlineendcomment=\count297
+\ltj@dimen@zw=\dimen153
+\ltj@dimen@zh=\dimen154
+\ltj@dimen@jQ=\dimen155
+\ltj@icflag=\attribute4
+\ltj@curjfnt=\attribute5
+\ltj@curtfnt=\attribute6
+\ltj@charclass=\attribute7
+\ltj@charcode=\attribute8
+\ltj@autospc=\attribute9
+\ltj@autoxspc=\attribute10
+\ltj@yablshift=\attribute11
+\ltj@ykblshift=\attribute12
+\ltj@tablshift=\attribute13
+\ltj@tkblshift=\attribute14
+\jfam=\attribute15
+\ltj@vert@ori=\attribute16
+\ltj@dir=\attribute17
+\ltj@@japanese=\language2
+\ltj@tempcnta=\count298
+\ltj@tempdima=\dimen156
+\ltj@@stack=\count299
+\ltj@@group@level=\count300
+\ltj@kcat0=\attribute18
+\ltj@kcat1=\attribute19
+\ltj@kcat2=\attribute20
+\ltj@kcat3=\attribute21
+\ltj@kcat4=\attribute22
+\ltj@kcat5=\attribute23
+\ltj@kcat6=\attribute24
+Custom whatsit inhibitglue = 1
+Custom whatsit stack_marker = 2
+Custom whatsit begin_par = 3
+Custom whatsit direction = 4
+Custom whatsit box_boundary = 5
+Custom whatsit ja_al_boundary = 6
+Module luatexbase Info: Uninstalling kernel luatexbase code on input line 184
+(load cache: ltj-cid-auto-adobe-japan1.luc)
+Lua module: luatexja.charrange 2022-08-19 Handling the range of Japanese characters
+Lua module: luatexja.stack 2022-08-20 LuaTeX-ja stack system
+Inserting `ltj.create_dir_whatsit' in `hpack_filter'.
+Inserting `ltj.create_dir_whatsit' in `post_linebreak_filter'.
+Inserting `ltj.direction' in `vpack_filter'.
+Inserting `ltj.direction' in `pre_output_filter'.
+Inserting `ltj.lineskip' in `post_linebreak_filter'.
+Inserting `ltj.lineskip' in `append_to_vlist_filter'.
+Lua module: luatexja.jfont 2025-05-04 Loader for Japanese fonts
+Removing  `luaotfload.define_font' from `define_font'.
+Inserting `luatexja.font_callback' in `define_font'.
+Removing  `luaotfload.aux.set_sscale_dimens' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.set_font_index' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.patch_cambria_domh' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.set_capheight' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.set_xheight' from `luaotfload.patch_font'.
+Removing  `luaotfload.rewrite_fontname' from `luaotfload.patch_font'.
+Inserting `ltj.prepare_extra_data' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_sscale_dimens' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_font_index' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.patch_cambria_domh' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_capheight' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_xheight' in `luaotfload.patch_font'.
+Inserting `luaotfload.rewrite_fontname' in `luaotfload.patch_font'.
+Inserting `ltj.prepare_extra_data' in `luatexja.define_font'.(load cache: extra_lmroman10-regular.luc)(load cache: extra_lmroman10-bold.luc)
+Inserting `ltj.get_vert_form' in `luatexja.define_jfont'.
+Removing  `ltj.prepare_extra_data' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.set_sscale_dimens' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.set_font_index' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.patch_cambria_domh' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.set_capheight' from `luaotfload.patch_font'.
+Removing  `luaotfload.aux.set_xheight' from `luaotfload.patch_font'.
+Removing  `luaotfload.rewrite_fontname' from `luaotfload.patch_font'.
+Inserting `ltj.supply_tounicode' in `luaotfload.patch_font'.
+Inserting `ltj.prepare_extra_data' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_sscale_dimens' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_font_index' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.patch_cambria_domh' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_capheight' in `luaotfload.patch_font'.
+Inserting `luaotfload.aux.set_xheight' in `luaotfload.patch_font'.
+Inserting `luaotfload.rewrite_fontname' in `luaotfload.patch_font'.
+Inserting `ltj.process_input_buffer' in `process_input_buffer'.
+Inserting `ltj.hyphenate' in `hyphenate'.
+Removing  `luaotfload.node_processor' from `hpack_filter'.
+Removing  `luaotfload.harf.finalize_hlist' from `hpack_filter'.
+Removing  `ltj.create_dir_whatsit' from `hpack_filter'.
+Inserting `ltj.set_stack_level' in `hpack_filter'.
+Inserting `luaotfload.node_processor' in `hpack_filter'.
+Inserting `luaotfload.harf.finalize_hlist' in `hpack_filter'.
+Inserting `ltj.create_dir_whatsit' in `hpack_filter'.
+Removing  `luaotfload.node_processor' from `pre_linebreak_filter'.
+Inserting `ltj.set_stack_level' in `pre_linebreak_filter'.
+Inserting `luaotfload.node_processor' in `pre_linebreak_filter'.
+Lua module: luatexja.jfmglue 2026-01-07 Insertion process of JFM glues, [x]kanjiskip and others
+Inserting `luatexja.beginpar.np_info' in `luatexja.jfmglue.whatsit_getinfo'.
+Inserting `luatexja.beginpar.np_info_after' in `luatexja.jfmglue.whatsit_after'.
+Inserting `ltj.mlist_to_hlist_pre' in `pre_mlist_to_hlist_filter'.
+Inserting `ltj.main' in `pre_linebreak_filter'.
+Removing  `luaotfload.harf.finalize_hlist' from `hpack_filter'.
+Removing  `ltj.create_dir_whatsit' from `hpack_filter'.
+Inserting `ltj.main' in `hpack_filter'.
+Inserting `luaotfload.harf.finalize_hlist' in `hpack_filter'.
+Inserting `ltj.create_dir_whatsit' in `hpack_filter'.
+Removing  `ltj.set_stack_level' from `pre_linebreak_filter'.
+Removing  `luaotfload.node_processor' from `pre_linebreak_filter'.
+Removing  `ltj.main' from `pre_linebreak_filter'.
+Inserting `ltj.adjust_icflag' in `pre_linebreak_filter'.
+Inserting `ltj.set_stack_level' in `pre_linebreak_filter'.
+Inserting `luaotfload.node_processor' in `pre_linebreak_filter'.
+Inserting `ltj.main' in `pre_linebreak_filter'.
+Removing  `ltj.set_stack_level' from `hpack_filter'.
+Removing  `luaotfload.node_processor' from `hpack_filter'.
+Removing  `ltj.main' from `hpack_filter'.
+Removing  `luaotfload.harf.finalize_hlist' from `hpack_filter'.
+Removing  `ltj.create_dir_whatsit' from `hpack_filter'.
+Inserting `ltj.adjust_icflag' in `hpack_filter'.
+Inserting `ltj.set_stack_level' in `hpack_filter'.
+Inserting `luaotfload.node_processor' in `hpack_filter'.
+Inserting `ltj.main' in `hpack_filter'.
+Inserting `luaotfload.harf.finalize_hlist' in `hpack_filter'.
+Inserting `ltj.create_dir_whatsit' in `hpack_filter'. (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/ltj-base.sty
+Package: ltj-base 2021-03-16
+\ltj@tempcntb=\count301
+\ltj@tempcntc=\count302
+\ltj@afbox=\box53
+)
+\ltj@@italic@inner=\luafunction31
+\ltj@@start@time@measure@inner=\luafunction32
+\ltj@@stop@time@measure@inner=\luafunction33
+\ltj@@jfont@inner=\luafunction34
+\ltj@zw@inner=\luafunction35
+\ltj@zh@inner=\luafunction36
+\ltj@reset@globaldefs@inner=\luafunction37
+\ltj@restore@globaldefs@inner=\luafunction38
+\ltj@@disihb@inner=\luafunction39
+\ltj@@ihb@inner=\luafunction40
+\ltj@@fakeparbegin@inner=\luafunction41
+\ltj@@fakeboxbdd@inner=\luafunction42
+\ltj@@ins@xk@inner=\luafunction43
+\ltj@@ins@k@inner=\luafunction44
+\ltjsetkanjiskip@inner=\luafunction45
+\ltjsetxkanjiskip@inner=\luafunction46
+\ltj@@getparam@one@inner=\luafunction47
+\ltj@alljachar@inner=\luafunction48
+\ltj@@lua@populate@insertwhatsit@inner=\luafunction49
+\ltj@@vadjust@begin@inner=\luafunction50
+\ltj@@vadjust@dirhook@inner=\luafunction51
+\ltj@@vadjust@check@dir@inner=\luafunction52
+\ltj@@box@dirhook@inner=\luafunction53
+\ltj@@reset@badness@inner=\luafunction54
+\ltj@@lua@raisebox@inner=\luafunction55
+\ltj@@vsplit@inner=\luafunction56
+\ltj@@lua@unboxcheckdir@inner=\luafunction57
+\ltj@@lua@uncopycheckdir@inner=\luafunction58
+\ltj@@lua@uncopy@restore@whatsit@inner=\luafunction59
+(load cache: ltj-kinsoku_default.luc) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/ltj-latex.sty
+Package: ltj-latex 2026-07-05 LaTeX support of LuaTeX-ja
+Inserting `ltj.direction' in `pre_shipout_filter'. (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/patches/lltjfont.sty
+Package: lltjfont 2026-10-01 Patch to NFSS2 for LuaTeX-ja
+\ltj@@latex@plv=\count303
+ (/usr/local/texlive/2026/texmf-dist/tex/latex/base/tuenc.def
+File: tuenc.def 2025/07/18 v2.1d Standard LaTeX file
+\@remove@tlig@@@=\luafunction60
+LaTeX Font Info:    Redeclaring font encoding TU on input line 105.
+LaTeX Encoding Info:    Redeclaring text command \textquotesingle (encoding TU) on input line 148.
+LaTeX Encoding Info:    Redeclaring text command \textasciigrave (encoding TU) on input line 149.
+LaTeX Encoding Info:    Redeclaring text command \textquotedbl (encoding TU) on input line 150.
+LaTeX Encoding Info:    Redeclaring text command \textdollar (encoding TU) on input line 151.
+LaTeX Encoding Info:    Redeclaring text command \textless (encoding TU) on input line 152.
+LaTeX Encoding Info:    Redeclaring text command \textgreater (encoding TU) on input line 153.
+LaTeX Encoding Info:    Redeclaring text command \textbackslash (encoding TU) on input line 154.
+LaTeX Encoding Info:    Redeclaring text command \textasciicircum (encoding TU) on input line 155.
+LaTeX Encoding Info:    Redeclaring text command \textunderscore (encoding TU) on input line 156.
+LaTeX Encoding Info:    Redeclaring text command \textbraceleft (encoding TU) on input line 157.
+LaTeX Encoding Info:    Redeclaring text command \textbar (encoding TU) on input line 158.
+LaTeX Encoding Info:    Redeclaring text command \textbraceright (encoding TU) on input line 159.
+LaTeX Encoding Info:    Redeclaring text command \textasciitilde (encoding TU) on input line 160.
+LaTeX Encoding Info:    Redeclaring text command \textexclamdown (encoding TU) on input line 161.
+LaTeX Encoding Info:    Redeclaring text command \textcent (encoding TU) on input line 162.
+LaTeX Encoding Info:    Redeclaring text command \textsterling (encoding TU) on input line 163.
+LaTeX Encoding Info:    Redeclaring text command \textcurrency (encoding TU) on input line 164.
+LaTeX Encoding Info:    Redeclaring text command \textyen (encoding TU) on input line 165.
+LaTeX Encoding Info:    Redeclaring text command \textbrokenbar (encoding TU) on input line 166.
+LaTeX Encoding Info:    Redeclaring text command \textsection (encoding TU) on input line 167.
+LaTeX Encoding Info:    Redeclaring text command \textasciidieresis (encoding TU) on input line 168.
+LaTeX Encoding Info:    Redeclaring text command \textcopyright (encoding TU) on input line 169.
+LaTeX Encoding Info:    Redeclaring text command \textordfeminine (encoding TU) on input line 170.
+LaTeX Encoding Info:    Redeclaring text command \guillemetleft (encoding TU) on input line 171.
+LaTeX Encoding Info:    Redeclaring text command \guillemotleft (encoding TU) on input line 172.
+LaTeX Encoding Info:    Redeclaring text command \textlnot (encoding TU) on input line 173.
+LaTeX Encoding Info:    Redeclaring text command \textregistered (encoding TU) on input line 174.
+LaTeX Encoding Info:    Redeclaring text command \textasciimacron (encoding TU) on input line 175.
+LaTeX Encoding Info:    Redeclaring text command \textdegree (encoding TU) on input line 176.
+LaTeX Encoding Info:    Redeclaring text command \textpm (encoding TU) on input line 177.
+LaTeX Encoding Info:    Redeclaring text command \texttwosuperior (encoding TU) on input line 178.
+LaTeX Encoding Info:    Redeclaring text command \textthreesuperior (encoding TU) on input line 179.
+LaTeX Encoding Info:    Redeclaring text command \textasciiacute (encoding TU) on input line 180.
+LaTeX Encoding Info:    Redeclaring text command \textmu (encoding TU) on input line 181.
+LaTeX Encoding Info:    Redeclaring text command \textparagraph (encoding TU) on input line 182.
+LaTeX Encoding Info:    Redeclaring text command \textperiodcentered (encoding TU) on input line 183.
+LaTeX Encoding Info:    Redeclaring text command \textonesuperior (encoding TU) on input line 184.
+LaTeX Encoding Info:    Redeclaring text command \textordmasculine (encoding TU) on input line 185.
+LaTeX Encoding Info:    Redeclaring text command \guillemetright (encoding TU) on input line 186.
+LaTeX Encoding Info:    Redeclaring text command \guillemotright (encoding TU) on input line 187.
+LaTeX Encoding Info:    Redeclaring text command \textonequarter (encoding TU) on input line 188.
+LaTeX Encoding Info:    Redeclaring text command \textonehalf (encoding TU) on input line 189.
+LaTeX Encoding Info:    Redeclaring text command \textthreequarters (encoding TU) on input line 190.
+LaTeX Encoding Info:    Redeclaring text command \textquestiondown (encoding TU) on input line 191.
+LaTeX Encoding Info:    Redeclaring text command \AE (encoding TU) on input line 192.
+LaTeX Encoding Info:    Redeclaring text command \DH (encoding TU) on input line 193.
+LaTeX Encoding Info:    Redeclaring text command \texttimes (encoding TU) on input line 194.
+LaTeX Encoding Info:    Redeclaring text command \O (encoding TU) on input line 195.
+LaTeX Encoding Info:    Redeclaring text command \TH (encoding TU) on input line 196.
+LaTeX Encoding Info:    Redeclaring text command \ss (encoding TU) on input line 197.
+LaTeX Encoding Info:    Redeclaring text command \ae (encoding TU) on input line 198.
+LaTeX Encoding Info:    Redeclaring text command \dh (encoding TU) on input line 199.
+LaTeX Encoding Info:    Redeclaring text command \textdiv (encoding TU) on input line 200.
+LaTeX Encoding Info:    Redeclaring text command \o (encoding TU) on input line 201.
+LaTeX Encoding Info:    Redeclaring text command \th (encoding TU) on input line 202.
+LaTeX Encoding Info:    Redeclaring text command \DJ (encoding TU) on input line 203.
+LaTeX Encoding Info:    Redeclaring text command \dj (encoding TU) on input line 204.
+LaTeX Encoding Info:    Redeclaring text command \i (encoding TU) on input line 205.
+LaTeX Encoding Info:    Redeclaring text command \IJ (encoding TU) on input line 206.
+LaTeX Encoding Info:    Redeclaring text command \ij (encoding TU) on input line 207.
+LaTeX Encoding Info:    Redeclaring text command \L (encoding TU) on input line 208.
+LaTeX Encoding Info:    Redeclaring text command \l (encoding TU) on input line 209.
+LaTeX Encoding Info:    Redeclaring text command \NG (encoding TU) on input line 210.
+LaTeX Encoding Info:    Redeclaring text command \ng (encoding TU) on input line 211.
+LaTeX Encoding Info:    Redeclaring text command \OE (encoding TU) on input line 212.
+LaTeX Encoding Info:    Redeclaring text command \oe (encoding TU) on input line 213.
+LaTeX Encoding Info:    Redeclaring text command \textflorin (encoding TU) on input line 214.
+LaTeX Encoding Info:    Redeclaring text command \j (encoding TU) on input line 215.
+LaTeX Encoding Info:    Redeclaring text command \textasciicaron (encoding TU) on input line 216.
+LaTeX Encoding Info:    Redeclaring text command \textasciibreve (encoding TU) on input line 217.
+LaTeX Encoding Info:    Redeclaring text command \textacutedbl (encoding TU) on input line 218.
+LaTeX Encoding Info:    Redeclaring text command \textgravedbl (encoding TU) on input line 219.
+LaTeX Encoding Info:    Redeclaring text command \texttildelow (encoding TU) on input line 220.
+LaTeX Encoding Info:    Redeclaring text command \textbaht (encoding TU) on input line 221.
+LaTeX Encoding Info:    Redeclaring text command \SS (encoding TU) on input line 222.
+LaTeX Encoding Info:    Redeclaring text command \textcompwordmark (encoding TU) on input line 223.
+LaTeX Encoding Info:    Redeclaring text command \textendash (encoding TU) on input line 224.
+LaTeX Encoding Info:    Redeclaring text command \textemdash (encoding TU) on input line 225.
+LaTeX Encoding Info:    Redeclaring text command \textnonbreakinghyphen (encoding TU) on input line 226.
+LaTeX Encoding Info:    Redeclaring text command \textfiguredash (encoding TU) on input line 228.
+LaTeX Encoding Info:    Redeclaring text command \texthorizontalbar (encoding TU) on input line 230.
+LaTeX Encoding Info:    Redeclaring text command \textbardbl (encoding TU) on input line 232.
+LaTeX Encoding Info:    Redeclaring text command \textquoteleft (encoding TU) on input line 233.
+LaTeX Encoding Info:    Redeclaring text command \textquoteright (encoding TU) on input line 234.
+LaTeX Encoding Info:    Redeclaring text command \quotesinglbase (encoding TU) on input line 235.
+LaTeX Encoding Info:    Redeclaring text command \textquotedblleft (encoding TU) on input line 236.
+LaTeX Encoding Info:    Redeclaring text command \textquotedblright (encoding TU) on input line 237.
+LaTeX Encoding Info:    Redeclaring text command \quotedblbase (encoding TU) on input line 238.
+LaTeX Encoding Info:    Redeclaring text command \textdagger (encoding TU) on input line 239.
+LaTeX Encoding Info:    Redeclaring text command \textdaggerdbl (encoding TU) on input line 240.
+LaTeX Encoding Info:    Redeclaring text command \textbullet (encoding TU) on input line 241.
+LaTeX Encoding Info:    Redeclaring text command \textellipsis (encoding TU) on input line 242.
+LaTeX Encoding Info:    Redeclaring text command \textperthousand (encoding TU) on input line 243.
+LaTeX Encoding Info:    Redeclaring text command \textpertenthousand (encoding TU) on input line 244.
+LaTeX Encoding Info:    Redeclaring text command \guilsinglleft (encoding TU) on input line 245.
+LaTeX Encoding Info:    Redeclaring text command \guilsinglright (encoding TU) on input line 246.
+LaTeX Encoding Info:    Redeclaring text command \textreferencemark (encoding TU) on input line 247.
+LaTeX Encoding Info:    Redeclaring text command \textinterrobang (encoding TU) on input line 248.
+LaTeX Encoding Info:    Redeclaring text command \textfractionsolidus (encoding TU) on input line 249.
+LaTeX Encoding Info:    Redeclaring text command \textlquill (encoding TU) on input line 250.
+LaTeX Encoding Info:    Redeclaring text command \textrquill (encoding TU) on input line 251.
+LaTeX Encoding Info:    Redeclaring text command \textdiscount (encoding TU) on input line 252.
+LaTeX Encoding Info:    Redeclaring text command \textcolonmonetary (encoding TU) on input line 253.
+LaTeX Encoding Info:    Redeclaring text command \textlira (encoding TU) on input line 254.
+LaTeX Encoding Info:    Redeclaring text command \textnaira (encoding TU) on input line 255.
+LaTeX Encoding Info:    Redeclaring text command \textwon (encoding TU) on input line 256.
+LaTeX Encoding Info:    Redeclaring text command \textdong (encoding TU) on input line 257.
+LaTeX Encoding Info:    Redeclaring text command \texteuro (encoding TU) on input line 258.
+LaTeX Encoding Info:    Redeclaring text command \textpeso (encoding TU) on input line 259.
+LaTeX Encoding Info:    Redeclaring text command \textcelsius (encoding TU) on input line 260.
+LaTeX Encoding Info:    Redeclaring text command \textnumero (encoding TU) on input line 261.
+LaTeX Encoding Info:    Redeclaring text command \textcircledP (encoding TU) on input line 262.
+LaTeX Encoding Info:    Redeclaring text command \textrecipe (encoding TU) on input line 263.
+LaTeX Encoding Info:    Redeclaring text command \textservicemark (encoding TU) on input line 264.
+LaTeX Encoding Info:    Redeclaring text command \texttrademark (encoding TU) on input line 265.
+LaTeX Encoding Info:    Redeclaring text command \textohm (encoding TU) on input line 266.
+LaTeX Encoding Info:    Redeclaring text command \textmho (encoding TU) on input line 267.
+LaTeX Encoding Info:    Redeclaring text command \textestimated (encoding TU) on input line 268.
+LaTeX Encoding Info:    Redeclaring text command \textleftarrow (encoding TU) on input line 269.
+LaTeX Encoding Info:    Redeclaring text command \textuparrow (encoding TU) on input line 270.
+LaTeX Encoding Info:    Redeclaring text command \textrightarrow (encoding TU) on input line 271.
+LaTeX Encoding Info:    Redeclaring text command \textdownarrow (encoding TU) on input line 272.
+LaTeX Encoding Info:    Redeclaring text command \textminus (encoding TU) on input line 273.
+LaTeX Encoding Info:    Redeclaring text command \Hwithstroke (encoding TU) on input line 275.
+LaTeX Encoding Info:    Redeclaring text command \hwithstroke (encoding TU) on input line 276.
+LaTeX Encoding Info:    Redeclaring text command \textasteriskcentered (encoding TU) on input line 277.
+LaTeX Encoding Info:    Redeclaring text command \textsurd (encoding TU) on input line 288.
+LaTeX Encoding Info:    Redeclaring text command \textlangle (encoding TU) on input line 289.
+LaTeX Encoding Info:    Redeclaring text command \textrangle (encoding TU) on input line 290.
+LaTeX Encoding Info:    Redeclaring text command \textblank (encoding TU) on input line 291.
+LaTeX Encoding Info:    Redeclaring text command \textvisiblespace (encoding TU) on input line 292.
+LaTeX Encoding Info:    Redeclaring text command \textopenbullet (encoding TU) on input line 293.
+LaTeX Encoding Info:    Redeclaring text command \textbigcircle (encoding TU) on input line 294.
+LaTeX Encoding Info:    Redeclaring text command \textmusicalnote (encoding TU) on input line 295.
+LaTeX Encoding Info:    Redeclaring text command \textmarried (encoding TU) on input line 296.
+LaTeX Encoding Info:    Redeclaring text command \textdivorced (encoding TU) on input line 297.
+LaTeX Encoding Info:    Redeclaring text command \textinterrobangdown (encoding TU) on input line 298.
+LaTeX Encoding Info:    Redeclaring text command \` (encoding TU) on input line 299.
+LaTeX Encoding Info:    Redeclaring text command \' (encoding TU) on input line 300.
+LaTeX Encoding Info:    Redeclaring text command \^ (encoding TU) on input line 301.
+LaTeX Encoding Info:    Redeclaring text command \~ (encoding TU) on input line 302.
+LaTeX Encoding Info:    Redeclaring text command \= (encoding TU) on input line 303.
+LaTeX Encoding Info:    Redeclaring text command \u (encoding TU) on input line 304.
+LaTeX Encoding Info:    Redeclaring text command \. (encoding TU) on input line 305.
+LaTeX Encoding Info:    Redeclaring text command \" (encoding TU) on input line 306.
+LaTeX Encoding Info:    Redeclaring text command \r (encoding TU) on input line 307.
+LaTeX Encoding Info:    Redeclaring text command \H (encoding TU) on input line 308.
+LaTeX Encoding Info:    Redeclaring text command \v (encoding TU) on input line 309.
+LaTeX Encoding Info:    Redeclaring text command \b (encoding TU) on input line 310.
+LaTeX Encoding Info:    Redeclaring text command \d (encoding TU) on input line 311.
+LaTeX Encoding Info:    Redeclaring text command \c (encoding TU) on input line 312.
+LaTeX Encoding Info:    Redeclaring text command \k (encoding TU) on input line 313.
+LaTeX Encoding Info:    Redeclaring text command \textcommabelow (encoding TU) on input line 314.
+)
+\Cht=\dimen157
+\cht=\dimen158
+\Cdp=\dimen159
+\cdp=\dimen160
+\Cwd=\dimen161
+\cwd=\dimen162
+\Cvs=\dimen163
+\cvs=\dimen164
+\Chs=\dimen165
+\chs=\dimen166
+\cHT=\dimen167
+\dstrutbox=\box54
+\tstrutbox=\box55
+\zstrutbox=\box56
+LaTeX Info: Redefining \strut on input line 71.
+\ltj@@add@fenc@@inner=\luafunction61
+\ltj@@add@kyenc@@inner=\luafunction62
+\ltj@@add@ktenc@@inner=\luafunction63
+\ltj@@is@kyenc@@inner=\luafunction64
+\ltj@@is@ktenc@@inner=\luafunction65
+\ltj@@is@kenc@@inner=\luafunction66
+\ltj@@is@ffam@@inner=\luafunction67
+\ltj@@add@ffam@@inner=\luafunction68
+\ltj@@add@kfam@@inner=\luafunction69
+\ltj@@adjust@baseline@inner=\luafunction70
+LaTeX Info: Redefining \fontencoding on input line 573.
+LaTeX Info: Redefining \fontfamily on input line 619.
+LaTeX Info: Redefining \fontseries on input line 813.
+LaTeX Info: Redefining \fontseriesforce on input line 814.
+LaTeX Info: Redefining \fontshape on input line 822.
+LaTeX Info: Redefining \fontshapeforce on input line 833.
+\ltj@@jfont@@jfmonly@@inner=\luafunction71
+\ltj@@does@alt@set@@inner=\luafunction72
+\ltj@@cipath@clear@inner=\luafunction73
+) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/patches/lltjdefs.sty
+Package: lltjdefs 2024-05-16 Default font settings of LuaTeX-ja
+LaTeX Font Info:    Font shape `JT3/mc/m/n' will be
+(Font)              scaled to size 9.6222pt on input line 69.
+
+(/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/jfm-ujisv.lua)
+LaTeX Font Info:    Font shape `JY3/mc/m/n' will be
+(Font)              scaled to size 9.6222pt on input line 69.
+(save cache: /tmp/texmf-var/luatexja/extra_haranoajimincho-regular.lua.gz)(save cache: /tmp/texmf-var/luatexja/extra_haranoajimincho-regular.luc)
+(/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/jfm-ujis.lua)
+\symmincho=\mathgroup4
+LaTeX Font Info:    Overwriting symbol font `mincho' in version `bold'
+(Font)                  JY3/mc/m/n --> JY3/gt/m/n on input line 78.
+) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/patches/lltjcore.sty
+Package: lltjcore 2026-10-01 Patch to LaTeX2e Kernel for LuaTeX-ja
+\@tombowwidth=\dimen168
+\@TL=\box57
+\@Tl=\box58
+\@TC=\box59
+\@TR=\box60
+\@Tr=\box61
+\@BL=\box62
+\@Bl=\box63
+\@BC=\box64
+\@BR=\box65
+\@Br=\box66
+\@CL=\box67
+\@CR=\box68
+(save cache: /tmp/texmf-var/luatexja/extra_lmmono9-regular.lua.gz)(save cache: /tmp/texmf-var/luatexja/extra_lmmono9-regular.luc)
+\@bannertoken=\toks27
+\@@paperheight=\dimen169
+\@@paperwidth=\dimen170
+\@@topmargin=\dimen171
+LaTeX Info: Redefining \underline on input line 306.
+) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/patches/lltjp-atbegshi.sty
+Package: lltjp-atbegshi 2024-05-14 Patching \shipout hooks for LuaTeX-ja
+\l__platex_shipout_dummy_box=\box69
+) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/patches/lltjp-fontspec.sty) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/patches/lltjp-geometry.sty
+Package: lltjp-geometry 2026-10-16 Patch to geometry for LuaTeX-ja with vertical writing mode
+ (/usr/local/texlive/2026/texmf-dist/tex/generic/iftex/ifluatex.sty
+Package: ifluatex 2019/10/25 v1.5 ifluatex legacy package. Use iftex instead.
+)))
+\ltj@temp@cctb=\catcodetable16
+) (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/luatexja-compat.sty
+Package: luatexja-compat 2025-09-21 Compatibility with pTeX
+(load cache: ltj-jisx0208.luc)
+\hour=\count304
+\minute=\count305
+))(save cache: /tmp/texmf-var/luatexja/extra_lmroman17-regular.lua.gz)(save cache: /tmp/texmf-var/luatexja/extra_lmroman17-regular.luc)
+LaTeX Font Info:    Font shape `JT3/mc/m/n' will be
+(Font)              scaled to size 15.39551pt on input line 16.
+LaTeX Font Info:    Font shape `JY3/mc/m/n' will be
+(Font)              scaled to size 15.39551pt on input line 16.
+ (/usr/local/texlive/2026/texmf-dist/tex/luatex/luatexja/addons/luatexja-fontspec-29e.sty
+Package: luatexja-fontspec-29e 2026-09-29 fontspec support of LuaTeX-ja
+\g__ltj_fontspec_altnumber_int=\count306
+ (/usr/local/texlive/2026/texmf-dist/tex/latex/regexpatch/regexpatch.sty
+Package: regexpatch 2021/03/21 v0.2f Extending etoolbox patching commands
+ (/usr/local/texlive/2026/texmf-dist/tex/latex/l3packages/xparse/xparse.sty
+Package: xparse 2025-10-09 L3 Experimental document command parser
+))))
+luaotfload | cache : Lookup cache loaded from /tmp/texmf-var/luatex-cache/generic/names/luaotfload-lookup-cache.luc.
+luaotfload | cache : Error writing cache.(load cache: extra_notoserifcjktc-regular.luc)
+luaotfload | cache : Error writing cache.
+
+Package fontspec Info: 
+(fontspec)             Noto Serif CJK TC scale = 0.96221923828125.
+
+luaotfload | cache : Error writing cache.
+luaotfload | cache : Error writing cache.
+
+Package fontspec Info: 
+(fontspec)             Could not resolve font "Noto Serif CJK TC/BI" (it
+(fontspec)             probably doesn't exist).
+
+luaotfload | cache : Error writing cache.(load cache: extra_notoserifcjktc-bold.luc)
+luaotfload | cache : Error writing cache.
+
+Package fontspec Info: 
+(fontspec)             Could not resolve font "Noto Serif CJK TC/I" (it
+(fontspec)             probably doesn't exist).
+
+luaotfload | cache : Error writing cache.
+
+Package fontspec Info: 
+(fontspec)             Noto Serif CJK TC scale = 0.96221923828125.
+
+LaTeX Font Info:    Font shape `JY3/mc/m/n' will be
+(Font)              scaled to size 9.6222pt on input line 5.
+
+Package fontspec Info: 
+(fontspec)             Noto Serif CJK TC scale = 0.96221923828125.
+
+luaotfload | cache : Error writing cache.
+
+Package fontspec Info: 
+(fontspec)             Noto Serif CJK TC/B scale = 0.96221923828125.
+
+
+Package fontspec Info: 
+(fontspec)             Noto Serif CJK TC/B scale = 0.96221923828125.
+
+
+Package fontspec Info: 
+(fontspec)             Font family 'NotoSerifCJKTC(0)' created for font 'Noto
+(fontspec)             Serif CJK TC' with options
+(fontspec)             [YokoFeatures={JFM=ujis},TateFeatures={JFM=ujisv},Scale=0.96221923828125,Kerning=Off,Script=CJK].
+(fontspec)              
+(fontspec)              This font family consists of the following NFSS
+(fontspec)             series/shapes:
+(fontspec)              
+
+LaTeX Font Info:    Redeclaring symbol font `mincho' on input line 5.
+LaTeX Font Info:    Overwriting symbol font `mincho' in version `normal'
+(Font)                  JY3/mc/m/n --> JY3/NotoSerifCJKTC(0)/m/n on input line 5.
+LaTeX Font Info:    Overwriting symbol font `mincho' in version `bold'
+(Font)                  JY3/gt/m/n --> JY3/NotoSerifCJKTC(0)/m/n on input line 5.
+LaTeX Font Info:    Overwriting symbol font `mincho' in version `bold'
+(Font)                  JY3/NotoSerifCJKTC(0)/m/n --> JY3/NotoSerifCJKTC(0)/b/n on input line 5.
+LaTeX Font Info:    Font shape `JT3/NotoSerifCJKTC(0)/m/n' will be
+(Font)              scaled to size 9.6222pt on input line 5.
+LaTeX Font Info:    Font shape `JY3/NotoSerifCJKTC(0)/m/n' will be
+(Font)              scaled to size 9.6222pt on input line 5.
+luaotfload | cache : Error writing cache. (./.out/main.aux)
+\openout1 = main.aux
+
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for TU/lmr/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for JY3/mc/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+LaTeX Font Info:    Checking defaults for JT3/mc/m/n on input line 5.
+LaTeX Font Info:    ... okay on input line 5.
+
+Package fontspec Info: 
+(fontspec)             Adjusting the maths setup (use [no-math] to avoid
+(fontspec)             this).
+
+\symlegacymaths=\mathgroup5
+LaTeX Font Info:    Overwriting symbol font `legacymaths' in version `bold'
+(Font)                  OT1/cmr/m/n --> OT1/cmr/bx/n on input line 5.
+LaTeX Font Info:    Redeclaring math accent \acute on input line 5.
+LaTeX Font Info:    Redeclaring math accent \grave on input line 5.
+LaTeX Font Info:    Redeclaring math accent \ddot on input line 5.
+LaTeX Font Info:    Redeclaring math accent \tilde on input line 5.
+LaTeX Font Info:    Redeclaring math accent \bar on input line 5.
+LaTeX Font Info:    Redeclaring math accent \breve on input line 5.
+LaTeX Font Info:    Redeclaring math accent \check on input line 5.
+LaTeX Font Info:    Redeclaring math accent \hat on input line 5.
+LaTeX Font Info:    Redeclaring math accent \dot on input line 5.
+LaTeX Font Info:    Redeclaring math accent \mathring on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \colon on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Gamma on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Delta on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Theta on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Lambda on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Xi on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Pi on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Sigma on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Upsilon on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Phi on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Psi on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \Omega on input line 5.
+LaTeX Font Info:    Redeclaring math symbol \mathdollar on input line 5.
+LaTeX Font Info:    Redeclaring symbol font `operators' on input line 5.
+LaTeX Font Info:    Encoding `OT1' has changed to `TU' for symbol font
+(Font)              `operators' in the math version `normal' on input line 5.
+LaTeX Font Info:    Overwriting symbol font `operators' in version `normal'
+(Font)                  OT1/cmr/m/n --> TU/lmr/m/n on input line 5.
+LaTeX Font Info:    Encoding `OT1' has changed to `TU' for symbol font
+(Font)              `operators' in the math version `bold' on input line 5.
+LaTeX Font Info:    Overwriting symbol font `operators' in version `bold'
+(Font)                  OT1/cmr/bx/n --> TU/lmr/m/n on input line 5.
+LaTeX Font Info:    Overwriting symbol font `operators' in version `normal'
+(Font)                  TU/lmr/m/n --> TU/lmr/m/n on input line 5.
+LaTeX Font Info:    Overwriting math alphabet `\mathit' in version `normal'
+(Font)                  OT1/cmr/m/it --> TU/lmr/m/it on input line 5.
+LaTeX Font Info:    Overwriting math alphabet `\mathbf' in version `normal'
+(Font)                  OT1/cmr/bx/n --> TU/lmr/b/n on input line 5.
+LaTeX Font Info:    Overwriting math alphabet `\mathsf' in version `normal'
+(Font)                  OT1/cmss/m/n --> TU/lmss/m/n on input line 5.
+LaTeX Font Info:    Overwriting math alphabet `\mathtt' in version `normal'
+(Font)                  OT1/cmtt/m/n --> TU/lmtt/m/n on input line 5.
+LaTeX Font Info:    Overwriting symbol font `operators' in version `bold'
+(Font)                  TU/lmr/m/n --> TU/lmr/b/n on input line 5.
+LaTeX Font Info:    Overwriting math alphabet `\mathit' in version `bold'
+(Font)                  OT1/cmr/bx/it --> TU/lmr/b/it on input line 5.
+LaTeX Font Info:    Overwriting math alphabet `\mathsf' in version `bold'
+(Font)                  OT1/cmss/bx/n --> TU/lmss/b/n on input line 5.
+LaTeX Font Info:    Overwriting math alphabet `\mathtt' in version `bold'
+(Font)                  OT1/cmtt/m/n --> TU/lmtt/b/n on input line 5.
+ [1
+
+{/usr/local/texlive/2026/texmf-var/fonts/map/pdftex/updmap/pdftex.map}] (./.out/main.aux)
+ ***********
+LaTeX2e <2026-06-01>
+L3 programming layer <2021/03/21>
+ ***********
+)
+
+Here is how much of LuaTeX's memory you used:
+ 5497 strings out of 475604
+ 125244,953878 words of node,token memory allocated
+ 787 words of node memory still in use:
+   7 hlist, 1 vlist, 4 rule, 2 glue, 3 kern, 1 glyph, 129 attribute, 48 glue_spec, 20 attribute_list, 1 write, 9 user_defined nodes
+   avail lists: 1:5,2:684,3:8,4:26,5:29,6:2,7:72,9:34,11:4
+ 28308 multiletter control sequences out of 65536+600000
+ 27 fonts using 82596711 bytes
+ 106i,5n,109p,2080b,362s stack positions out of 10000i,1000n,20000p,200000b,200000s
+</usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc></usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc></usr/local/texlive/2026/texmf-dist/fonts/opentype/public/lm/lmroman10-regular.otf>
+Output written on main.pdf (1 page, 5980 bytes).
+
+PDF statistics: 22 PDF objects out of 1000 (max. 8388607)
+ 12 compressed objects within 1 object stream
+ 0 named destinations out of 1000 (max. 1048576)
+ 1 words of extra memory for PDF output out of 10000 (max. 100000000)
+

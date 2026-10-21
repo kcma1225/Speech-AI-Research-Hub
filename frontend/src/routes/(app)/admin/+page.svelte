@@ -8,10 +8,11 @@
   import PageHeader from "#lib/components/ui/PageHeader.svelte";
   import InvitesPanel from "#lib/components/manage/InvitesPanel.svelte";
   import MembersPanel from "#lib/components/manage/MembersPanel.svelte";
+  import AdminSetupCard from "#lib/components/manage/AdminSetupCard.svelte";
 
-  const isOwner = $derived(session.user?.role === "owner");
+  const isAdmin = $derived(session.user?.role === "admin");
   $effect(() => {
-    if (session.user && !isOwner) void goto("/", { replace: true });
+    if (session.user && !isAdmin) void goto("/", { replace: true });
   });
 
   const tabs = [
@@ -27,8 +28,9 @@
 
 <svelte:head><title>{t("nav.admin")} · Speech-AI Hub</title></svelte:head>
 
-{#if isOwner}
+{#if isAdmin}
   <PageHeader title={t("nav.admin")} subtitle={t("manage.admin.subtitle")} />
+  <AdminSetupCard />
   <Tabs.Root bind:value={tab} class="flex flex-col gap-5">
     <Tabs.List class="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 [scrollbar-width:none] sm:mx-0 sm:px-0">
       {#each tabs as item (item.value)}

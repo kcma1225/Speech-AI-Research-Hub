@@ -12,7 +12,7 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import InviteSheet from "./InviteSheet.svelte";
-  import { roleLabel, roleTone, stateTone, tc, type Invitation } from "./manage.ts";
+  import { adminTone, roleLabel, roleTone, stateTone, tc, type Invitation } from "./manage.ts";
 
   let invitations = $state<Invitation[] | null>(null);
   let error = $state<string | null>(null);
@@ -137,7 +137,7 @@
         {#each shown as invite (invite.id)}
           <tr class="border-b border-line last:border-0 hover:bg-surface-2/60 {invite.state === 'active' ? '' : 'text-ink-3'}">
             <td class="py-3 pl-6">{@render statePill(invite)}</td>
-            <td class="py-3"><Pill tone={roleTone[invite.role]}>{t(roleLabel(invite.role))}</Pill></td>
+            <td class="py-3"><span class="inline-flex flex-wrap gap-1"><Pill tone={roleTone[invite.role]}>{t(roleLabel(invite.role))}</Pill>{#if invite.is_admin && invite.role !== "admin"}<Pill tone={adminTone}>{t("manage.invites.adminSuffix")}</Pill>{/if}</span></td>
             <td class="py-3">{@render uses(invite)}</td>
             <td class="py-3 whitespace-nowrap" title={invite.state === "revoked" && invite.revoked_at ? fullDate(invite.revoked_at) : invite.expires_at ? fullDate(invite.expires_at) : undefined}>{expiry(invite)}</td>
             <td class="max-w-48 py-3">{@render joined(invite)}</td>
@@ -154,7 +154,7 @@
           <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-2">
               {@render statePill(invite)}
-              <Pill tone={roleTone[invite.role]}>{t(roleLabel(invite.role))}</Pill>
+              <Pill tone={roleTone[invite.role]}>{t(roleLabel(invite.role))}</Pill>{#if invite.is_admin && invite.role !== "admin"}<Pill tone={adminTone}>{t("manage.invites.adminSuffix")}</Pill>{/if}
             </div>
             {@render revokeButton(invite)}
           </div>

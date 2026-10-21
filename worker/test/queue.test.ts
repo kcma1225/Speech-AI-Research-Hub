@@ -2,6 +2,8 @@ import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Queue } from "../src/queue.js";
 
+const KINDS = ["media_transcode", "slide_render"];
+
 /**
  * Runs against a real database with the v2 schema applied and the hub_worker role:
  *   TEST_ADMIN_DB_URL=postgres://postgres:pw@127.0.0.1:55434/research_hub
@@ -34,7 +36,7 @@ describe.skipIf(!enabled)("Queue (postgres)", () => {
     await insert("run_after=now() + interval '1 hour'");
     const a = new Queue(worker, "a");
     const b = new Queue(worker, "b");
-    const [x, y] = await Promise.all([a.claim(), b.claim()]);
+    const [x, y] = await Promise.all([a.claim(KINDS), b.claim(KINDS)]);
     const claimed = [x, y].filter(Boolean);
     expect(claimed).toHaveLength(1);
     expect(claimed[0]!.id).toBe(first);
@@ -45,7 +47,7 @@ describe.skipIf(!enabled)("Queue (postgres)", () => {
   it("heartbeat reports cancel and lost lease; only the lock holder can finish", async () => {
     const id = await insert();
     const q = new Queue(worker, "a");
-    await q.claim();
+    await q.claim(KINDS);
     expect(await q.heartbeat(id, "音訊轉碼", 40)).toEqual({ cancelRequested: false });
     await admin.query("UPDATE jobs SET cancel_requested=true WHERE id=$1", [id]);
     expect(await q.heartbeat(id, "音訊轉碼", 30)).toEqual({ cancelRequested: true });
@@ -64,7 +66,7 @@ describe.skipIf(!enabled)("Queue (postgres)", () => {
     await listener.query("LISTEN jobs_finished");
     const notified = new Promise<string>(resolve => listener.on("notification", message => resolve(message.payload ?? "")));
     const q = new Queue(worker, "a");
-    await q.claim();
+    await q.claim(KINDS);
     await q.succeed(id, { ok: 1 });
     expect(await notified).toBe(id);
     await listener.end();
@@ -76,14 +78,14 @@ describe.skipIf(!enabled)("Queue (postgres)", () => {
   it("retryOrFail requeues with backoff, then fails when attempts are exhausted", async () => {
     const id = await insert("max_attempts=2");
     const q = new Queue(worker, "a");
-    const job = (await q.claim())!;
+    const job = (await q.claim(KINDS))!;
     expect(await q.retryOrFail(job, "s3 down")).toBe("requeued");
     let current = await row(id);
     expect(current.status).toBe("queued");
     expect(current.locked_by).toBeNull();
     expect(new Date(current.run_after).getTime()).toBeGreaterThan(Date.now() + 10_000);
     await admin.query("UPDATE jobs SET run_after=now() WHERE id=$1", [id]);
-    const again = (await q.claim())!;
+    const again = (await q.claim(KINDS))!;
     expect(again.attempts).toBe(2);
     expect(await q.retryOrFail(again, "s3 down")).toBe("failed");
     current = await row(id);
@@ -94,7 +96,7 @@ describe.skipIf(!enabled)("Queue (postgres)", () => {
   it("release hands a job back without consuming an attempt", async () => {
     const id = await insert();
     const q = new Queue(worker, "a");
-    const job = (await q.claim())!;
+    const job = (await q.claim(KINDS))!;
     await q.release(job);
     expect(await row(id)).toMatchObject({ status: "queued", attempts: 0, locked_by: null });
   });

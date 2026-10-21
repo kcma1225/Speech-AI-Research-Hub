@@ -1,5 +1,5 @@
 import { buildApp } from "./app.js";
-import { bootstrapOwner } from "./bootstrap.js";
+import { bootstrapAdmin } from "./bootstrap.js";
 import { loadConfig } from "./config.js";
 import { createPool } from "./db.js";
 import { JobFinalizer } from "./jobs/queue.js";
@@ -12,7 +12,7 @@ const storage = new Storage(config.S3_BUCKET, config);
 const app = await buildApp({ config, db, storage });
 
 await migrate(db, app.log);
-await bootstrapOwner(db, config);
+await bootstrapAdmin(db, config);
 await storage.ensureBucket();
 
 const finalizer = new JobFinalizer(db, app.log);

@@ -10,6 +10,8 @@ RUN npm run build && npm prune --omit=dev
 FROM node:22.21.1-alpine3.22
 ENV NODE_ENV=production
 WORKDIR /app
+# ffmpeg: ASR chunking in ai-worker (same image). claude CLI: the experimental `claude-cli` provider.
+RUN apk add --no-cache ffmpeg && npm install -g @anthropic-ai/claude-code@2.1.304 && npm cache clean --force
 # Runs as the image's unprivileged `node` user (uid 1000).
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist

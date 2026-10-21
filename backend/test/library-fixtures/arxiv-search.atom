@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <id>https://arxiv.org/api/xpH5u0yCRxkLmVPyR3PsiZ+vO9g</id>
+  <title>arXiv Query: search_query=all:conformer AND all:speech&amp;id_list=&amp;start=0&amp;max_results=2</title>
+  <updated>2026-10-21T00:00:00Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=all:conformer&amp;start=0&amp;max_results=2" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>2</opensearch:itemsPerPage>
+  <opensearch:totalResults>1288</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2005.08100v1</id>
+    <title>Conformer: Convolution-augmented Transformer for Speech
+  Recognition</title>
+    <updated>2020-05-16T23:55:21Z</updated>
+    <link href="https://arxiv.org/abs/2005.08100v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2005.08100v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>  Recently Transformer and Convolution neural network (CNN) based models have
+shown promising results in Automatic Speech Recognition (ASR).
+</summary>
+    <category term="eess.AS" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.SD" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2020-05-16T23:55:21Z</published>
+    <arxiv:comment>Submitted to Interspeech 2020</arxiv:comment>
+    <arxiv:primary_category term="eess.AS"/>
+    <author><name>Anmol Gulati</name></author>
+    <author><name>James Qin</name></author>
+    <author><name>Chung-Cheng Chiu</name><arxiv:affiliation>Google</arxiv:affiliation></author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2110.04934v2</id>
+    <title>Wav2vec-Switch: Contrastive Learning from Original-noisy Speech Pairs for
+  Robust Speech Recognition</title>
+    <updated>2022-02-10T01:02:03Z</updated>
+    <link href="https://arxiv.org/abs/2110.04934v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2110.04934v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>The goal of self-supervised learning (SSL) for automatic speech recognition (ASR) is to learn good speech representations.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-10-11T00:00:00Z</published>
+    <arxiv:doi>10.1109/ICASSP43922.2022.9747077</arxiv:doi>
+    <arxiv:journal_ref>ICASSP 2022</arxiv:journal_ref>
+    <arxiv:primary_category term="cs.CL"/>
+    <author><name>Yiming Wang</name></author>
+    <author><name>Jinyu Li</name></author>
+  </entry>
+</feed>

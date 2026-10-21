@@ -3,6 +3,7 @@ import { registerFinalizer, type SlideRenderPayload, type SlideRenderResult } fr
 import { slideUrls } from "../lib/slides/access.js";
 import type { NotificationPayload } from "../lib/notify.js";
 import type { Queryable } from "../db.js";
+import { recordActivity } from "../lib/studies/activity.js";
 
 /** The worker's thumbnail key, if it is a plain key inside this version's output prefix; otherwise none. */
 export function validThumbnailKey(key: unknown, outputPrefix: string): string | null {
@@ -28,8 +29,8 @@ export const REVIEW_NOTICE_TITLE = "簡報轉換完成，請確認";
 export function registerSlideFinalizer(app: FastifyInstance) {
   registerFinalizer("slide_render", async (job, { client }) => {
     const payload = job.payload as SlideRenderPayload;
-    const version = (await client.query<{ id: string; version: number; project_id: string; output_prefix: string; source_type: string; status: string; created_by: string | null; title: string; slug: string }>(
-      `SELECT v.id,v.version,v.project_id,v.output_prefix,v.source_type,v.status,v.created_by,p.title,p.slug FROM slide_versions v JOIN slide_projects p ON p.id=v.project_id
+    const version = (await client.query<{ id: string; version: number; deck_id: string; output_prefix: string; source_type: string; status: string; created_by: string | null; title: string; slug: string; study_id: string }>(
+      `SELECT v.id,v.version,v.deck_id,v.output_prefix,v.source_type,v.status,v.created_by,p.title,p.slug,p.study_id FROM slide_versions v JOIN decks p ON p.id=v.deck_id
         WHERE v.id=$1 AND v.job_id=$2 FOR UPDATE OF v, p`,
       [payload.versionId, job.id],
     )).rows[0];
@@ -73,6 +74,7 @@ export function registerSlideFinalizer(app: FastifyInstance) {
         notice = { kind: "slide", title: REVIEW_NOTICE_TITLE, body: `${version.title} · Version ${version.version}`, url: slideUrls.player(version.slug) };
       } else {
         await activateIfNewest(client, version);
+        await recordDeckPublished(client, version, version.created_by);
         notice = { kind: "slide", title: "簡報編譯完成", body: `${version.title} · Version ${version.version}`, url: slideUrls.player(version.slug) };
       }
     } else {
@@ -90,11 +92,21 @@ export function registerSlideFinalizer(app: FastifyInstance) {
 }
 
 /** Makes `version` active unless an even newer version already is (the activation rule). */
-export async function activateIfNewest(client: Queryable, version: { id: string; project_id: string; version: number }) {
+export async function activateIfNewest(client: Queryable, version: { id: string; deck_id: string; version: number }) {
   await client.query(
-    `UPDATE slide_projects SET active_version_id=$1,updated_at=now()
+    `UPDATE decks SET active_version_id=$1,updated_at=now()
       WHERE id=$2 AND (active_version_id IS NULL OR NOT EXISTS (
-        SELECT 1 FROM slide_versions WHERE id=slide_projects.active_version_id AND version>$3))`,
-    [version.id, version.project_id, version.version],
+        SELECT 1 FROM slide_versions WHERE id=decks.active_version_id AND version>$3))`,
+    [version.id, version.deck_id, version.version],
   );
+}
+
+/** `deck_published` study activity for a version that just became published. */
+export async function recordDeckPublished(client: Queryable, version: { id: string; deck_id: string; version: number }, actorId: string | null) {
+  const deck = (await client.query<{ study_id: string; title: string; slug: string }>("SELECT study_id,title,slug FROM decks WHERE id=$1", [version.deck_id])).rows[0];
+  if (!deck) return;
+  await recordActivity(client, {
+    studyId: deck.study_id, actorId, kind: "deck_published", title: `${deck.title} v${version.version}`,
+    url: `/slides/${version.deck_id}`, targetType: "deck", targetId: version.deck_id, metadata: { versionId: version.id },
+  });
 }

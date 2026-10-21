@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { JobInputError, tail, throwIfAborted } from "../errors.js";
-import { ProgressParser, parseDuration, progressPercent, transcodeArgs } from "../ffmpeg.js";
+import { ProgressParser, hasVideoStream, parseDuration, progressPercent, streamTypesArgs, transcodeArgs } from "../ffmpeg.js";
 import { PeakAccumulator, peakArgs } from "../peaks.js";
 import { run } from "../process.js";
 import { STAGES, type MediaTranscodeResult } from "../types.js";
@@ -13,6 +13,10 @@ const payloadSchema = z.object({
   sourceKey: z.string().regex(/^media\/uploads\/[0-9a-f-]{36}\/source$/),
   outputKey: z.string().regex(/^media\/items\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.m4a$/),
   fileName: z.string().max(500),
+  /** Further recorder parts (`media/uploads/<id>/part-<n>`), concatenated after `sourceKey`. */
+  extraSourceKeys: z.array(z.string().regex(/^media\/uploads\/[0-9a-f-]{36}\/part-\d{1,3}$/)).max(50).optional(),
+  /** Keep `sourceKey` when it contains video (playback copy). */
+  keepSource: z.boolean().optional(),
 });
 
 const TRANSCODE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
@@ -22,25 +26,36 @@ export const mediaTranscode: Handler = async (raw, context) => {
   const { storage, signal, workDir, progress, log } = context;
   const payload = payloadSchema.safeParse(raw);
   if (!payload.success) throw new JobInputError("工作內容不正確。");
-  const { sourceKey, outputKey } = payload.data;
-  const input = path.join(workDir, "source");
+  const { sourceKey, outputKey, extraSourceKeys = [], keepSource = false } = payload.data;
+  const sources = [sourceKey, ...extraSourceKeys];
+  const inputs = sources.map((_, i) => path.join(workDir, i === 0 ? "source" : `part-${i}`));
   const output = path.join(workDir, "output.m4a");
 
   progress(STAGES.analyze, 0);
-  await storage.download(sourceKey, input, signal);
-  throwIfAborted(signal);
+  for (const [i, key] of sources.entries()) {
+    await storage.download(key, inputs[i]!, signal);
+    throwIfAborted(signal);
+  }
 
-  const probe = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input], {
-    timeoutMs: 30_000,
-    signal,
-    keepLog: 2000,
-  });
-  const durationSeconds = probe.code === 0 ? parseDuration(probe.log) : null;
+  let durationSeconds: number | null = 0;
+  for (const input of inputs) {
+    const probe = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input], {
+      timeoutMs: 30_000,
+      signal,
+      keepLog: 2000,
+    });
+    const d = probe.code === 0 ? parseDuration(probe.log) : null;
+    durationSeconds = d === null || durationSeconds === null ? null : durationSeconds + d;
+  }
+  if (durationSeconds === 0) durationSeconds = null;
+  const streams = await run("ffprobe", streamTypesArgs(inputs[0]!), { timeoutMs: 30_000, signal, keepLog: 4000 });
+  const hasVideo = streams.code === 0 && hasVideoStream(streams.log);
+  if (streams.code === 0 && !/^audio\b/m.test(streams.log)) throw new JobInputError(hasVideo ? "影片中沒有音軌。" : "媒體檔沒有可用的音訊。");
 
   progress(STAGES.transcode, 0);
   const parser = new ProgressParser();
   let last = -1;
-  const result = await run("ffmpeg", transcodeArgs(input, output), {
+  const result = await run("ffmpeg", transcodeArgs(inputs.length > 1 ? inputs : inputs[0]!, output), {
     timeoutMs: TRANSCODE_TIMEOUT_MS,
     signal,
     onStdout: chunk => {
@@ -58,16 +73,24 @@ export const mediaTranscode: Handler = async (raw, context) => {
     throw new JobInputError("無法解析媒體檔。");
   }
   const { size } = await stat(output);
+  // Browser recordings (streamed WebM) carry no duration: measure the transcoded file instead.
+  if (durationSeconds === null) {
+    const probe = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", output], { timeoutMs: 30_000, signal, keepLog: 2000 });
+    durationSeconds = probe.code === 0 ? parseDuration(probe.log) : null;
+  }
   if (size === 0) throw new JobInputError("媒體檔沒有可用的音訊。");
   const peaks = await computePeaks(output, context);
 
   progress(STAGES.upload, 96);
   await storage.uploadFile(outputKey, output, "audio/mp4", signal);
   throwIfAborted(signal);
-  // The upload is no longer needed; a failed delete must not fail a finished transcode.
-  await storage.delete(sourceKey).catch(error => log.warn({ err: error, key: sourceKey }, "could not delete media upload"));
+  // The uploads are no longer needed (except a video kept for playback); a failed delete must not fail the job.
+  const keptSource = keepSource && hasVideo;
+  for (const key of keptSource ? extraSourceKeys : sources) {
+    await storage.delete(key).catch(error => log.warn({ err: error, key }, "could not delete media upload"));
+  }
   progress(STAGES.done, 100);
-  return { outputKey, bytes: size, durationSeconds, ...(peaks ? { peaks } : {}) } satisfies MediaTranscodeResult;
+  return { outputKey, bytes: size, durationSeconds, ...(peaks ? { peaks } : {}), hasVideo, keptSource } satisfies MediaTranscodeResult;
 };
 
 /**

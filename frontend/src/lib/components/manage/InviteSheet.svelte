@@ -8,12 +8,12 @@
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import Switch from "#lib/components/ui/Switch.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
-  import { expiryChoices, grantableRoles, roleLabel, type ExpiryChoice, type GrantableRole, type Invitation } from "./manage.ts";
+  import { expiryChoices, invitableRoles, roleLabel, type ExpiryChoice, type InvitableRole, type Invitation } from "./manage.ts";
 
   /** Create-invitation sheet. After creation it shows the raw link once; closing forgets it. */
   let { open = $bindable(false), onCreated }: { open?: boolean; onCreated: (invitation: Invitation) => void } = $props();
 
-  let role = $state<GrantableRole>("member");
+  let role = $state<InvitableRole>("student");
   let expiresIn = $state<ExpiryChoice>("7d");
   let singleUse = $state(true);
   let busy = $state(false);
@@ -22,12 +22,16 @@
   let copied = $state(false);
   let linkInput = $state<HTMLTextAreaElement | null>(null);
 
-  // Reset when the sheet closes so the raw link is never shown again.
+  // Reset when the sheet closes so the raw link is never shown again, and so the next invitation starts from the
+  // safe defaults (never silently inherits "professor" or the admin flag from the previous one).
   $effect(() => {
     if (!open) {
       created = null;
       copied = false;
       error = null;
+      role = "student";
+      expiresIn = "7d";
+      singleUse = true;
     }
   });
 
@@ -104,7 +108,7 @@
       <form id="invite-form" class="flex flex-col gap-6 pt-2" onsubmit={submit}>
         <div class="flex flex-col gap-2">
           <span class="text-[13px] font-medium text-ink-2">{t("manage.invites.field.role")}</span>
-          <Segmented bind:value={role} label={t("manage.invites.field.role")} class="w-full" options={grantableRoles.map(r => ({ value: r, label: t(roleLabel(r)) }))} />
+          <Segmented bind:value={role} label={t("manage.invites.field.role")} class="w-full" options={invitableRoles.map(r => ({ value: r, label: t(roleLabel(r)) }))} />
           <p class="text-[12.5px] text-ink-3">{t(`manage.role.hint.${role}`)}</p>
         </div>
         <div class="flex flex-col gap-2">

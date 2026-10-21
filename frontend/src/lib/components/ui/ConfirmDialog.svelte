@@ -31,6 +31,9 @@
     try {
       await onConfirm();
       open = false;
+    } catch {
+      // The caller shows the error (toast or description); the dialog stays open. Not rethrown: an unhandled
+      // rejection from a click handler only ends up as a console error.
     } finally {
       busy = false;
     }

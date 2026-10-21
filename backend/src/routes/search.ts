@@ -1,46 +1,57 @@
+/** Global search (docs/architecture.md "Search"): `GET /api/search`, `GET /api/search/status`. */
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { requireUser } from "../lib/auth.js";
-import { parse } from "../lib/http.js";
-import { markdownExcerpt } from "../lib/notes/excerpt.js";
-import { escapeLike } from "../lib/notes/items.js";
+import { badRequest, notFound, parse } from "../lib/http.js";
+import { findStudy, STUDY_MISSING } from "../lib/studies/access.js";
+import { search, searchMode, searchSources } from "../lib/search/index.js";
+import { MAX_QUERY_LENGTH } from "../lib/search/text.js";
 
-const LIMIT = 6;
-const searchQuery = z.object({ q: z.string().trim().min(1).max(100) });
+const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const query = z.object({
+  q: z.string().max(MAX_QUERY_LENGTH * 2).default(""),
+  types: z.string().max(200).optional(),
+  studyId: z.string().min(1).max(80).optional(),
+  author: z.union([z.literal("me"), z.uuid()]).optional(),
+  from: date.optional(),
+  to: date.optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+  mode: z.enum(["auto", "keyword"]).optional(),
+});
 
-/** Quick search (command palette): decks, notes and tags whose names contain `q`, newest first. */
-const search: FastifyPluginAsync = async app => {
+const searchRoutes: FastifyPluginAsync = async (app) => {
   app.get("/search", async (request, reply) => {
-    await requireUser(request);
-    const { q } = parse(searchQuery, request.query, "請輸入 1–100 字的搜尋內容。");
-    const pattern = `%${escapeLike(q)}%`;
-    const [slides, notes, tags] = await Promise.all([
-      app.db.query<{ id: string; title: string; slug: string }>(
-        `SELECT id,title,slug FROM slide_projects WHERE title ILIKE $1 OR slug ILIKE $1
-          ORDER BY updated_at DESC, id LIMIT ${LIMIT}`,
-        [pattern],
-      ),
-      app.db.query<{ id: string; title: string; content: string; audio_name: string | null; has_audio: boolean }>(
-        `SELECT id,title,left(content,4000) AS content,audio_name,(audio_key IS NOT NULL) AS has_audio FROM items
-          WHERE title ILIKE $1 OR content ILIKE $1
-          ORDER BY updated_at DESC, id LIMIT ${LIMIT}`,
-        [pattern],
-      ),
-      app.db.query<{ id: string; name: string; kind: "note" | "slide" }>(
-        `SELECT id,name,kind FROM (
-           SELECT id,name,'note' AS kind,created_at FROM tags WHERE name ILIKE $1
-           UNION ALL
-           SELECT id,name,'slide' AS kind,created_at FROM slide_tags WHERE name ILIKE $1
-         ) t ORDER BY created_at DESC, id LIMIT ${LIMIT}`,
-        [pattern],
-      ),
-    ]);
-    return reply.header("Cache-Control", "no-store").send({
-      slides: slides.rows,
-      notes: notes.rows.map(row => ({ id: row.id, title: row.title, excerpt: markdownExcerpt(row.content) || row.audio_name || "", hasAudio: row.has_audio })),
-      tags: tags.rows,
+    const user = await requireUser(request);
+    const input = parse(query, request.query, "搜尋條件不正確。");
+    const known = searchSources().map((s) => s.type);
+    const types = input.types
+      ? input.types.split(",").map((t) => t.trim()).filter(Boolean)
+      : undefined;
+    if (types?.some((t) => !known.includes(t))) throw badRequest("不支援的搜尋類型。");
+    let studyId: string | undefined;
+    if (input.studyId) {
+      const study = await findStudy(app.db, input.studyId);
+      if (!study) throw notFound(STUDY_MISSING);
+      studyId = study.id;
+    }
+    const result = await search(app.db, input.q, {
+      types,
+      studyId,
+      authorId: input.author === "me" ? user.id : input.author,
+      from: input.from,
+      to: input.to,
+      limit: input.limit,
+      mode: input.mode,
+      user,
     });
+    return reply.header("Cache-Control", "no-store").send(result);
+  });
+
+  app.get("/search/status", async (request, reply) => {
+    await requireUser(request);
+    const st = await searchMode();
+    return reply.header("Cache-Control", "no-store").send({ search_mode: st.mode, notice_zh: st.reason_zh, types: searchSources().map((s) => s.type) });
   });
 };
 
-export default search;
+export default searchRoutes;

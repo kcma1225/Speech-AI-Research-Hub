@@ -1,16 +1,14 @@
 <script lang="ts">
   import { ArrowUpRight, ChevronRight } from "@lucide/svelte";
-  import { manageNav, type NavItem } from "#lib/nav.ts";
+  import { canSee, hrefOf as resolveHref, manageNav, type NavItem } from "#lib/nav.ts";
   import { session } from "#lib/stores/session.svelte.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import JobsWidget from "./JobsWidget.svelte";
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
-  const items = $derived(
-    manageNav.filter(item => (!item.roles || (session.user && item.roles.includes(session.user.role))) && (!item.external || session.config.latexUrl)),
-  );
-  const hrefOf = (item: NavItem) => (item.key === "latex" ? session.config.latexUrl! : item.href);
+  const items = $derived(manageNav.filter(item => canSee(item, session.user, session.config)));
+  const hrefOf = (item: NavItem) => resolveHref(item, session.config);
 </script>
 
 <Sheet bind:open title={t("nav.more")}>

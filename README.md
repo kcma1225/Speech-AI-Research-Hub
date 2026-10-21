@@ -20,15 +20,28 @@ docker compose --profile latex up -d --build   # 連同 Aldine：http://latex.lo
 docker compose down               # 停止；資料保留在 volumes
 ```
 
-- Owner 帳號名稱為 `OWNER_NAME`，密碼見 `.env` 的 `OWNER_PASSWORD`。之後在 App 內邀請成員。
+- 初始管理員帳號名稱為 `ADMIN_NAME`（預設 `admin`），密碼見 `.env` 的 `ADMIN_PASSWORD`。管理員帳號只管理系統（帳號、邀請、模型、系統設定），不能使用研究工作區；學生與教授請用邀請連結加入。
 - 修改 `.env` 後：`docker compose up -d --build --force-recreate`。
 - `docker compose down -v` 會刪除所有資料，不可復原。
 - 健康檢查：`/api/health`（存活）、`/api/health/ready`（DB 與 S3 可用）。
 
+## v3 staging（`v3-study` 分支）
+
+v3 在獨立的 compose project `hubv3` 測試，只綁 `127.0.0.1:18090`，有自己的 volumes（`hubv3_*`）與 `.env.staging`，不會動到正式站（`hubv2`）。
+
+```bash
+scripts/staging.sh up      # 第一次會產生 .env.staging（管理員帳號 admin，密碼隨機產生，存在 .env.staging 的 ADMIN_PASSWORD），建置並啟動
+scripts/staging.sh ps      # 狀態；logs [service…] 看紀錄
+scripts/staging.sh down    # 停止（資料保留）
+scripts/staging.sh reset   # 停止並刪除 staging 資料（會再確認一次）
+```
+
+開啟 http://127.0.0.1:18090 ，以 `admin` 和 `.env.staging` 裡的 `ADMIN_PASSWORD` 登入。
+
 ## 設定重點（`.env`）
 
 - `APP_ORIGIN`：瀏覽器使用的網址。寫入請求的 `Origin` 必須一致，否則回 403（CSRF 防護）。
-- `OWNER_PASSWORD`：變更後下次啟動會重設 Owner 密碼並登出 Owner；在 Profile 改的密碼在 env 未變時保留。
+- `ADMIN_PASSWORD`：變更後下次啟動會重設初始管理員密碼並登出；在「設定」改的密碼在 env 未變時保留。舊的 `OWNER_NAME` / `OWNER_PASSWORD` 在 `ADMIN_*` 留空時仍會讀取。
 - `POSTGRES_PASSWORD`、`WORKER_DB_PASSWORD`：每次 db 啟動會重新套用到既有 role。worker 使用最小權限的 `hub_worker`（只能讀寫 `jobs` 表）。
 - `AUTH_SECRET`：簽章簡報檢視 token；更換後已開啟的簡報需重新整理。Session 不受影響。
 - `S3_ACCESS_KEY`、`S3_SECRET_KEY`：RustFS 帳密，backend 與 worker 共用。

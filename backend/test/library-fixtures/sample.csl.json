@@ -1,0 +1,38 @@
+[
+  {
+    "id": "http://zotero.org/users/123/items/ABCD1234",
+    "type": "paper-conference",
+    "title": "HuBERT: Self-Supervised Speech Representation Learning by Masked Prediction of Hidden Units",
+    "container-title": "IEEE/ACM Transactions on Audio, Speech, and Language Processing",
+    "page": "3451-3460",
+    "volume": "29",
+    "DOI": "10.1109/TASLP.2021.3122291",
+    "author": [
+      { "family": "Hsu", "given": "Wei-Ning" },
+      { "family": "Bolte", "given": "Benjamin" },
+      { "family": "Tsai", "given": "Yao-Hung Hubert" }
+    ],
+    "issued": { "date-parts": [["2021", 10, 26]] },
+    "keyword": "self-supervised, speech"
+  },
+  {
+    "id": "lin2024taiwanese",
+    "citation-key": "lin2024taiwanese",
+    "type": "article-journal",
+    "title": "台灣閩南語語音合成之研究",
+    "author": [{ "family": "林", "given": "怡君" }, { "literal": "國立陽明交通大學語音實驗室" }],
+    "container-title": ["臺灣語文研究"],
+    "issued": { "raw": "2024-06" },
+    "language": "zh-TW"
+  },
+  {
+    "id": "preprint1",
+    "type": "posted-content",
+    "title": "SpeechT5: Unified-Modal Encoder-Decoder Pre-Training for Spoken Language Processing",
+    "author": [{ "family": "Ao", "given": "Junyi" }],
+    "issued": { "date-parts": [[2021, 10]] },
+    "URL": "https://arxiv.org/abs/2110.07205v3"
+  },
+  { "id": "notitle", "type": "book" },
+  42
+]

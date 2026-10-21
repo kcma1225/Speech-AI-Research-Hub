@@ -1,0 +1,25 @@
+{
+  "doi": "10.18653/v1/2020.acl-main.1",
+  "doi_url": "https://doi.org/10.18653/v1/2020.acl-main.1",
+  "title": "Learning to Understand Child-directed and Adult-directed Speech",
+  "genre": "proceedings-article",
+  "is_paratext": false,
+  "published_date": "2020-01-01",
+  "year": 2020,
+  "journal_name": "Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics",
+  "publisher": "Association for Computational Linguistics",
+  "is_oa": true,
+  "oa_status": "hybrid",
+  "has_repository_copy": true,
+  "best_oa_location": {
+    "url": "https://www.aclweb.org/anthology/2020.acl-main.1.pdf",
+    "url_for_pdf": "https://www.aclweb.org/anthology/2020.acl-main.1.pdf",
+    "url_for_landing_page": "https://doi.org/10.18653/v1/2020.acl-main.1",
+    "host_type": "publisher",
+    "license": "cc-by",
+    "version": "publishedVersion",
+    "is_best": true
+  },
+  "oa_locations": [],
+  "z_authors": [{ "given": "Lieke", "family": "Gelderloos" }]
+}

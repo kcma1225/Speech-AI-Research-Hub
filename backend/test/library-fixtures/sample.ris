@@ -1,0 +1,51 @@
+TY  - JOUR
+ID  - li2021taslp
+AU  - Li, Jinyu
+AU  - Wu, Yu
+TI  - Recent Advances in End-to-End Automatic Speech Recognition
+JO  - APSIPA Transactions on Signal and Information Processing
+PY  - 2022/11/01/
+VL  - 11
+IS  - 1
+SP  - e8
+DO  - 10.1561/116.00000050
+UR  - https://www.nowpublishers.com/article/Details/SIP-2021-0050
+KW  - end-to-end
+KW  - speech recognition
+AB  - Recently, the speech community is seeing a significant trend of moving
+      from deep neural network based hybrid modeling to end-to-end modeling.
+ER  - 
+
+TY  - CPAPER
+AU  - Chang, Xuankai
+AU  - Watanabe, Shinji
+TI  - Exploration of Efficient End-to-End ASR using Discretized Input from Self-Supervised Learning
+T2  - Proc. Interspeech 2023
+PY  - 2023
+SP  - 1399
+EP  - 1403
+DO  - 10.21437/Interspeech.2023-2051
+ER  - 
+
+TY  - JOUR
+AU  - 陳, 大文
+AU  - 李美玲
+TI  - 華語兒童語音辨識之資料增強方法
+T2  - 中文計算語言學期刊
+PY  - 2021
+VL  - 26
+IS  - 2
+SP  - 45
+EP  - 62
+LA  - zh-TW
+ER  - 
+
+TY  - WHATEVER
+TI  - Some unknown thing
+PY  - 2019
+ER  - 
+
+TY  - JOUR
+AU  - Nobody, A.
+PY  - 2020
+ER  - 

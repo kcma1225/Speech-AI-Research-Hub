@@ -2,10 +2,18 @@ import type pg from "pg";
 import type { FastifyBaseLogger } from "fastify";
 import type { Db, Queryable } from "../db.js";
 
-export type JobKind = "media_transcode" | "slide_render";
+/**
+ * Core kinds plus any kind a module adds (lower snake case, DB CHECK). Workers must only claim the kinds they handle;
+ * document new kinds and their payloads in docs/architecture.md "Jobs".
+ */
+export type JobKind = "media_transcode" | "slide_render" | (string & {});
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
-/** Payload/result contracts shared with the worker. Keep in sync with worker/src/types.ts. */
+/**
+ * Payload/result contracts shared with the worker. Keep in sync with worker/src/types.ts.
+ * `media_transcode`: v3 has no finalizer yet (v2 notes are gone); the meetings module defines what `itemId` refers to
+ * and registers the finalizer.
+ */
 export type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: string; fileName: string };
 /** `peaks`: optional waveform, up to 1000 values in [0,1] (3 decimals). */
 export type MediaTranscodeResult = { outputKey: string; bytes: number; durationSeconds: number | null; peaks?: number[] };
@@ -74,7 +82,9 @@ export type JobRow = {
 /** Inserts a queued job and wakes workers. Use the caller's transaction client so the job commits with its domain row. */
 export async function enqueueJob(client: Queryable, kind: "media_transcode", payload: MediaTranscodePayload, createdBy: string, maxAttempts?: number): Promise<string>;
 export async function enqueueJob(client: Queryable, kind: "slide_render", payload: SlideRenderPayload, createdBy: string, maxAttempts?: number): Promise<string>;
-export async function enqueueJob(client: Queryable, kind: JobKind, payload: object, createdBy: string, maxAttempts = 3): Promise<string> {
+/** Module-defined kinds (`createdBy` null = system job). */
+export async function enqueueJob(client: Queryable, kind: string, payload: object, createdBy: string | null, maxAttempts?: number): Promise<string>;
+export async function enqueueJob(client: Queryable, kind: JobKind, payload: object, createdBy: string | null, maxAttempts = 3): Promise<string> {
   const result = await client.query<{ id: string }>(
     "INSERT INTO jobs(kind,payload,created_by,max_attempts) VALUES($1,$2,$3,$4) RETURNING id",
     [kind, JSON.stringify(payload), createdBy, maxAttempts],

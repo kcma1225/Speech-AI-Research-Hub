@@ -75,10 +75,11 @@ export function multipart(fields: Record<string, string>, file?: { field?: strin
 }
 
 /** Creates a user and a session directly (independent of the auth routes). */
-export async function userSession(db: Db, role: "owner" | "admin" | "member" | "professor", name = `${role}-${randomBytes(3).toString("hex")}`) {
+/** `owner` = the bootstrapped initial admin; `admin` = another (system-only) admin account. */
+export async function userSession(db: Db, role: "owner" | "admin" | "student" | "professor", name = `${role}-${randomBytes(3).toString("hex")}`) {
   const id = role === "owner"
-    ? (await db.query<{ id: string }>("SELECT id FROM users WHERE role='owner'")).rows[0]!.id
-    : (await db.query<{ id: string }>("INSERT INTO users(name,password_hash,role) VALUES($1,'x',$2) RETURNING id", [name, role])).rows[0]!.id;
+    ? (await db.query<{ id: string }>("SELECT id FROM users WHERE is_owner")).rows[0]!.id
+    : (await db.query<{ id: string }>("INSERT INTO users(name,password_hash,role,is_admin) VALUES($1,'x',$2,$3) RETURNING id", [name, role, role === "admin"])).rows[0]!.id;
   const token = randomBytes(32).toString("base64url");
   await db.query("INSERT INTO sessions(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '1 day')", [id, sha256(token)]);
   return { id, cookie: `hub_session=${token}` };

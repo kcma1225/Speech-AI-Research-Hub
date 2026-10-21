@@ -5,12 +5,11 @@
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import FileDrop from "#lib/components/ui/FileDrop.svelte";
-  import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import Switch from "#lib/components/ui/Switch.svelte";
-  import TagPicker from "#lib/components/ui/TagPicker.svelte";
+  import Segmented from "#lib/components/ui/Segmented.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { SlideStatus, UploadLimits } from "#lib/slides/types.ts";
@@ -19,11 +18,15 @@
 
   /**
    * Upload a new deck (`projectId` unset) or a new version of `projectId`, then follow its render.
+   * A new deck belongs to a study: `studyId` fixes it (study page); otherwise the user picks one of the studies they edit.
    * `onUploaded` fires once the ZIP is accepted (202); `onRendered` when the render finishes either way.
    */
-  let { open = $bindable(false), projectId, limits = DEFAULT_LIMITS, onUploaded, onRendered }: {
+  let { open = $bindable(false), projectId, studyId, kind: initialKind, limits = DEFAULT_LIMITS, onUploaded, onRendered }: {
     open?: boolean;
     projectId?: string;
+    studyId?: string;
+    /** Preselected deck type for a new deck. */
+    kind?: "progress" | "paper_report";
     limits?: UploadLimits;
     onUploaded?: (result: { id: string; slug?: string; version: number }) => void;
     onRendered?: (status: SlideStatus) => void;
@@ -36,8 +39,10 @@
   let slug = $state("");
   let slugTouched = $state(false);
   let publicView = $state(false);
-  let tagIds = $state<string[]>([]);
-  let tagNames = $state<Record<string, string>>({});
+  let chosenStudy = $state("");
+  let deckKind = $state<"progress" | "paper_report">("progress");
+  let studies = $state<{ id: string; title: string }[] | null>(null);
+  const targetStudy = $derived(studyId ?? chosenStudy);
   let file = $state<File | null>(null);
   let entries = $state<string[] | null>(null);
   let entry = $state("");
@@ -78,6 +83,7 @@
   let wasOpen = false;
   $effect(() => {
     if (open && !wasOpen && (phase === "done" || phase === "failed")) reset();
+    if (open && !wasOpen && phase === "form" && initialKind) deckKind = initialKind;
     wasOpen = open;
   });
   $effect(() => () => stop?.());
@@ -87,19 +93,25 @@
   const slugError = $derived(
     slug && (!SLUG_RE.test(slug) || slug.length > 80) ? t("slides.upload.slugInvalid") : slug && slug === takenSlug ? t("slides.upload.slugTaken") : null,
   );
-  const canSubmit = $derived(Boolean(file) && (isVersion || (title.trim() && slug && !slugError)) && (!entries || entry));
+  const canSubmit = $derived(Boolean(file) && (isVersion || (title.trim() && slug && !slugError && targetStudy)) && (!entries || entry));
 
-  async function loadTagNames() {
-    if (tagIds.every(id => tagNames[id])) return;
-    const { tags } = await api.get<{ tags: { id: string; name: string }[] }>("/slide-tags");
-    tagNames = Object.fromEntries(tags.map(tag => [tag.id, tag.name]));
-  }
+  // Studies the user may add decks to (owner or member), for the picker.
+  $effect(() => {
+    if (!open || isVersion || studyId || studies) return;
+    api.get<{ studies: { id: string; title: string; my_role: string | null }[] }>("/studies?member=me").then(
+      r => {
+        studies = r.studies.filter(s => s.my_role === "owner" || s.my_role === "member");
+        if (!chosenStudy && studies[0]) chosenStudy = studies[0].id;
+      },
+      () => (studies = []),
+    );
+  });
 
   function reset() {
     phase = "form";
     title = slug = entry = "";
     slugTouched = publicView = false;
-    tagIds = [];
+    deckKind = "progress";
     file = null;
     entries = null;
     error = null;
@@ -119,7 +131,8 @@
       form.append("title", title.trim());
       form.append("slug", slug);
       form.append("public", publicView ? "true" : "false");
-      form.append("tagIds", JSON.stringify(tagIds));
+      form.append("studyId", targetStudy);
+      form.append("kind", deckKind);
     }
     if (entries && entry) form.append("entry", entry);
     form.append("file", file, file.name);
@@ -192,12 +205,19 @@
           disabled={phase === "uploading"}
           oninput={() => (slugTouched = true)}
         />
-        <div class="flex flex-col gap-2">
-          <span class="text-[13px] font-medium text-ink-2">{t("slides.info.tags")}</span>
-          <div class="flex flex-wrap items-center gap-1.5">
-            {#each tagIds as id (id)}{#if tagNames[id]}<Pill tone={toneFor(id)} size="sm">{tagNames[id]}</Pill>{/if}{/each}
-            <TagPicker endpoint="/slide-tags" bind:selected={tagIds} label={t("slides.info.addTag")} onChange={() => void loadTagNames()} />
+        {#if !studyId}
+          <div class="flex flex-col gap-1.5">
+            <span class="text-[13px] font-medium text-ink-2">{t("slides.upload.study")}</span>
+            {#if studies && !studies.length}
+              <p class="text-[13px] text-ink-3">{t("slides.upload.noStudy")}</p>
+            {:else}
+              <Select bind:value={chosenStudy} label={t("slides.upload.study")} class="w-full" options={(studies ?? []).map(s => ({ value: s.id, label: s.title }))} />
+            {/if}
           </div>
+        {/if}
+        <div class="flex flex-col gap-1.5">
+          <span class="text-[13px] font-medium text-ink-2">{t("slides.upload.kind")}</span>
+          <Segmented bind:value={deckKind} label={t("slides.upload.kind")} class="w-full" options={[{ value: "progress", label: t("slides.kind.progress") }, { value: "paper_report", label: t("slides.kind.paper_report") }]} />
         </div>
         <div class="flex items-center justify-between gap-4 rounded-2xl border border-line p-3.5">
           <div class="min-w-0">

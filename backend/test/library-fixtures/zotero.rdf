@@ -1,0 +1,83 @@
+<rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns:z="http://www.zotero.org/namespaces/export#"
+ xmlns:dcterms="http://purl.org/dc/terms/"
+ xmlns:bib="http://purl.org/net/biblio#"
+ xmlns:foaf="http://xmlns.com/foaf/0.1/"
+ xmlns:link="http://purl.org/rss/1.0/modules/link/"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:prism="http://prismstandard.org/namespaces/1.2/basic/"
+ xmlns:vcard="http://nwalsh.com/rdf/vCard#">
+    <bib:Article rdf:about="https://doi.org/10.1109/TASLP.2021.3122291">
+        <z:itemType>journalArticle</z:itemType>
+        <dcterms:isPartOf rdf:resource="urn:issn:2329-9290"/>
+        <bib:authors>
+            <rdf:Seq>
+                <rdf:li>
+                    <foaf:Person>
+                        <foaf:surname>Hsu</foaf:surname>
+                        <foaf:givenName>Wei-Ning</foaf:givenName>
+                    </foaf:Person>
+                </rdf:li>
+                <rdf:li>
+                    <foaf:Person>
+                        <foaf:surname>Mohamed</foaf:surname>
+                        <foaf:givenName>Abdelrahman</foaf:givenName>
+                    </foaf:Person>
+                </rdf:li>
+            </rdf:Seq>
+        </bib:authors>
+        <link:link rdf:resource="#item_88"/>
+        <dc:subject>self-supervised</dc:subject>
+        <dc:subject>
+           <z:AutomaticTag>
+              <rdf:value>Speech recognition</rdf:value>
+           </z:AutomaticTag>
+        </dc:subject>
+        <dc:title>HuBERT: Self-Supervised Speech Representation Learning by Masked Prediction of Hidden Units</dc:title>
+        <dcterms:abstract>Self-supervised approaches for speech representation learning are challenged by three unique problems.</dcterms:abstract>
+        <dc:date>2021</dc:date>
+        <z:language>en</z:language>
+        <dc:identifier>DOI 10.1109/TASLP.2021.3122291</dc:identifier>
+        <prism:volume>29</prism:volume>
+        <bib:pages>3451-3460</bib:pages>
+    </bib:Article>
+    <bib:Journal rdf:about="urn:issn:2329-9290">
+        <dc:title>IEEE/ACM Transactions on Audio, Speech, and Language Processing</dc:title>
+        <dc:identifier>ISSN 2329-9290</dc:identifier>
+    </bib:Journal>
+    <z:Attachment rdf:about="#item_88">
+        <z:itemType>attachment</z:itemType>
+        <rdf:resource rdf:resource="files/88/Hsu2021.pdf"/>
+        <dc:title>Full Text PDF</dc:title>
+    </z:Attachment>
+    <rdf:Description rdf:about="#item_90">
+        <z:itemType>conferencePaper</z:itemType>
+        <dcterms:isPartOf>
+           <bib:Journal><dc:title>Proc. Interspeech 2022</dc:title></bib:Journal>
+        </dcterms:isPartOf>
+        <dc:publisher>
+           <foaf:Organization>
+              <vcard:adr><vcard:Address><vcard:locality>Incheon</vcard:locality></vcard:Address></vcard:adr>
+              <foaf:name>ISCA</foaf:name>
+           </foaf:Organization>
+        </dc:publisher>
+        <bib:authors>
+            <rdf:Seq>
+                <rdf:li><foaf:Person><foaf:surname>吳</foaf:surname><foaf:givenName>建宏</foaf:givenName></foaf:Person></rdf:li>
+                <rdf:li><foaf:Person><foaf:surname>Speech Lab</foaf:surname></foaf:Person></rdf:li>
+            </rdf:Seq>
+        </bib:authors>
+        <dc:title>低資源客語語音辨識</dc:title>
+        <dc:date>2022-09-18</dc:date>
+        <bib:pages>101-105</bib:pages>
+        <dc:identifier>
+            <dcterms:URI><rdf:value>https://www.isca-archive.org/interspeech_2022/wu22_interspeech.html</rdf:value></dcterms:URI>
+        </dc:identifier>
+    </rdf:Description>
+    <bib:Memo rdf:about="#item_91"><rdf:value>a note</rdf:value></bib:Memo>
+    <rdf:Description rdf:about="#item_92">
+        <z:itemType>podcast</z:itemType>
+        <dc:title>Speech Podcast Episode 3</dc:title>
+    </rdf:Description>
+</rdf:RDF>

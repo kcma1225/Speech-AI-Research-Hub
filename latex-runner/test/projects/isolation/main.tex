@@ -1,0 +1,13 @@
+\documentclass{article}
+\begin{document}
+\makeatletter
+% Each attempt must fail with "File not found": the sandbox has no /etc, no /proc, no /app and no other
+% project directories.
+\IfFileExists{/etc/passwd}{\typeout{LEAK: /etc/passwd readable}}{\typeout{OK: /etc/passwd hidden}}
+\IfFileExists{/proc/self/environ}{\typeout{LEAK: /proc readable}}{\typeout{OK: /proc hidden}}
+\IfFileExists{/app/package.json}{\typeout{LEAK: /app readable}}{\typeout{OK: /app hidden}}
+\IfFileExists{/tmp/latex/projects/OTHER/src/secret.tex}{\typeout{LEAK: other project readable}}{\typeout{OK: other project hidden}}
+\IfFileExists{../../OTHER/src/secret.tex}{\typeout{LEAK: other project readable via ..}}{\typeout{OK: other project hidden via ..}}
+\makeatother
+\input{/etc/passwd}
+\end{document}

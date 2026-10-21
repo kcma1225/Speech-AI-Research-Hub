@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { AudioLines, Bell, Info, Presentation } from "@lucide/svelte";
+  import { AudioLines, Bell, FlaskConical, Info, ListTodo, Presentation } from "@lucide/svelte";
   import { notificationsStore } from "#lib/stores/notifications.svelte.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
 
   let { onNavigate }: { onNavigate?: () => void } = $props();
-  const icons = { slide: Presentation, media: AudioLines, system: Info };
+  const icons: Record<string, typeof Info> = { slide: Presentation, media: AudioLines, system: Info, study: FlaskConical, task: ListTodo };
 </script>
 
 {#if notificationsStore.loading && notificationsStore.items.length === 0}

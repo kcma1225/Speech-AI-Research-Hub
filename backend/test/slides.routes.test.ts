@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { LightMyRequestResponse } from "fastify";
 import { createTestContext, hasTestDb, hasTestS3, ORIGIN, type TestContext } from "./helpers.js";
 import { deckZip, makeZip, multipart, PDF_BYTES, userSession } from "./slides-fixtures.js";
+import { addStudyMember, insertStudy } from "./study-fixtures.js";
 import { viewToken } from "../src/lib/slides/access.js";
 import type { SlideRenderPayload } from "../src/jobs/queue.js";
 
@@ -12,13 +13,17 @@ run("slides routes", () => {
   let member: { id: string; cookie: string };
   let professor: { id: string; cookie: string };
   let owner: { id: string; cookie: string };
+  let outsider: { id: string; cookie: string };
+  let study: { id: string; slug: string };
   const json = (response: LightMyRequestResponse) => response.json() as Record<string, any>;
 
   beforeAll(async () => {
     ctx = await createTestContext();
-    member = await userSession(ctx.db, "member", "Member A");
+    member = await userSession(ctx.db, "student", "Member A");
     professor = await userSession(ctx.db, "professor", "Prof Lee");
     owner = await userSession(ctx.db, "owner");
+    outsider = await userSession(ctx.db, "student", "Outsider");
+    study = await insertStudy(ctx.db, member.id, "Deck study");
   });
   afterAll(async () => {
     await ctx?.close();
@@ -27,8 +32,9 @@ run("slides routes", () => {
   const write = (method: "POST" | "PATCH" | "DELETE" | "PUT", url: string, cookie: string | undefined, payload?: unknown) =>
     ctx.app.inject({ method, url, headers: { origin: ORIGIN, ...(cookie ? { cookie } : {}) }, ...(payload === undefined ? {} : { payload: payload as object }) });
   const get = (url: string, cookie?: string, headers: Record<string, string> = {}) => ctx.app.inject({ method: "GET", url, headers: { ...(cookie ? { cookie } : {}), ...headers } });
+  /** New decks go into `study` unless `studyId` is given. */
   const upload = (url: string, cookie: string, fields: Record<string, string>, zip: Buffer, filename = "deck.zip") => {
-    const body = multipart(fields, { filename, data: zip, type: "application/zip" });
+    const body = multipart(url === "/api/slides" ? { studyId: study.id, ...fields } : fields, { filename, data: zip, type: "application/zip" });
     return ctx.app.inject({ method: "POST", url, headers: { origin: ORIGIN, cookie, ...body.headers }, payload: body.payload });
   };
   const jobFor = async (versionId: string) =>
@@ -76,6 +82,10 @@ run("slides routes", () => {
 
   it("rejects bad uploads", async () => {
     expect((await upload("/api/slides", professor.cookie, { title: "P", slug: "p" }, deckZip())).statusCode).toBe(403);
+    expect((await upload("/api/slides", outsider.cookie, { title: "P", slug: "p" }, deckZip())).statusCode).toBe(403);
+    expect((await upload("/api/slides", member.cookie, { title: "P", slug: "p", studyId: "" }, deckZip())).statusCode).toBe(400);
+    expect((await upload("/api/slides", member.cookie, { title: "P", slug: "p", studyId: crypto.randomUUID() }, deckZip())).statusCode).toBe(404);
+    expect((await upload("/api/slides", member.cookie, { title: "P", slug: "p", kind: "poster" }, deckZip())).statusCode).toBe(400);
     expect((await upload("/api/slides", member.cookie, { title: "Dup", slug: "week-1" }, deckZip())).statusCode).toBe(409);
     expect((await upload("/api/slides", member.cookie, { title: "Bad", slug: "Bad Slug" }, deckZip())).statusCode).toBe(400);
     const traversal = await upload("/api/slides", member.cookie, { title: "T", slug: "t" }, makeZip([{ name: "index.qmd" }, { name: "x.sh", data: "rm -rf /" }]));
@@ -103,7 +113,10 @@ run("slides routes", () => {
     expect(detail.limits).toEqual({ zipBytes: expect.any(Number), deckBytes: expect.any(Number), deckTypes: [".zip", ".pdf", ".pptx"], referenceBytes: expect.any(Number) });
     expect(detail.viewUrl).toMatch(new RegExp(`^/api/slides/view/week-1/t\\.\\d{10}\\.[\\w-]{43}/${deck.versionId}/index\\.html$`));
     expect(detail.project.share_key).toBeTruthy();
-    expect(detail.permissions).toEqual({ manage: true, review: false, reply: false });
+    expect(detail.permissions).toEqual({ manage: true, review: false, reply: true });
+    expect(detail.study).toEqual({ id: study.id, slug: study.slug, title: "Deck study" });
+    expect(detail.project).toMatchObject({ kind: "progress", paper_id: null, study_id: study.id });
+    expect(json(await get(`/api/slides/${deck.id}`, outsider.cookie)).permissions).toEqual({ manage: false, review: false, reply: false });
     const notes = await ctx.db.query("SELECT kind,title,url FROM notifications WHERE user_id=$1", [member.id]);
     expect(notes.rows).toContainEqual({ kind: "slide", title: "簡報編譯完成", url: "/slides/play/week-1" });
     const asProfessor = json(await get(`/api/slides/${deck.id}`, professor.cookie));
@@ -200,6 +213,7 @@ run("slides routes", () => {
     expect(withKey.statusCode).toBe(200);
     expect(json(withKey).project.share_key).toBeNull();
     expect(json(withKey).permissions).toEqual({ manage: false, review: false, reply: false });
+    expect(json(withKey).study).toBeNull();
 
     expect((await get("/api/slides/share/week-1/wrong")).statusCode).toBe(404);
     const share = await get(`/api/slides/share/week-1/${encodeURIComponent(shareKey)}`);
@@ -266,49 +280,62 @@ run("slides routes", () => {
     expect(await ctx.storage.get(fileKey)).toBeNull();
   });
 
-  it("allows professor/owner reviews and owner replies", async () => {
+  it("allows professor reviews only (not the Owner/admin) and study-member replies", async () => {
     expect((await write("POST", `/api/slides/${deck.id}/reviews`, member.cookie, { body: "x" })).statusCode).toBe(403);
+    expect((await write("POST", `/api/slides/${deck.id}/reviews`, outsider.cookie, { body: "x" })).statusCode).toBe(403);
+    expect((await write("POST", `/api/slides/${deck.id}/reviews`, owner.cookie, { body: "Owner note" })).statusCode).toBe(403);
+    // Admin accounts are system-only: they cannot even read study content.
+    expect((await get(`/api/slides/${deck.id}`, owner.cookie)).statusCode).toBe(403);
     const review = await write("POST", `/api/slides/${deck.id}/reviews`, professor.cookie, { body: "Fix figure 2" });
     expect(review.statusCode).toBe(201);
     const reviewId = json(review).review.id;
     expect((await write("POST", `/api/slides/${deck.id}/reviews`, professor.cookie, { body: "" })).statusCode).toBe(400);
-    expect((await write("POST", `/api/slides/${deck.id}/reviews`, owner.cookie, { body: "Owner note" })).statusCode).toBe(201);
     expect((await write("POST", `/api/slides/${deck.id}/reviews/${reviewId}/replies`, professor.cookie, { body: "x" })).statusCode).toBe(403);
-    expect((await write("POST", `/api/slides/${deck.id}/reviews/${reviewId}/replies`, member.cookie, { body: "x" })).statusCode).toBe(403);
-    const replied = await write("POST", `/api/slides/${deck.id}/reviews/${reviewId}/replies`, owner.cookie, { body: "Done" });
+    expect((await write("POST", `/api/slides/${deck.id}/reviews/${reviewId}/replies`, owner.cookie, { body: "x" })).statusCode).toBe(403);
+    expect((await write("POST", `/api/slides/${deck.id}/reviews/${reviewId}/replies`, outsider.cookie, { body: "x" })).statusCode).toBe(403);
+    const replied = await write("POST", `/api/slides/${deck.id}/reviews/${reviewId}/replies`, member.cookie, { body: "Done" });
     expect(replied.statusCode).toBe(201);
-    expect((await write("POST", `/api/slides/${deck.id}/reviews/${crypto.randomUUID()}/replies`, owner.cookie, { body: "Done" })).statusCode).toBe(404);
+    expect((await write("POST", `/api/slides/${deck.id}/reviews/${crypto.randomUUID()}/replies`, member.cookie, { body: "Done" })).statusCode).toBe(404);
+    // An advisor of the study (a professor) may reply too.
+    await addStudyMember(ctx.db, study.id, professor.id, "advisor");
+    expect((await write("POST", `/api/slides/${deck.id}/reviews/${reviewId}/replies`, professor.cookie, { body: "ok" })).statusCode).toBe(201);
+    await ctx.db.query("DELETE FROM study_members WHERE study_id=$1 AND user_id=$2", [study.id, professor.id]);
 
     const detail = json(await get(`/api/slides/${deck.id}`, member.cookie));
-    expect(detail.reviews[0]).toMatchObject({ body: "Fix figure 2", author: "Prof Lee", replies: [{ body: "Done" }] });
+    expect(detail.reviews.find((r: any) => r.body === "Fix figure 2")).toMatchObject({ author: "Prof Lee", replies: [{ body: "Done" }, { body: "ok" }] });
     const memberNotes = (await ctx.db.query("SELECT title FROM notifications WHERE user_id=$1", [member.id])).rows.map(r => r.title);
     expect(memberNotes).toContain("Prof Lee 新增了簡報審閱");
     const profNotes = (await ctx.db.query("SELECT title FROM notifications WHERE user_id=$1", [professor.id])).rows;
     expect(profNotes).toHaveLength(1);
+    // Publishing was recorded in the study timeline.
+    const activity = (await ctx.db.query("SELECT kind,title FROM study_activity WHERE study_id=$1", [study.id])).rows;
+    expect(activity).toContainEqual({ kind: "deck_published", title: "Week 1 v1" });
   });
 
-  it("lists decks with tag and text filters", async () => {
-    const tag = (await ctx.db.query<{ id: string }>("INSERT INTO slide_tags(name) VALUES('Paper') RETURNING id")).rows[0]!.id;
-    expect((await write("PATCH", `/api/slides/${deck.id}`, member.cookie, { tagIds: [tag], title: "Week One" })).statusCode).toBe(200);
+  it("lists decks with study and text filters", async () => {
+    expect((await write("PATCH", `/api/slides/${deck.id}`, outsider.cookie, { title: "Nope" })).statusCode).toBe(403);
+    expect((await write("PATCH", `/api/slides/${deck.id}`, member.cookie, { title: "Week One", kind: "paper_report" })).statusCode).toBe(200);
     const all = json(await get("/api/slides", professor.cookie)).slides;
     expect(all.length).toBeGreaterThanOrEqual(2);
-    const tagged = json(await get(`/api/slides?tags=${tag}`, member.cookie)).slides;
-    expect(tagged.map((s: any) => s.id)).toEqual([deck.id]);
-    expect(tagged[0]).toMatchObject({ title: "Week One", tags: [{ id: tag, name: "Paper" }], active_version: 1, reference_count: 0, author_name: "Member A" });
-    expect(typeof tagged[0].review_count).toBe("number");
-    expect(tagged[0].published_at).toBeTruthy();
-    const untagged = json(await get("/api/slides?tags=none", member.cookie)).slides;
-    expect(untagged.some((s: any) => s.id === deck.id)).toBe(false);
-    expect(json(await get("/api/slides?tags=", member.cookie)).slides).toEqual([]);
+    const other = await insertStudy(ctx.db, outsider.id, "Other study");
+    expect(json(await get(`/api/slides?studyId=${other.id}`, member.cookie)).slides).toEqual([]);
+    const inStudy = json(await get(`/api/slides?studyId=${study.slug}`, member.cookie)).slides;
+    expect(inStudy.map((s: any) => s.id)).toContain(deck.id);
+    const row = inStudy.find((s: any) => s.id === deck.id);
+    expect(row).toMatchObject({ title: "Week One", kind: "paper_report", study: { id: study.id, slug: study.slug, title: "Deck study" }, active_version: 1, reference_count: 0, author_name: "Member A" });
+    expect(typeof row.review_count).toBe("number");
+    expect(row.published_at).toBeTruthy();
+    expect((await get("/api/slides?studyId=missing-study", member.cookie)).statusCode).toBe(404);
     expect(json(await get("/api/slides?q=one", member.cookie)).slides.map((s: any) => s.id)).toEqual([deck.id]);
     expect(json(await get("/api/slides?q=%25", member.cookie)).slides).toEqual([]);
     expect((await write("PATCH", `/api/slides/${deck.id}`, member.cookie, { slug: "multi" })).statusCode).toBe(409);
   });
 
   it("deletes a deck and its storage", async () => {
-    const keysBefore = (await ctx.db.query<{ output_prefix: string; source_key: string }>("SELECT output_prefix,source_key FROM slide_versions WHERE project_id=$1", [deck.id])).rows;
+    const keysBefore = (await ctx.db.query<{ output_prefix: string; source_key: string }>("SELECT output_prefix,source_key FROM slide_versions WHERE deck_id=$1", [deck.id])).rows;
     expect(keysBefore.length).toBeGreaterThan(0);
     expect((await write("DELETE", `/api/slides/${deck.id}`, professor.cookie)).statusCode).toBe(403);
+    expect((await write("DELETE", `/api/slides/${deck.id}`, outsider.cookie)).statusCode).toBe(403);
     expect((await write("DELETE", `/api/slides/${deck.id}`, member.cookie)).statusCode).toBe(200);
     for (const row of keysBefore) {
       expect(await ctx.storage.get(row.source_key)).toBeNull();

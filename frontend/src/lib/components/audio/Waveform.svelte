@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { formatClock } from "#lib/recordings/types.ts";
+  import { formatClock } from "#lib/audio/time.ts";
 
   /**
    * Seekable waveform (an ARIA slider). Bars come from `peaks` (values in [0,1]); without peaks it draws flat bars.

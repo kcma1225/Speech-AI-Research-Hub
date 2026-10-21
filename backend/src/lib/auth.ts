@@ -4,12 +4,18 @@ import { secureCookies } from "../config.js";
 import { forbidden, unauthorized } from "./http.js";
 import { resolvePreferences, type Preferences } from "./preferences.js";
 
-export type Role = "owner" | "admin" | "member" | "professor";
+/**
+ * Account kind. `admin` accounts are system-only (models, system settings, users, invitations) and never act in the
+ * research workspace; `is_admin` always equals `role === "admin"`. `is_owner` marks the initial admin (bootstrap account).
+ */
+export type Role = "student" | "professor" | "admin";
 export type Locale = "zh-TW" | "en";
 export type CurrentUser = {
   id: string;
   name: string;
   role: Role;
+  is_admin: boolean;
+  is_owner: boolean;
   auth_mode: "either" | "two_factor";
   theme: "system" | "light" | "dark";
   locale: Locale;
@@ -18,11 +24,13 @@ export type CurrentUser = {
 };
 
 /** Columns of `users` (alias `u`) that make up a CurrentUser; pass the row to `toCurrentUser`. */
-export const CURRENT_USER_COLUMNS = "u.id,u.name,u.role,u.auth_mode,u.theme,u.locale,u.preferences";
+export const CURRENT_USER_COLUMNS = "u.id,u.name,u.role,u.is_admin,u.is_owner,u.auth_mode,u.theme,u.locale,u.preferences";
 export const toCurrentUser = (row: Omit<CurrentUser, "preferences"> & { preferences: unknown }): CurrentUser => ({
   id: row.id,
   name: row.name,
   role: row.role,
+  is_admin: row.is_admin,
+  is_owner: row.is_owner,
   auth_mode: row.auth_mode,
   theme: row.theme,
   locale: row.locale,
@@ -64,10 +72,46 @@ export async function requireRole(request: FastifyRequest, roles: readonly Role[
   return user;
 }
 
-/** Owner-only (admin console: invitations, roles). */
-export const requireOwner = (request: FastifyRequest) => requireRole(request, ["owner"]);
-/** Everyone except Professor, who is read-only for notes, tags, media and slide management. */
-export const requireEditor = (request: FastifyRequest) => requireRole(request, ["owner", "admin", "member"]);
+/** System administration (accounts, invitations, models, templates, system settings). */
+export async function requireAdmin(request: FastifyRequest): Promise<CurrentUser> {
+  const user = await requireUser(request);
+  if (user.role !== "admin") throw forbidden("需要管理員權限。");
+  return user;
+}
+
+/** Message for admin sessions that reach a research-workspace route (see `workspaceGuard`). */
+export const ADMIN_WORKSPACE_FORBIDDEN = "管理員帳號只能管理系統設定與使用者。";
+
+/**
+ * API paths an admin session may use (everything else under /api is research workspace and refused for admins):
+ * sign-in/session/profile, users and invitations, AI platform admin + status, system settings, templates,
+ * notifications/push, the jobs tray, health/config.
+ */
+const ADMIN_ALLOWED = [
+  /^\/api\/health(\/|$)/,
+  /^\/api\/config$/,
+  /^\/api\/auth(\/|$)/,
+  /^\/api\/users(\/|$)/,
+  /^\/api\/invitations(\/|$)/,
+  /^\/api\/join(\/|$)/,
+  /^\/api\/admin(\/|$)/,
+  /^\/api\/ai\/status(\/|$)/,
+  /^\/api\/library\/settings$/,
+  /^\/api\/note-templates(\/|$)/,
+  /^\/api\/notifications(\/|$)/,
+  /^\/api\/push(\/|$)/,
+  /^\/api\/jobs(\/|$)/,
+];
+export const adminMayUse = (path: string) => ADMIN_ALLOWED.some(re => re.test(path));
+
+/** onRequest hook: refuses admin sessions on research-workspace API routes (403). Bearer-only routes are unaffected. */
+export async function workspaceGuard(request: FastifyRequest, reply: FastifyReply) {
+  const path = request.url.split("?")[0]!;
+  if (!path.startsWith("/api/") || adminMayUse(path)) return;
+  if (!request.cookies?.[SESSION_COOKIE]) return;
+  const user = await currentUser(request);
+  if (user?.role === "admin") return reply.code(403).send({ error: ADMIN_WORKSPACE_FORBIDDEN, code: "admin_workspace" });
+}
 
 export async function createSession(request: FastifyRequest, reply: FastifyReply, userId: string) {
   const token = randomToken();

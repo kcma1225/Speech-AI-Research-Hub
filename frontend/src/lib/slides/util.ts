@@ -108,3 +108,6 @@ export const absoluteUrl = (path: string) => new URL(path, location.origin).toSt
 export function formatBytes(n: number) {
   return n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${Math.round(n / (1 << 20))} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 }
+
+/** SPA path of a deck inside its study (`/edit` = the Quarto editor). */
+export const deckUrl = (studySlug: string, deckId: string, sub?: "edit") => `/studies/${encodeURIComponent(studySlug)}/decks/${deckId}${sub ? `/${sub}` : ""}`;

@@ -1,37 +1,59 @@
 <script lang="ts">
-  import { ArrowRight, ArrowUpRight, AudioLines, FileText, MessageSquareQuote, MessageSquareReply, Mic, Plus, Presentation, Upload } from "@lucide/svelte";
+  import { ArrowUpRight, BookOpen, CalendarClock, Check, ClipboardCheck, Flag, FlaskConical, ListTodo, Plus, Presentation, Sparkles, UserPlus, UsersRound, Workflow } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
-  import { session } from "#lib/stores/session.svelte.ts";
-  import type { Dashboard } from "#lib/types.ts";
   import type { MessageKey } from "#lib/messages.ts";
+  import { session } from "#lib/stores/session.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
   import Button from "#lib/components/ui/Button.svelte";
   import Card from "#lib/components/ui/Card.svelte";
   import CardHeader from "#lib/components/ui/CardHeader.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
-  import Pill, { tagTone, type Tone } from "#lib/components/ui/Pill.svelte";
+  import Pill, { toneFor, type Tone } from "#lib/components/ui/Pill.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
+  import { toasts } from "#lib/components/ui/toast.svelte.ts";
+  import DueLabel from "#lib/components/study/DueLabel.svelte";
+  import StageBar from "#lib/components/study/StageBar.svelte";
+  import TaskRow from "#lib/components/study/TaskRow.svelte";
+  import type { DashboardData, Task } from "#lib/studies/types.ts";
 
-  let data = $state<Dashboard | null>(null);
+  let data = $state<DashboardData | null>(null);
   let error = $state<string | null>(null);
-  const s = $derived(data?.stats);
   function load() {
     error = null;
-    api.get<Dashboard>("/dashboard").then(d => (data = d), e => (error = e.message));
+    api.get<DashboardData>("/dashboard").then(d => (data = d), e => (error = e.message));
   }
   $effect(load);
 
   const hour = Number(new Intl.DateTimeFormat("en", { hour: "numeric", hourCycle: "h23", timeZone: "Asia/Taipei" }).format(new Date()));
   const greeting: MessageKey = hour >= 5 && hour < 11 ? "dash.greeting.morning" : hour >= 11 && hour < 18 ? "dash.greeting.afternoon" : "dash.greeting.evening";
 
-  const kindMeta: Record<Dashboard["activity"][number]["kind"], { icon: typeof Presentation; tone: Tone }> = {
-    slide_version: { icon: Presentation, tone: "peach" },
-    note: { icon: FileText, tone: "sky" },
-    recording: { icon: AudioLines, tone: "mint" },
-    review: { icon: MessageSquareQuote, tone: "lilac" },
-    reply: { icon: MessageSquareReply, tone: "butter" },
+  const kinds: Record<string, { icon: typeof Flag; tone: Tone }> = {
+    study_created: { icon: Sparkles, tone: "peach" },
+    stage_changed: { icon: Workflow, tone: "lilac" },
+    milestone_done: { icon: Flag, tone: "mint" },
+    task_done: { icon: Check, tone: "sky" },
+    deck_published: { icon: Presentation, tone: "butter" },
+    member_added: { icon: UserPlus, tone: "rose" },
+    meeting_confirmed: { icon: ClipboardCheck, tone: "mint" },
+    paper_added: { icon: BookOpen, tone: "sky" },
+    paper_read: { icon: BookOpen, tone: "lilac" },
+    papers_imported: { icon: BookOpen, tone: "butter" },
   };
+  const meetingTime = (iso: string) => formatDate(iso, { month: "short", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const c = $derived(data?.counts);
+  const kindOf = (kind: string) => kinds[kind] ?? { icon: ArrowUpRight, tone: "stone" as Tone };
+  const kindLabel = (kind: string) => (kind in kinds ? t(`dash.kind.${kind}` as MessageKey) : t("dash.kind.other"));
+
+  async function toggle(task: Task, done: boolean) {
+    if (!task.study) return;
+    try {
+      await api.patch(`/studies/${task.study.id}/tasks/${task.id}`, { status: done ? "done" : "open" });
+      load();
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    }
+  }
 </script>
 
 <svelte:head><title>{t("nav.overview")} · Speech-AI Hub</title></svelte:head>
@@ -41,12 +63,7 @@
     <h1 class="font-display text-[34px] leading-[1.05] sm:text-[46px]">{t(greeting, { name: session.user!.name })}</h1>
     <p class="mt-2 text-[14px] text-ink-3">{t("dash.subtitle")}</p>
   </div>
-  {#if session.canEdit}
-    <div class="flex gap-2">
-      <Button variant="secondary" href="/notes?new=1"><Plus />{t("action.newNote")}</Button>
-      <Button variant="primary" href="/slides?upload=1"><Upload />{t("action.upload")}</Button>
-    </div>
-  {/if}
+  <Button variant="primary" href="/studies/new" class="w-fit"><Plus />{t("dash.newStudy")}</Button>
 </div>
 
 {#if error}
@@ -56,193 +73,159 @@
     </EmptyState>
   </Card>
 {:else}
-  <div class="grid grid-cols-[minmax(0,1fr)] gap-4 sm:gap-5 xl:grid-cols-3">
-    <!-- Hero: latest deck -->
-    <section class="relative overflow-hidden rounded-[28px] hero-gradient p-5 text-hero-ink sm:p-7 xl:col-span-2">
-      {#if !data}
-        <Skeleton class="h-[260px] bg-white/40 dark:bg-white/5" />
-      {:else if !data.latestSlide}
-        <div class="flex min-h-[240px] flex-col justify-between gap-6">
-          <span class="inline-flex w-fit items-center gap-1.5 rounded-full bg-white/55 px-3 py-1 text-xs font-medium backdrop-blur dark:bg-black/25"><Presentation class="size-3.5" />{t("dash.latest")}</span>
-          <div>
-            <h2 class="font-display text-[34px] leading-tight sm:text-[42px]">{t("dash.noSlides")}</h2>
-            <p class="mt-2 max-w-md text-sm opacity-75">{t("dash.noSlidesHint")}</p>
-          </div>
-          {#if session.canEdit}<Button variant="primary" href="/slides?upload=1" class="w-fit"><Upload />{t("action.upload")}</Button>{/if}
+  <!-- Stats -->
+  <div class="mb-4 grid grid-cols-2 gap-3 sm:mb-5 sm:gap-4 lg:grid-cols-3">
+    {#snippet stat(label: string, value: number | undefined, icon: typeof Flag, tone: Tone, foot: string, href: string, cls = "")}
+      {@const Icon = icon}
+      <a {href} class="group flex flex-col justify-between gap-4 rounded-[22px] border border-line/70 bg-surface p-4 shadow-card transition-colors hover:border-line-2 sm:p-5 {cls}">
+        <div class="flex items-center justify-between">
+          <span class="grid size-9 place-items-center rounded-xl" style="background:var(--pill-{tone});color:var(--pill-{tone}-ink)"><Icon class="size-[18px]" /></span>
+          <ArrowUpRight class="size-4 text-ink-3 opacity-0 transition-opacity group-hover:opacity-100" />
         </div>
-      {:else}
-        {@const deck = data.latestSlide}
-        <div class="grid items-center gap-6 md:grid-cols-[1fr_minmax(0,46%)]">
-          <div class="flex min-w-0 flex-col gap-5">
-            <span class="inline-flex w-fit items-center gap-1.5 rounded-full bg-white/55 px-3 py-1 text-xs font-medium backdrop-blur dark:bg-black/25"><Presentation class="size-3.5" />{t("dash.latest")}</span>
-            <div>
-              <h2 class="font-display text-[32px] leading-[1.08] text-balance sm:text-[42px]">{deck.title}</h2>
-              <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] opacity-80">
-                {#if deck.authorName}<span class="inline-flex items-center gap-2"><Avatar name={deck.authorName} size={22} class="ring-white/60" />{deck.authorName}</span><span aria-hidden="true">·</span>{/if}
-                <span>{t("dash.version", { n: deck.version })}</span><span aria-hidden="true">·</span>
-                <span>{formatDate(deck.publishedAt)}</span>
-              </div>
-            </div>
-            {#if deck.tags.length}
-              <div class="flex flex-wrap gap-1.5">
-                {#each deck.tags as tag (tag.id)}<span class="rounded-full bg-white/55 px-2.5 py-0.5 text-xs font-medium dark:bg-black/25">{tag.name}</span>{/each}
-              </div>
-            {/if}
-            <div class="flex flex-wrap items-center gap-2">
-              <Button variant="primary" href="/slides/{deck.id}">{t("action.open")}<ArrowRight /></Button>
-              {#if deck.reviewCount}
-                <a href="/slides/{deck.id}#reviews" class="inline-flex h-10 items-center gap-2 rounded-full bg-white/55 px-4 text-sm font-medium backdrop-blur hover:bg-white/75 dark:bg-black/25 dark:hover:bg-black/35">
-                  <MessageSquareQuote class="size-4" />{t(deck.reviewCount === 1 ? "dash.reviews.one" : "dash.reviews", { n: deck.reviewCount })}
-                </a>
-              {/if}
-            </div>
-          </div>
-          <a href="/slides/{deck.id}" class="group block" aria-label={deck.title}>
-            <div class="aspect-[16/10] overflow-hidden rounded-[18px] bg-white/70 shadow-[0_24px_48px_-20px_rgb(80_30_10/0.45)] ring-1 ring-black/5 transition-transform duration-300 group-hover:-translate-y-1 dark:bg-black/30 dark:ring-white/10">
-              {#if deck.thumbnailUrl}
-                <img src={deck.thumbnailUrl} alt="" class="size-full object-cover" loading="lazy" />
-              {:else}
-                <div class="grid size-full place-items-center"><Presentation class="size-10 opacity-40" /></div>
-              {/if}
-            </div>
-          </a>
+        <div>
+          {#if value === undefined}<Skeleton class="h-9 w-14" />{:else}<p class="font-display text-[38px] leading-none tabular-nums">{value}</p>{/if}
+          <p class="mt-1.5 text-[13px] font-medium text-ink-2">{label}</p>
+          <p class="mt-0.5 truncate text-[12px] text-ink-3">{foot || "\u00a0"}</p>
         </div>
-      {/if}
-    </section>
+      </a>
+    {/snippet}
+    {@render stat(t("dash.stat.myStudies"), c?.myStudies, FlaskConical, "peach", c ? t("dash.stat.labStudies", { n: c.labStudies }) : "", "/studies?member=me")}
+    {@render stat(t("dash.stat.openTasks"), c?.openTasks, ListTodo, "sky", c ? (c.overdueTasks ? t("dash.stat.overdue", { n: c.overdueTasks }) : t("dash.stat.noOverdue")) : "", "#my-tasks")}
+    {@render stat(t("dash.stat.dueWeek"), c?.dueThisWeek, CalendarClock, "butter", "", "#my-tasks", "col-span-2 lg:col-span-1")}
+  </div>
 
-    <!-- Stats -->
-    <div class="grid grid-cols-2 gap-3 sm:gap-4">
-      {#snippet stat(label: string, value: number | undefined, icon: typeof Presentation, tone: Tone, foot: string | null, href: string)}
-        {@const Icon = icon}
-        <a href={href} class="group flex flex-col justify-between gap-4 rounded-[22px] border border-line/70 bg-surface p-4 shadow-card transition-colors hover:border-line-2 sm:p-5">
-          <div class="flex items-center justify-between">
-            <span class="grid size-9 place-items-center rounded-xl" style="background:var(--pill-{tone});color:var(--pill-{tone}-ink)"><Icon class="size-[18px]" /></span>
-            <ArrowUpRight class="size-4 text-ink-3 opacity-0 transition-opacity group-hover:opacity-100" />
-          </div>
-          <div>
-            {#if value === undefined}<Skeleton class="h-9 w-14" />{:else}<p class="text-[32px] leading-none font-semibold tracking-[-0.03em] tabular-nums">{value}</p>{/if}
-            <p class="mt-1.5 text-[13px] text-ink-2">{label}</p>
-            <!-- Always one line tall so the numbers line up across tiles. -->
-            <p class="mt-0.5 truncate text-[12px] text-ink-3">{foot ?? "\u00a0"}</p>
-          </div>
-        </a>
-      {/snippet}
-      {@render stat(t("dash.stat.slides"), s?.slides, Presentation, "peach", s ? t("dash.stat.versionsThisWeek", { n: s.slidesThisWeek }) : null, "/slides")}
-      {@render stat(t("dash.stat.notes"), s?.notes, FileText, "sky", s ? t("dash.stat.thisWeek", { n: s.notesThisWeek }) : null, "/notes")}
-      {@render stat(t("dash.stat.recordings"), s?.recordings, Mic, "mint", null, "/recordings")}
-      {@render stat(t("dash.stat.pending"), s?.pendingReviews, MessageSquareQuote, "lilac", s && !s.pendingReviews ? t("dash.stat.allClear") : null, "#pending")}
+  <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
+    <!-- My studies -->
+    <Card>
+      <CardHeader title={t("dash.myStudies")}>
+        {#snippet actions()}<Button size="sm" variant="ghost" href="/studies">{t("action.viewAll")}<ArrowUpRight /></Button>{/snippet}
+      </CardHeader>
+      {#if !data}
+        <div class="flex flex-col gap-3">{#each [0, 1] as i (i)}<Skeleton class="h-20" />{/each}</div>
+      {:else if !data.myStudies.length}
+        <EmptyState title={t("dash.myStudies.empty")} hint={t("dash.myStudies.emptyHint")} class="py-8">
+          {#snippet icon()}<FlaskConical />{/snippet}
+          {#snippet action()}<Button size="sm" variant="primary" href="/studies/new"><Plus />{t("dash.newStudy")}</Button>{/snippet}
+        </EmptyState>
+      {:else}
+        <ul class="-mx-2 flex flex-col">
+          {#each data.myStudies as study (study.id)}
+            <li>
+              <a href="/studies/{study.slug}" class="group flex flex-col gap-2.5 rounded-2xl px-2 py-3 hover:bg-surface-2 sm:flex-row sm:items-center sm:gap-5">
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-[14.5px] font-semibold text-ink group-hover:underline">{study.title}</p>
+                  <p class="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12.5px] text-ink-3">
+                    <Flag class="size-3.5 shrink-0" />
+                    {#if study.next_milestone}
+                      <span class="min-w-0 truncate">{study.next_milestone.title}</span>
+                      {#if study.next_milestone.due_on}<DueLabel date={study.next_milestone.due_on} compact />{/if}
+                    {:else}{t("dash.noMilestone")}{/if}
+                  </p>
+                </div>
+                <div class="flex w-full shrink-0 flex-col gap-1.5 sm:w-52">
+                  <div class="flex items-baseline justify-between gap-2 text-[12px]">
+                    <span class="truncate font-medium text-ink-2">{study.current_stage?.name ?? t("studies.noStage")}</span>
+                    {#if study.open_task_count}<span class="inline-flex shrink-0 items-center gap-1 text-ink-3"><ListTodo class="size-3.5" />{study.open_task_count}</span>{/if}
+                  </div>
+                  <StageBar count={study.stage_count} done={study.stages_done} current={study.current_stage?.position ?? null} />
+                </div>
+              </a>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </Card>
+
+    <!-- My tasks -->
+    <div id="my-tasks" class="min-w-0 scroll-mt-24 xl:row-span-2">
+    <Card>
+      <CardHeader title={t("dash.myTasks")} />
+      {#if !data}
+        <div class="flex flex-col gap-2">{#each [0, 1, 2] as i (i)}<Skeleton class="h-11" />{/each}</div>
+      {:else if !data.myTasks.length}
+        <EmptyState title={t("dash.myTasks.empty")} class="py-8">{#snippet icon()}<Check />{/snippet}</EmptyState>
+      {:else}
+        <ul class="-mx-2 flex flex-col">
+          {#each data.myTasks as task (task.id)}<li><TaskRow {task} canEdit showStudy onToggle={toggle} /></li>{/each}
+        </ul>
+      {/if}
+    </Card>
+    {#if data && (data.pendingDrafts?.length || data.upcomingMeetings?.length)}
+      <!-- Meetings: drafts waiting for the caller's confirmation, then upcoming ones -->
+      <Card class="mt-4 sm:mt-5">
+        <CardHeader title={t("dash.meetings")}>
+          {#snippet actions()}<Button size="sm" variant="ghost" href="/meetings">{t("action.viewAll")}<ArrowUpRight /></Button>{/snippet}
+        </CardHeader>
+        {#if data.pendingDrafts?.length}
+          <p class="mb-1 text-[12px] font-medium text-ink-3">{t("dash.meetings.drafts")}</p>
+          <ul class="-mx-2 mb-3 flex flex-col">
+            {#each data.pendingDrafts as draft (draft.id)}
+              <li>
+                <a href="/meetings/{draft.meeting.id}" class="flex min-h-11 min-w-0 items-center gap-3 rounded-2xl px-2 py-2 hover:bg-surface-2">
+                  <span class="grid size-8 shrink-0 place-items-center rounded-xl" style="background:var(--pill-peach);color:var(--pill-peach-ink)"><ClipboardCheck class="size-4" /></span>
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate text-[13.5px] font-medium text-ink">{draft.meeting.title}</p>
+                    <p class="mt-0.5 flex min-w-0 items-center gap-2 text-[12px] text-ink-3">
+                      <Pill tone={toneFor(draft.study.id)} size="sm" class="max-w-[60%]">{draft.study.title}</Pill>
+                      <span class="shrink-0">{relativeTime(draft.meeting.held_at)}</span>
+                    </p>
+                  </div>
+                  <span class="shrink-0 text-[12.5px] font-medium text-ink-2">{t("dash.meetings.review")}</span>
+                </a>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if data.upcomingMeetings?.length}
+          <p class="mb-1 text-[12px] font-medium text-ink-3">{t("dash.meetings.upcoming")}</p>
+          <ul class="-mx-2 flex flex-col">
+            {#each data.upcomingMeetings as meeting (meeting.id)}
+              <li>
+                <a href="/meetings/{meeting.id}" class="flex min-h-11 min-w-0 items-center gap-3 rounded-2xl px-2 py-2 hover:bg-surface-2">
+                  <span class="grid size-8 shrink-0 place-items-center rounded-xl" style="background:var(--pill-sky);color:var(--pill-sky-ink)"><UsersRound class="size-4" /></span>
+                  <p class="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{meeting.title}</p>
+                  <span class="shrink-0 text-[12px] text-ink-3">{meetingTime(meeting.held_at)}</span>
+                </a>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </Card>
+    {/if}
     </div>
 
     <!-- Activity -->
-    <Card class="xl:col-span-2" padded={false}>
-      <div class="px-5 pt-5 sm:px-6 sm:pt-6"><CardHeader title={t("dash.activity")} /></div>
+    <Card>
+      <CardHeader title={t("dash.activity")} />
       {#if !data}
-        <div class="flex flex-col gap-2 px-5 pb-5 sm:px-6">{#each [0, 1, 2, 3] as i (i)}<Skeleton class="h-11" />{/each}</div>
+        <div class="flex flex-col gap-3">{#each [0, 1, 2] as i (i)}<Skeleton class="h-12" />{/each}</div>
       {:else if !data.activity.length}
-        <EmptyState title={t("dash.activity.empty")} class="pb-10" />
+        <EmptyState title={t("dash.activity.empty")} class="py-8" />
       {:else}
-        <table class="hidden w-full text-left text-[13.5px] md:table">
-          <thead>
-            <tr class="border-y border-line bg-surface-2/60 text-[12px] text-ink-3">
-              <th class="py-2.5 pl-6 font-medium">{t("dash.activity.col.item")}</th>
-              <th class="py-2.5 font-medium">{t("dash.activity.col.type")}</th>
-              <th class="py-2.5 font-medium">{t("dash.activity.col.who")}</th>
-              <th class="py-2.5 pr-6 text-right font-medium">{t("dash.activity.col.when")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each data.activity as a (a.kind + a.id)}
-              {@const meta = kindMeta[a.kind]}
-              <tr class="group border-b border-line last:border-0 hover:bg-surface-2/60">
-                <td class="max-w-0 py-3 pl-6">
-                  <a href={a.url} class="flex items-center gap-3">
-                    <span class="grid size-8 shrink-0 place-items-center rounded-lg" style="background:var(--pill-{meta.tone});color:var(--pill-{meta.tone}-ink)"><meta.icon class="size-4" /></span>
-                    <span class="truncate font-medium text-ink group-hover:underline">{a.title}</span>
-                  </a>
-                </td>
-                <td class="w-28 py-3"><Pill tone={meta.tone} size="sm" dot>{t(`dash.kind.${a.kind}`)}</Pill></td>
-                <td class="w-44 py-3">
-                  {#if a.actor}<span class="flex items-center gap-2 text-ink-2"><Avatar name={a.actor.name} size={24} class="ring-0" /><span class="truncate">{a.actor.name}</span></span>{:else}<span class="text-ink-3">—</span>{/if}
-                </td>
-                <td class="w-32 py-3 pr-6 text-right whitespace-nowrap text-ink-3">{relativeTime(a.at)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-        <ul class="flex flex-col px-3 pb-3 md:hidden">
-          {#each data.activity as a (a.kind + a.id)}
-            {@const meta = kindMeta[a.kind]}
+        <ul class="-mx-2 flex flex-col">
+          {#each data.activity as item (item.id)}
+            {@const meta = kindOf(item.kind)}
+            {@const Icon = meta.icon}
             <li>
-              <a href={a.url} class="flex items-center gap-3 rounded-2xl px-2 py-2.5 active:bg-surface-2">
-                <span class="grid size-9 shrink-0 place-items-center rounded-xl" style="background:var(--pill-{meta.tone});color:var(--pill-{meta.tone}-ink)"><meta.icon class="size-4" /></span>
-                <span class="min-w-0 flex-1">
-                  <span class="block truncate text-[14px] font-medium">{a.title}</span>
-                  <span class="block truncate text-[12px] text-ink-3">{t(`dash.kind.${a.kind}`)}{#if a.actor} · {a.actor.name}{/if}</span>
-                </span>
-                <span class="shrink-0 text-[12px] text-ink-3">{relativeTime(a.at)}</span>
+              <a href={item.url ?? `/studies/${item.study.slug}`} class="flex min-w-0 items-start gap-3 rounded-2xl px-2 py-2.5 hover:bg-surface-2">
+                <span class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl" style="background:var(--pill-{meta.tone});color:var(--pill-{meta.tone}-ink)"><Icon class="size-4" /></span>
+                <div class="min-w-0 flex-1">
+                  <p class="text-[13.5px] leading-snug text-ink">
+                    {#if item.actor}<span class="font-semibold">{item.actor.name}</span>{/if}
+                    <span class="text-ink-2">{kindLabel(item.kind)}</span>
+                    <span class="font-medium break-words">{item.title}</span>
+                  </p>
+                  <p class="mt-1 flex min-w-0 items-center gap-2 text-[12px] text-ink-3">
+                    <Pill tone={toneFor(item.study.id)} size="sm" class="max-w-[60%]">{item.study.title}</Pill>
+                    <span class="shrink-0">{relativeTime(item.at)}</span>
+                  </p>
+                </div>
+                {#if item.actor}<span class="hidden sm:block"><Avatar name={item.actor.name} size={28} class="ring-0" /></span>{/if}
               </a>
             </li>
           {/each}
         </ul>
       {/if}
     </Card>
-
-    <!-- Pending reviews -->
-    <Card class="scroll-mt-24">
-      <div id="pending"></div>
-      <CardHeader title={t("dash.pending")} />
-      {#if !data}
-        <div class="flex flex-col gap-2">{#each [0, 1, 2] as i (i)}<Skeleton class="h-20" />{/each}</div>
-      {:else if !data.pendingReviews.length}
-        <EmptyState title={t("dash.pending.empty")}>{#snippet icon()}<MessageSquareQuote />{/snippet}</EmptyState>
-      {:else}
-        <ul class="flex flex-col gap-2.5">
-          {#each data.pendingReviews as r (r.reviewId)}
-            <li>
-              <a href="/slides/{r.slideId}#review-{r.reviewId}" class="block rounded-2xl border border-line p-3.5 transition-colors hover:border-line-2 hover:bg-surface-2/60">
-                <p class="line-clamp-2 text-[13.5px] leading-relaxed [overflow-wrap:anywhere] text-ink">{t("dash.pending.quote", { text: r.excerpt })}</p>
-                <p class="mt-2 truncate text-[12px] text-ink-3">{t("dash.pending.on", { title: r.slideTitle })}</p>
-                <div class="mt-1.5 flex items-center gap-2 text-[12px] text-ink-3">
-                  {#if r.authorName}<Avatar name={r.authorName} size={20} class="ring-0" /><span class="min-w-0 truncate text-ink-2">{r.authorName}</span>{/if}
-                  {#if r.page !== null}<Pill size="sm" tone="lilac" class="shrink-0">{t("dash.pending.page", { n: r.page })}</Pill>{/if}
-                  <span class="ml-auto shrink-0">{relativeTime(r.createdAt)}</span>
-                </div>
-              </a>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </Card>
-
-    <!-- Recent notes -->
-    <section class="xl:col-span-3">
-      <div class="mb-3 flex items-center justify-between px-1">
-        <h2 class="text-[15px] font-semibold">{t("dash.recentNotes")}</h2>
-        <a href="/notes" class="inline-flex items-center gap-1 text-[13px] font-medium text-ink-2 hover:text-ink">{t("action.viewAll")}<ArrowRight class="size-3.5" /></a>
-      </div>
-      {#if !data}
-        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{#each [0, 1, 2] as i (i)}<Skeleton class="h-36 rounded-[22px]" />{/each}</div>
-      {:else if !data.recentNotes.length}
-        <Card><EmptyState title={t("dash.recentNotes.empty")}>{#snippet icon()}<FileText />{/snippet}</EmptyState></Card>
-      {:else}
-        <div class="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-3">
-          {#each data.recentNotes as note (note.id)}
-            <a href="/notes/{note.id}" class="group flex flex-col rounded-[22px] border border-line/70 bg-surface p-5 shadow-card transition-colors hover:border-line-2">
-              <div class="flex items-start justify-between gap-3">
-                <h3 class="line-clamp-2 text-[15px] font-semibold [overflow-wrap:anywhere] text-ink group-hover:underline">{note.title}</h3>
-                {#if note.hasAudio}<span class="grid size-7 shrink-0 place-items-center rounded-lg" style="background:var(--pill-mint);color:var(--pill-mint-ink)" title={t("dash.hasAudio")}><AudioLines class="size-3.5" /></span>{/if}
-              </div>
-              <p class="mt-2 line-clamp-2 flex-1 text-[13px] leading-relaxed [overflow-wrap:anywhere] text-ink-3">{note.excerpt}</p>
-              <div class="mt-4 flex items-center gap-2">
-                <div class="flex min-w-0 flex-1 gap-1.5 overflow-hidden">
-                  {#each note.tags.slice(0, 2) as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>{/each}
-                </div>
-                <span class="shrink-0 text-[12px] text-ink-3">{relativeTime(note.updatedAt)}</span>
-              </div>
-            </a>
-          {/each}
-        </div>
-      {/if}
-    </section>
   </div>
 {/if}

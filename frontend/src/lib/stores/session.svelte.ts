@@ -29,8 +29,9 @@ export const session = {
   get loaded() {
     return loaded;
   },
-  get canEdit() {
-    return !!user && user.role !== "professor";
+  /** System admin (accounts, invitations, models, templates). */
+  get isAdmin() {
+    return !!user?.is_admin;
   },
   async load() {
     // Transient failures (429/5xx/network) are retried: they must not look like a logged-out session.

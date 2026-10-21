@@ -1,9 +1,17 @@
 /** Job contracts shared with the backend. Keep in sync with backend/src/jobs/queue.ts. */
-export type JobKind = "media_transcode" | "slide_render";
+export type JobKind = "media_transcode" | "slide_render" | "slide_preview";
 
-export type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: string; fileName: string };
-/** `peaks`: waveform overview, ≤1000 values in [0,1] (3 decimals); omitted when it could not be computed. */
-export type MediaTranscodeResult = { outputKey: string; bytes: number; durationSeconds: number | null; peaks?: number[] };
+/**
+ * Meetings (backend lib/meetings/media.ts): `itemId` = meeting media id. `extraSourceKeys`: further recorder parts of a
+ * browser recording, concatenated after `sourceKey`. `keepSource`: keep `sourceKey` (do not delete it) when it has a
+ * video stream, so the video can be played back.
+ */
+export type MediaTranscodePayload = { itemId: string; sourceKey: string; outputKey: string; fileName: string; extraSourceKeys?: string[]; keepSource?: boolean };
+/**
+ * `peaks`: waveform overview, ≤1000 values in [0,1] (3 decimals); omitted when it could not be computed.
+ * `hasVideo`: the (first) source has a video stream. `keptSource`: `sourceKey` was kept (keepSource && hasVideo).
+ */
+export type MediaTranscodeResult = { outputKey: string; bytes: number; durationSeconds: number | null; peaks?: number[]; hasVideo?: boolean; keptSource?: boolean };
 /** Kind of uploaded deck: a Quarto ZIP, a PDF, or a PowerPoint file converted with LibreOffice. */
 export type SlideSourceType = "quarto" | "pdf" | "pptx";
 /**
@@ -41,6 +49,14 @@ export type SlideRenderResult = {
   manifestKey?: string;
   converter?: string;
 };
+
+/**
+ * `slide_preview` (quick HTML-only render of an in-app source tree). Keys: `slides/<deckId>/preview/<previewId>/source.zip`
+ * and `…/output/`. Keep in sync with backend/src/lib/slides/preview.ts.
+ */
+export type SlidePreviewPayload = { deckId: string; previewId: string; sourceKey: string; entry: string; outputPrefix: string; /** Also capture `_hub/shots/` (AI layout review). */ shots?: boolean };
+export type PreviewShots = { count: number; total?: number; width?: number; height?: number; truncated?: boolean; error?: string };
+export type SlidePreviewResult = { entryHtml: string; fileCount: number; quartoVersion: string | null; shots?: PreviewShots };
 
 /** Speaker notes of one page: plain text (paragraphs separated by blank lines) and, for quarto, minimal HTML. */
 export type PageNotes = { text: string; html?: string };

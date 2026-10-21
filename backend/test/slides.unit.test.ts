@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chooseEntry, safeEntryName, scanZip } from "../src/lib/slides/zip-validate.js";
 import { safeEqual, validCapability, validViewToken, viewToken, type SlideProject } from "../src/lib/slides/access.js";
-import { parseTagFilter } from "../src/lib/slides/filters.js";
 import { deckCsp, patchDeckHtml, safeAssetPath } from "../src/routes/slide-view.js";
 import { writeZip, type ZipEntry } from "./slides-fixtures.js";
 
@@ -141,11 +140,4 @@ describe("asset serving helpers", () => {
     expect(csp).toContain("connect-src 'none'");
   });
 
-  it("parses tag filters", () => {
-    expect(parseTagFilter(undefined)).toEqual({ mode: "all" });
-    expect(parseTagFilter("")).toEqual({ mode: "set", ids: [], untagged: false });
-    const id = "6f1d2a1e-1d7b-4c43-9a35-2f8a3a0f8f11";
-    expect(parseTagFilter(`${id},none`)).toEqual({ mode: "set", ids: [id], untagged: true });
-    expect(() => parseTagFilter("nope")).toThrow();
-  });
 });

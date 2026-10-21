@@ -10,14 +10,18 @@ import { backoffSeconds, tail } from "./errors.js";
 export class Queue {
   constructor(private readonly pool: pg.Pool, readonly workerId: string) {}
 
-  async claim(): Promise<ClaimedJob | null> {
+  /**
+   * Claims the oldest queued job whose kind is in `kinds` (other services own the other kinds). Quick previews
+   * (`slide_preview`) are low priority: claimed only when no other claimable job is waiting.
+   */
+  async claim(kinds: readonly string[]): Promise<ClaimedJob | null> {
     const result = await this.pool.query<ClaimedJob>(
       `UPDATE jobs SET status='running', attempts=attempts+1, locked_by=$1, heartbeat_at=now(),
               started_at=coalesce(started_at, now()), stage='starting', error=NULL
-        WHERE id = (SELECT id FROM jobs WHERE status='queued' AND run_after<=now()
-                     ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+        WHERE id = (SELECT id FROM jobs WHERE status='queued' AND run_after<=now() AND kind = ANY($2::text[])
+                     ORDER BY (kind = 'slide_preview'), created_at FOR UPDATE SKIP LOCKED LIMIT 1)
         RETURNING id, kind, payload, attempts, max_attempts`,
-      [this.workerId],
+      [this.workerId, kinds],
     );
     return result.rows[0] ?? null;
   }

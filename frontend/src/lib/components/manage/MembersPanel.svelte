@@ -10,9 +10,10 @@
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Pill from "#lib/components/ui/Pill.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
+  import { accountLabel } from "#lib/roles.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import RoleMenu from "./RoleMenu.svelte";
-  import { roleLabel, roleTone, tc, type AdminUser, type GrantableRole } from "./manage.ts";
+  import { adminTone, ownerTone, roleLabel, roleTone, tc, type AdminUser, type GrantableRole } from "./manage.ts";
 
   let users = $state<AdminUser[] | null>(null);
   let error = $state<string | null>(null);
@@ -58,7 +59,7 @@
     }
   }
 
-  const isFixed = (user: AdminUser) => user.role === "owner" || user.id === session.user?.id;
+  const isFixed = (user: AdminUser) => user.is_owner || user.id === session.user?.id;
 </script>
 
 {#snippet who(user: AdminUser, compact = false)}
@@ -77,11 +78,14 @@
 {/snippet}
 
 {#snippet role(user: AdminUser)}
-  {#if isFixed(user)}
+  {#if user.is_owner}
     <span class="inline-flex items-center gap-1.5" title={t("manage.members.protected")}>
-      <Pill tone={roleTone[user.role]}>{t(roleLabel(user.role))}</Pill>
+      <Pill tone={ownerTone}>{accountLabel(user)}</Pill>
       <ShieldCheck class="size-3.5 text-ink-3" aria-label={t("manage.members.protected")} />
     </span>
+  {:else if user.role === "admin" || user.id === session.user?.id}
+    <!-- Admin accounts stay admins (create them by invitation); nobody changes their own role. -->
+    <Pill tone={user.role === "admin" ? adminTone : roleTone[user.role]}>{accountLabel(user)}</Pill>
   {:else}
     <RoleMenu
       role={user.role}
@@ -128,8 +132,8 @@
     <table class="hidden w-full text-left text-[13.5px] md:table">
       <thead>
         <tr class="border-b border-line bg-surface-2/60 text-[12px] text-ink-3">
-          <th class="w-[34%] py-2.5 pl-6 font-medium">{t("manage.members.col.member")}</th>
-          <th class="w-[18%] py-2.5 font-medium">{t("manage.members.col.role")}</th>
+          <th class="w-[30%] py-2.5 pl-6 font-medium">{t("manage.members.col.member")}</th>
+          <th class="w-[22%] py-2.5 font-medium">{t("manage.members.col.role")}</th>
           <th class="w-[16%] py-2.5 font-medium">{t("manage.members.col.lastLogin")}</th>
           <th class="py-2.5 font-medium">{t("manage.members.col.status")}</th>
           <th class="py-2.5 pr-6 text-right font-medium"><span class="sr-only">{t("manage.members.col.actions")}</span></th>
@@ -137,7 +141,7 @@
       </thead>
       <tbody>
         {#each users as user (user.id)}
-          <tr class="border-b border-line last:border-0 hover:bg-surface-2/60 {user.role === 'owner' ? 'bg-surface-2/40' : ''}">
+          <tr class="border-b border-line last:border-0 hover:bg-surface-2/60 {user.is_owner ? 'bg-surface-2/40' : ''}">
             <td class="max-w-0 py-3 pl-6">{@render who(user)}</td>
             <td class="py-3">{@render role(user)}</td>
             <td class="py-3 whitespace-nowrap text-ink-2">{@render lastLogin(user)}</td>
@@ -150,13 +154,13 @@
 
     <ul class="divide-y divide-line md:hidden">
       {#each users as user (user.id)}
-        <li class="flex flex-col gap-3 p-4 {user.role === 'owner' ? 'bg-surface-2/40' : ''}">
+        <li class="flex flex-col gap-3 p-4 {user.is_owner ? 'bg-surface-2/40' : ''}">
           <div class="flex items-start justify-between gap-3">
             {@render who(user, true)}
             {@render status(user)}
           </div>
-          <div class="flex min-h-8 items-center justify-between gap-2 pl-12">
-            {@render role(user)}
+          <div class="flex min-h-10 flex-wrap items-center justify-between gap-2 pl-12">
+            <div class="flex flex-wrap items-center gap-3">{@render role(user)}</div>
             {@render action(user)}
           </div>
         </li>

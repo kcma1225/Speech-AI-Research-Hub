@@ -1,14 +1,14 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { ArrowUpRight } from "@lucide/svelte";
-  import { isActive, manageNav, workspaceNav, type NavItem } from "#lib/nav.ts";
+  import { canSee, hrefOf as resolveHref, isActive, manageNav, workspaceNav, type NavItem } from "#lib/nav.ts";
   import { session } from "#lib/stores/session.svelte.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import Wordmark from "./Wordmark.svelte";
   import JobsWidget from "./JobsWidget.svelte";
 
-  const visible = (item: NavItem) => (!item.roles || (session.user && item.roles.includes(session.user.role))) && (!item.external || session.config.latexUrl);
-  const hrefOf = (item: NavItem) => (item.key === "latex" ? session.config.latexUrl! : item.href);
+  const visible = (item: NavItem) => canSee(item, session.user, session.config);
+  const hrefOf = (item: NavItem) => resolveHref(item, session.config);
 </script>
 
 {#snippet link(item: NavItem)}
@@ -30,11 +30,13 @@
 
 <aside class="sticky top-0 hidden h-dvh w-[260px] shrink-0 flex-col px-4 pt-6 pb-4 lg:flex">
   <div class="px-2.5"><Wordmark /></div>
-  <nav class="mt-9 flex flex-col gap-1" aria-label={t("nav.workspace")}>
-    <p class="px-3.5 pb-1.5 text-[11px] font-medium tracking-[0.08em] text-ink-3 uppercase">{t("nav.workspace")}</p>
-    {#each workspaceNav as item (item.key)}{@render link(item)}{/each}
-  </nav>
-  <nav class="mt-7 flex flex-col gap-1" aria-label={t("nav.manage")}>
+  {#if workspaceNav.some(visible)}
+    <nav class="mt-9 flex flex-col gap-1" aria-label={t("nav.workspace")}>
+      <p class="px-3.5 pb-1.5 text-[11px] font-medium tracking-[0.08em] text-ink-3 uppercase">{t("nav.workspace")}</p>
+      {#each workspaceNav.filter(visible) as item (item.key)}{@render link(item)}{/each}
+    </nav>
+  {/if}
+  <nav class="{workspaceNav.some(visible) ? 'mt-7' : 'mt-9'} flex flex-col gap-1" aria-label={t("nav.manage")}>
     <p class="px-3.5 pb-1.5 text-[11px] font-medium tracking-[0.08em] text-ink-3 uppercase">{t("nav.manage")}</p>
     {#each manageNav.filter(visible) as item (item.key)}{@render link(item)}{/each}
   </nav>

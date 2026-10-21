@@ -1,0 +1,41 @@
+{
+  "total": 1832,
+  "offset": 0,
+  "next": 2,
+  "data": [
+    {
+      "paperId": "0170fc76e934ee643f869df18fb617d5357e8b4e",
+      "externalIds": { "DBLP": "conf/interspeech/GulatiQCPZYHWZW20", "MAG": "3097777922", "ArXiv": "2005.08100", "DOI": "10.21437/interspeech.2020-3015", "CorpusId": 218674528 },
+      "url": "https://www.semanticscholar.org/paper/0170fc76e934ee643f869df18fb617d5357e8b4e",
+      "title": "Conformer: Convolution-augmented Transformer for Speech Recognition",
+      "abstract": "Recently Transformer and Convolution neural network (CNN) based models have shown promising results in Automatic Speech Recognition (ASR), outperforming Recurrent neural networks (RNNs).",
+      "venue": "Interspeech",
+      "publicationVenue": { "id": "af90489e-312f-4514-bea2-bcb399cb8ece", "name": "Interspeech", "type": "conference", "alternate_names": ["Conf Int Speech Commun Assoc", "INTERSPEECH"] },
+      "year": 2020,
+      "openAccessPdf": { "url": "https://arxiv.org/pdf/2005.08100", "status": "GREEN", "license": null },
+      "publicationTypes": ["JournalArticle", "Conference"],
+      "publicationDate": "2020-05-16",
+      "journal": { "name": "ArXiv", "volume": "abs/2005.08100" },
+      "authors": [
+        { "authorId": "40441452", "name": "Anmol Gulati" },
+        { "authorId": "2112478040", "name": "James Qin" },
+        { "authorId": "34320634", "name": "Ruoming Pang" }
+      ]
+    },
+    {
+      "paperId": "49a049dc85e2380dde80501a984878341dd8efdf",
+      "externalIds": { "ArXiv": "2006.11477", "DBLP": "conf/nips/BaevskiZMA20", "CorpusId": 219966759 },
+      "url": "https://www.semanticscholar.org/paper/49a049dc85e2380dde80501a984878341dd8efdf",
+      "title": "wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations",
+      "abstract": null,
+      "venue": "Neural Information Processing Systems",
+      "publicationVenue": { "id": "d9720b90-d60b-48bc-9df8-87a30b9a60dd", "name": "Neural Information Processing Systems", "type": "conference" },
+      "year": 2020,
+      "openAccessPdf": { "url": "", "status": null, "license": null },
+      "publicationTypes": ["JournalArticle", "Conference"],
+      "publicationDate": "2020-06-20",
+      "journal": { "name": "ArXiv", "volume": "abs/2006.11477" },
+      "authors": [ { "authorId": "51428394", "name": "Alexei Baevski" }, { "authorId": "2117779029", "name": "Henry Zhou" } ]
+    }
+  ]
+}

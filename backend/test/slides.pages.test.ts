@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { LightMyRequestResponse } from "fastify";
 import { createTestContext, hasTestDb, hasTestS3, ORIGIN, type TestContext } from "./helpers.js";
 import { deckZip, multipart, PDF_BYTES, pptxBytes, userSession } from "./slides-fixtures.js";
+import { insertStudy } from "./study-fixtures.js";
 import type { PageManifest, SlideRenderPayload, SlideRenderResult } from "../src/jobs/queue.js";
 
 const run = hasTestDb && hasTestS3 ? describe : describe.skip;
@@ -11,12 +12,14 @@ run("slide pages, PDF/PPTX decks, per-page reviews", () => {
   let ctx: TestContext;
   let member: { id: string; cookie: string };
   let professor: { id: string; cookie: string };
+  let studyId: string;
   const json = (response: LightMyRequestResponse) => response.json() as Record<string, any>;
 
   beforeAll(async () => {
     ctx = await createTestContext();
-    member = await userSession(ctx.db, "member", "Member P");
+    member = await userSession(ctx.db, "student", "Member P");
     professor = await userSession(ctx.db, "professor", "Prof Pages");
+    studyId = (await insertStudy(ctx.db, member.id)).id;
   });
   afterAll(async () => {
     await ctx?.close();
@@ -26,7 +29,7 @@ run("slide pages, PDF/PPTX decks, per-page reviews", () => {
     ctx.app.inject({ method, url, headers: { origin: ORIGIN, ...(cookie ? { cookie } : {}) }, ...(payload === undefined ? {} : { payload: payload as object }) });
   const get = (url: string, cookie?: string, headers: Record<string, string> = {}) => ctx.app.inject({ method: "GET", url, headers: { ...(cookie ? { cookie } : {}), ...headers } });
   const upload = (url: string, fields: Record<string, string>, data: Buffer, filename: string) => {
-    const body = multipart(fields, { filename, data });
+    const body = multipart(url === "/api/slides" ? { studyId, ...fields } : fields, { filename, data });
     return ctx.app.inject({ method: "POST", url, headers: { origin: ORIGIN, cookie: member.cookie, ...body.headers }, payload: body.payload });
   };
   const jobFor = async (versionId: string) =>
@@ -243,8 +246,6 @@ run("slide pages, PDF/PPTX decks, per-page reviews", () => {
     expect(reviews.map((r: any) => [r.page, r.versionId])).toEqual([[2, v3], [3, v2], [null, null]]);
     const bySlug = json(await get(`/api/slides/by-slug/${slug}?key=${encodeURIComponent(shareKey)}`)).reviews;
     expect(bySlug[0]).toMatchObject({ page: 2, versionId: v3 });
-    const dashboard = json(await get("/api/dashboard", member.cookie));
-    expect(dashboard.pendingReviews.map((r: any) => r.page)).toEqual([null, 3, 2]);
   });
 
   it("re-indexes a legacy version into a new prefix without touching the served deck until it succeeds", async () => {

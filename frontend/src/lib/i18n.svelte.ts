@@ -5,11 +5,21 @@ import { messages, type MessageKey } from "./messages";
 let current = $state<Locale>(readCached());
 
 function readCached(): Locale {
+  let stored: string | null = null;
   try {
-    return localStorage.getItem("hub-locale") === "en" ? "en" : "zh-TW";
+    stored = localStorage.getItem("hub-locale");
   } catch {
-    return "zh-TW";
+    // Storage blocked: fall back to the browser language.
   }
+  if (stored === "en" || stored === "zh-TW") return stored;
+  // Nothing chosen on this device yet (e.g. an anonymous viewer of a shared deck): follow the browser, Chinese first.
+  const langs = typeof navigator === "undefined" ? [] : navigator.languages?.length ? navigator.languages : [navigator.language];
+  const first = langs.find(l => /^(zh|en)\b/i.test(l ?? ""));
+  if (first && /^en/i.test(first)) {
+    if (typeof document !== "undefined") document.documentElement.lang = "en";
+    return "en";
+  }
+  return "zh-TW";
 }
 
 export const i18n = {

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { Copy, Download, ExternalLink, FileText, Link2, RefreshCw, Star, Trash2 } from "@lucide/svelte";
-  import { untrack } from "svelte";
   import { goto } from "$app/navigation";
   import { api } from "#lib/api.ts";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
@@ -8,10 +7,9 @@
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import FileDrop from "#lib/components/ui/FileDrop.svelte";
-  import Pill, { tagTone, toneFor } from "#lib/components/ui/Pill.svelte";
+  import Pill from "#lib/components/ui/Pill.svelte";
   import Segmented from "#lib/components/ui/Segmented.svelte";
   import Switch from "#lib/components/ui/Switch.svelte";
-  import TagPicker from "#lib/components/ui/TagPicker.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { SlideDetail } from "#lib/slides/types.ts";
@@ -25,25 +23,13 @@
   // Details form (editors). Re-seeded whenever the server copy changes.
   let title = $state("");
   let slug = $state("");
-  let tagIds = $state<string[]>([]);
-  let tagNames = $state<Record<string, string>>({});
   let saving = $state(false);
   $effect(() => {
     title = p.title;
     slug = p.slug;
-    tagIds = detail.tags.map(tag => tag.id);
-    const known = Object.fromEntries(detail.tags.map(tag => [tag.id, tag.name]));
-    untrack(() => (tagNames = { ...tagNames, ...known }));
   });
   const slugError = $derived(slug && (!SLUG_RE.test(slug) || slug.length > 80) ? t("slides.upload.slugInvalid") : null);
-  const sameTags = $derived(tagIds.length === detail.tags.length && detail.tags.every(tag => tagIds.includes(tag.id)));
-  const dirty = $derived(title.trim() !== p.title || slug !== p.slug || !sameTags);
-
-  async function loadTagNames() {
-    if (tagIds.every(id => tagNames[id])) return;
-    const { tags } = await api.get<{ tags: { id: string; name: string }[] }>("/slide-tags");
-    tagNames = Object.fromEntries(tags.map(tag => [tag.id, tag.name]));
-  }
+  const dirty = $derived(title.trim() !== p.title || slug !== p.slug);
 
   async function save() {
     saving = true;
@@ -51,7 +37,6 @@
       const patch: Record<string, unknown> = {};
       if (title.trim() !== p.title) patch.title = title.trim();
       if (slug !== p.slug) patch.slug = slug;
-      if (!sameTags) patch.tagIds = tagIds;
       await api.patch(`/slides/${p.id}`, patch);
       toasts.show(t("slides.info.saved"), "success");
       await onChanged();
@@ -150,16 +135,9 @@
     {#if manage}
       <TextField label={t("slides.info.name")} bind:value={title} maxlength={160} />
       <TextField label={t("slides.info.slug")} bind:value={slug} maxlength={80} autocapitalize="off" spellcheck={false} error={slugError} />
-      <div class="flex flex-col gap-2">
-        <span class="text-[13px] font-medium text-ink-2">{t("slides.info.tags")}</span>
-        <div class="flex flex-wrap items-center gap-1.5">
-          {#each tagIds as id (id)}{#if tagNames[id]}<Pill tone={toneFor(id)} size="sm">{tagNames[id]}</Pill>{/if}{/each}
-          <TagPicker endpoint="/slide-tags" bind:selected={tagIds} label={t("slides.info.addTag")} onChange={() => void loadTagNames()} />
-        </div>
-      </div>
       {#if dirty}
         <div class="flex justify-end gap-2">
-          <Button size="sm" variant="ghost" onclick={() => ((title = p.title), (slug = p.slug), (tagIds = detail.tags.map(tag => tag.id)))}>{t("action.cancel")}</Button>
+          <Button size="sm" variant="ghost" onclick={() => ((title = p.title), (slug = p.slug))}>{t("action.cancel")}</Button>
           <Button size="sm" variant="primary" loading={saving} disabled={!title.trim() || !slug || Boolean(slugError)} onclick={save}>{t("action.save")}</Button>
         </div>
       {/if}
@@ -167,13 +145,15 @@
       <dl class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-[13.5px]">
         <dt class="text-ink-3">{t("slides.info.name")}</dt><dd class="min-w-0 break-words">{p.title}</dd>
         <dt class="text-ink-3">{t("slides.info.slug")}</dt><dd class="min-w-0 truncate font-mono text-[12.5px]">{p.slug}</dd>
-        <dt class="text-ink-3">{t("slides.info.tags")}</dt>
-        <dd class="flex flex-wrap gap-1.5">
-          {#each detail.tags as tag (tag.id)}<Pill tone={tagTone(tag)} size="sm">{tag.name}</Pill>{:else}<span class="text-ink-3">{t("slides.info.noTags")}</span>{/each}
-        </dd>
       </dl>
     {/if}
     <dl class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-[13px]">
+      {#if detail.study}
+        <dt class="text-ink-3">{t("slides.info.study")}</dt>
+        <dd class="min-w-0 truncate"><a href="/studies/{detail.study.slug}" class="font-medium text-ink underline-offset-2 hover:underline">{detail.study.title}</a></dd>
+      {/if}
+      <dt class="text-ink-3">{t("slides.upload.kind")}</dt>
+      <dd>{t(p.kind === "paper_report" ? "slides.kind.paper_report" : "slides.kind.progress")}</dd>
       {#if p.creator_name}
         <dt class="text-ink-3">{t("slides.info.creator")}</dt>
         <dd class="flex min-w-0 items-center gap-1.5"><Avatar name={p.creator_name} size={18} class="ring-0" /><span class="truncate">{p.creator_name}</span></dd>

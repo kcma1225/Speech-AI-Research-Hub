@@ -1,7 +1,7 @@
 import type { CurrentUser } from "../auth.js";
 import type { Queryable } from "../../db.js";
 import type { SlideSourceType } from "../../jobs/queue.js";
-import { isEditorRole, slideUrls, viewToken, type SlideContext, type SlideProject } from "./access.js";
+import { deckPermissions, slideUrls, viewToken, type SlideContext, type SlideProject } from "./access.js";
 
 export type VersionStatus = "queued" | "rendering" | "review" | "published" | "failed";
 
@@ -41,7 +41,7 @@ export const VERSION_SELECT = `SELECT v.id,v.version,v.status,v.source_type,v.pa
  * requests, for `review` versions (the uploader checks them before publishing); the player only sees published ones.
  */
 export async function listVersions(db: Queryable, secret: string, project: SlideProject, context: SlideContext = { mode: "session" }) {
-  const rows = (await db.query<VersionRow>(`${VERSION_SELECT} WHERE v.project_id=$1 ORDER BY v.version DESC`, [project.id])).rows;
+  const rows = (await db.query<VersionRow>(`${VERSION_SELECT} WHERE v.deck_id=$1 ORDER BY v.version DESC`, [project.id])).rows;
   return rows.map(row => {
     const published = row.status === "published";
     const pagesVisible = Boolean(row.page_count && row.manifest_key) && (published || (row.status === "review" && context.mode === "session"));
@@ -71,28 +71,27 @@ export async function listVersions(db: Queryable, secret: string, project: Slide
 
 /** Everything the deck detail / player page renders. `share_key` is only revealed to editors. */
 export async function slideDetail(db: Queryable, secret: string, project: SlideProject, user: CurrentUser | null, context: SlideContext = { mode: "session" }) {
-  const [versions, references, reviews, replies, tags, creator] = await Promise.all([
+  const [versions, references, reviews, replies, study, creator, perms, tree] = await Promise.all([
     listVersions(db, secret, project, context),
     db.query<{ id: string; title: string; url: string | null; file_key: string | null; file_name: string | null; file_bytes: string | null; is_default: boolean; created_at: string }>(
-      "SELECT id,title,url,file_key,file_name,file_bytes,is_default,created_at FROM slide_references WHERE project_id=$1 ORDER BY is_default DESC,created_at,id",
+      "SELECT id,title,url,file_key,file_name,file_bytes,is_default,created_at FROM slide_references WHERE deck_id=$1 ORDER BY is_default DESC,created_at,id",
       [project.id],
     ),
     db.query<{ id: string; body: string; created_at: string; author: string; author_id: string; page: number | null; versionId: string | null }>(
       `SELECT r.id,r.body,r.created_at,u.name AS author,r.author_id,r.page,r.version_id AS "versionId"
-         FROM slide_reviews r JOIN users u ON u.id=r.author_id WHERE r.project_id=$1 ORDER BY r.created_at,r.id`,
+         FROM slide_reviews r JOIN users u ON u.id=r.author_id WHERE r.deck_id=$1 ORDER BY r.created_at,r.id`,
       [project.id],
     ),
     db.query<{ id: string; review_id: string; body: string; created_at: string; author: string; author_id: string }>(
-      "SELECT p.id,p.review_id,p.body,p.created_at,u.name AS author,p.author_id FROM slide_review_replies p JOIN slide_reviews r ON r.id=p.review_id JOIN users u ON u.id=p.author_id WHERE r.project_id=$1 ORDER BY p.created_at,p.id",
+      "SELECT p.id,p.review_id,p.body,p.created_at,u.name AS author,p.author_id FROM slide_review_replies p JOIN slide_reviews r ON r.id=p.review_id JOIN users u ON u.id=p.author_id WHERE r.deck_id=$1 ORDER BY p.created_at,p.id",
       [project.id],
     ),
-    db.query<{ id: string; name: string }>(
-      "SELECT t.id,t.name FROM slide_project_tags j JOIN slide_tags t ON t.id=j.tag_id WHERE j.project_id=$1 ORDER BY lower(t.name)",
-      [project.id],
-    ),
+    db.query<{ id: string; slug: string; title: string }>("SELECT id,slug,title FROM studies WHERE id=$1", [project.study_id]),
     db.query<{ name: string }>("SELECT name FROM users WHERE id=$1", [project.created_by]),
+    deckPermissions(db, project, user),
+    db.query<{ revision: number; published_revision: number | null }>("SELECT revision,published_revision FROM deck_source_trees WHERE deck_id=$1", [project.id]),
   ]);
-  const editor = isEditorRole(user);
+  const editor = perms.manage;
   const active = versions.find(version => version.id === project.active_version_id && version.status === "published") ?? null;
   // The thumbnail route needs a session, so anonymous viewers get no URL.
   const thumbnailUrl = user && active?.hasThumbnail ? slideUrls.thumbnail(project.id, active.id) : null;
@@ -101,6 +100,12 @@ export async function slideDetail(db: Queryable, secret: string, project: SlideP
       id: project.id,
       title: project.title,
       slug: project.slug,
+      kind: project.kind,
+      paper_id: project.paper_id,
+      metadata: project.metadata ?? {},
+      // In-app Quarto source (signed-in viewers only): revision and the revision last published.
+      source: user && tree.rows[0] ? { revision: tree.rows[0].revision, published_revision: tree.rows[0].published_revision } : null,
+      study_id: user ? project.study_id : null,
       public_view: project.public_view,
       active_version_id: project.active_version_id,
       created_by: project.created_by,
@@ -123,11 +128,8 @@ export async function slideDetail(db: Queryable, secret: string, project: SlideP
       href: file_key ? slideUrls.reference(project.slug, ref.id) : ref.url,
     })),
     reviews: reviews.rows.map(review => ({ ...review, replies: replies.rows.filter(reply => reply.review_id === review.id) })),
-    tags: tags.rows,
-    permissions: {
-      manage: editor,
-      review: Boolean(user && (user.role === "professor" || user.role === "owner")),
-      reply: user?.role === "owner",
-    },
+    // Anonymous viewers (public decks, share links) don't learn which study a deck belongs to.
+    study: user ? study.rows[0] ?? null : null,
+    permissions: { manage: perms.manage, review: perms.review, reply: perms.reply },
   };
 }

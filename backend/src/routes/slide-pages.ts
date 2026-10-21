@@ -30,7 +30,7 @@ type PagedVersion = { output_prefix: string; manifest_key: string | null; page_c
 const slidePages: FastifyPluginAsync = async app => {
   const pagedVersion = async (projectId: string, versionId: string, statuses: string[]) =>
     (await app.db.query<PagedVersion>(
-      "SELECT output_prefix,manifest_key,page_count FROM slide_versions WHERE id=$1 AND project_id=$2 AND status=ANY($3::text[])",
+      "SELECT output_prefix,manifest_key,page_count FROM slide_versions WHERE id=$1 AND deck_id=$2 AND status=ANY($3::text[])",
       [versionId, projectId, statuses],
     )).rows[0] ?? null;
 

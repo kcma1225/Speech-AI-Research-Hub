@@ -1,4 +1,4 @@
-# Speech-AI Research Hub v2. See docs/architecture.md.
+# Speech-AI Research Hub v3. See docs/architecture.md.
 # Only nginx publishes ports; everything else is reachable solely on internal networks.
 
 x-logging: &logging
@@ -46,9 +46,14 @@ services:
       DATABASE_NAME: ${DATABASE_NAME:-research_hub}
       DATABASE_USER: ${DATABASE_USER:-research_hub}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      OWNER_NAME: ${OWNER_NAME:-Owner}
-      OWNER_PASSWORD: ${OWNER_PASSWORD:?Set OWNER_PASSWORD in .env}
+      # Initial admin; the backend falls back to the legacy OWNER_* values and refuses to start without a password.
+      ADMIN_NAME: ${ADMIN_NAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      OWNER_NAME: ${OWNER_NAME:-}
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-}
       AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      # AES-256-GCM key for provider secrets stored in the DB (AI platform); never shared with AUTH_SECRET.
+      PROVIDER_TOKEN_KEY: ${PROVIDER_TOKEN_KEY:-}
       S3_ENDPOINT: http://rustfs:9000
       S3_BUCKET: ${S3_BUCKET:-hub}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
@@ -80,6 +85,49 @@ services:
       retries: 6
       start_period: 20s
     stop_grace_period: 30s
+    restart: unless-stopped
+    logging: *logging
+
+  # AI background jobs (ai_* kinds: transcription, meeting analysis, embeddings, slide generation, library imports).
+  # Same image as the backend; needs internet for cloud model/ASR providers and paper sources.
+  ai-worker:
+    build: ./backend
+    command: ["node", "dist/ai-worker/main.js"]
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost}
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-research_hub}
+      DATABASE_USER: ${DATABASE_USER:-research_hub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      # Initial admin; the backend falls back to the legacy OWNER_* values and refuses to start without a password.
+      ADMIN_NAME: ${ADMIN_NAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      OWNER_NAME: ${OWNER_NAME:-}
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in .env}
+      PROVIDER_TOKEN_KEY: ${PROVIDER_TOKEN_KEY:-}
+      S3_ENDPOINT: http://rustfs:9000
+      S3_BUCKET: ${S3_BUCKET:-hub}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
+      AI_WORKER_CONCURRENCY: ${AI_WORKER_CONCURRENCY:-2}
+    read_only: true
+    tmpfs: ["/tmp:size=4g,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [edge, internal]
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    stop_grace_period: 45s
     restart: unless-stopped
     logging: *logging
 
@@ -121,8 +169,54 @@ services:
     restart: unless-stopped
     logging: *logging
 
+  # Compiles LaTeX projects (`latex_compile` jobs only; latex-runner/README.md). TeX Live + Noto CJK, every compile in a
+  # bubblewrap sandbox (no network, only its own project dir). Like the worker it reaches only db + rustfs ("jobs"
+  # network, no internet) as hub_worker. Custom seccomp = Docker's default + namespace/mount syscalls for bwrap.
+  latex-runner:
+    build: ./latex-runner
+    image: hub-latex-runner:${HUB_VERSION:-dev}
+    platform: linux/amd64
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${DATABASE_NAME:-research_hub}
+      WORKER_DB_USER: hub_worker
+      WORKER_DB_PASSWORD: ${WORKER_DB_PASSWORD:?Set WORKER_DB_PASSWORD in .env}
+      S3_ENDPOINT: http://rustfs:9000
+      S3_BUCKET: ${S3_BUCKET:-hub}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
+      LATEX_CONCURRENCY: ${LATEX_CONCURRENCY:-2}
+      LATEX_TIMEOUT_SECONDS: ${LATEX_TIMEOUT_SECONDS:-120}
+      # Per-compile project directories live below the cache volume (the root fs is read-only).
+      WORK_DIR: /var/latex/work
+    volumes:
+      - latex_cache:/var/latex # per-project build caches only; safe to delete
+    tmpfs: ["/tmp:size=512m,mode=1777"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./latex-runner/seccomp.json
+    mem_limit: 5g # 2 slots × 2 GiB RLIMIT_AS + runner
+    pids_limit: 512
+    networks: [jobs]
+    depends_on:
+      db:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      # Migrations (jobs table, hub_worker grants) run at backend start.
+      backend:
+        condition: service_healthy
+    stop_grace_period: 60s
+    restart: unless-stopped
+    logging: *logging
+
   db:
-    image: postgres:17.6-alpine3.22
+    # PostgreSQL 17 + pgvector (semantic search); pg_trgm ships with it. Extensions are created by migration 0001.
+    image: pgvector/pgvector:0.8.7-pg17
     entrypoint: ["/bin/sh", "/hub/entrypoint.sh"]
     environment:
       POSTGRES_DB: ${DATABASE_NAME:-research_hub}
@@ -260,5 +354,6 @@ networks:
 volumes:
   pgdata:
   rustfsdata:
+  latex_cache:
   latex_data:
   latex_secrets:

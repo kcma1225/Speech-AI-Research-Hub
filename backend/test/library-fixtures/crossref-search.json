@@ -1,0 +1,42 @@
+{
+  "status": "ok",
+  "message-type": "work-list",
+  "message-version": "1.0.0",
+  "message": {
+    "facets": {},
+    "total-results": 25371,
+    "items": [
+      {
+        "DOI": "10.1109/ICASSP43922.2022.9747077",
+        "type": "proceedings-article",
+        "publisher": "IEEE",
+        "title": ["Wav2vec-Switch: Contrastive Learning from Original-Noisy Speech Pairs for Robust Speech Recognition"],
+        "author": [ { "given": "Yiming", "family": "Wang", "sequence": "first" }, { "given": "Jinyu", "family": "Li", "sequence": "additional" } ],
+        "container-title": ["ICASSP 2022 - 2022 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)"],
+        "page": "7097-7101",
+        "issued": { "date-parts": [[2022, 5, 23]] },
+        "ISBN": ["9781665405409"],
+        "URL": "https://doi.org/10.1109/icassp43922.2022.9747077",
+        "score": 61.2
+      },
+      {
+        "DOI": "10.1162/tacl_a_00490",
+        "type": "journal-article",
+        "publisher": "MIT Press",
+        "title": ["Self-supervised Speech Representation Learning: <i>A</i> Review"],
+        "author": [ { "given": "Abdelrahman", "family": "Mohamed", "sequence": "first" }, { "name": "SSL Survey Consortium", "sequence": "additional" } ],
+        "container-title": ["IEEE Journal of Selected Topics in Signal Processing"],
+        "volume": "16",
+        "issue": "6",
+        "page": "1179-1210",
+        "issued": { "date-parts": [[2022, 10]] },
+        "abstract": "<jats:title>Abstract</jats:title><jats:p>Although supervised deep learning has revolutionized speech &amp; audio processing…</jats:p>",
+        "ISSN": ["1932-4553"],
+        "URL": "https://doi.org/10.1162/tacl_a_00490",
+        "score": 55.0
+      }
+    ],
+    "items-per-page": 2,
+    "query": { "start-index": 0, "search-terms": "self-supervised speech" }
+  }
+}

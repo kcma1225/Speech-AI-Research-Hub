@@ -1,0 +1,36 @@
+{
+  "status": "ok",
+  "message-type": "work",
+  "message-version": "1.0.0",
+  "message": {
+    "indexed": { "date-parts": [[2026, 10, 1]], "date-time": "2026-10-01T00:00:00Z", "timestamp": 1790000000000 },
+    "reference-count": 0,
+    "publisher": "ISCA",
+    "content-domain": { "domain": [], "crossmark-restriction": false },
+    "published-print": { "date-parts": [[2020, 10, 25]] },
+    "DOI": "10.21437/Interspeech.2020-3015",
+    "type": "proceedings-article",
+    "created": { "date-parts": [[2020, 10, 27]] },
+    "page": "5036-5040",
+    "source": "Crossref",
+    "is-referenced-by-count": 2100,
+    "title": ["Conformer: Convolution-augmented Transformer for Speech Recognition"],
+    "prefix": "10.21437",
+    "author": [
+      { "given": "Anmol", "family": "Gulati", "sequence": "first", "affiliation": [] },
+      { "given": "James", "family": "Qin", "sequence": "additional", "affiliation": [] },
+      { "given": "Ruoming", "family": "Pang", "sequence": "additional", "affiliation": [] }
+    ],
+    "member": "8406",
+    "event": { "name": "Interspeech 2020" },
+    "container-title": ["Interspeech 2020"],
+    "link": [{ "URL": "https://www.isca-archive.org/interspeech_2020/gulati20_interspeech.pdf", "content-type": "unspecified", "content-version": "vor", "intended-application": "similarity-checking" }],
+    "deposited": { "date-parts": [[2024, 8, 6]] },
+    "score": 1,
+    "resource": { "primary": { "URL": "https://www.isca-archive.org/interspeech_2020/gulati20_interspeech.html" } },
+    "issued": { "date-parts": [[2020, 10, 25]] },
+    "references-count": 0,
+    "URL": "https://doi.org/10.21437/interspeech.2020-3015",
+    "published": { "date-parts": [[2020, 10, 25]] }
+  }
+}

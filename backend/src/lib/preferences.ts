@@ -7,6 +7,8 @@ const groups = {
     mediaTranscoded: z.boolean().default(true),
     reviews: z.boolean().default(true),
     replies: z.boolean().default(true),
+    /** A study task was assigned to you. */
+    tasks: z.boolean().default(true),
   }),
   editor: z.object({
     fontSize: z.number().int().min(12).max(22).default(15),
@@ -28,6 +30,7 @@ export const preferencesPatchSchema = z.strictObject({
     mediaTranscoded: z.boolean().optional(),
     reviews: z.boolean().optional(),
     replies: z.boolean().optional(),
+    tasks: z.boolean().optional(),
   }).optional(),
   editor: z.strictObject({
     fontSize: z.number().int().min(12).max(22).optional(),
