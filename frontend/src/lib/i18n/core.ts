@@ -16,6 +16,8 @@ export const zh = {
   "nav.workspace": "工作區",
   "nav.manage": "管理",
   "nav.skip": "跳到主要內容",
+  "nav.collapse": "收合側邊欄",
+  "nav.expand": "展開側邊欄",
 
   "role.owner": "初始管理員",
   "role.admin": "管理員",
@@ -29,6 +31,7 @@ export const zh = {
   "search.slides": "簡報",
   "search.studies": "研究",
   "search.pages": "前往",
+  "search.actions": "動作",
   "search.navigate": "選擇",
   "search.open": "開啟",
   "search.close": "關閉",
@@ -230,6 +233,8 @@ export const en: Record<keyof typeof zh, string> = {
   "nav.workspace": "Workspace",
   "nav.manage": "Manage",
   "nav.skip": "Skip to content",
+  "nav.collapse": "Collapse sidebar",
+  "nav.expand": "Expand sidebar",
 
   "role.owner": "Initial admin",
   "role.admin": "Admin",
@@ -243,6 +248,7 @@ export const en: Record<keyof typeof zh, string> = {
   "search.slides": "Slides",
   "search.studies": "Studies",
   "search.pages": "Go to",
+  "search.actions": "Actions",
   "search.navigate": "Select",
   "search.open": "Open",
   "search.close": "Close",

@@ -123,6 +123,11 @@ export const zh = {
   "slides.speaker.minutes": "{n} 分鐘",
   "slides.speaker.less": "減少目標時間",
   "slides.speaker.more": "增加目標時間",
+  "slides.speaker.smaller": "縮小備註文字",
+  "slides.speaker.larger": "放大備註文字",
+  "slides.speaker.textSize": "備註文字 {n}px",
+  "slides.speaker.split": "調整備註欄寬度",
+  "slides.speaker.noNotesHint": "照著投影片講就好；有備註的頁面會顯示在這裡。",
 
   "slides.tab.reviews": "評論",
   "slides.tab.versions": "版本",
@@ -494,6 +499,11 @@ export const en: Record<keyof typeof zh, string> = {
   "slides.speaker.minutes": "{n} min",
   "slides.speaker.less": "Shorter target",
   "slides.speaker.more": "Longer target",
+  "slides.speaker.smaller": "Smaller notes text",
+  "slides.speaker.larger": "Larger notes text",
+  "slides.speaker.textSize": "Notes text {n}px",
+  "slides.speaker.split": "Resize the notes column",
+  "slides.speaker.noNotesHint": "Speak to the slide. Pages with notes show them here.",
 
   "slides.tab.reviews": "Reviews",
   "slides.tab.versions": "Versions",

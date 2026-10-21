@@ -4,6 +4,7 @@
   import { session } from "#lib/stores/session.svelte.ts";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
   import { notificationsStore } from "#lib/stores/notifications.svelte.ts";
+  import { sidebar } from "#lib/stores/sidebar.svelte.ts";
   import Sidebar from "#lib/components/shell/Sidebar.svelte";
   import Topbar from "#lib/components/shell/Topbar.svelte";
   import BottomTabs from "#lib/components/shell/BottomTabs.svelte";
@@ -32,7 +33,10 @@
     <div class="flex min-w-0 flex-1 flex-col lg:pr-6">
       <Topbar />
       <main id="main" tabindex="-1" class="flex-1 outline-none px-4 pt-2 pb-[calc(96px+env(safe-area-inset-bottom))] sm:px-6 lg:px-0 lg:pt-7 lg:pb-10">
-        <div class="mx-auto w-full max-w-[1280px]">{@render children()}</div>
+        <!-- A collapsed sidebar frees ~190px; wide screens give it to the content (max-width eases with the rail). -->
+        <div class="mx-auto w-full max-w-[1280px] transition-[max-width] duration-[220ms] ease-[cubic-bezier(.2,.8,.2,1)] {sidebar.collapsed ? 'lg:max-w-[1600px]' : ''}">
+          {@render children()}
+        </div>
       </main>
     </div>
   </div>

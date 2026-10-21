@@ -1,10 +1,12 @@
 <script lang="ts">
   import { Command, Dialog } from "bits-ui";
   import { goto } from "$app/navigation";
-  import { CornerDownLeft, Info, Search, SearchCheck } from "@lucide/svelte";
+  import { CornerDownLeft, Info, PanelLeftClose, PanelLeftOpen, Search, SearchCheck } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { canSee, manageNav, workspaceNav } from "#lib/nav.ts";
   import { session } from "#lib/stores/session.svelte.ts";
+  import { sidebar } from "#lib/stores/sidebar.svelte.ts";
+  import { viewport } from "#lib/media.svelte.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import { focusSnippet, SEARCH_TYPES, typeMeta } from "#lib/search/meta.ts";
   import type { SearchResponse } from "#lib/search/types.ts";
@@ -26,6 +28,10 @@
       item => !item.external && canSee(item, session.user, session.config) && t(item.label).toLowerCase().includes(query.trim().toLowerCase()),
     ),
   );
+
+  // Shell actions (desktop only: phones and tablets have no sidebar to collapse).
+  const sidebarLabel = $derived(sidebar.collapsed ? t("nav.expand") : t("nav.collapse"));
+  const showSidebarAction = $derived(viewport.desktop && sidebarLabel.toLowerCase().includes(query.trim().toLowerCase()));
 
   $effect(() => {
     const q = query.trim();
@@ -74,7 +80,8 @@
   const groups = $derived(
     results ? [...results.groups].sort((a, b) => SEARCH_TYPES.findIndex(x => x.type === a.type) - SEARCH_TYPES.findIndex(x => x.type === b.type)) : [],
   );
-  const empty = $derived(!!results && !loading && !pages.length && !groups.length);
+  const empty = $derived(!!results && !loading && !pages.length && !groups.length && !showSidebarAction);
+  const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
   const item = "flex min-h-11 cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-sm text-ink outline-none data-selected:bg-surface-2 [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-ink-3";
   const heading = "px-3 pt-3 pb-1.5 text-[11px] font-medium tracking-[0.08em] text-ink-3 uppercase";
 </script>
@@ -132,6 +139,25 @@
                   {#each pages as p (p.key)}
                     <Command.Item value="page-{p.key}" onSelect={() => go(p.href)} class={item}><p.icon /><span class="flex-1">{t(p.label)}</span></Command.Item>
                   {/each}
+                </Command.GroupItems>
+              </Command.Group>
+            {/if}
+            {#if showSidebarAction}
+              <Command.Group>
+                <Command.GroupHeading class={heading}>{t("search.actions")}</Command.GroupHeading>
+                <Command.GroupItems>
+                  <Command.Item
+                    value="action-sidebar"
+                    onSelect={() => {
+                      searchPalette.open = false;
+                      sidebar.toggle();
+                    }}
+                    class={item}
+                  >
+                    {#if sidebar.collapsed}<PanelLeftOpen />{:else}<PanelLeftClose />{/if}
+                    <span class="flex-1">{sidebarLabel}</span>
+                    <span class="flex gap-1"><Kbd>{mac ? "⌘" : "Ctrl"}</Kbd><Kbd>B</Kbd></span>
+                  </Command.Item>
                 </Command.GroupItems>
               </Command.Group>
             {/if}

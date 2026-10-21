@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { ChevronLeft, ChevronRight, Minus, Pause, Play, Plus, Presentation, RotateCcw, Timer } from "@lucide/svelte";
+  import { AArrowDown, AArrowUp, ChevronLeft, ChevronRight, Minus, NotebookText, Pause, Play, Plus, Presentation, RotateCcw, Timer } from "@lucide/svelte";
   import { page as appPage } from "$app/state";
   import { api, ApiError } from "#lib/api.ts";
   import { i18n, t } from "#lib/i18n.svelte.ts";
@@ -162,6 +162,64 @@
   };
   const clock = $derived(new Intl.DateTimeFormat(i18n.locale, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(tickNow));
 
+  // ---- Notes text size and the column split (per viewer, remembered across decks) ---------------
+  const SIZE_KEY = "hub-speaker-notes-size";
+  const SPLIT_KEY = "hub-speaker-split";
+  const SIZE_MIN = 16;
+  const SIZE_MAX = 44;
+  const SPLIT_MIN = 30; // notes column, % of the width
+  const SPLIT_MAX = 60;
+  const readNum = (k: string, fallback: number, lo: number, hi: number) => {
+    try {
+      const n = Number(localStorage.getItem(k));
+      return Number.isFinite(n) && n >= lo && n <= hi ? n : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const writeNum = (k: string, n: number) => {
+    try {
+      localStorage.setItem(k, String(n));
+    } catch {}
+  };
+  let notesSize = $state(readNum(SIZE_KEY, 24, SIZE_MIN, SIZE_MAX));
+  let split = $state(readNum(SPLIT_KEY, 42, SPLIT_MIN, SPLIT_MAX));
+  function resizeNotes(dir: 1 | -1) {
+    notesSize = Math.min(SIZE_MAX, Math.max(SIZE_MIN, notesSize + dir * 2));
+    writeNum(SIZE_KEY, notesSize);
+  }
+  function setSplit(n: number, save = true) {
+    split = Math.round(Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, n)) * 10) / 10;
+    if (save) writeNum(SPLIT_KEY, split);
+  }
+  let layout = $state<HTMLElement | null>(null);
+  let dragging = $state(false);
+  function splitAt(clientX: number) {
+    const r = layout?.getBoundingClientRect();
+    if (r?.width) setSplit(((r.right - clientX) / r.width) * 100, false);
+  }
+  function onDividerDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    dragging = true;
+  }
+  function onDividerUp() {
+    if (!dragging) return;
+    dragging = false;
+    writeNum(SPLIT_KEY, split);
+  }
+  function onDividerKey(e: KeyboardEvent) {
+    const by = e.shiftKey ? 5 : 2;
+    // The divider moves the notes edge: left widens the notes, right narrows them.
+    if (e.key === "ArrowLeft" || e.key === "ArrowUp") setSplit(split + by);
+    else if (e.key === "ArrowRight" || e.key === "ArrowDown") setSplit(split - by);
+    else if (e.key === "Home") setSplit(SPLIT_MAX);
+    else if (e.key === "End") setSplit(SPLIT_MIN);
+    else return;
+    e.preventDefault(); // keeps the window's page keys from also firing
+  }
+
   function onKey(e: KeyboardEvent) {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
     const target = e.target as HTMLElement | null;
@@ -195,7 +253,6 @@
         {peer ? t("slides.speaker.linked") : t("slides.speaker.unlinked")}
       </p>
     </div>
-    <span class="text-[15px] font-medium text-ink-2 tabular-nums" aria-label={t("slides.speaker.clock")}>{clock}</span>
   </header>
 
   {#if error}
@@ -209,11 +266,13 @@
       <EmptyState title={t("slides.noDeck")}>{#snippet icon()}<Presentation />{/snippet}</EmptyState>
     </div>
   {:else}
-    <!-- One scrolling column on narrow or portrait windows; landscape windows from md fit everything in the window and the notes take the leftover height. -->
-    <main class="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4 md:landscape:grid-cols-[minmax(0,1.6fr)_minmax(300px,1fr)] md:landscape:content-stretch md:landscape:overflow-hidden">
+    <!-- Narrow or portrait windows: one scrolling column (current slide, notes, then next + timer).
+         Landscape from md: the left column stacks the current slide over next + timer, the notes take the
+         whole right column, and the divider between them sets the split. -->
+    <main bind:this={layout} class="speaker-layout min-h-0 flex-1 overflow-y-auto p-3 sm:p-4" class:dragging style="--notes:{split}fr; --slides:{100 - split}fr">
       <!-- Current page -->
-      <section class="flex flex-col gap-3 md:landscape:min-h-0">
-        <div class="relative overflow-hidden rounded-[22px] border border-line/70 bg-surface-2 shadow-card aspect-[var(--r)] md:landscape:aspect-auto md:landscape:min-h-0 md:landscape:flex-1" style="--r:{ratio}">
+      <section class="area-cur flex min-w-0 flex-col gap-3">
+        <div class="slide-box relative overflow-hidden rounded-[22px] border border-line/70 bg-surface-2 shadow-card" style="--r:{ratio}">
           {#if liveSrc}
             <iframe
               bind:this={frame}
@@ -247,65 +306,107 @@
         </div>
       </section>
 
-      <!-- Next page, timer, notes -->
-      <aside class="flex flex-col gap-3 sm:gap-4 md:landscape:min-h-0 md:landscape:overflow-y-auto">
-        <div class="grid gap-3 min-[560px]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] sm:gap-4 md:landscape:grid-cols-1">
-          <div class="rounded-[22px] border border-line/70 bg-surface p-3 shadow-card">
-            <p class="mb-2 px-1 text-[12px] font-medium text-ink-3">{t("slides.speaker.next")}</p>
-            <!-- Height-capped on short windows so the notes keep their room; the width follows the ratio. -->
-            <div class="relative mx-auto max-h-[24dvh] overflow-hidden rounded-xl border border-line/70 bg-surface-2" style="aspect-ratio:{ratio}">
-              {#if next}
-                <img src={next.thumb} alt={next.title ?? t("slides.player.pageAlt", { n: next.index })} class="absolute inset-0 size-full object-contain" />
-              {:else}
-                <p class="absolute inset-0 grid place-items-center text-[12.5px] text-ink-3">{total && current >= total ? t("slides.speaker.end") : "—"}</p>
-              {/if}
-            </div>
-          </div>
-
-          <div class="flex flex-col rounded-[22px] border p-4 shadow-card transition-colors {over ? 'border-danger bg-danger-soft' : 'border-line/70 bg-surface'}">
-            <div class="flex items-center justify-between gap-2">
-              <p class="inline-flex items-center gap-1.5 text-[12px] font-medium {over ? 'text-danger' : 'text-ink-3'}"><Timer class="size-3.5" />{over ? t("slides.speaker.over") : t("slides.speaker.elapsed")}</p>
-              <kbd class="rounded border border-line px-1 font-sans text-[10.5px] leading-4 text-ink-3" title={t("slides.speaker.timerKey")}>T</kbd>
-            </div>
-            <div class="mt-1 flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
-              <div class="min-w-0">
-                <p class="font-display text-[40px] leading-none tabular-nums xl:text-[48px] {over ? 'text-danger' : nearEnd ? 'text-[var(--pill-butter-ink)]' : 'text-ink'}" role="timer" aria-live="off">{fmt(elapsed)}</p>
-                {#if targetOn}
-                  <p class="mt-1 text-[12.5px] tabular-nums {over ? 'font-medium text-danger' : 'text-ink-3'}">
-                    {over ? t("slides.speaker.overBy", { time: fmt(elapsed - targetMin * 60_000) }) : t("slides.speaker.remaining", { time: fmt(targetMin * 60_000 - elapsed) })}
-                  </p>
-                {/if}
-              </div>
-              <div class="flex items-center gap-1.5">
-                <Button size="sm" variant="ghost" disabled={!elapsed} onclick={resetTimer} aria-label={t("slides.speaker.reset")} title={t("slides.speaker.reset")} class="px-2.5"><RotateCcw /></Button>
-                <Button size="sm" variant="primary" onclick={toggleTimer}>{#if startedAt}<Pause />{t("slides.speaker.pause")}{:else}<Play />{elapsed ? t("slides.speaker.resume") : t("slides.speaker.start")}{/if}</Button>
-              </div>
-            </div>
-            <div class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t pt-3 {over ? 'border-danger/30' : 'border-line'}">
-              <Switch bind:checked={targetOn} label={t("slides.speaker.target")} />
-              <span class="text-[12.5px] whitespace-nowrap text-ink-2">{t("slides.speaker.target")}</span>
-              <div class="ml-auto flex items-center gap-1 {targetOn ? '' : 'opacity-50'}">
-                <button type="button" class={stepBtn} aria-label={t("slides.speaker.less")} disabled={!targetOn || targetMin <= 1} onclick={() => (targetMin = Math.max(1, targetMin - (targetMin > 10 ? 5 : 1)))}><Minus /></button>
-                <span class="min-w-[4.5em] text-center text-[12.5px] font-medium whitespace-nowrap tabular-nums">{t("slides.speaker.minutes", { n: targetMin })}</span>
-                <button type="button" class={stepBtn} aria-label={t("slides.speaker.more")} disabled={!targetOn || targetMin >= 180} onclick={() => (targetMin = Math.min(180, targetMin + (targetMin >= 10 ? 5 : 1)))}><Plus /></button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="flex min-h-[180px] flex-col overflow-hidden rounded-[22px] border border-line/70 bg-surface shadow-card md:landscape:min-h-[140px] md:landscape:flex-1">
-          <p class="border-b border-line px-4 py-2.5 text-[12px] font-medium text-ink-3">{t("slides.player.notes")}</p>
-          <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-[17px] leading-relaxed text-ink-2">
-            {#if notes}
-              <div class="speaker-notes">{@html notes}</div>
-            {:else if now?.notes}
-              <p class="whitespace-pre-wrap">{now.notes.text}</p>
+      <!-- Next page + timer -->
+      <div class="area-aux grid min-w-0 gap-3 min-[560px]:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] sm:gap-4">
+        <div class="flex min-w-0 flex-col rounded-[22px] border border-line/70 bg-surface p-3 shadow-card">
+          <p class="mb-2 px-1 text-[12px] font-medium text-ink-3">{t("slides.speaker.next")}</p>
+          <!-- Height-capped on short windows so the current slide keeps its room; the width follows the ratio. -->
+          <div class="relative my-auto max-h-[22dvh] w-full overflow-hidden rounded-xl border border-line/70 bg-surface-2" style="aspect-ratio:{ratio}">
+            {#if next}
+              <img src={next.thumb} alt={next.title ?? t("slides.player.pageAlt", { n: next.index })} class="absolute inset-0 size-full object-contain" />
             {:else}
-              <p class="text-[14px] text-ink-3">{t("slides.player.noNotes")}</p>
+              <p class="absolute inset-0 grid place-items-center text-[12.5px] text-ink-3">{total && current >= total ? t("slides.speaker.end") : "—"}</p>
             {/if}
           </div>
         </div>
-      </aside>
+
+        <div class="flex min-w-0 flex-col justify-center rounded-[22px] border p-4 shadow-card transition-colors {over ? 'border-danger bg-danger-soft' : 'border-line/70 bg-surface'}">
+          <div class="flex items-center justify-between gap-2">
+            <p class="inline-flex items-center gap-1.5 text-[12px] font-medium {over ? 'text-danger' : 'text-ink-3'}"><Timer class="size-3.5" />{over ? t("slides.speaker.over") : t("slides.speaker.elapsed")}</p>
+            <span class="inline-flex items-center gap-2">
+              <span class="text-[12.5px] text-ink-3 tabular-nums" aria-label={t("slides.speaker.clock")}>{clock}</span>
+              <kbd class="rounded border border-line px-1 font-sans text-[10.5px] leading-4 text-ink-3" title={t("slides.speaker.timerKey")}>T</kbd>
+            </span>
+          </div>
+          <div class="mt-1 flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
+            <div class="min-w-0">
+              <p class="font-display text-[40px] leading-none tabular-nums xl:text-[48px] {over ? 'text-danger' : nearEnd ? 'text-[var(--pill-butter-ink)]' : 'text-ink'}" role="timer" aria-live="off">{fmt(elapsed)}</p>
+              {#if targetOn}
+                <p class="mt-1 text-[12.5px] tabular-nums {over ? 'font-medium text-danger' : 'text-ink-3'}">
+                  {over ? t("slides.speaker.overBy", { time: fmt(elapsed - targetMin * 60_000) }) : t("slides.speaker.remaining", { time: fmt(targetMin * 60_000 - elapsed) })}
+                </p>
+              {/if}
+            </div>
+            <div class="flex items-center gap-1.5">
+              <Button size="sm" variant="ghost" disabled={!elapsed} onclick={resetTimer} aria-label={t("slides.speaker.reset")} title={t("slides.speaker.reset")} class="px-2.5"><RotateCcw /></Button>
+              <Button size="sm" variant="primary" onclick={toggleTimer}>{#if startedAt}<Pause />{t("slides.speaker.pause")}{:else}<Play />{elapsed ? t("slides.speaker.resume") : t("slides.speaker.start")}{/if}</Button>
+            </div>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t pt-3 {over ? 'border-danger/30' : 'border-line'}">
+            <Switch bind:checked={targetOn} label={t("slides.speaker.target")} />
+            <span class="text-[12.5px] whitespace-nowrap text-ink-2">{t("slides.speaker.target")}</span>
+            <div class="ml-auto flex items-center gap-1 {targetOn ? '' : 'opacity-50'}">
+              <button type="button" class={stepBtn} aria-label={t("slides.speaker.less")} disabled={!targetOn || targetMin <= 1} onclick={() => (targetMin = Math.max(1, targetMin - (targetMin > 10 ? 5 : 1)))}><Minus /></button>
+              <span class="min-w-[4.5em] text-center text-[12.5px] font-medium whitespace-nowrap tabular-nums">{t("slides.speaker.minutes", { n: targetMin })}</span>
+              <button type="button" class={stepBtn} aria-label={t("slides.speaker.more")} disabled={!targetOn || targetMin >= 180} onclick={() => (targetMin = Math.min(180, targetMin + (targetMin >= 10 ? 5 : 1)))}><Plus /></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Drag (or arrow keys) to move the split; only shown in the two-column layout. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+      <div
+        class="area-div group relative hidden cursor-col-resize touch-none justify-center outline-none select-none"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={t("slides.speaker.split")}
+        aria-valuemin={100 - SPLIT_MAX}
+        aria-valuemax={100 - SPLIT_MIN}
+        aria-valuenow={Math.round(100 - split)}
+        tabindex="0"
+        onpointerdown={onDividerDown}
+        onpointermove={e => dragging && splitAt(e.clientX)}
+        onpointerup={onDividerUp}
+        onpointercancel={onDividerUp}
+        onkeydown={onDividerKey}
+        ondblclick={() => setSplit(42)}
+      >
+        <span class="my-auto h-12 w-1 rounded-full transition-colors {dragging ? 'bg-ink-2' : 'bg-line-2 group-hover:bg-ink-3 group-focus-visible:bg-ink-2'}"></span>
+        <span class="pointer-events-none absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 rounded-full ring-2 ring-transparent group-focus-visible:ring-primary"></span>
+      </div>
+
+      <!-- Speaker notes: the whole right column -->
+      <section class="area-notes flex min-h-[40dvh] min-w-0 flex-col overflow-hidden rounded-[22px] border border-line/70 bg-surface shadow-card" aria-label={t("slides.player.notes")}>
+        <header class="flex shrink-0 items-center gap-3 border-b border-line py-2 pr-2 pl-5">
+          <div class="min-w-0 flex-1">
+            <p class="text-[12px] font-medium text-ink-3">{t("slides.player.notes")}</p>
+            <h2 class="truncate text-[16px] font-semibold tabular-nums">
+              {t("slides.player.pageAlt", { n: current })}{#if now?.title}<span class="ml-1.5 font-normal text-ink-3">· {now.title}</span>{/if}
+            </h2>
+          </div>
+          <div class="flex items-center gap-0.5 rounded-full border border-line p-0.5">
+            <Button size="icon-sm" variant="ghost" aria-label={t("slides.speaker.smaller")} title={t("slides.speaker.smaller")} disabled={notesSize <= SIZE_MIN} onclick={() => resizeNotes(-1)}><AArrowDown /></Button>
+            <span class="min-w-[2.2em] text-center text-[12px] text-ink-3 tabular-nums" aria-live="polite" aria-label={t("slides.speaker.textSize", { n: notesSize })}>{notesSize}</span>
+            <Button size="icon-sm" variant="ghost" aria-label={t("slides.speaker.larger")} title={t("slides.speaker.larger")} disabled={notesSize >= SIZE_MAX} onclick={() => resizeNotes(1)}><AArrowUp /></Button>
+          </div>
+        </header>
+        <div class="notes-body min-h-0 flex-1 overflow-y-auto px-5 py-4 text-ink sm:px-6" style="font-size:{notesSize}px" tabindex="-1">
+          {#if notes}
+            <div class="speaker-notes">{@html notes}</div>
+          {:else if now?.notes}
+            <p class="whitespace-pre-wrap">{now.notes.text}</p>
+          {:else}
+            <div class="grid h-full min-h-[12rem] place-items-center text-center">
+              <div class="max-w-[22rem] text-ink-3">
+                <NotebookText class="mx-auto size-6 opacity-70" />
+                <p class="mt-3 text-[15px] font-medium text-ink-2">{t("slides.player.noNotes")}</p>
+                <p class="mt-1 text-[13px] leading-relaxed">{t("slides.speaker.noNotesHint")}</p>
+              </div>
+            </div>
+          {/if}
+        </div>
+      </section>
     </main>
 
     {#if pages.length}
@@ -327,3 +428,40 @@
     {/if}
   {/if}
 </div>
+
+<style>
+  /* One column below md or in portrait: current slide, notes, then next + timer. */
+  .speaker-layout {
+    display: grid;
+    align-content: start;
+    gap: 0.75rem;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "cur" "notes" "aux";
+  }
+  .area-cur { grid-area: cur; }
+  .area-aux { grid-area: aux; }
+  .area-div { grid-area: div; }
+  .area-notes { grid-area: notes; }
+  .slide-box { aspect-ratio: var(--r); }
+  .notes-body { line-height: 1.6; }
+  @media (min-width: 40rem) {
+    .speaker-layout { gap: 1rem; }
+  }
+  @media (min-width: 48rem) and (orientation: landscape) {
+    .speaker-layout {
+      overflow: hidden;
+      align-content: stretch;
+      column-gap: 0;
+      grid-template-columns: minmax(0, var(--slides)) 1rem minmax(0, var(--notes));
+      grid-template-rows: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "cur div notes"
+        "aux div notes";
+    }
+    .area-cur { min-height: 0; }
+    .slide-box { aspect-ratio: auto; flex: 1; min-height: 0; }
+    .area-div { display: flex; }
+    .area-notes { min-height: 0; }
+    .dragging { cursor: col-resize; user-select: none; }
+  }
+</style>
