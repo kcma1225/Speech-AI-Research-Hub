@@ -48,7 +48,7 @@ describe.skipIf(!chrome)("layout metrics (browser)", () => {
         <svg id="mermaid-1" width="600" height="120" viewBox="0 0 600 120"><g class="node"><rect x="10" y="10" width="80" height="40"/><text x="14" y="36" font-size="18">A label that is far too long</text></g>
         <g class="node"><rect x="200" y="10" width="200" height="40"/><text x="210" y="36" font-size="18">fits</text></g></svg>
         <img data-font="18" style="width:500px" src="data:image/svg+xml,${svgImg}">`));
-      await view.waitForFunction(() => (document.querySelector("img") as HTMLImageElement).complete);
+      await view.waitForFunction(`document.querySelector("img").complete`);
       const m = (await view.evaluate(SLIDE_METRICS)) as SlideMetrics;
       expect(m.textOverflow).toBe(1);
       expect(m.overflowLabels?.[0]).toContain("far too long");
