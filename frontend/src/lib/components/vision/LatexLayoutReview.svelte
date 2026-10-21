@@ -144,7 +144,7 @@
   </span>
 {/if}
 
-<Sheet bind:open title={t("vision.latex.title")} description={t("vision.latex.desc")} side="right">
+<Sheet bind:open guard={false} title={t("vision.latex.title")} description={t("vision.latex.desc")} side="right">
   <div class="flex flex-col gap-4">
     {#if !compile?.pdf_url}
       <p class="rounded-2xl border border-dashed border-line-2 p-4 text-center text-[13px] text-ink-3">{t("vision.noPdf")}</p>

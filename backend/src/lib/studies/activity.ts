@@ -6,6 +6,7 @@ import type { Queryable } from "../../db.js";
  */
 export type CoreActivityKind =
   | "study_created"
+  | "study_renamed"
   | "stage_changed"
   | "milestone_done"
   | "task_done"

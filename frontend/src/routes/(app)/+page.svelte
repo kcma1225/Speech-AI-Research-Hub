@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowUpRight, BookOpen, CalendarClock, Check, ClipboardCheck, Flag, FlaskConical, ListTodo, Plus, Presentation, Sparkles, UserPlus, UsersRound, Workflow } from "@lucide/svelte";
+  import { ArrowUpRight, BookOpen, CalendarClock, Check, ClipboardCheck, Flag, FlaskConical, ListTodo, PenLine, Plus, Presentation, Sparkles, UserPlus, UsersRound, Workflow } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
@@ -30,6 +30,7 @@
 
   const kinds: Record<string, { icon: typeof Flag; tone: Tone }> = {
     study_created: { icon: Sparkles, tone: "peach" },
+    study_renamed: { icon: PenLine, tone: "peach" },
     stage_changed: { icon: Workflow, tone: "lilac" },
     milestone_done: { icon: Flag, tone: "mint" },
     task_done: { icon: Check, tone: "sky" },

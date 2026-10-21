@@ -114,10 +114,10 @@ describe("memory and outbound checks", () => {
 describe("propose_study_plan arguments", () => {
   it("turns double-escaped newlines back into real ones", async () => {
     const { studyPlanInput } = await import("../src/agent/tools/interview.js");
-    const parsed = studyPlanInput.parse({ title: "t", summary_format: "prose", summary_md: "## 問題\\n本研究\\n\\n## 方法", stages: [{ name: "x", description: "a\\nb" }] });
+    const parsed = studyPlanInput.parse({ title: "t", summary_md: "## 問題\\n本研究\\n\\n## 方法", stages: [{ name: "x", description: "a\\nb" }] });
     expect(parsed.summary_md).toBe("## 問題\n本研究\n\n## 方法");
     expect(parsed.stages[0]!.description).toBe("a\nb");
     // Real newlines present: left alone (a literal \n in code stays).
-    expect(studyPlanInput.parse({ title: "t", summary_format: "prose", summary_md: "a\n`\\n`", stages: [{ name: "x" }] }).summary_md).toBe("a\n`\\n`");
+    expect(studyPlanInput.parse({ title: "t", summary_md: "a\n`\\n`", stages: [{ name: "x" }] }).summary_md).toBe("a\n`\\n`");
   });
 });

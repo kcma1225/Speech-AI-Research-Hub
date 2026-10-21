@@ -113,7 +113,7 @@
   }
 </script>
 
-<Sheet bind:open side="right" title={t("aiAdmin.oauth.title", { name: provider?.name ?? "" })} description={provider?.label ? (provider.label.zh) : undefined}>
+<Sheet bind:open side="right" dirty={!done && (start !== null || code.trim() !== "" || token.trim() !== "")} title={t("aiAdmin.oauth.title", { name: provider?.name ?? "" })} description={provider?.label ? (provider.label.zh) : undefined}>
   {#snippet children()}
     {#if provider}
       <div class="flex flex-col gap-4 pt-1">

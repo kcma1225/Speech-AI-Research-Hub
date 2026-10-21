@@ -25,17 +25,23 @@ import { EventWriter, insertEvent } from "./events.js";
 import { memoriesForContext, stripMemoryMarkers, usedMemories } from "./memory.js";
 import { decide, grantScope } from "./policy.js";
 import {
-  capResult, compactionCut, envelope, estimateTokens, pageContextText, SUMMARY_SYSTEM, systemPrompt, toModelMessages, transcriptText,
+  capResult, compactionCut, envelope, estimateTokens, intentText, pageContextText, SUMMARY_SYSTEM, systemPrompt, toModelMessages, transcriptText,
   type PageContext, type StoredMessage,
 } from "./prompt.js";
 import { getAgentSettings } from "./settings.js";
+import { inlineToolImages, storeToolImages, toolResultContent, type StoredToolImage } from "./images.js";
 import "./tools/index.js";
+import { inlineAttachmentImages, prepareAttachments, refOf, type AttachmentRef, type PreparedAttachments, type StoredAttachment } from "./attachments/index.js";
 import { INTERVIEW_INTRO, MATURITY_QUESTION } from "./tools/interview.js";
 import { getAgentTool, listAgentTools, toolJsonSchema, type AgentToolContext, type AgentToolDef } from "./tools/registry.js";
 import { conversationView, messageView, runView, toolCallView, type ConversationRow, type MessageRow, type RunRow, type ToolCallRow } from "./views.js";
 
 /** A user turn: free text and/or the answers to an `ask_user` card; page context from the page (or the edited message). */
-export type TurnInput = { text?: string; answers?: AnswersInput; context?: PageContext | null };
+export type TurnInput = { text?: string; answers?: AnswersInput; context?: PageContext | null; intent?: TurnIntent; attachments?: AttachmentRef[]; prepared?: PreparedAttachments };
+/** Attachment fields of a built turn (stored list + taint labels of content the caller did not author). */
+const turnAttachments = (p?: PreparedAttachments) => ({ attachments: p?.stored.length ? p.stored : (null as StoredAttachment[] | null), taint: p?.taint ?? [] });
+/** Quick actions of the chat toolbar: the shown text stays the user's, the model also gets the task instructions. */
+export type TurnIntent = "make_note";
 
 export type ModelCall = (req: RoleChatRequest, ctx: { userId: string; signal: AbortSignal; onRoute?: (info: { model: string }) => void }) => AsyncIterable<ChatEvent>;
 export type FastCall = (req: RoleChatRequest, ctx: { userId: string }) => Promise<string>;
@@ -58,6 +64,8 @@ export type AgentOptions = {
   fast?: FastCall;
   /** Whether the `assistant` role can take a new message (503 otherwise). */
   available?: () => Promise<boolean>;
+  /** Whether the `assistant` role takes images right now (default: ai.capabilities("assistant").vision). */
+  vision?: () => Promise<boolean>;
   limits?: Partial<AgentLimits>;
   /** Estimated-token thresholds: clear old tool results above `clearAbove`, summarise above `compactAbove`. */
   compaction?: { clearAbove: number; compactAbove: number };
@@ -66,6 +74,9 @@ export type AgentOptions = {
   /** Delays between LLM retries (ms), by attempt. */
   backoffMs?: number[];
 };
+
+/** Second attempt after an empty / cut-off reply (the user never sees it; it is not stored). */
+const RETRY_NUDGE = "（系統提示：上一次的回覆在給出答案前就中斷或用完了輸出額度。請不要長篇思考，直接用繁體中文給出完整的回答；內容很多時先給最重要的部分，最後問使用者要不要繼續。）";
 
 const ACTIVE = ["running", "awaiting_approval", "awaiting_llm"] as const;
 const UNRESOLVED = ["pending_approval", "approved", "running"];
@@ -127,6 +138,13 @@ export class AgentRuntime {
       await this.emitRun(r.id);
       this.kick(r.id);
     }
+    // Self-heal: a run left waiting although nothing in its open step is pending any more (approved calls only).
+    const unstuck = (await this.db.query<{ id: string }>(
+      `UPDATE agent_runs r SET status='running', updated_at=now() WHERE r.status='awaiting_approval' AND r.updated_at < now() - interval '5 seconds'
+          AND EXISTS (SELECT 1 FROM tool_calls tc WHERE tc.run_id=r.id AND tc.status='approved')
+          AND NOT EXISTS (SELECT 1 FROM tool_calls tc WHERE tc.run_id=r.id AND tc.status='pending_approval') RETURNING r.id`,
+    )).rows;
+    for (const r of unstuck) await this.emitRun(r.id);
     const orphans = (await this.db.query<{ id: string }>("SELECT id FROM agent_runs WHERE status='running' AND (lease_expires_at IS NULL OR lease_expires_at<now())")).rows;
     for (const r of orphans) if (!this.executing.has(r.id)) this.kick(r.id);
     const expired = (await this.db.query<{ conversation_id: string; run_id: string }>(
@@ -247,7 +265,8 @@ export class AgentRuntime {
     const results: ToolResultBlock[] = uses.map((u) => {
       const c = byProvider.get(u.id);
       if (!c) return { type: "tool_result", tool_use_id: u.id, content: "這個工具呼叫沒有被執行。", is_error: true };
-      return { type: "tool_result", tool_use_id: u.id, content: c.result_text ?? "（沒有結果）", ...(c.status === "done" ? {} : { is_error: true }) };
+      const images = c.status === "done" ? (c.result as { images?: StoredToolImage[] } | null)?.images : undefined;
+      return { type: "tool_result", tool_use_id: u.id, content: toolResultContent(c.result_text ?? "（沒有結果）", images), ...(c.status === "done" ? {} : { is_error: true }) };
     });
     await client.query("INSERT INTO agent_messages(conversation_id,run_id,role,content) VALUES($1,$2,'tool',$3)", [conversationId, step.run_id, JSON.stringify(results)]);
     return events;
@@ -323,7 +342,8 @@ export class AgentRuntime {
     const extra = input.text?.trim() ?? "";
     if (!input.answers) {
       if (!extra) throw new HttpError(400, "訊息不能是空的（最多 20 000 字）。");
-      return { blocks: [...head, { type: "text" as const, text: extra }], text: extra, answers: null as StoredAnswers | null };
+      const task: TextBlock[] = input.intent ? [{ type: "text", text: intentText(input.intent) }] : [];
+      return { blocks: [...head, ...(input.prepared?.blocks ?? []), { type: "text" as const, text: extra }, ...task], text: extra, answers: null as StoredAnswers | null, ...turnAttachments(input.prepared) };
     }
     const call = (await client.query<ToolCallRow & { mseq: string; hidden_by: string | null }>(
       "SELECT tc.*, m.seq AS mseq, m.hidden_by FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id WHERE tc.id=$1 AND tc.conversation_id=$2",
@@ -342,22 +362,23 @@ export class AgentRuntime {
     const out = answersText(args.data, stored);
     const model = extra ? `${out.model}\n\n補充：${extra}` : out.model;
     const display = extra ? `${out.display}\n\n${extra}` : out.display;
-    return { blocks: [...head, { type: "text" as const, text: model }], text: display, answers: stored };
+    return { blocks: [...head, { type: "text" as const, text: model }], text: display, answers: stored, ...turnAttachments() };
   }
 
   /** Inserts the user turn, updates the conversation's context and opens a run (inside the lock). */
   private async insertTurn(client: Queryable, conv: ConversationRow, user: CurrentUser, turn: Awaited<ReturnType<AgentRuntime["buildTurn"]>>, ctx: PageContext | null, versionOf: string | null) {
     const msg = (await client.query<MessageRow>(
-      "INSERT INTO agent_messages(conversation_id,role,content,text,page_context,answers,version_of) VALUES($1,'user',$2,$3,$4,$5,$6) RETURNING *",
-      [conv.id, JSON.stringify(turn.blocks), turn.text, ctx ? JSON.stringify(ctx) : null, turn.answers ? JSON.stringify(turn.answers) : null, versionOf],
+      "INSERT INTO agent_messages(conversation_id,role,content,text,page_context,answers,version_of,attachments) VALUES($1,'user',$2,$3,$4,$5,$6,$7) RETURNING *",
+      [conv.id, JSON.stringify(turn.blocks), turn.text, ctx ? JSON.stringify(ctx) : null, turn.answers ? JSON.stringify(turn.answers) : null, versionOf, turn.attachments ? JSON.stringify(turn.attachments) : null],
     )).rows[0]!;
     const conversation = (await client.query<ConversationRow>(
       "UPDATE conversations SET updated_at=now(), context=CASE WHEN $2::jsonb IS NULL THEN context ELSE $2::jsonb END, study_id=CASE WHEN $2::jsonb IS NULL THEN study_id ELSE $3::uuid END WHERE id=$1 RETURNING *",
       [conv.id, ctx ? JSON.stringify(ctx) : null, ctx?.studyId ?? null],
     )).rows[0]!;
     const run = (await client.query<RunRow>(
-      "INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,autopilot) VALUES($1,$2,'running',$3,$4) RETURNING *",
-      [conv.id, user.id, this.limits.maxSteps, conv.autopilot],
+      // Attached content the caller did not author taints the run from the start (like an untrusted tool result).
+      "INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,autopilot,tainted,taint_sources) VALUES($1,$2,'running',$3,$4,$5,$6::jsonb) RETURNING *",
+      [conv.id, user.id, this.limits.maxSteps, conv.autopilot, turn.taint.length > 0, JSON.stringify(turn.taint)],
     )).rows[0]!;
     await client.query("UPDATE agent_messages SET run_id=$2 WHERE id=$1", [msg.id, run.id]);
     return { msg: { ...msg, run_id: run.id }, run, conversation };
@@ -365,8 +386,10 @@ export class AgentRuntime {
 
   /** Adds a user message (text or `ask_user` answers) and starts a run. A pending step is superseded (its open approvals are denied). */
   async postMessage(user: CurrentUser, conversationId: string, input: TurnInput | string, pageContext: PageContext | null = null) {
-    const turnInput: TurnInput = typeof input === "string" ? { text: input, context: pageContext } : input;
+    let turnInput: TurnInput = typeof input === "string" ? { text: input, context: pageContext } : input;
     const ctx = await this.resolveContext(turnInput.context ?? null);
+    // Attachments: access checked and content loaded before the lock (403/404 names the item).
+    if (turnInput.attachments?.length && !turnInput.answers) turnInput = { ...turnInput, prepared: await prepareAttachments(this.app, user, conversationId, turnInput.attachments) };
     const result = await transaction(this.db, async (client) => {
       const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, user.id])).rows[0];
       if (!conv) throw notFound("找不到這個對話。");
@@ -405,7 +428,7 @@ export class AgentRuntime {
     const result = await transaction(this.db, async (client) => {
       const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, user.id])).rows[0];
       if (!conv) throw notFound("找不到這個對話。");
-      const target = (await client.query<MessageRow & { version_of: string | null; answers: StoredAnswers | null; content: TextBlock[] }>(
+      const target = (await client.query<MessageRow & { version_of: string | null; answers: StoredAnswers | null; content: TextBlock[]; attachments: StoredAttachment[] | null }>(
         "SELECT * FROM agent_messages WHERE id=$1 AND conversation_id=$2 AND role='user' AND hidden_by IS NULL",
         [messageId, conv.id],
       )).rows[0];
@@ -415,14 +438,19 @@ export class AgentRuntime {
       const seq = Number(target.seq);
       const ctx = input.context !== undefined ? await this.resolveContext(input.context) : ((target.page_context as PageContext | null) ?? null);
       let turn: Awaited<ReturnType<AgentRuntime["buildTurn"]>>;
+      // A quick action (「整理成筆記」) keeps its task instructions when edited or regenerated.
+      const intent = input.intent ?? (target.content.some((b) => b.type === "text" && b.text.startsWith('<task kind="make_note"')) ? ("make_note" as const) : undefined);
+      // Attachments are kept unless the edit sends a new list; re-resolved (fresh content, access re-checked).
+      const refs = input.attachments ?? (target.attachments ?? []).map(refOf);
+      const prepared = refs.length && !target.answers ? await prepareAttachments(this.app, user, conv.id, refs) : undefined;
       if (input.answers || input.text?.trim()) {
         if (target.answers && !input.answers) throw new HttpError(400, "這則是問題卡片的回答，請用「修改答案」。");
-        turn = await this.buildTurn(client, conv.id, input, ctx, seq);
+        turn = await this.buildTurn(client, conv.id, { ...input, intent, prepared }, ctx, seq);
       } else if (target.answers) {
         // Regenerate after an answered card: the same answers again.
-        turn = { blocks: target.content, text: target.text, answers: target.answers };
+        turn = { blocks: target.content, text: target.text, answers: target.answers, ...turnAttachments() };
       } else {
-        turn = await this.buildTurn(client, conv.id, { text: target.text }, ctx, seq);
+        turn = await this.buildTurn(client, conv.id, { text: target.text, intent, prepared }, ctx, seq);
       }
       const firstUser = (await client.query<{ id: string }>("SELECT id FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq LIMIT 1", [conv.id])).rows[0];
       await this.hideFrom(client, conv.id, seq, target.id);
@@ -664,12 +692,19 @@ export class AgentRuntime {
         const waiting = await this.runApproved(run, conv, user, step.id, writer, signal);
         if (signal.aborted) return;
         if (waiting) {
-          const moved = await this.db.query("UPDATE agent_runs SET status='awaiting_approval', updated_at=now() WHERE id=$1 AND status='running'", [run.id]);
-          if (moved.rowCount) {
-            await writer.drain();
-            await this.emitRun(run.id);
-            void this.maybeTitle(conv, user).catch(() => undefined);
-          }
+          // Under the conversation lock (decisions hold it too) and only while a call is still pending: an approval that
+          // lands between the check above and this update would otherwise leave the run waiting forever.
+          const moved = await transaction(this.db, async (client) => {
+            await this.lockConversation(client, conv.id);
+            return client.query(
+              "UPDATE agent_runs SET status='awaiting_approval', updated_at=now() WHERE id=$1 AND status='running' AND EXISTS (SELECT 1 FROM tool_calls WHERE message_id=$2 AND status='pending_approval')",
+              [run.id, step.id],
+            );
+          });
+          if (!moved.rowCount) continue;
+          await writer.drain();
+          await this.emitRun(run.id);
+          void this.maybeTitle(conv, user).catch(() => undefined);
           return;
         }
         const events = await transaction(this.db, async (client) => {
@@ -705,7 +740,8 @@ export class AgentRuntime {
       }
       if (!res.calls.length) {
         await writer.drain();
-        await this.finish(run, "done");
+        if (res.truncated) await this.finish(run, "done", { stopReason: "limit_output", notice: ["limit_output", "AI 的回覆不完整（輸出被截斷或是空的）。可以按「繼續」讓它接著回答，或換個方式再問一次。"] });
+        else await this.finish(run, "done");
         void this.maybeTitle(conv, user).catch(() => undefined);
         return;
       }
@@ -733,27 +769,32 @@ export class AgentRuntime {
   }
 
   private async modelStep(run: RunRow, conv: ConversationRow, user: CurrentUser, writer: EventWriter, signal: AbortSignal):
-    Promise<{ kind: "ok"; messageId: string; calls: ToolUseBlock[] } | { kind: "stopped" } | { kind: "llm_down" | "failed"; error: { error: string; code?: string; hint?: string } }> {
+    Promise<{ kind: "ok"; messageId: string; calls: ToolUseBlock[]; truncated?: boolean } | { kind: "stopped" } | { kind: "llm_down" | "failed"; error: { error: string; code?: string; hint?: string } }> {
     const settings = await getAgentSettings(this.db, user.id);
     const memoryOn = conv.mode === "chat" && settings.memory_enabled && conv.memory_enabled;
     const memories = memoryOn ? await memoriesForContext(this.db, user.id, conv.study_id) : null;
     const tools = this.toolsFor(conv, memoryOn);
     const system = systemPrompt({ mode: conv.mode, user, memories });
-    const messages = await this.contextMessages(conv, user, system);
+    const vision = await this.visionNow();
+    const messages = await inlineAttachmentImages(this.app.storage, await inlineToolImages(this.app.storage, await this.contextMessages(conv, user, system), { vision }), { vision });
     const req: RoleChatRequest = {
       messages: [{ role: "system", content: system }, ...messages],
       tools: tools.map((t) => ({ name: t.name, description: t.description, inputSchema: toolJsonSchema(t) })),
-      maxTokens: this.options.maxOutputTokens ?? 3000,
+      // Room for a full paper explanation or a structured reading note in one reply (clamped to the model's limit).
+      maxTokens: this.options.maxOutputTokens ?? 8000,
       signal,
     };
     await writer.emit("step_start", { runId: run.id, step: run.step });
     let text = "";
     let reasoning = "";
-    const calls: ToolUseBlock[] = [];
+    let calls: ToolUseBlock[] = [];
     let providerState: ProviderState | undefined;
     let model: string | null = null;
     let usage = { in: 0, out: 0 };
+    let stop: string | null = null;
+    let truncated = false;
     const call = this.options.model ?? ((r, c) => aiFor(this.app).chatStream("assistant", r, { userId: c.userId, signal: c.signal, onRoute: (i) => c.onRoute?.(i) }));
+    for (let attempt = 0; ; attempt++) {
     try {
       for await (const ev of call(req, { userId: user.id, signal, onRoute: (i) => (model = i.model) })) {
         if (signal.aborted) break;
@@ -772,6 +813,7 @@ export class AgentRuntime {
         } else if (ev.type === "done") {
           providerState = ev.providerState;
           model = ev.model ?? model;
+          stop = ev.stopReason;
         } else if (ev.type === "error") {
           throw ev.error;
         }
@@ -792,6 +834,26 @@ export class AgentRuntime {
     if (signal.aborted) {
       await this.savePartial(run, conv, text, reasoning, writer);
       return { kind: "stopped" };
+    }
+    // An empty or cut-off final answer (reasoning models can spend the whole budget thinking, or the stream just ends):
+    // retry once with a nudge to answer directly, a bigger budget and low reasoning; still cut off → notice + 「繼續」.
+    const incomplete = !calls.length && (!text.replace(/\n?data: \[DONE\]\s*$/, "").trim() || stop === "max_tokens" || stop === "other");
+    if (!incomplete) break;
+    this.app.log.warn({ runId: run.id, attempt, stopReason: stop, textChars: text.length, reasoningChars: reasoning.length, model }, "agent reply empty or cut off");
+    if (attempt >= 1) {
+      truncated = true;
+      break;
+    }
+    await writer.emit("step_discarded", { runId: run.id });
+    await writer.drain();
+    await writer.emit("step_start", { runId: run.id, step: run.step });
+    req.messages = [...req.messages, { role: "user", content: [{ type: "text", text: RETRY_NUDGE }] }];
+    req.maxTokens = Math.max(req.maxTokens ?? 0, 12_000);
+    req.reasoning = { effort: "low" };
+    text = "";
+    reasoning = "";
+    calls = [];
+    stop = null;
     }
     // Some gateways append a stray `data: [DONE]` line.
     text = text.replace(/\n?data: \[DONE\]\s*$/, "");
@@ -814,7 +876,7 @@ export class AgentRuntime {
     });
     if (!saved) return { kind: "stopped" };
     await writer.emit("message", { message: messageView(saved) });
-    return { kind: "ok", messageId: saved.id, calls };
+    return { kind: "ok", messageId: saved.id, calls, truncated };
   }
 
   /** Keeps text streamed before a stop (marked 已中止); never tool calls of an unfinished step. */
@@ -865,7 +927,14 @@ export class AgentRuntime {
   }
 
   private toolCtx(conv: ConversationRow, user: CurrentUser, run: RunRow, signal: AbortSignal, autopilot: boolean): AgentToolContext {
-    return { app: this.app, db: this.db, user, source: "agent", conversationId: conv.id, runId: run.id, autopilot, signal };
+    return { app: this.app, db: this.db, user, source: "agent", conversationId: conv.id, runId: run.id, autopilot, signal, vision: () => this.visionNow() };
+  }
+
+  /** Whether the assistant role accepts images now (images in the context would otherwise fail the call). */
+  async visionNow(): Promise<boolean> {
+    if (this.options.vision) return this.options.vision();
+    if (this.options.model) return false;
+    return (await aiFor(this.app).capabilities("assistant").catch(() => ({ vision: false }))).vision;
   }
 
   /**
@@ -966,7 +1035,7 @@ export class AgentRuntime {
       const fresh = (await this.db.query<{ autopilot: boolean }>("SELECT autopilot FROM conversations WHERE id=$1", [conv.id])).rows[0];
       const counts = (await this.db.query<{ autopilot_writes: number }>("SELECT autopilot_writes FROM agent_runs WHERE id=$1", [run.id])).rows[0]!;
       const granted = ((await this.db.query("SELECT 1 FROM conversation_grants WHERE conversation_id=$1 AND tool=$2 AND scope=$3", [conv.id, def.name, grantScope(target)])).rowCount ?? 0) > 0;
-      const decision = decide({ risk: def.risk, alwaysAsk: def.alwaysAsk, openWorld: def.openWorld, autopilot: !!fresh?.autopilot && conv.mode === "chat", tainted, granted, autopilotWrites: counts.autopilot_writes, autopilotWriteLimit: this.limits.autopilotWrites });
+      const decision = def.requireCard?.(p.args as never) ? ({ run: false, reason: def.risk === "destructive" ? "destructive" : "write" } as const) : decide({ risk: def.risk, alwaysAsk: def.alwaysAsk, openWorld: def.openWorld, autopilot: !!fresh?.autopilot && conv.mode === "chat", tainted, granted, autopilotWrites: counts.autopilot_writes, autopilotWriteLimit: this.limits.autopilotWrites });
       if (decision.run) {
         if (decision.via === "autopilot") await this.db.query("UPDATE agent_runs SET autopilot_writes=autopilot_writes+1 WHERE id=$1", [run.id]);
         const row = await insert(p, { status: "approved", approved_via: decision.via ?? undefined, summary, target: target ?? undefined });
@@ -1004,7 +1073,8 @@ export class AgentRuntime {
       const res = await def.execute(def.input.parse(args) as never, this.toolCtx(conv, user, run, signal, row.approved_via === "autopilot"));
       const body = res.text ?? JSON.stringify(res.data, null, 0);
       const text = envelope(row.tool, capResult(body), { untrusted: !!res.untrusted || !!def.openWorld, source: res.source });
-      await this.db.query("UPDATE tool_calls SET status='done', result=$2, result_text=$3, finished_at=now() WHERE id=$1", [row.id, JSON.stringify({ data: res.data, links: res.links ?? [], source: res.source ?? null, untrusted: !!res.untrusted, ...(res.undo && row.approved_via !== "user" ? { undo: res.undo } : {}) }), text]);
+      const images = res.images?.length ? await storeToolImages(this.app.storage, conv.id, row.id, res.images.slice(0, 6)) : undefined;
+      await this.db.query("UPDATE tool_calls SET status='done', result=$2, result_text=$3, finished_at=now() WHERE id=$1", [row.id, JSON.stringify({ data: res.data, links: res.links ?? [], source: res.source ?? null, untrusted: !!res.untrusted, ...(images ? { images } : {}), ...(res.undo && row.approved_via !== "user" ? { undo: res.undo } : {}) }), text]);
       if (res.untrusted || def.openWorld) {
         await this.db.query(
           `UPDATE agent_runs SET tainted=true, taint_sources=CASE WHEN $2::text IS NULL OR taint_sources ? $2 THEN taint_sources ELSE (taint_sources || to_jsonb($2::text)) END WHERE id=$1`,

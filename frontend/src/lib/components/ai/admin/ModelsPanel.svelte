@@ -3,7 +3,7 @@
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import { aiApi, toErrorBody, type ModelCapability, type ModelProfile, type ProfileField } from "#lib/ai/admin.ts";
   import { adminStore } from "#lib/ai/admin-store.svelte.ts";
-  import { dot, modelHealth, providerTone, statFor, tokens, pct } from "#lib/ai/routing.ts";
+  import { dot, modelHealth, statFor, tokens, pct } from "#lib/ai/routing.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
@@ -16,6 +16,7 @@
   import Switch from "#lib/components/ui/Switch.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import AiErrorPanel from "../AiErrorPanel.svelte";
+  import ProviderIcon from "../ProviderIcon.svelte";
   import StateDot from "../StateDot.svelte";
   import ModelSheet from "./ModelSheet.svelte";
   import SourceTag from "./SourceTag.svelte";
@@ -126,7 +127,7 @@
     {@const p = adminStore.provider(provider)}
     {#if p}
       <div class="flex flex-wrap items-center gap-3 rounded-2xl bg-surface-2 px-4 py-2.5 text-[13px]">
-        <span class="size-2.5 rounded-sm" style="background: var(--pill-{providerTone(p.id)}-ink)"></span>
+        <ProviderIcon kind={p.kind} size="sm" />
         <span class="font-medium">{p.name}</span>
         <span class="text-ink-3">{t("aiAdmin.models.syncedAt", { time: p.models_synced_at ? relativeTime(p.models_synced_at) : "—" })}</span>
         <Button size="sm" variant="secondary" class="ml-auto" loading={syncing === p.id} onclick={() => sync(p.id)}><RefreshCw />{t("aiAdmin.models.sync")}</Button>
@@ -158,7 +159,7 @@
           {@const h = modelHealth(m, adminStore.providers, adminStore.bindings)}
           <li class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 lg:grid-cols-[minmax(0,2.2fr)_repeat(4,minmax(0,1fr))_auto] {m.enabled ? '' : 'opacity-60'}">
             <div class="flex min-w-0 items-start gap-2.5">
-              <span class="mt-1.5 size-2.5 shrink-0 rounded-sm" style="background: var(--pill-{providerTone(m.provider_id)}-ink)" title={m.provider_name ?? ""}></span>
+              <ProviderIcon kind={m.provider_kind} size="xs" class="mt-px" />
               <div class="min-w-0">
                 <p class="flex min-w-0 items-center gap-2">
                   <span class="truncate font-mono text-[13px] font-medium">{m.model_id}</span>

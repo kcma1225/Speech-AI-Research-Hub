@@ -31,7 +31,7 @@
    * Everything about one paper: metadata, PDF, citation, studies, and — inside a study — reading status, cite key,
    * tags and notes with AI helpers. Used by PaperSheet (side panel) and the /library/[id] reader page.
    */
-  let { paperId, study = null, layout = "sheet", onChanged, onGone, tagSuggestions = [] }: {
+  let { paperId, study = null, layout = "sheet", onChanged, onGone, tagSuggestions = [], unsaved = $bindable(false) }: {
     paperId: string;
     study?: { id: string; slug: string; title: string; canEdit: boolean } | null;
     layout?: "sheet" | "page";
@@ -39,6 +39,8 @@
     /** The paper was deleted or removed from the study. */
     onGone?: () => void;
     tagSuggestions?: string[];
+    /** Out: notes or cite key edited but not saved (PaperSheet asks before closing). */
+    unsaved?: boolean;
   } = $props();
 
   let paper = $state<PaperDetail | null>(null);
@@ -108,6 +110,9 @@
     savingNotes = false;
   }
   const dirty = $derived(Boolean(sp) && notes !== savedNotes);
+  $effect(() => {
+    unsaved = dirty || Boolean(canEditStudy && sp && citeKey.trim() && citeKey.trim() !== sp.cite_key);
+  });
 
   // PDF
   let fileInput = $state<HTMLInputElement | null>(null);

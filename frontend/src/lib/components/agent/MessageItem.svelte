@@ -11,6 +11,7 @@
   import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
   import AgentMarkdown from "./AgentMarkdown.svelte";
   import AskCard from "./AskCard.svelte";
+  import MessageAttachments from "./attach/MessageAttachments.svelte";
   import { answerLabel } from "#lib/agent/ask.ts";
   import type { Answer, AskArgs, Message } from "#lib/agent/types.ts";
 
@@ -20,7 +21,7 @@
    * ⋯ or a long press on phones. Answers to a question card render as a compact summary with 「修改答案」.
    */
   let { message, streaming = false, canRemember = false, conversationId = null, onContinue, ask = null, busy = false, onEdit, onEditAnswers, onRegenerate, onSwitch }: {
-    message: Pick<Message, "role" | "text" | "reasoning" | "status" | "memories" | "kind" | "page_context"> & { id?: string; answers?: Message["answers"]; versions?: string[] | null };
+    message: Pick<Message, "role" | "text" | "reasoning" | "status" | "memories" | "kind" | "page_context"> & { id?: string; answers?: Message["answers"]; versions?: string[] | null; attachments?: Message["attachments"] };
     streaming?: boolean;
     canRemember?: boolean;
     conversationId?: string | null;
@@ -154,6 +155,7 @@
           </div>
         </div>
       {:else}
+        {#if message.attachments?.length}<MessageAttachments items={message.attachments} />{/if}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="rounded-[20px] rounded-br-md bg-ink px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words text-primary-ink select-text [-webkit-touch-callout:none]" onpointerdown={pressStart} onpointerup={pressEnd} onpointercancel={pressEnd} onpointerleave={pressEnd}>{message.text}</div>
         <div class="flex items-center gap-0.5">

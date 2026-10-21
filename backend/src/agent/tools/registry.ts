@@ -36,6 +36,8 @@ export type AgentToolContext = {
   /** The call was auto-approved by autopilot: suggestion tools apply their change at once (versions tagged 自動駕駛). */
   autopilot: boolean;
   signal?: AbortSignal;
+  /** Whether the assistant role takes images right now (agent loop only). */
+  vision?: () => Promise<boolean>;
 };
 
 export type AgentToolLink = { label: string; url: string; kind?: "suggestion" | "note" | "task" | "study" | "paper" | "deck" | "meeting" | "memory" };
@@ -51,6 +53,8 @@ export type AgentToolResult = {
   source?: string;
   /** Links the UI shows under the tool row (「在筆記中檢視建議」). */
   links?: AgentToolLink[];
+  /** Images for the model (page renders); stored in S3, sent only while the role has vision (src/agent/images.ts). */
+  images?: import("../images.js").ToolImage[];
   /** How 「復原」 reverts this call when it ran without a card (autopilot / grant); never sent to the model. */
   undo?: AgentUndo;
 };
@@ -79,6 +83,11 @@ export interface AgentToolDef<I extends z.ZodType = z.ZodType> {
   risk: AgentRisk;
   /** Never auto-approved, never granted (memory). */
   alwaysAsk?: boolean;
+  /**
+   * Shows a normal consent card for this call even under autopilot or a conversation grant (e.g. confirming a meeting
+   * draft, rewriting the user's own reading notes). Return true to ask. Set `grantable: false` with it.
+   */
+  requireCard?(args: z.infer<I>): boolean;
   /** 「本對話都允許」 offered. Default: risk === "write" && !alwaysAsk. */
   grantable?: boolean;
   /** Sends data outside the hub (online search): asks once the run is tainted. */

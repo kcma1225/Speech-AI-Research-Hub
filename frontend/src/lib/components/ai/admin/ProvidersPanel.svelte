@@ -14,6 +14,7 @@
   import Pill from "#lib/components/ui/Pill.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import AiErrorPanel from "../AiErrorPanel.svelte";
+  import ProviderIcon from "../ProviderIcon.svelte";
   import StateDot from "../StateDot.svelte";
   import OAuthSheet from "./OAuthSheet.svelte";
   import ProviderSheet from "./ProviderSheet.svelte";
@@ -138,7 +139,7 @@
             {@const r = results[p.id]}
             <li class="flex min-w-0 flex-col rounded-[var(--radius-card)] border border-line/70 bg-surface p-4 shadow-card {p.enabled ? '' : 'opacity-70'}">
               <div class="flex items-start gap-3">
-                <span class="grid size-10 shrink-0 place-items-center rounded-2xl bg-surface-3 text-[14px] font-semibold text-ink-2">{(L(p.label) || p.kind).slice(0, 1)}</span>
+                <ProviderIcon kind={p.kind} label={L(p.label)} size="lg" />
                 <div class="min-w-0 flex-1">
                   <p class="truncate text-[15px] font-semibold text-ink">{p.name}</p>
                   <p class="truncate text-[12.5px] text-ink-3">{L(p.label) || p.kind}</p>

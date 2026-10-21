@@ -59,7 +59,7 @@
   const name = (v: LatexVersion) => v.label || formatDate(v.created_at, { dateStyle: "medium", timeStyle: "short" } as Intl.DateTimeFormatOptions);
 </script>
 
-<Sheet bind:open side="right" title={t("latex.versions")} description={t("latex.versions.hint")}>
+<Sheet bind:open side="right" dirty={label.trim() !== ""} title={t("latex.versions")} description={t("latex.versions.hint")}>
   {#if canEdit}
     <form class="mb-4 flex items-end gap-2" onsubmit={save}>
       <TextField label={t("latex.versions.label")} bind:value={label} maxlength={200} placeholder={t("latex.versions.placeholder")} class="min-w-0 flex-1" />

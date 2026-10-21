@@ -82,11 +82,12 @@ export class ChatSession {
     return r.conversation;
   }
 
-  async send(text: string, context: PageContext | null = null) {
+  /** `intent: "make_note"` (「整理成筆記」) asks the server to synthesise the conversation into a reading note. */
+  async send(text: string, context: PageContext | null = null, intent?: "make_note", attachments: { kind: string; id: string; project_id?: string; version?: string }[] = []) {
     this.sending = true;
     try {
       if (!this.id) await this.create({ context });
-      const r = await api.post<{ message: Message; run: Run }>(`/agent/conversations/${this.id}/messages`, { text, ...(context ? { context } : {}) });
+      const r = await api.post<{ message: Message; run: Run }>(`/agent/conversations/${this.id}/messages`, { text, ...(context ? { context } : {}), ...(intent ? { intent } : {}), ...(attachments.length ? { attachments } : {}) });
       this.upsertMessage(r.message);
       this.setRun(r.run);
       // Pending cards of a superseded step are denied by the server; the events update them.

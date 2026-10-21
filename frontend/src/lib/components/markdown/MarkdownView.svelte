@@ -3,13 +3,30 @@
   import { renderMarkdown } from "#lib/markdown.ts";
   import { theme } from "#lib/theme.svelte.ts";
   import { renderMermaidIn } from "./mermaid.ts";
+  import { t } from "#lib/i18n.svelte.ts";
+  import { toasts } from "#lib/components/ui/toast.svelte.ts";
 
   /**
    * Rendered, sanitized Markdown with the hub's prose styles. `fontSize` scales the whole block (px).
-   * `sourceLines` adds `data-line` attributes (editor scroll sync); ```mermaid blocks render lazily.
+   * `sourceLines` adds `data-line` attributes (editor scroll sync); ```mermaid blocks render lazily. `streaming`: a trailing
+   * display formula without its closing delimiter shows as a muted placeholder. Display formulas get a copy-LaTeX button.
    */
-  let { source, fontSize, class: cls = "", sourceLines = false, element = $bindable(null) }: { source: string; fontSize?: number; class?: string; sourceLines?: boolean; element?: HTMLElement | null } = $props();
-  const html = $derived(renderMarkdown(source, { sourceLines }));
+  let { source, fontSize, class: cls = "", sourceLines = false, streaming = false, element = $bindable(null) }: { source: string; fontSize?: number; class?: string; sourceLines?: boolean; streaming?: boolean; element?: HTMLElement | null } = $props();
+  const html = $derived(renderMarkdown(source, { sourceLines, streaming }));
+
+  async function onclick(e: MouseEvent) {
+    const button = (e.target as HTMLElement | null)?.closest?.(".md-math-copy");
+    if (!button || !element?.contains(button)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const tex = button.closest<HTMLElement>(".md-math")?.dataset.tex ?? "";
+    try {
+      await navigator.clipboard.writeText(tex);
+      toasts.show(t("mdx.copiedTex"), "success");
+    } catch {
+      // clipboard unavailable (insecure context)
+    }
+  }
 
   $effect(() => {
     void html;
@@ -19,7 +36,9 @@
 </script>
 
 <!-- sanitized by DOMPurify in renderMarkdown -->
-<div bind:this={element} class="md {cls}" style={fontSize ? `font-size:${fontSize}px` : undefined}>{@html html}</div>
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div bind:this={element} {onclick} class="md {cls}" style={fontSize ? `font-size:${fontSize}px` : undefined}>{@html html}</div>
 
 <style>
   .md {
@@ -204,15 +223,90 @@
     border-bottom: 0;
   }
   .md :global(.md-math) {
+    position: relative;
+    border-radius: 12px;
+  }
+  .md :global(.md-math-body) {
     overflow-x: auto;
     overflow-y: hidden;
-    padding: 0.2em 0;
+    padding: 0.35em 0.5em;
+    text-align: center;
+    overscroll-behavior-x: contain;
+  }
+  .md :global(.md-math:hover),
+  .md :global(.md-math:focus-within) {
+    background: var(--surface-2);
+  }
+  .md :global(.md-math-copy) {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-3);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms;
+  }
+  .md :global(.md-math-copy:hover) {
+    color: var(--ink);
+  }
+  .md :global(.md-math:hover .md-math-copy),
+  .md :global(.md-math-copy:focus-visible) {
+    opacity: 1;
+  }
+  @media (pointer: coarse) {
+    .md :global(.md-math-copy) {
+      opacity: 0.85;
+      width: 40px;
+      height: 40px;
+      top: -4px;
+      right: -4px;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .md :global(.md-math-copy) {
+      transition: none;
+    }
+  }
+  .md :global(.md-math-pending) {
+    margin: 0.85em 0;
+    padding: 0.6em 0.9em;
+    border-left: 3px solid var(--line-2);
+    border-radius: 0 10px 10px 0;
+    background: var(--surface-2);
+    color: var(--ink-3);
+    font-size: 0.86em;
+    overflow-x: auto;
+  }
+  .md :global(.md-math-pending-label) {
+    display: block;
+    margin-bottom: 0.2em;
+    font-size: 0.9em;
+    font-weight: 600;
+  }
+  .md :global(.md-math-pending code) {
+    white-space: pre-wrap;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   .md :global(.katex) {
     font-size: 1.08em;
   }
   .md :global(.katex-display) {
     margin: 0;
+  }
+  /* Inline \\[…\\] / $$…$$ inside a paragraph: its own centered, scrollable line. */
+  .md :global(p .katex-display) {
+    display: block;
+    overflow-x: auto;
+    overflow-y: hidden;
+    margin: 0.5em 0;
+    text-align: center;
   }
   .md :global(img) {
     max-width: 100%;
@@ -291,6 +385,89 @@
   .md :global(.footnote-ref) {
     font-size: 0.75em;
     line-height: 0;
+  }
+  /* ```chart (lib/chart.ts): inline SVG, series colours from the pill inks (light/dark aware). */
+  .md :global(.md-chart-wrap) {
+    margin: 0.85em 0;
+    padding: 0.7em 0.8em 0.6em;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--surface);
+  }
+  .md :global(.md-chart) {
+    margin: 0;
+  }
+  .md :global(.md-chart svg) {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 420px;
+    font-family: "Inter Variable", "Noto Sans TC Variable", sans-serif;
+  }
+  .md :global(.md-chart .t) {
+    font-size: 14px;
+    font-weight: 600;
+    fill: var(--ink);
+  }
+  .md :global(.md-chart .a),
+  .md :global(.md-chart .v) {
+    font-size: 11px;
+    fill: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .md :global(.md-chart .v) {
+    fill: var(--ink-2);
+  }
+  .md :global(.md-chart .g) {
+    stroke: var(--line);
+    stroke-width: 1;
+  }
+  .md :global(.md-chart .z) {
+    stroke: var(--line-2);
+    stroke-width: 1;
+  }
+  .md :global(.md-chart .l) {
+    fill: none;
+    stroke-width: 2.25;
+    stroke-linejoin: round;
+  }
+  .md :global(.md-chart .s0) {
+    --c: var(--pill-sky-ink);
+  }
+  .md :global(.md-chart .s1) {
+    --c: var(--pill-peach-ink);
+  }
+  .md :global(.md-chart .s2) {
+    --c: var(--pill-mint-ink);
+  }
+  .md :global(.md-chart .s3) {
+    --c: var(--pill-lilac-ink);
+  }
+  .md :global(.md-chart .s4) {
+    --c: var(--pill-butter-ink);
+  }
+  .md :global(.md-chart .f) {
+    fill: var(--c);
+  }
+  .md :global(.md-chart .l) {
+    stroke: var(--c);
+  }
+  .md :global(.md-chart-legend) {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em 1em;
+    margin-top: 0.3em;
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  .md :global(.md-chart-legend i) {
+    display: inline-block;
+    width: 0.75em;
+    height: 0.75em;
+    margin-right: 0.4em;
+    border-radius: 3px;
+    vertical-align: -0.05em;
+    background: var(--c);
   }
   .md :global(.md-mermaid) {
     margin: 0.85em 0;

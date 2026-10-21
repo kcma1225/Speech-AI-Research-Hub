@@ -147,6 +147,7 @@
       {#if !dup}
         <Segmented
           bind:value={mode}
+          guardIgnore
           label={t("library.addSheet.title")}
           class="w-full"
           options={[

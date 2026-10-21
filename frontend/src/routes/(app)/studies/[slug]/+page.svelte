@@ -12,6 +12,8 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import AvatarStack from "#lib/components/study/AvatarStack.svelte";
   import StageBar from "#lib/components/study/StageBar.svelte";
+  import StudyTitle from "#lib/components/study/StudyTitle.svelte";
+  import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { studyTabs, tabByKey } from "#lib/components/study/tabs/registry.ts";
   import type { StudyDetail } from "#lib/studies/types.ts";
   import { memberRoleTone, statusTone } from "#lib/studies/ui.ts";
@@ -29,6 +31,19 @@
       if (next.study.slug !== slug) void goto(`/studies/${next.study.slug}${page.url.search}`, { replace: true, reset: false });
     } catch (e) {
       error = { status: e instanceof ApiError ? e.status : 0, message: (e as Error).message };
+    }
+  }
+  /** Optimistic rename (the slug stays, so the address does not change). */
+  async function rename(title: string) {
+    if (!detail) return;
+    const before = detail.study.title;
+    detail.study.title = title;
+    try {
+      detail = await api.patch<StudyDetail>(`/studies/${detail.study.id}`, { title });
+      toasts.show(t("studies.rename.saved"), "success");
+    } catch (e) {
+      if (detail.study.title === title) detail.study.title = before;
+      toasts.show((e as Error).message, "error");
     }
   }
   $effect(() => {
@@ -65,7 +80,7 @@
   <header class="mb-5 flex flex-col gap-4 sm:mb-6">
     <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
       <div class="min-w-0">
-        <h1 class="font-display text-[32px] leading-[1.06] text-balance text-ink sm:text-[44px]">{d.study.title}</h1>
+        <StudyTitle title={d.study.title} canEdit={d.permissions.edit} onRename={rename} />
         <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-ink-3">
           <Pill tone={statusTone[d.study.status]} size="sm" dot>{t(`studies.status.${d.study.status}` as MessageKey)}</Pill>
           {#if d.permissions.role}<Pill tone={memberRoleTone[d.permissions.role]} size="sm">{t(`studies.role.${d.permissions.role}` as MessageKey)}</Pill>{/if}

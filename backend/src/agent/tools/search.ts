@@ -22,6 +22,9 @@ export type AgentSearchHit = {
   url?: string;
   /** Author of the content (null = unknown): hits not written by the caller taint the run. */
   authorId?: string | null;
+  /** Author name and date (ISO) of the content, when known. */
+  authorName?: string | null;
+  at?: string | null;
   score?: number;
 };
 export type AgentSearchQuery = { query: string; studyId: string | null; types: AgentSearchType[] | null; limit: number };
@@ -73,6 +76,20 @@ export async function keywordSearch(ctx: AgentToolContext, q: AgentSearchQuery):
     )).rows;
     for (const r of rows) hits.push({ type: "paper", id: r.id, title: r.title, excerpt: r.year ? String(r.year) : undefined, study: r.study, url: `/library?paper=${r.id}`, authorId: null });
   }
+  if (want("meeting")) {
+    try {
+      const rows = (await ctx.db.query<{ id: string; title: string; held_at: string | null; created_by: string | null; text: string }>(
+        `SELECT m.id,m.title,m.held_at,m.created_by,concat_ws(E'\\n', m.notes, (SELECT string_agg(f.body_md, E'\\n') FROM meeting_feedback f WHERE f.meeting_id=m.id)) AS text
+           FROM meetings m WHERE ($2::uuid IS NULL OR EXISTS (SELECT 1 FROM meeting_studies x WHERE x.meeting_id=m.id AND x.study_id=$2))
+            AND (m.title ILIKE $1 OR m.notes ILIKE $1 OR EXISTS (SELECT 1 FROM meeting_feedback f WHERE f.meeting_id=m.id AND f.body_md ILIKE $1))
+          ORDER BY m.held_at DESC NULLS LAST LIMIT $3`,
+        [like, q.studyId, per],
+      )).rows;
+      for (const r of rows) hits.push({ type: "meeting", id: r.id, title: r.title, excerpt: markdownExcerpt(r.text ?? "", 160), url: `/meetings/${r.id}`, authorId: r.created_by, at: r.held_at });
+    } catch {
+      // meetings module not installed
+    }
+  }
   return hits.slice(0, q.limit);
 }
 
@@ -81,11 +98,12 @@ registerAgentTool({
   title: "搜尋",
   titleEn: "Search",
   risk: "read",
-  description: "Search the lab's notes, tasks, studies and papers (semantic when available, otherwise keywords). Optionally limit to one study and to some types.",
+  description:
+    "Search the lab's notes, tasks, studies, papers (incl. reading notes), meetings (notes, AI summaries/feedback and transcripts), decks and milestones — semantic when available, otherwise keywords. Optionally limit to one study and to some types. Use it for 「我之前哪裡寫過…」「老師哪次會議提過…」 questions.",
   input: z.object({
     query: z.string().trim().min(1).max(200),
     study: studyRef.optional(),
-    types: z.array(z.enum(["note", "task", "study", "paper"])).max(4).optional(),
+    types: z.array(z.enum(["note", "task", "study", "paper", "meeting", "deck", "milestone"])).max(7).optional(),
     limit: z.number().int().min(1).max(30).optional(),
   }),
   summarize: (a) => `搜尋「${a.query}」`,
@@ -103,8 +121,17 @@ registerAgentTool({
     }
     hits ??= await keywordSearch(ctx, q);
     return {
-      data: { mode, results: hits.map((h) => ({ type: h.type, id: h.id, title: scrub(h.title), excerpt: h.excerpt ? clip(scrub(h.excerpt), 200) : undefined, study: h.study ? { id: h.study.id, slug: h.study.slug, title: h.study.title } : undefined })) },
-      untrusted: hits.some((h) => h.authorId !== ctx.user.id),
+      data: {
+        mode,
+        results: hits.map((h) => ({
+          type: h.type, id: h.id, title: scrub(h.title), excerpt: h.excerpt ? clip(scrub(h.excerpt), 300) : undefined,
+          study: h.study ? { id: h.study.id, slug: h.study.slug, title: h.study.title } : undefined,
+          ...(h.at ? { date: String(h.at).slice(0, 10) } : {}), ...(h.authorName ? { author: h.authorName } : {}),
+        })),
+        ...(hits.some((h) => h.type === "meeting") ? { hint: "會議結果：用 get_meeting 讀回饋與草稿，用 get_transcript_excerpt（q 關鍵字）讀原話。" } : {}),
+      },
+      // Meetings carry transcripts and feedback (other people's words) whoever created the meeting.
+      untrusted: hits.some((h) => h.type === "meeting" || h.authorId !== ctx.user.id),
       source: "搜尋結果",
     };
   },

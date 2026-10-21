@@ -129,7 +129,7 @@
   {/if}
 {/if}
 
-<Sheet bind:open title={t("vision.slides.title")} description={t("vision.slides.desc")} side="right">
+<Sheet bind:open guard={false} title={t("vision.slides.title")} description={t("vision.slides.desc")} side="right">
   <div class="flex flex-col gap-4">
     {#if hasSource && canVersion}
       <Segmented

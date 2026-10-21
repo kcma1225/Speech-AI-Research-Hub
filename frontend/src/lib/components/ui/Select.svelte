@@ -1,5 +1,6 @@
 <script lang="ts" generics="T extends string">
   import { Select } from "bits-ui";
+  import { markFormDirty } from "./close-guard.svelte.ts";
   import { Check, ChevronDown, ChevronUp } from "@lucide/svelte";
 
   let { value = $bindable(), options, label, onValueChange, class: cls = "" }: {
@@ -9,10 +10,11 @@
     onValueChange?: (v: T) => void;
     class?: string;
   } = $props();
+  const markDirty = markFormDirty();
   const selected = $derived(options.find(o => o.value === value));
 </script>
 
-<Select.Root type="single" bind:value={value as string} onValueChange={v => onValueChange?.(v as T)} items={options}>
+<Select.Root type="single" bind:value={value as string} onValueChange={v => (markDirty(), onValueChange?.(v as T))} items={options}>
   <Select.Trigger
     aria-label={label}
     class="inline-flex h-10 min-w-40 cursor-pointer items-center justify-between gap-3 rounded-xl border border-line-2 bg-surface px-3.5 text-sm text-ink transition-colors hover:border-ink-3 data-[state=open]:border-ink {cls}"

@@ -95,6 +95,7 @@
           <div role="group" aria-roledescription={t("aiAdmin.diagram.brick")} tabindex={actions ? 0 : undefined} onkeydown={e => onKey(e, i)} class="rounded-[12px] outline-offset-2" data-leaf-provider={model?.provider_id} aria-label={actions ? t("aiAdmin.diagram.brickLabel", { name: model?.model_id ?? child?.name ?? "?", n: i + 1 }) : undefined}>
             <BrickFace
               tone={child ? "stone" : providerTone(model?.provider_id)}
+              vendor={!child && model ? { kind: model.provider_kind } : undefined}
               title={child ? child.name : (model?.model_id ?? m.model_id ?? "?")}
               subtitle={child ? t("aiAdmin.groups.memberCount", { n: child.members.length }) : s ? `${ms(s.p50_ms)} · ${pct(s.success_rate)}` : (model?.provider_name ?? "")}
               mono={!child}

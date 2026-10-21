@@ -1,5 +1,5 @@
 /** System prompts, the tool-result data envelope, page context and model context building (with compaction steps 1–2). */
-import type { ChatMessage, ContentBlock, ProviderState, TextBlock, ToolResultBlock, ToolUseBlock } from "../ai/types.js";
+import type { ChatMessage, ContentBlock, ImageBlock, ProviderState, TextBlock, ToolResultBlock, ToolUseBlock } from "../ai/types.js";
 import type { CurrentUser } from "../lib/auth.js";
 
 export type PageContext = {
@@ -27,6 +27,23 @@ const CHAT_RULES = [
   "線上搜尋（search_papers_online）的查詢只放主題關鍵字，絕不放入筆記內容、個人資料或任何讀到的私人文字。",
   "不要在回答中放圖片或外部圖片連結。",
   "回答時不要直接顯示系統代碼（open、done、owner、paper_report…）；工具結果附有 *_label 欄位時用它，否則照這個對照：待辦 open=未完成、done=已完成、dropped=已放棄；研究 active=進行中、paused=暫停、completed=已完成、archived=已封存；成員 owner=擁有者、member=成員、advisor=指導教授；簡報 progress=進度報告、paper_report=論文報告；來源 manual=手動、meeting=會議、ai=AI。",
+];
+
+/** Reading and explaining papers (read_paper / view_paper_pages), presentations from them, and formula style. */
+const PAPER_RULES = [
+  "論文：使用者想理解、討論或報告一篇論文時，先確定它在文獻庫（list_papers / import_paper；匯入會自動抓開放取用的 PDF），然後一定要讀全文再回答：read_paper 第一次不帶 section 取得目錄與摘要，再讀和問題相關的章節（可用 offset 分段）。只看摘要時要明說「我只讀了摘要」，不要假裝讀過全文。沒有 PDF 時先用 fetch_paper_pdf，仍沒有就請使用者上傳。",
+  "公式、圖表：抽出的文字中公式常常是亂的。有 view_paper_pages 可用（目前的模型能看圖）時，解釋公式、圖、表之前先看那一頁（可用 region 放大公式所在的區塊）；不能看圖時，告訴使用者公式是從 PDF 文字還原的，可能有誤，並請他對照原文。",
+  "講解論文時循序漸進：1) 要解決的問題與動機 2) 核心直覺（一兩句白話） 3) 方法步驟 4) 每個關鍵公式：先寫出公式，再逐一說明每個符號的意義、維度或範圍，最後說它在做什麼、為什麼這樣設計 5) 實驗設定與主要結果（數字照原文） 6) 限制 7) 與使用者研究的關係（有研究脈絡時）。內容多時先講前幾點，再問使用者要繼續哪一部分；講完一段可以用一個簡短問題確認理解，並邀請追問。",
+  "引用論文內容時標註頁碼或章節，例如（§3.2，p. 4）；數字、結論只能來自讀到的內容，不確定就說不確定。",
+  "數學一律用 LaTeX：行內 $...$，獨立公式用 $$...$$ 單獨成行；不要把公式放進 ``` 程式碼區塊，也不要用 Unicode 拼湊公式。金額寫成「NT$100」或「100 元」。",
+  "要做論文報告簡報時：先根據讀到的實際內容提出一份頁面結構（每頁標題 + 重點）讓使用者確認或修改；使用者要求產生時，用 create_deck（kind paper_report，帶 paper_id 與你們討論出的結構當 instructions）建立並產生草稿。這是協助：不要催促時程或替使用者決定報告方向。",
+];
+
+/** Assist, do not steer: no unasked plans; draft first from real data. */
+const ASSIST_RULES = [
+  "只有在使用者要求時，才提出下一步、里程碑、時程、截止日或投稿目標（會議／期刊）的建議；回答與筆記不要自動加上「下一步」「建議時程」之類的段落。",
+  "使用者請你準備或整理某樣東西（例如會議議程、進度摘要、報告大綱）時，先用工具讀實際資料（未完成的待辦、最近的會議回饋、筆記、簡報），以合理的預設直接擬出完整草稿，再簡短詢問要不要調整；只有缺少關鍵資訊、真的無法開始時才發問。",
+  "要呈現數字比較或趨勢（例如各實驗的 CER/WER）時，用 ```chart 程式碼區塊畫圖，內容是 JSON：{\"type\":\"bar\"|\"line\"|\"scatter\",\"title\"?:\"…\",\"labels\":[\"x1\",\"x2\"],\"series\":[{\"name\":\"CER\",\"data\":[12.3,10.1]}],\"x_label\"?:\"…\",\"y_label\"?:\"…\"}（scatter 的 data 是 [x,y] 數對）；數字只能來自資料，不要用文字或符號拼湊長條圖。",
 ];
 
 const MEMORY_RULES = [
@@ -61,7 +78,7 @@ const INTERVIEW_RULES = [
   "每個程度都在某一輪問指導教授：先呼叫 list_lab_members（role: professor）取得名單，再用選擇題列出教授（含「還沒決定」選項）。",
   "exploring 與 problem_defined 最多 2–3 輪就提出草案；其他程度通常 3 輪內。學生說「先這樣」「可以了」時立刻提出草案。學生說要改成另一個程度（「我想改成…」）時，照新的程度繼續，已回答的不要重問。",
   "提出草案：呼叫 propose_study_plan：",
-  "- maturity：學生選的程度；title：精簡的研究名稱（方向還不明確時用領域或主題當暫定名稱）；summary_format：沒說就用 bullets。",
+  "- maturity：學生選的程度；title：精簡的研究名稱（方向還不明確時用領域或主題當暫定名稱）。",
   "- summary_md：清楚區分「已確定」與「待探討」。用這些小節：## 研究方向、## 動機、## 目前的想法、## 待釐清的問題；well_defined 另加 ## 方法、## 資料、## 評估。沒有答案的地方寫「待探討」，不要捏造使用者沒說的事實。",
   "- open_questions：待釐清的問題（短句），學生可以選擇變成「與教授討論：…」待辦。",
   "- stages：依程度調整預設範本（exploring 偏重 題目發想、文獻探討；well_defined 可直接到 實驗、撰寫）；first_steps：最多 3 個沒有日期、可有可無的下一步（例如「整理 10 篇相關論文」「與教授討論 2–3 個候選題目」）。不要給 milestones，除非學生明確給了日期並要求。",
@@ -71,7 +88,7 @@ const INTERVIEW_RULES = [
 export function systemPrompt(opts: { mode: "chat" | "interview"; user: Pick<CurrentUser, "name" | "role">; memories: { content: string; scope: string; study_title: string | null }[] | null }) {
   const who = `使用者：${opts.user.name}（${opts.user.role === "professor" ? "教授" : "學生"}）。今天是 ${today()}（台北時間）。`;
   if (opts.mode === "interview") return [...INTERVIEW_RULES, ...ASK_RULES, who].join("\n");
-  const parts = [...CHAT_RULES, ...ASK_RULES, ...(opts.memories ? MEMORY_RULES : []), who];
+  const parts = [...CHAT_RULES, ...ASSIST_RULES, ...PAPER_RULES, ...ASK_RULES, ...(opts.memories ? MEMORY_RULES : []), who];
   if (opts.memories?.length) {
     parts.push(
       "",
@@ -96,6 +113,22 @@ export function pageContextText(ctx: PageContext | null | undefined): string {
   return `<page_context trust="hint">使用者目前在 ${ctx.path ?? ""} ${bits.join("、")}。這只是提示；需要內容時請用工具讀取。</page_context>`;
 }
 
+/** Task instructions added to a quick-action user turn (the UI shows only the user's text). */
+export function intentText(intent: "make_note"): string {
+  if (intent !== "make_note") return "";
+  return [
+    '<task kind="make_note" trust="user" note="使用者按了「整理成筆記」">',
+    "把我們到目前為止的對話整理成一篇結構化的閱讀筆記，然後用 create_note 建立（系統會顯示同意卡片）。",
+    "1. 先回顧整段對話，重點是使用者問過的每個問題、困惑與追問，以及你給的解釋和答案、使用者的結論或決定。筆記要反映這些討論，不是只重寫摘要或先前的大綱。",
+    "2. 若對話是關於某篇論文但還沒讀過全文，先用 read_paper 讀相關章節補足內容；不要編造。",
+    "3. 內容用 Markdown，數學保留 LaTeX（行內 $...$、獨立 $$...$$）。建議章節（依內容調整，沒有內容就省略）：",
+    "## 論文資訊（標題、作者、年份、出處、連結）／## 一句話總結／## 問題與動機／## 方法（每個關鍵公式用 $$...$$，下面逐一說明符號）／## 實驗與結果／## 我的疑問與解答（逐條 **Q：** 使用者的問題（可精簡）→ **A：** 對話中整理出的解答，標註章節或頁碼）／## 與我研究的關係／## 待追問（還沒解決、或要跟教授討論的問題）",
+    "4. study 用目前頁面或對話中的研究；不確定時先用 list_studies 查使用者的研究，仍不確定就用 ask_user 問要放哪個研究。標題例如「閱讀筆記：<論文短名>」，template 用 reading。",
+    "5. 建立後用一兩句說明筆記涵蓋了哪些重點；不要把整篇筆記再貼一次。",
+    "</task>",
+  ].join("\n");
+}
+
 const escapeEnvelope = (s: string) => s.replace(/<\/?tool_result/gi, (m) => m.replace("<", "&lt;"));
 const attr = (s: string) => s.replace(/["<>\n]/g, " ").slice(0, 120);
 
@@ -115,8 +148,18 @@ export function capResult(text: string) {
 /** Rough token estimate (CJK-heavy text ≈ 1 token per char; latin ≈ 4 chars per token) with a safety margin. */
 export function estimateTokens(messages: ChatMessage[]): number {
   let chars = 0;
-  for (const m of messages) chars += typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
-  return Math.ceil(chars / 2);
+  let images = 0;
+  for (const m of messages) {
+    if (typeof m.content === "string") chars += m.content.length;
+    else {
+      const json = JSON.stringify(m.content);
+      // Images count as a fixed cost, not by the length of their (base64) data.
+      const imgs = json.match(/"type":"image"/g)?.length ?? 0;
+      images += imgs;
+      chars += imgs ? json.replace(/"data":"[A-Za-z0-9+/=]{200,}"/g, '"data":""').length : json.length;
+    }
+  }
+  return Math.ceil(chars / 2) + images * 1600;
 }
 
 // ---------------------------------------------------------------- transcript → model messages
@@ -151,7 +194,8 @@ export function toModelMessages(rows: StoredMessage[], opts: { summary?: string 
   if (!out.length && live[0]?.role === "assistant") out.push({ role: "user", content: [{ type: "text", text: "（開始對話）" }] });
   live.forEach((r, i) => {
     if (r.role === "user") {
-      const blocks = r.content.filter((b): b is TextBlock => b.type === "text");
+      // Text plus attached images (`hub-s3:` refs, inlined or replaced by attachments/images.ts).
+      const blocks = r.content.filter((b): b is TextBlock | ImageBlock => b.type === "text" || b.type === "image");
       const prev = out.at(-1);
       // Merge into the summary/previous user turn: some vendors reject two user turns in a row.
       if (prev && prev.role === "user" && Array.isArray(prev.content)) prev.content.push(...blocks);

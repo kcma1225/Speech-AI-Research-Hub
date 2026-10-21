@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack, type Snippet } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import { ArrowDown, CloudOff, RotateCcw, Rocket, TriangleAlert, Wrench } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
@@ -10,8 +10,12 @@
   import Composer from "./Composer.svelte";
   import AskCard from "./AskCard.svelte";
   import MessageItem from "./MessageItem.svelte";
+  import QuestionNav from "./QuestionNav.svelte";
   import ThinkingLine from "./ThinkingLine.svelte";
   import ToolTimeline from "./ToolTimeline.svelte";
+  import AttachButton from "./attach/AttachButton.svelte";
+  import AttachmentTray from "./attach/AttachmentTray.svelte";
+  import { AttachDraft } from "./attach/state.svelte.ts";
   import type { ChatSession } from "#lib/agent/chat.svelte.ts";
   import { contextLabel } from "#lib/agent/context.ts";
   import { answersByCall, askArgs } from "#lib/agent/ask.ts";
@@ -54,6 +58,25 @@
   let settings = $state<AgentSettings | null>(null);
   let draftAutopilot = $state<boolean | null>(null);
   let explainOpen = $state(false);
+
+  // Attachments of the next message (「附加」 / @). Uploads need a conversation: created on demand, announced on send.
+  let createdForUpload = false;
+  const attachments = new AttachDraft(async () => {
+    if (!session.id) {
+      await session.create({ context: ctx, ...(draftAutopilot ? { autopilot: true } : {}) });
+      createdForUpload = true;
+    }
+    return session.id!;
+  });
+  let attachOpen = $state(false);
+  let attachConv: string | null = null;
+  $effect(() => {
+    const id = session.id;
+    untrack(() => {
+      if (attachConv && id !== attachConv) attachments.clear();
+      attachConv = id;
+    });
+  });
 
   $effect(() => {
     const fromSession = session.settings;
@@ -230,19 +253,97 @@
     seenCards = n;
   });
 
-  async function send(value: string) {
+  async function send(value: string, intent?: "make_note") {
     const was = session.id;
-    text = "";
+    if (!intent && attachments.busy) return void toasts.show(t("attach.waitUploads"), "error");
+    if (!intent && attachments.items.some((i) => i.error)) return void toasts.show(t("attach.uploadErrors"), "error");
+    const refs = intent ? [] : attachments.refs;
+    // The quick action keeps whatever the user is typing.
+    if (!intent) text = "";
     try {
       if (!session.id && draftAutopilot) await session.create({ context: ctx, autopilot: true });
-      await session.send(value, ctx);
+      await session.send(value, ctx, intent, refs);
+      if (refs.length) attachments.clear();
       atBottom = true;
       toBottom();
-      if (!was && session.id) onCreated?.(session.id);
+      if ((!was || createdForUpload) && session.id) {
+        createdForUpload = false;
+        onCreated?.(session.id);
+      }
     } catch (e) {
-      text = value;
+      if (!intent) text = value;
       toasts.show(`${t("agent.sendFailed")}：${(e as Error).message}`, "error");
     }
+  }
+
+  // 「整理成筆記」: the server turns the discussion (especially the user's questions) into a reading note via create_note.
+  const canMakeNote = $derived(
+    !interview && !!session.id && !replying && run?.status !== "awaiting_approval" && session.messages.some((m) => m.role === "assistant" && !!m.text),
+  );
+  function makeNote() {
+    if (canMakeNote) void send(t("agent.makeNote.prompt"), "make_note");
+  }
+
+  // ---------------------------------------------------------------- question navigator
+  let root = $state<HTMLElement | null>(null);
+  let width = $state(0);
+  const questions = $derived(session.messages.filter((m) => m.role === "user" && !m.answers && m.text.trim()).map((m) => ({ id: m.id, text: m.text })));
+  const questionKey = $derived(questions.map((q) => q.id).join(","));
+  let currentQ = $state(-1);
+  const navVariant = $derived(interview || questions.length < 2 ? null : compact ? "compact" : width >= 680 ? "rail" : "sheet");
+
+  /** The question the reader is at: the last one whose top is above 45 % of the viewport. */
+  function measure() {
+    if (!scroller) return;
+    const line = scroller.getBoundingClientRect().top + scroller.clientHeight * 0.45;
+    let at = -1;
+    scroller.querySelectorAll<HTMLElement>("[data-question]").forEach((el, i) => {
+      if (el.getBoundingClientRect().top <= line) at = i;
+    });
+    currentQ = at;
+  }
+  $effect(() => {
+    void questionKey;
+    const el = scroller;
+    if (!el || !navVariant) return;
+    // Fires whenever a question crosses the 45 % line (scrolling either way), not on every scroll event.
+    const io = new IntersectionObserver(() => measure(), { root: el, rootMargin: "0px 0px -55% 0px", threshold: [0, 1] });
+    void tick().then(() => {
+      el.querySelectorAll("[data-question]").forEach((q) => io.observe(q));
+      measure();
+    });
+    return () => io.disconnect();
+  });
+  function jump(i: number) {
+    const q = questions[i];
+    const el = q && scroller?.querySelector<HTMLElement>(`[data-msg-id="${q.id}"]`);
+    if (!el || !scroller) return;
+    scroller.scrollTo({ top: Math.max(0, el.offsetTop - 16), behavior: prefersReducedMotion.current ? "auto" : "smooth" });
+    currentQ = i;
+    atBottom = false;
+  }
+  function latest() {
+    atBottom = true;
+    toBottom(true);
+  }
+  function onWindowKey(e: KeyboardEvent) {
+    if (!navVariant || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !root) return;
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown" && e.key !== "End") return;
+    const active = document.activeElement;
+    const inside = !!active && root.contains(active);
+    // The side panel reacts only when focus is in it; the page chat unless focus is in another chat.
+    if (compact && !inside) return;
+    if (!compact && !inside && active?.closest("[data-chat-root]")) return;
+    if (!root.getClientRects().length) return;
+    e.preventDefault();
+    if (e.key === "End") latest();
+    else if (e.key === "ArrowUp") jump(Math.max(0, currentQ - (currentQ >= 0 && isAboveTop(currentQ) ? 0 : 1)));
+    else jump(Math.min(questions.length - 1, currentQ + 1));
+  }
+  /** The current question starts above the viewport top (reading its answer): 上一題 first goes back to it. */
+  function isAboveTop(i: number) {
+    const el = scroller?.querySelector<HTMLElement>(`[data-msg-id="${questions[i]?.id}"]`);
+    return !!el && !!scroller && el.getBoundingClientRect().top < scroller.getBoundingClientRect().top - 8;
   }
   async function decide(call: ToolCall, decision: "approve" | "approve_conversation" | "deny", opts?: { reason?: string; editedArgs?: Record<string, unknown> }) {
     await session.decide(call, decision, opts);
@@ -278,14 +379,20 @@
   }
 </script>
 
-<div class="flex h-full min-h-0 flex-col">
+<svelte:window onkeydown={onWindowKey} />
+
+<div bind:this={root} bind:clientWidth={width} data-chat-root class="flex h-full min-h-0 flex-col">
+  {#if navVariant === "compact"}
+    <div class="flex justify-end px-3 pt-2"><QuestionNav {questions} current={currentQ} variant="compact" onJump={jump} onLatest={latest} /></div>
+  {/if}
   {#if autopilot}
     <div class="flex justify-center px-3 pt-2">
       <span class="pill inline-flex h-7 items-center gap-1.5 rounded-full bg-[var(--pill-butter)] px-3 text-[12px] font-semibold text-[var(--pill-butter-ink)]" title={t("agent.autopilotHint")}><Rocket class="size-3.5" />{t("agent.autopilotOn")}</span>
     </div>
   {/if}
 
-  <div bind:this={scroller} {onscroll} class="relative min-h-0 flex-1 overflow-y-auto overscroll-contain [scroll-behavior:auto]" role="log" aria-live="off" aria-label={t("agent.title")}>
+  <div class="relative flex min-h-0 flex-1">
+  <div bind:this={scroller} {onscroll} class="relative min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain [scroll-behavior:auto]" role="log" aria-live="off" aria-label={t("agent.title")}>
     <div class="mx-auto flex w-full max-w-[760px] flex-col gap-4 {compact ? 'px-3 py-4' : 'px-4 py-6 sm:px-6'}">
       {#if session.loading && !session.messages.length}
         <div class="flex flex-col gap-3" aria-busy="true">
@@ -302,6 +409,7 @@
         {#if entry.message}
           {@const m = entry.message}
           {@const askCall = m.answers ? callById.get(m.answers.toolCallId) : undefined}
+          <div data-msg-id={m.id} data-question={m.role === "user" && !m.answers && m.text.trim() ? "" : undefined} class="scroll-mt-4">
           <MessageItem
             message={m}
             canRemember={memoryAvailable && !interview}
@@ -314,6 +422,7 @@
             onRegenerate={m.id === regenerateId ? () => void regenerate() : undefined}
             onSwitch={m.versions ? (id) => void switchVersion(id) : undefined}
           />
+          </div>
         {/if}
         {#if entry.calls.length}
           <ToolTimeline calls={entry.calls} {compact} onDecide={decide} />
@@ -357,6 +466,12 @@
       {/if}
     </div>
   </div>
+  {#if navVariant === "rail"}
+    <QuestionNav {questions} current={currentQ} variant="rail" wide={width >= 960} onJump={jump} onLatest={latest} />
+  {:else if navVariant === "sheet"}
+    <div class="absolute right-3 bottom-3 z-10"><QuestionNav {questions} current={currentQ} variant="sheet" onJump={jump} onLatest={latest} /></div>
+  {/if}
+  </div>
 
   {#if unseen && !atBottom && !openCards}
     <div class="pointer-events-none relative z-10 -mt-12 flex justify-center pb-2">
@@ -384,6 +499,11 @@
         onAutopilot={(v) => void setAutopilot(v)}
         onMemory={(v) => void setMemory(v)}
         onClearContext={() => (dropContext = true)}
+        onMakeNote={interview ? undefined : makeNote}
+        makeNoteDisabled={!canMakeNote}
+        attach={interview ? undefined : attachBar}
+        tray={interview ? undefined : attachTray}
+        onAt={interview ? undefined : () => (attachOpen = true)}
       />
       {#snippet fallback()}
         <div class="flex items-start gap-3 rounded-[24px] border border-dashed border-line-2 bg-surface-2 p-4 text-[13px] text-ink-2" role="status">
@@ -394,6 +514,9 @@
     </AiGate>
   </div>
 </div>
+
+{#snippet attachBar()}<AttachButton draft={attachments} context={ctx} conversationId={session.id} {compact} bind:open={attachOpen} />{/snippet}
+{#snippet attachTray()}<AttachmentTray draft={attachments} />{/snippet}
 
 <ConfirmDialog
   bind:open={tailConfirm}

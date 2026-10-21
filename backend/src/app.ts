@@ -111,6 +111,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register((await import("./routes/latex.js")).default, { prefix: "/api" }); // LaTeX editor (M7; after notes: app.collab)
   await app.register((await import("./routes/vision-review.js")).default, { prefix: "/api" }); // AI 檢查排版 (slides + LaTeX; after latex: app.collab)
   await app.register((await import("./routes/agent.js")).default, { prefix: "/api" }); // agent + memories + MCP (M3)
+  await app.register((await import("./routes/agent-attachments.js")).default, { prefix: "/api" }); // assistant attachments (uploads + picker)
   await app.register((await import("./routes/doc-import.js")).default, { prefix: "/api" }); // document import (Magika) + Markdown images
 
   return app;

@@ -4,7 +4,7 @@
   import { i18n, t } from "#lib/i18n.svelte.ts";
   import { aiApi, ROLE_KEYS, STATE_KEYS, toErrorBody, type AiErrorBody, type Binding, type Capability, type TargetInput } from "#lib/ai/admin.ts";
   import { adminStore } from "#lib/ai/admin-store.svelte.ts";
-  import { providerTone, ROLE_CAP } from "#lib/ai/routing.ts";
+  import { ROLE_CAP } from "#lib/ai/routing.ts";
   import { aiStatus, type AiRole } from "#lib/ai/status.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
@@ -15,6 +15,7 @@
   import AiErrorPanel from "../AiErrorPanel.svelte";
   import StateDot from "../StateDot.svelte";
   import VisionBadge from "../../vision/VisionBadge.svelte";
+  import ProviderIcon from "../ProviderIcon.svelte";
   import TargetPicker from "./TargetPicker.svelte";
 
   /** 功能綁定: tick several functions and bind them all to one model or group, or change one at a time. */
@@ -145,7 +146,7 @@
                     <Boxes class="size-4 shrink-0 text-ink-3" aria-hidden="true" />
                     <span class="min-w-0 flex-1 truncate text-[13.5px] font-medium">{b.target.name}</span>
                   {:else if b.target}
-                    <span class="size-2.5 shrink-0 rounded-sm" style="background: var(--pill-{providerTone(pid)}-ink)" aria-hidden="true"></span>
+                    <ProviderIcon kind={adminStore.provider(pid)?.kind} size="xs" />
                     <span class="min-w-0 flex-1 truncate font-mono text-[12.5px]">{b.target.name}</span>
                   {:else}
                     <span class="min-w-0 flex-1 truncate text-[13px] text-ink-3">{t("aiAdmin.bindings.none")}</span>

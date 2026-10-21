@@ -213,6 +213,7 @@
                 <BrickFace
                   tone={child ? "stone" : providerTone(m?.provider_id)}
                   title={child ? child.name : (m?.model_id ?? "?")}
+                  vendor={!child && m ? { kind: m.provider_kind } : undefined}
                   subtitle={child ? `${t(sKey(child.strategy))} · ${t("aiAdmin.groups.memberCount", { n: child.members.length })}` : (m?.provider_name ?? "")}
                   mono={!child}
                   seq={seqLabel(i)}

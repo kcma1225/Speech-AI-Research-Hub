@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { ArrowUp, Brain, Rocket, Square, X } from "@lucide/svelte";
+  import type { Snippet } from "svelte";
+  import { ArrowUp, Brain, NotebookPen, Rocket, Square, X } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
 
@@ -21,6 +22,11 @@
     onAutopilot,
     onMemory,
     onClearContext,
+    onMakeNote,
+    makeNoteDisabled = false,
+    attach,
+    tray,
+    onAt,
     value = $bindable(""),
     ref = $bindable(null),
   }: {
@@ -39,6 +45,13 @@
     onAutopilot?: (v: boolean) => void;
     onMemory?: (v: boolean) => void;
     onClearContext?: () => void;
+    /** 「整理成筆記」 quick action (chat mode). */
+    onMakeNote?: () => void;
+    makeNoteDisabled?: boolean;
+    /** Attachments: toolbar button, chips above the input, and typing @ (at a word start) to open the picker. */
+    attach?: Snippet;
+    tray?: Snippet;
+    onAt?: () => void;
     value?: string;
     ref?: HTMLTextAreaElement | null;
   } = $props();
@@ -57,6 +70,15 @@
     const text = value.trim();
     if (!text || disabled || busy) return;
     void onSend(text);
+  }
+  function oninput(e: Event) {
+    const ev = e as InputEvent;
+    if (!onAt || ev.inputType !== "insertText" || ev.data !== "@" || !ref) return;
+    const at = ref.selectionStart ?? value.length;
+    const before = value.slice(0, at - 1);
+    if (before && !/\s$/.test(before)) return;
+    value = before + value.slice(at);
+    onAt();
   }
   function onkeydown(e: KeyboardEvent) {
     if (e.key === "Escape" && busy) {
@@ -81,6 +103,7 @@
       </span>
     </div>
   {/if}
+  {#if tray}{@render tray()}{/if}
   <label class="sr-only" for="agent-composer">{t("agent.composer")}</label>
   <textarea
     id="agent-composer"
@@ -88,12 +111,14 @@
     bind:value
     rows="1"
     {onkeydown}
+    {oninput}
     placeholder={placeholder ?? (busy ? t("agent.placeholderBusy") : t("agent.placeholder"))}
     disabled={disabled}
     aria-keyshortcuts="Enter Shift+Enter Escape"
     class="block max-h-[220px] min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed text-ink outline-none placeholder:text-ink-3 disabled:opacity-60 sm:text-[14.5px]"
   ></textarea>
-  <div class="flex items-center gap-1.5 px-2 pb-2">
+  <div class="flex items-center gap-1 px-2 pb-2 sm:gap-1.5">
+    {#if attach}{@render attach()}{/if}
     {#if autopilot !== null && onAutopilot}
       <button
         type="button"
@@ -120,6 +145,17 @@
         class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium transition-colors disabled:opacity-50 {memory.on ? 'bg-[var(--pill-lilac)] text-[var(--pill-lilac-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
       >
         <Brain class="size-4" /><span class="hidden sm:inline">{t("agent.memory")}</span>
+      </button>
+    {/if}
+    {#if onMakeNote}
+      <button
+        type="button"
+        disabled={makeNoteDisabled || busy}
+        title={t("agent.makeNote.hint")}
+        onclick={onMakeNote}
+        class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium whitespace-nowrap text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
+      >
+        <NotebookPen class="size-4" /><span>{t("agent.makeNote.label")}</span>
       </button>
     {/if}
     <span class="hidden flex-1 truncate text-right text-[11.5px] text-ink-3 lg:block" aria-hidden="true">{t("agent.keys")}</span>

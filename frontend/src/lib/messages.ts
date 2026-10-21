@@ -14,6 +14,7 @@ import * as meetings from "./i18n/meetings.ts";
 import * as latex from "./i18n/latex.ts";
 import * as vision from "./i18n/vision.ts";
 import * as editor from "./i18n/editor.ts";
+import * as attach from "./i18n/attach.ts";
 
 const zh = {
   ...core.zh,
@@ -30,6 +31,7 @@ const zh = {
   ...latex.zh,
   ...vision.zh,
   ...editor.zh,
+  ...attach.zh,
 };
 export type MessageKey = keyof typeof zh;
 
@@ -48,6 +50,7 @@ const en: Record<MessageKey, string> = {
   ...latex.en,
   ...vision.en,
   ...editor.en,
+  ...attach.en,
 };
 
 export const messages: Record<"zh-TW" | "en", Record<MessageKey, string>> = { "zh-TW": zh, en };

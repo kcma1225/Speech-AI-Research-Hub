@@ -480,7 +480,7 @@ describe.skipIf(!hasTestDb)("agent runtime", () => {
     const seeded = await state(conv);
     expect(seeded.toolCalls).toHaveLength(1);
     expect(seeded.toolCalls[0]).toMatchObject({ tool: "ask_user", status: "done" });
-    const plan = { maturity: "exploring", title: "中文語音情緒辨識", summary_format: "bullets", summary_md: "## 研究方向\n語音情緒辨識\n## 待釐清的問題\n資料：待探討", stages: [{ name: "題目發想" }, { name: "文獻探討" }], open_questions: ["要用哪個資料集？"], first_steps: [{ title: "整理 10 篇相關論文" }] };
+    const plan = { maturity: "exploring", title: "中文語音情緒辨識", summary_md: "## 研究方向\n語音情緒辨識\n## 待釐清的問題\n資料：待探討", stages: [{ name: "題目發想" }, { name: "文獻探討" }], open_questions: ["要用哪個資料集？"], first_steps: [{ title: "整理 10 篇相關論文" }] };
     script = [say("你對哪個方向有興趣？"), calls(["propose_study_plan", plan]), say("草案在右側。")];
     await send(conv, "開始");
     expect(requests[0]!.tools!.map((x) => x.name).sort()).toEqual(["ask_user", "list_lab_members", "propose_study_plan"]);

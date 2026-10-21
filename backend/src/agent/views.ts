@@ -93,6 +93,8 @@ export type MessageRow = {
   memories?: { id: string; content: string }[];
   /** Ids of every version of this user message (oldest first), when it has more than one. */
   versions?: string[];
+  /** Resolved attachments of a user message (`src/agent/attachments`). */
+  attachments?: unknown[] | null;
 };
 
 export const messageView = (m: MessageRow) => ({
@@ -110,6 +112,7 @@ export const messageView = (m: MessageRow) => ({
   // `ask_user` answers of this user turn (the card renders them; 「修改答案」 edits them as a new version).
   answers: m.answers ?? null,
   versions: m.versions && m.versions.length > 1 ? m.versions : null,
+  attachments: m.attachments ?? [],
   hidden: !!m.hidden_by,
   created_at: m.created_at,
 });

@@ -16,6 +16,8 @@ import { toolCatalogue } from "../agent/tools/registry.js";
 import { conversationView, messageView, runView, toolCallView, type ConversationRow, type MessageRow, type RunRow, type ToolCallRow } from "../agent/views.js";
 import memories from "./memories.js";
 import mcp from "./mcp.js";
+import { agentImagePrefix } from "../agent/images.js";
+import { attachmentsInput } from "../agent/attachments/index.js";
 
 const idParams = z.object({ id: z.uuid() });
 const uuidLike = z.string().regex(/^[0-9a-f-]{36}$/i);
@@ -35,9 +37,9 @@ export const pageContextSchema = z
 const createInput = z.object({ mode: z.enum(["chat", "interview"]).optional(), context: pageContextSchema, autopilot: z.boolean().optional(), title: z.string().trim().min(1).max(120).optional() });
 const patchInput = z.object({ title: z.string().trim().min(1).max(120).optional(), autopilot: z.boolean().optional(), memory_enabled: z.boolean().optional() });
 const messageInput = z
-  .object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema })
+  .object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema, intent: z.enum(["make_note"]).optional(), attachments: attachmentsInput.optional() })
   .refine((v) => !!v.answers || !!v.text, { message: "empty" });
-const editInput = z.object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema });
+const editInput = z.object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema, attachments: attachmentsInput.optional() });
 const messageParams = z.object({ id: z.uuid(), messageId: z.uuid() });
 const decisionInput = z.object({ decision: z.enum(["approve", "approve_conversation", "deny"]), reason: z.string().max(500).optional(), edited_args: z.record(z.string(), z.unknown()).optional() });
 const listQuery = z.object({ mode: z.enum(["chat", "interview"]).optional(), q: z.string().max(100).optional(), limit: z.coerce.number().int().min(1).max(200).optional() });
@@ -198,6 +200,8 @@ export default async function agent(app: FastifyInstance) {
     await ownConversation(app, user.id, id);
     await runtime.cancel(user, id).catch(() => undefined);
     await app.db.query("DELETE FROM conversations WHERE id=$1 AND user_id=$2", [id, user.id]);
+    // Page images shown to the model (view_paper_pages).
+    await app.storage.deletePrefix(agentImagePrefix(id)).catch((e) => request.log.warn({ err: e }, "agent image cleanup failed"));
     return { ok: true };
   });
 
@@ -210,7 +214,7 @@ export default async function agent(app: FastifyInstance) {
     await ownConversation(app, user.id, id);
     await requireAvailable();
     reply.code(202);
-    return runtime.postMessage(user, id, { text: input.text, answers: input.answers, context: input.context ?? null });
+    return runtime.postMessage(user, id, { text: input.text, answers: input.answers, context: input.context ?? null, ...(input.intent ? { intent: input.intent } : {}), ...(input.attachments ? { attachments: input.attachments } : {}) });
   });
 
   const requireAvailable = async () => {
@@ -225,7 +229,7 @@ export default async function agent(app: FastifyInstance) {
     await ownConversation(app, user.id, id);
     await requireAvailable();
     reply.code(202);
-    return runtime.editMessage(user, id, messageId, { text: input.text, answers: input.answers, ...(input.context !== undefined ? { context: input.context } : {}) });
+    return runtime.editMessage(user, id, messageId, { text: input.text, answers: input.answers, ...(input.context !== undefined ? { context: input.context } : {}), ...(input.attachments ? { attachments: input.attachments } : {}) });
   });
 
   /** 「重新產生」 the latest reply (resubmits the last user message as a new version). */

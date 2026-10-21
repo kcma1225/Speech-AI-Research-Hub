@@ -37,7 +37,6 @@ export const unescapeNewlines = (v: unknown) => (typeof v === "string" && !v.inc
 export const studyPlanInput = z.object({
   title: z.string().trim().min(1).max(200),
   maturity: z.enum(STUDY_MATURITIES).optional().describe("How far the student's thinking is (the answer to the first card)"),
-  summary_format: z.enum(["prose", "bullets"]).describe("prose = paragraphs, bullets = bullet list"),
   summary_md: z.preprocess(unescapeNewlines, z.string().trim().min(1).max(8000)).describe("Markdown with sections ## 研究方向 / ## 動機 / ## 目前的想法 / ## 待釐清的問題 (+ ## 方法 / ## 資料 / ## 評估 when well_defined); unknowns written as 待探討"),
   open_questions: z.array(z.string().trim().min(1).max(200)).max(10).optional().describe("Open questions to clarify later (may become 「與教授討論：…」 tasks)"),
   first_steps: z.array(z.object({ title: z.string().trim().min(1).max(200) })).max(3).optional().describe("Up to 3 optional, undated first steps"),

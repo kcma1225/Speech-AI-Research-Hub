@@ -7,7 +7,7 @@ import { setAgentSearchProvider, type AgentSearchHit } from "../../agent/tools/s
 import { search } from "./service.js";
 
 setAgentSearchProvider(async (ctx, q) => {
-  const r = await search(ctx.db, q.query, { types: q.types ?? ["note", "task", "study", "paper"], studyId: q.studyId ?? undefined, limit: q.limit, user: ctx.user });
+  const r = await search(ctx.db, q.query, { types: q.types ?? ["note", "task", "study", "paper", "meeting", "deck", "milestone"], studyId: q.studyId ?? undefined, limit: q.limit, user: ctx.user });
   // Interleave the per-type rankings (best of each type first), then cut to the limit.
   const hits: AgentSearchHit[] = [];
   const depth = Math.max(0, ...r.groups.map((g) => g.results.length));
@@ -15,7 +15,7 @@ setAgentSearchProvider(async (ctx, q) => {
     for (const g of r.groups) {
       const h = g.results[i];
       if (!h || hits.length >= q.limit) continue;
-      hits.push({ type: h.type, id: h.id, title: h.title, excerpt: h.snippet || undefined, study: h.study, url: h.url, authorId: h.author?.id ?? null, score: h.score });
+      hits.push({ type: h.type, id: h.id, title: h.title, excerpt: h.snippet || undefined, study: h.study, url: h.url, authorId: h.author?.id ?? null, authorName: h.author?.name ?? null, at: h.at ?? null, score: h.score });
     }
   }
   return { hits, mode: r.search_mode === "semantic" ? "hybrid" : "keyword" };

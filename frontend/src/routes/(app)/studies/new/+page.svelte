@@ -10,7 +10,6 @@
   import Button from "#lib/components/ui/Button.svelte";
   import Card from "#lib/components/ui/Card.svelte";
   import PageHeader from "#lib/components/ui/PageHeader.svelte";
-  import Segmented from "#lib/components/ui/Segmented.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
@@ -24,7 +23,6 @@
   let title = $state("");
   let slug = $state("");
   let summary = $state("");
-  let format = $state<"prose" | "bullets">("prose");
   let maturity = $state("");
   // 「從檔案匯入」: prefill the summary (and the title when it is still empty) from a document.
   let importOpen = $state(false);
@@ -76,7 +74,6 @@
         title: title.trim(),
         ...(slug ? { slug } : {}),
         summary_md: summary,
-        summary_format: format,
         ...(maturity ? { maturity } : {}),
         members: [...members.map(userId => ({ userId, role: "member" })), ...advisors.map(userId => ({ userId, role: "advisor" }))],
       });
@@ -111,13 +108,10 @@
       <div class="flex flex-col gap-2">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <span class="text-[13px] font-medium text-ink-2">{t("studies.field.summary")}</span>
-          <div class="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant="ghost" onclick={() => (importOpen = true)}><FileInput />{t("docimport.title")}</Button>
-            <Segmented bind:value={format} label={t("studies.field.format")} options={[{ value: "prose", label: t("studies.format.prose") }, { value: "bullets", label: t("studies.format.bullets") }]} />
-          </div>
+          <Button size="sm" variant="ghost" onclick={() => (importOpen = true)}><FileInput />{t("docimport.title")}</Button>
         </div>
         <MarkdownEditor bind:value={summary} bind:layout fontSize={session.user?.preferences.editor.fontSize ?? 15} label={t("studies.field.summary")} onImport={() => (importOpen = true)} />
-        <DocImportSheet bind:open={importOpen} target={{ kind: "draft", purpose: "study_summary" }} style={format} onMarkdown={imported} />
+        <DocImportSheet bind:open={importOpen} target={{ kind: "draft", purpose: "study_summary" }} onMarkdown={imported} />
         <p class="text-[12.5px] text-ink-3">{t("studies.field.summaryHint")}</p>
       </div>
 
@@ -176,7 +170,6 @@
       onFill={plan => {
         title = plan.title;
         summary = plan.summary_md;
-        format = plan.summary_format;
         maturity = plan.maturity ?? "";
         // On phones the form is below the interview now: bring it into view.
         document.getElementById("study-form")?.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });

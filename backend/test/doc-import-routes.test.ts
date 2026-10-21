@@ -98,7 +98,7 @@ describe.skipIf(!hasTestDb || !hasTestS3)("doc import routes", () => {
   });
 
   it("AI condense reports 「維護中」 (503) while the writing role has no route", async () => {
-    const r = await upload(alice, `/api/studies/${study.id}/summary/import`, { mode: "condense", style: "bullets" }, { filename: "sample.txt", data: fixture("sample.txt") });
+    const r = await upload(alice, `/api/studies/${study.id}/summary/import`, { mode: "condense", style: "bullets" /* legacy field, ignored */ }, { filename: "sample.txt", data: fixture("sample.txt") });
     expect(r.statusCode).toBe(503);
     expect(r.json().code).toBe("llm_unavailable");
   });

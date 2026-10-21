@@ -18,6 +18,8 @@ import {
 } from "../lib/library/store.js";
 import { paperDetail, paperPermissions } from "../lib/library/detail.js";
 import { fetchOpenAccessPdf, storePaperPdf } from "../lib/library/files.js";
+import { autoFetchPdf, type AutoPdfOutcome } from "../lib/library/auto-pdf.js";
+import { fulltextKey } from "../lib/library/fulltext.js";
 import { libraryService, librarySettingsView, saveLibrarySettings } from "../lib/library/settings.js";
 import { NotEnoughText, summarizePaper } from "../lib/library/ai.js";
 import { createImportPreview } from "../lib/library/imports.js";
@@ -282,8 +284,19 @@ export default async function papers(app: FastifyInstance) {
         duplicates: result.duplicate!.map((m) => ({ level: m.level, reason: m.reason, paper: summarize(m.paper) })),
       });
     }
+    // Added by identifier: open-access full text right away (≤ 15 s; otherwise queued as an `ai_library_import` job).
+    let pdf: AutoPdfOutcome | null = null;
+    let paper = result.paper;
+    if (input.identifier && !input.record && !paper.pdf_key) {
+      pdf = await autoFetchPdf(app.db, app.storage, paper, user.id, { budgetMs: 15_000 }).catch((e): AutoPdfOutcome => {
+        request.log.warn({ err: e, paperId: paper.id }, "auto pdf fetch failed");
+        return { status: "failed" };
+      });
+      if (pdf.status === "stored") paper = (await getPaper(app.db, paper.id)) ?? paper;
+    }
     return reply.code(result.created ? 201 : 200).send({
-      paper: await paperDetail(app.db, result.paper, user),
+      paper: await paperDetail(app.db, paper, user),
+      pdf: pdf ? { status: pdf.status, source: pdf.source ?? null, jobId: pdf.jobId ?? null } : { status: paper.pdf_key ? "exists" : "none", source: null, jobId: null },
       created: result.created,
       study: studyAccess ? { id: studyAccess.study.id, cite_key: result.citeKey, added: result.addedToStudy } : null,
     });
@@ -365,6 +378,7 @@ export default async function papers(app: FastifyInstance) {
       [id],
     );
     await app.storage.delete(file.key).catch(() => {});
+    await app.storage.delete(fulltextKey(file.key)).catch(() => {});
     return { paper: await paperDetail(app.db, (await getPaper(app.db, id))!, user) };
   });
 

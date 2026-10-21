@@ -98,7 +98,7 @@
   {/if}
 </Card>
 
-<Sheet bind:open={createOpen} title={t("agent.mcp.create")} side="center">
+<Sheet bind:open={createOpen} dirty={secret ? false : undefined} title={t("agent.mcp.create")} side="center">
   {#if secret}
     <div class="flex flex-col gap-3">
       <p class="text-[13px] text-ink-2">{t("agent.mcp.created")}</p>

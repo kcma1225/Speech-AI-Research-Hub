@@ -8,7 +8,6 @@
   import Button from "#lib/components/ui/Button.svelte";
   import CheckCircle from "#lib/components/ui/CheckCircle.svelte";
   import DatePicker from "#lib/components/ui/DatePicker.svelte";
-  import Segmented from "#lib/components/ui/Segmented.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
@@ -87,7 +86,6 @@
       const detail = await api.post<{ study: { slug: string }; stages: { id: string; name: string; position: number; is_current: boolean }[] }>("/studies", {
         title: plan.title.trim(),
         summary_md: plan.summary_md,
-        summary_format: plan.summary_format,
         ...(plan.maturity ? { maturity: plan.maturity } : {}),
         members: members(),
       });
@@ -166,7 +164,6 @@
         />
       </div>
       <div class="flex flex-col gap-2">
-        <Segmented bind:value={plan.summary_format} label={t("studies.field.format")} options={[{ value: "prose", label: t("studies.format.prose") }, { value: "bullets", label: t("studies.format.bullets") }]} />
         <Textarea label={t("agent.interview.summary")} bind:value={plan.summary_md} rows={8} />
       </div>
       {#if plan.advisors?.length}<p class="text-[12.5px] text-ink-3">{t("agent.interview.advisors", { names: plan.advisors.join("、") })}</p>{/if}

@@ -18,7 +18,6 @@ export type Study = {
   slug: string;
   title: string;
   summary_md: string;
-  summary_format: "prose" | "bullets";
   /** 研究成熟度 (AI interview; NULL = not set). */
   maturity: StudyMaturity | null;
   status: StudyStatus;
@@ -51,7 +50,7 @@ export type StudyAccess = {
 };
 
 export const STUDY_MISSING = "研究不存在。";
-export const STUDY_COLUMNS = "s.id,s.slug,s.title,s.summary_md,s.summary_format,s.maturity,s.status,s.current_stage_id,s.created_by,s.updated_by,s.created_at,s.updated_at,s.activity_at,s.archived_at";
+export const STUDY_COLUMNS = "s.id,s.slug,s.title,s.summary_md,s.maturity,s.status,s.current_stage_id,s.created_by,s.updated_by,s.created_at,s.updated_at,s.activity_at,s.archived_at";
 
 const isUuid = (value: string) => z.uuid().safeParse(value).success;
 

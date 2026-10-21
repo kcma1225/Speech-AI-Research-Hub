@@ -56,7 +56,7 @@
   const size = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 </script>
 
-<Sheet bind:open side="right" title={t("latex.files.title")} description={t("latex.files.hint")}>
+<Sheet bind:open side="right" guard={false} title={t("latex.files.title")} description={t("latex.files.hint")}>
   {#if canEdit}
     <div class="mb-3 flex flex-wrap gap-2">
       <Button variant="secondary" size="sm" onclick={() => input?.click()} loading={uploading}><Upload />{t("latex.files.upload")}</Button>

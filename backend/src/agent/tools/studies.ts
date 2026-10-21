@@ -31,15 +31,17 @@ registerAgentTool({
   title: "列出研究",
   titleEn: "List studies",
   risk: "read",
-  description: "List studies in the lab (everyone can read every study). Use member='me' for the user's own studies. Returns id, slug, title, status, current stage, next milestone, open task count and the user's role.",
+  description:
+    "List studies in the lab (everyone can read every study). Use member='me' for the user's own studies, or a user id (from list_lab_members) for one person's studies (e.g. a professor asking about a student). Returns id, slug, title, status, current stage, next milestone, open task count and the user's role.",
   input: z.object({
-    member: z.enum(["me", "all"]).optional().describe("'me' = only studies the user belongs to (default all)"),
+    member: z.string().trim().max(64).optional().describe("'me', 'all' (default) or a user id (uuid): only studies that person belongs to"),
     q: z.string().max(100).optional().describe("Title or summary substring"),
     include_archived: z.boolean().optional(),
   }),
-  summarize: (a) => (a.member === "me" ? "列出我的研究" : a.q ? `搜尋研究「${a.q}」` : "列出實驗室的研究"),
+  summarize: (a) => (a.member === "me" ? "列出我的研究" : a.member && a.member !== "all" ? "列出成員的研究" : a.q ? `搜尋研究「${a.q}」` : "列出實驗室的研究"),
   async execute(a, ctx) {
-    const cards = await studyCards(ctx.db, ctx.user.id, { memberId: a.member === "me" ? ctx.user.id : null, q: a.q ?? null, status: a.include_archived ? "all" : null, limit: 50 });
+    const member = !a.member || a.member === "all" ? null : a.member === "me" ? ctx.user.id : isUuid(a.member) ? a.member : (() => { throw badRequest("member 請用 me、all 或成員的帳號 id（可用 list_lab_members 查詢）。"); })();
+    const cards = await studyCards(ctx.db, ctx.user.id, { memberId: member, q: a.q ?? null, status: a.include_archived ? "all" : null, limit: 50 });
     const studies = cards.slice(0, 50).map((c) => ({
       id: c.id, slug: c.slug, title: c.title, status: c.status, status_label: STUDY_STATUS_ZH[c.status] ?? c.status, my_role: c.my_role,
       my_role_label: c.my_role ? ROLE_ZH[c.my_role] ?? c.my_role : null, current_stage: c.current_stage?.name ?? null,
@@ -66,7 +68,7 @@ registerAgentTool({
     const s = access.study;
     return {
       data: {
-        study: { id: s.id, slug: s.slug, title: s.title, status: s.status, status_label: STUDY_STATUS_ZH[s.status] ?? s.status, summary_format: s.summary_format, maturity: s.maturity, maturity_label: s.maturity ? STUDY_MATURITY_ZH[s.maturity] : null, summary_md: clip(scrub(s.summary_md), 8000), url: studyUrl(s.slug) },
+        study: { id: s.id, slug: s.slug, title: s.title, status: s.status, status_label: STUDY_STATUS_ZH[s.status] ?? s.status, maturity: s.maturity, maturity_label: s.maturity ? STUDY_MATURITY_ZH[s.maturity] : null, summary_md: clip(scrub(s.summary_md), 8000), url: studyUrl(s.slug) },
         stages: stages.map((g) => ({ id: g.id, name: g.name, current: g.is_current, done: !!g.completed_at, description: g.description || undefined })),
         milestones: milestones.map((m) => ({ id: m.id, title: m.title, due_on: m.due_on, done: !!m.done_at, stage_id: m.stage_id })),
         members: members.map((m) => ({ id: m.id, name: m.name, role: m.role, role_label: ROLE_ZH[m.role] ?? m.role })),
@@ -83,7 +85,8 @@ registerAgentTool({
   title: "查看研究進度",
   titleEn: "Study progress",
   risk: "read",
-  description: "Summarised progress of a study: current stage, stage list, open and done milestones, open tasks (≤20), recently done tasks, recent notes (titles + short excerpts) and recent meetings.",
+  description:
+    "Summarised progress of a study: current stage, stage list, open and done milestones, open tasks (≤20), recently done tasks, recent notes (titles + excerpts; read the full text with get_note before quoting numbers), recent meetings with the advisor's feedback, and the latest deck review comments.",
   input: z.object({ study: studyRef }),
   summarize: (a) => `查看研究 ${a.study} 的進度`,
   async execute(a, ctx) {
@@ -100,14 +103,33 @@ registerAgentTool({
         [id],
       ),
     ]);
-    let meetings: { id: string; title: string; held_at: string | null; status: string }[] = [];
+    let meetings: { id: string; title: string; held_at: string | null; status: string; feedback?: string; draft_status?: string }[] = [];
     try {
-      meetings = (await ctx.db.query(
-        `SELECT m.id,m.title,m.held_at,m.status FROM meetings m JOIN meeting_studies ms ON ms.meeting_id=m.id WHERE ms.study_id=$1 ORDER BY m.held_at DESC NULLS LAST LIMIT 5`,
+      const rows = (await ctx.db.query<{ id: string; title: string; held_at: string | null; status: string; feedback_md: string | null; draft_status: string | null; direct: string | null }>(
+        `SELECT m.id,m.title,to_char(m.held_at AT TIME ZONE 'Asia/Taipei','YYYY-MM-DD HH24:MI') AS held_at,m.status,d.feedback_md,d.status AS draft_status,
+                (SELECT string_agg(f.body_md, E'\n') FROM meeting_feedback f WHERE f.meeting_id=m.id) AS direct
+           FROM meetings m JOIN meeting_studies ms ON ms.meeting_id=m.id
+           LEFT JOIN meeting_study_drafts d ON d.meeting_id=m.id AND d.study_id=ms.study_id AND d.status<>'dismissed'
+          WHERE ms.study_id=$1 ORDER BY m.held_at DESC NULLS LAST LIMIT 5`,
         [id],
       )).rows;
+      meetings = rows.map((m) => ({
+        id: m.id, title: m.title, held_at: m.held_at, status: m.status,
+        ...(m.feedback_md?.trim() || m.direct?.trim() ? { feedback: clip(scrub([m.direct, m.feedback_md].filter((x) => x?.trim()).join("\n")), 500) } : {}),
+        ...(m.draft_status ? { draft_status: m.draft_status === "confirmed" ? "已確認" : "待確認" } : {}),
+      }));
     } catch {
       meetings = []; // meetings module not installed (or its schema differs)
+    }
+    let reviews: { deck: string; page: number | null; author: string; body: string; at: string }[] = [];
+    try {
+      reviews = (await ctx.db.query<{ deck: string; page: number | null; author: string; body: string; at: string }>(
+        `SELECT d.title AS deck,r.page,u.name AS author,r.body,to_char(r.created_at AT TIME ZONE 'Asia/Taipei','YYYY-MM-DD') AS at
+           FROM slide_reviews r JOIN decks d ON d.id=r.deck_id JOIN users u ON u.id=r.author_id WHERE d.study_id=$1 ORDER BY r.created_at DESC LIMIT 5`,
+        [id],
+      )).rows.map((r) => ({ ...r, body: clip(scrub(r.body), 300) }));
+    } catch {
+      reviews = []; // slides module not installed
     }
     const current = stages.find((g) => g.is_current);
     return {
@@ -115,14 +137,16 @@ registerAgentTool({
         study: { id, slug: access.study.slug, title: access.study.title, status: access.study.status },
         current_stage: current?.name ?? null,
         stages: stages.map((g) => `${g.position + 1}. ${g.name}${g.is_current ? "（目前）" : g.completed_at ? "（完成）" : ""}`),
-        milestones_open: milestones.filter((m) => !m.done_at).map((m) => ({ title: m.title, due_on: m.due_on })),
+        milestones_open: milestones.filter((m) => !m.done_at).map((m) => ({ id: m.id, title: m.title, due_on: m.due_on })),
         milestones_done: milestones.filter((m) => m.done_at).length,
         open_tasks: open.rows.map(compactTask),
         recently_done_tasks: done.rows.map((t) => t.title),
-        recent_notes: notes.rows.map((n) => ({ id: n.id, title: n.title, date: n.event_date, author: n.author, excerpt: clip(scrub(markdownExcerpt(n.content_md, 160)), 160) })),
+        recent_notes: notes.rows.map((n) => ({ id: n.id, title: n.title, date: n.event_date, author: n.author, excerpt: clip(scrub(markdownExcerpt(n.content_md, 400)), 400) })),
         recent_meetings: meetings,
+        recent_deck_reviews: reviews,
       },
-      untrusted: await sharedAuthorship(ctx, access),
+      // Meeting feedback and review comments are other people's words.
+      untrusted: meetings.some((m) => m.feedback) || reviews.length > 0 || (await sharedAuthorship(ctx, access)),
       source: `研究〈${access.study.title}〉`,
     };
   },

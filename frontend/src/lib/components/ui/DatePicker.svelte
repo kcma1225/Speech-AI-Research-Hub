@@ -4,6 +4,7 @@
   import { CalendarDays, ChevronLeft, ChevronRight } from "@lucide/svelte";
   import { formatDate, i18n, t } from "#lib/i18n.svelte.ts";
   import { todayTaipei } from "#lib/dates.ts";
+  import { markFormDirty } from "./close-guard.svelte.ts";
 
   /** Custom date picker; `value` is `YYYY-MM-DD`. With `clearable`, `""` means no date (shown as `placeholder`). */
   let { value = $bindable(), label, onValueChange, clearable = false, placeholder, class: cls = "" }: {
@@ -15,6 +16,7 @@
     class?: string;
   } = $props();
   let open = $state(false);
+  const markDirty = markFormDirty();
 
   const parsed = $derived.by(() => {
     try {
@@ -27,6 +29,7 @@
   function pick(next: DateValue | undefined) {
     if (!next) return;
     value = next.toString();
+    markDirty();
     onValueChange?.(value);
     open = false;
   }
@@ -79,7 +82,7 @@
           {/each}
           <div class="mt-2 flex justify-end gap-1 border-t border-line pt-2">
             {#if clearable && value}
-              <button type="button" class="h-8 rounded-full px-3 text-[13px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink" onclick={() => ((value = ""), onValueChange?.(""), (open = false))}>{t("date.clear")}</button>
+              <button type="button" class="h-8 rounded-full px-3 text-[13px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink" onclick={() => ((value = ""), markDirty(), onValueChange?.(""), (open = false))}>{t("date.clear")}</button>
             {/if}
             <button type="button" class="h-8 rounded-full px-3 text-[13px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink" onclick={() => pick(parseDate(todayTaipei()))}>{t("date.today")}</button>
           </div>

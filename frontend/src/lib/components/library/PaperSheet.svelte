@@ -11,12 +11,13 @@
     onChanged?: () => void;
     tagSuggestions?: string[];
   } = $props();
+  let unsaved = $state(false);
 </script>
 
-<Sheet bind:open title={t("library.detail.title")} side="right">
+<Sheet bind:open dirty={unsaved} title={t("library.detail.title")} side="right">
   {#snippet children()}
     {#if paperId}
-      <div class="pt-1"><PaperDetailBody {paperId} {study} {onChanged} {tagSuggestions} onGone={() => (open = false)} /></div>
+      <div class="pt-1"><PaperDetailBody bind:unsaved {paperId} {study} {onChanged} {tagSuggestions} onGone={() => (open = false)} /></div>
     {/if}
   {/snippet}
 </Sheet>

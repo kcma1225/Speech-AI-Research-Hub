@@ -162,7 +162,7 @@
   });
 </script>
 
-<Sheet bind:open title={t("voice.title")} description={t("voice.hint")} side="center">
+<Sheet bind:open dirty={false} busy={phase === "recording" || phase === "paused" || phase === "uploading"} title={t("voice.title")} description={t("voice.hint")} side="center">
   <div class="flex flex-col items-center gap-5 pt-2 pb-1">
     <div class="flex h-16 w-full max-w-sm items-center justify-center gap-[3px]" aria-hidden="true">
       {#each levels as level, i (i)}

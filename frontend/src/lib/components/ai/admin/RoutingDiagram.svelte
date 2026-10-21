@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { DropdownMenu } from "bits-ui";
-  import { ArrowDown, Boxes, Ellipsis, Eye, FolderInput, Link2, Maximize, Search, Unlink, ZoomIn, ZoomOut } from "@lucide/svelte";
+  import { ArrowDown, Boxes, ChevronsDownUp, ChevronsUpDown, Ellipsis, Eye, FolderInput, Link2, Maximize, Search, Unlink, ZoomIn, ZoomOut } from "@lucide/svelte";
   import { i18n, relativeTime, t } from "#lib/i18n.svelte.ts";
   import { ROLE_KEYS, STATE_KEYS, toErrorBody, type Group, type ModelProfile, type Provider, type TargetInput } from "#lib/ai/admin.ts";
   import { adminStore } from "#lib/ai/admin-store.svelte.ts";
@@ -14,6 +14,8 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import StateDot from "../StateDot.svelte";
   import ProfileBadges from "./ProfileBadges.svelte";
+  import ProviderIcon from "../ProviderIcon.svelte";
+  import ProviderSections, { type ProviderSection } from "./ProviderSections.svelte";
   import TargetPicker from "./TargetPicker.svelte";
   import BrickFace from "./diagram/BrickFace.svelte";
   import GroupStack, { type StackActions } from "./diagram/GroupStack.svelte";
@@ -284,10 +286,20 @@
   let pickerRole = $state<AiRole | null>(null);
   const openPicker = (r: AiRole) => ((pickerRole = r), (pickerOpen = true));
   let paletteQuery = $state("");
-  let paletteAll = $state(false);
+  let paletteSections = $state<{ setAll: (open: boolean) => void } | null>(null);
+  let paletteAllOpen = $state(false);
   const palette = $derived.by(() => {
     const q = paletteQuery.trim().toLowerCase();
     return (adminStore.models ?? []).filter(m => m.enabled && (!q || m.model_id.toLowerCase().includes(q))).sort((a, b) => b.used_by.length - a.used_by.length || a.model_id.localeCompare(b.model_id));
+  });
+  // Palette grouped by account (accounts in use first), each a collapsible section.
+  const paletteSectionsData = $derived.by(() => {
+    const out: ProviderSection<ModelProfile>[] = [];
+    for (const p of providerList) {
+      const items = palette.filter(m => m.provider_id === p.id);
+      if (items.length) out.push({ id: p.id, name: p.name, kind: p.kind, vendor: L(p.label), health: providerHealth(p), items });
+    }
+    return out;
   });
   const groupsFor = (cap: string) => (adminStore.groups ?? []).filter(g => g.capability === cap);
   const rolesFor = (cap: string) => ROLE_ORDER.filter(r => ROLE_CAP[r] === cap);
@@ -392,7 +404,7 @@
         onpointerdown={mobile ? undefined : e => dnd.press(e, { kind: "model", modelId: m.id, label: m.model_id, capability: m.fields.capability })}
         class={mobile ? "" : "cursor-grab active:cursor-grabbing"}
       >
-        <BrickFace tone={providerTone(m.provider_id)} title={m.model_id} subtitle={live(m)} health={modelHealth(m, adminStore.providers, adminStore.bindings)} lifted={dnd.item?.kind === "model" && dnd.item.modelId === m.id}>
+        <BrickFace tone={providerTone(m.provider_id)} vendor={{ kind: m.provider_kind }} title={m.model_id} subtitle={live(m)} health={modelHealth(m, adminStore.providers, adminStore.bindings)} lifted={dnd.item?.kind === "model" && dnd.item.modelId === m.id}>
           {#snippet badges()}<ProfileBadges model={m} />{/snippet}
           {#snippet trailing()}{@render modelMenu(m, roles.length === 1 ? roles[0] : undefined)}{/snippet}
         </BrickFace>
@@ -404,8 +416,8 @@
 {#snippet providerBlock(p: Provider, mobile: boolean)}
   {@const h = providerHealth(p)}
   {@const used = usedProviders.includes(p.id)}
-  <div data-provider-id={mobile ? undefined : p.id} data-pan-stop class="flex min-h-[52px] items-center gap-2.5 rounded-[14px] border border-line bg-surface px-3 py-2 shadow-card {used ? '' : 'opacity-55'}">
-    <span class="grid size-8 shrink-0 place-items-center rounded-[10px] text-[13px] font-bold" style="background: var(--pill-{providerTone(p.id)}); color: var(--pill-{providerTone(p.id)}-ink)">{(L(p.label) || p.kind).slice(0, 1)}</span>
+  <div data-provider-id={mobile ? undefined : p.id} data-pan-stop class="flex min-h-[52px] items-center gap-2.5 rounded-[14px] border border-l-[3px] border-line bg-surface px-3 py-2 shadow-card {used ? '' : 'opacity-55'}" style="border-left-color: var(--pill-{providerTone(p.id)}-ink)">
+    <ProviderIcon kind={p.kind} label={L(p.label)} size="sm" />
     <div class="min-w-0 flex-1">
       <p class="truncate text-[13px] font-semibold">{p.name}</p>
       <p class="truncate text-[11.5px] text-ink-3">{p.last_probe ? `${ms(p.last_probe.latencyMs)} · ` : ""}{L(p.label) || p.kind}</p>
@@ -490,23 +502,24 @@
       <div class="mb-3 flex flex-wrap items-center gap-3">
         <h3 class="text-[14.5px] font-semibold">{t("aiAdmin.diagram.palette")}</h3>
         <p class="text-[12.5px] text-ink-3">{t("aiAdmin.diagram.paletteHint")}</p>
-        <label class="ml-auto flex h-9 w-60 items-center gap-2 rounded-xl border border-line-2 px-2.5 focus-within:border-ink">
+        {#if paletteSectionsData.length > 1}
+          <Button size="sm" variant="ghost" class="ml-auto" onclick={() => paletteSections?.setAll(!paletteAllOpen)}>{#if paletteAllOpen}<ChevronsDownUp />{t("aiAdmin.picker.collapseAll")}{:else}<ChevronsUpDown />{t("aiAdmin.picker.expandAll")}{/if}</Button>
+        {/if}
+        <label class="{paletteSectionsData.length > 1 ? '' : 'ml-auto'} flex h-9 w-60 items-center gap-2 rounded-xl border border-line-2 px-2.5 focus-within:border-ink">
           <Search class="size-4 text-ink-3" aria-hidden="true" />
           <input bind:value={paletteQuery} class="min-w-0 flex-1 bg-transparent text-[13px] outline-none" placeholder={t("aiAdmin.picker.search")} aria-label={t("aiAdmin.diagram.paletteSearch")} />
         </label>
       </div>
-      <ul class="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-x-2.5 gap-y-1.5">
-        {#each palette.slice(0, paletteAll || paletteQuery.trim() ? 60 : 12) as m (m.id)}
+      <ProviderSections bind:this={paletteSections} bind:allOpen={paletteAllOpen} sections={paletteSectionsData} storageKey="palette" query={paletteQuery} layout="grid">
+        {#snippet item(m: ModelProfile)}
           <li onpointerdown={e => dnd.press(e, { kind: "model", modelId: m.id, label: m.model_id, capability: m.fields.capability })} class="cursor-grab active:cursor-grabbing">
-            <BrickFace tone={providerTone(m.provider_id)} title={m.model_id} subtitle={m.provider_name ?? ""} compact health={modelHealth(m, adminStore.providers, adminStore.bindings)}>
+            <BrickFace tone={providerTone(m.provider_id)} title={m.model_id} subtitle={t(`aiAdmin.cap.${m.fields.capability}`)} compact health={modelHealth(m, adminStore.providers, adminStore.bindings)}>
               {#snippet trailing()}{@render modelMenu(m)}{/snippet}
             </BrickFace>
           </li>
-        {/each}
-      </ul>
-      {#if palette.length > 12 && !paletteQuery.trim()}
-        <div class="mt-3 text-center"><Button size="sm" variant="ghost" onclick={() => (paletteAll = !paletteAll)}>{paletteAll ? t("aiAdmin.diagram.paletteLess") : t("aiAdmin.diagram.paletteMore", { n: Math.min(60, palette.length) - 12 })}</Button></div>
-      {/if}
+        {/snippet}
+      </ProviderSections>
+      {#if !paletteSectionsData.length}<p class="py-6 text-center text-[13px] text-ink-3">{t("aiAdmin.sheet.noMatch")}</p>{/if}
     </div>
 
     <!-- Phones: one vertical stack per target -->

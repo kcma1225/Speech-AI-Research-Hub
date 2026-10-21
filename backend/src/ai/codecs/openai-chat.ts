@@ -4,7 +4,7 @@
  */
 import { AiError, type AiErrorCode } from "../errors.js";
 import { guardStream, joinUrl, modelsDetail, parseJsonLoose, send, sendJson, serverRoot, sseEvents, timedProbe, type Call } from "../providers/http.js";
-import type { ChatEvent, ChatMessage, ChatRequest, EmbedRequest, ModelInfo, StopReason, Usage } from "../types.js";
+import type { ChatEvent, ChatMessage, ChatRequest, ContentBlock, EmbedRequest, ModelInfo, StopReason, Usage } from "../types.js";
 import type { Codec, CodecContext } from "./codec.js";
 import {
   applyEmbedTemplate,
@@ -22,6 +22,7 @@ import {
   num,
   stateFor,
   textOf,
+  toolResultImages,
   toolResultText,
   ToolCalls,
 } from "./shared.js";
@@ -34,6 +35,16 @@ export interface OpenAiChatState {
 
 // ---------------------------------------------------------------- request
 
+/**
+ * Chat Completions tool messages carry text only: images of tool results (page renders) follow the tool messages as
+ * one user message, so they are not dropped silently.
+ */
+function pushToolImages(out: Record<string, unknown>[], results: ContentBlock[]) {
+  const images = results.flatMap((b) => (b.type === "tool_result" ? toolResultImages(b) : []));
+  if (!images.length) return;
+  out.push({ role: "user", content: [{ type: "text", text: "(Images returned by the tool call above.)" }, ...images.map((img) => ({ type: "image_url", image_url: { url: imageDataUrl(img) } }))] });
+}
+
 export function toOpenAiMessages(messages: ChatMessage[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const m of messages) {
@@ -41,10 +52,12 @@ export function toOpenAiMessages(messages: ChatMessage[]): Record<string, unknow
       out.push({ role: "system", content: textOf(m.content) });
     } else if (m.role === "tool") {
       for (const b of m.content) out.push({ role: "tool", tool_call_id: b.tool_use_id, content: toolResultText(b) || (b.is_error ? "error" : "") });
+      pushToolImages(out, m.content);
     } else if (m.role === "user") {
       const blocks = blocksOf(m.content);
       const results = blocks.filter((b) => b.type === "tool_result");
       for (const b of results) out.push({ role: "tool", tool_call_id: b.tool_use_id, content: toolResultText(b) || (b.is_error ? "error" : "") });
+      pushToolImages(out, results);
       const rest = blocks.filter((b) => b.type !== "tool_result");
       if (!rest.length) continue;
       if (rest.every((b) => b.type === "text")) {

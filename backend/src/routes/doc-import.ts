@@ -19,7 +19,8 @@ import mdImages from "./md-images.js";
 const fields = z.object({
   mode: z.enum(["markdown", "condense"]).default("markdown"),
   purpose: z.enum(["study_summary", "note"]).default("study_summary"),
-  style: z.enum(["prose", "bullets"]).optional(),
+  /** Ignored (old clients); the model picks the structure. */
+  style: z.string().max(20).optional(),
   placement: z.enum(["append", "replace"]).default("append"),
   study_id: z.uuid().optional(),
 });
@@ -56,16 +57,14 @@ const unfence = (text: string) => {
   return (m ? m[1]! : t).trim();
 };
 
-function condensePrompt(purpose: Fields["purpose"], style: "prose" | "bullets", doc: ImportedDocument, markdown: string, context: { title?: string; current?: string }): ChatMessage[] {
+function condensePrompt(purpose: Fields["purpose"], doc: ImportedDocument, markdown: string, context: { title?: string; current?: string }): ChatMessage[] {
   const clipped = markdown.length > AI_INPUT_CHARS;
   const body = clipped ? markdown.slice(0, AI_INPUT_CHARS) : markdown;
   const system =
     purpose === "study_summary"
       ? [
           "你是研究所實驗室的研究助理。把使用者提供的文件整理成「研究簡述」，用繁體中文（台灣用語）與 Markdown 輸出。",
-          style === "bullets"
-            ? "格式：條列。用 `## 研究問題`、`## 方法`、`## 資料與實驗`、`## 預期成果與進度` 等小標分組（文件沒有的部分就省略），每組 2–5 條精簡重點。"
-            : "格式：段落。3–6 段連貫的文字，依序涵蓋研究動機與問題、方法、資料與實驗、預期成果或目前進度（文件沒有的部分就省略）。",
+          "結構：用 `## 研究問題`、`## 方法`、`## 資料與實驗`、`## 預期成果與進度` 等小標分組（文件沒有的部分就省略）；每組依內容選擇自然的寫法——條列適合並列的事實（資料集、指標、步驟），敘述性的脈絡（動機、方法的思路）用 1–2 段簡潔文字。",
           "只根據文件內容，不要編造數字、結果或引用；專有名詞、模型與資料集名稱保留原文。",
           "直接輸出簡述本身，不要前言、不要結語、不要用 ``` 包起來。",
         ].join("\n")
@@ -121,7 +120,7 @@ export default async function docImport(app: FastifyInstance) {
       title = access.study.title;
     }
     const doc = await importDocument(file.bytes, file.name);
-    const markdown = input.mode === "condense" ? await condense(app, user.id, condensePrompt(input.purpose, input.style ?? "prose", doc, doc.markdown, { title })) : doc.markdown;
+    const markdown = input.mode === "condense" ? await condense(app, user.id, condensePrompt(input.purpose, doc, doc.markdown, { title })) : doc.markdown;
     request.log.info({ format: doc.format, detected: doc.detected.label, chars: doc.chars, mode: input.mode }, "doc import");
     return { markdown, document: publicDoc(doc) };
   });
@@ -133,10 +132,9 @@ export default async function docImport(app: FastifyInstance) {
     const { fields: input, file } = await readUpload(request);
     const doc = await importDocument(file.bytes, file.name);
     const current = access.study.summary_md ?? "";
-    const style = input.style ?? (access.study.summary_format as "prose" | "bullets") ?? "prose";
     const body =
       input.mode === "condense"
-        ? await condense(app, user.id, condensePrompt("study_summary", style, doc, doc.markdown, { title: access.study.title, current: input.placement === "replace" ? current : undefined }))
+        ? await condense(app, user.id, condensePrompt("study_summary", doc, doc.markdown, { title: access.study.title, current: input.placement === "replace" ? current : undefined }))
         : doc.markdown;
     const prefix = input.placement === "replace" || !current.trim() ? "" : `${current.replace(/\s+$/, "")}\n\n`;
     const room = SUMMARY_MAX - prefix.length - 1;

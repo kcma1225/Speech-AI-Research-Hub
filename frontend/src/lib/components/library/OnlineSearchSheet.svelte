@@ -72,6 +72,7 @@
 
 <WideSheet
   bind:open
+  guard={false}
   title={t("library.search.title")}
   description={study?.title}
   onOpenAutoFocus={e => {

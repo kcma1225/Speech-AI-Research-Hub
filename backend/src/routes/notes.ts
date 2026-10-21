@@ -18,6 +18,7 @@ import { transaction, type Queryable } from "../db.js";
 import { requireUser, type CurrentUser } from "../lib/auth.js";
 import { badRequest, forbidden, HttpError, notFound, parse } from "../lib/http.js";
 import { cleanOutput, continueMessages, draftMessages, rewriteMessages } from "../lib/notes/ai.js";
+import { noteDraftContext } from "../lib/notes/ai-context.js";
 import {
   addVersion, createNote, disconnectNotes, findNote, forgetNoteDocs, listNotes, NOTE_KINDS, noteDocName, noteUrl, type NoteKind, type NoteRow,
 } from "../lib/notes/store.js";
@@ -336,9 +337,9 @@ async function notesRoutes(app: FastifyInstance) {
     const template = note.template_id
       ? (await app.db.query<{ name: string; body_md: string; ai_prompt: string }>("SELECT name,body_md,ai_prompt FROM note_templates WHERE id=$1", [note.template_id])).rows[0] ?? null
       : null;
-    const [s, content] = [await study(note.study_id), await liveText(app, note)];
+    const [s, content, related] = [await study(note.study_id), await liveText(app, note), await noteDraftContext(app.db, note.study_id, note.id)];
     await streamAction(reply, async (send, signal) => {
-      const out = await streamChat(app, draftMessages({ study: s, note: { title: note.title, content, event_date: note.event_date }, template, instruction: input.instruction }), 4000, user.id, send, signal);
+      const out = await streamChat(app, draftMessages({ study: s, note: { title: note.title, content, event_date: note.event_date }, template, instruction: input.instruction, related }), 4000, user.id, send, signal);
       const suggestion = await createSuggestion({ db: app.db, collab: app.collab }, {
         targetType: "note", targetId: note.id, proposedText: out.endsWith("\n") ? out : `${out}\n`, title: "AI 草擬", source: "ai", actorId: user.id, user,
       });

@@ -186,8 +186,10 @@
   const renderLabel = $derived(status?.stage ?? t("slides.status.queued"));
 </script>
 
+<!-- No discard prompt: closing keeps the form (and a running upload continues); reopening shows it again. -->
 <Sheet
   bind:open
+  dirty={false}
   side="right"
   title={isVersion ? t("slides.upload.versionTitle") : t("slides.upload.title")}
   description={isVersion ? t("slides.upload.versionDescription") : t("slides.upload.description")}

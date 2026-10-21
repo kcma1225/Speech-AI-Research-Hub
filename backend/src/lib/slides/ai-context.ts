@@ -1,5 +1,6 @@
 import type { Queryable } from "../../db.js";
 import type { Storage } from "../storage.js";
+import { digest, paperFullText } from "../library/fulltext.js";
 import { LABHUB_RULES, qmdHeader, taipeiToday, type TemplateInput } from "./templates.js";
 
 /**
@@ -78,8 +79,30 @@ export async function progressContext(db: Queryable, deckId: string, studyId: st
   if (done.rows.length) lines.push(`近三週完成的待辦：\n${done.rows.map(t => `- ${t.title}${t.detail_md.trim() ? `：${clip(t.detail_md, 160)}` : ""}`).join("\n")}`);
   if (open.rows.length) lines.push(`尚未完成的待辦：\n${open.rows.map(t => `- ${t.title}${t.due_on ? `（${t.due_on}）` : ""}`).join("\n")}`);
   if (notes.length) lines.push(`最近的筆記：\n${notes.map(n => `### ${n.title}（${n.at}）\n${clip(n.content_md, 700)}`).join("\n")}`);
+  // Recent advisor/meeting feedback (meetings module; absent tables just mean no rows).
+  const meetingDrafts = await optional<{ title: string; at: string; feedback_md: string }>(
+    db,
+    "meeting_study_drafts",
+    `SELECT m.title,to_char(m.held_at AT TIME ZONE 'Asia/Taipei','YYYY-MM-DD') AS at,d.feedback_md FROM meeting_study_drafts d JOIN meetings m ON m.id=d.meeting_id
+      WHERE d.study_id=$1 AND d.status<>'dismissed' AND d.feedback_md<>'' AND m.held_at > now() - interval '60 days' ORDER BY m.held_at DESC LIMIT 3`,
+    [studyId],
+  );
+  const meetingNotes = await optional<{ title: string; at: string; body_md: string; author: string | null }>(
+    db,
+    "meeting_feedback",
+    `SELECT m.title,to_char(m.held_at AT TIME ZONE 'Asia/Taipei','YYYY-MM-DD') AS at,f.body_md,u.name AS author FROM meeting_feedback f
+       JOIN meetings m ON m.id=f.meeting_id JOIN meeting_studies ms ON ms.meeting_id=m.id LEFT JOIN users u ON u.id=f.author_id
+      WHERE ms.study_id=$1 AND f.body_md<>'' AND m.held_at > now() - interval '60 days' ORDER BY m.held_at DESC, f.created_at DESC LIMIT 4`,
+    [studyId],
+  );
+  if (meetingDrafts.length || meetingNotes.length) {
+    lines.push(`最近會議中的回饋：\n${[
+      ...meetingDrafts.map(d => `- ${d.at}〈${d.title}〉：${clip(d.feedback_md, 500)}`),
+      ...meetingNotes.map(f => `- ${f.at}〈${f.title}〉${f.author ? `（${f.author}）` : ""}：${clip(f.body_md, 400)}`),
+    ].join("\n")}`);
+  }
   if (reviews.rows.length) lines.push(`先前簡報收到的回饋：\n${reviews.rows.map(r => `- ${r.author}（${r.deck}${r.page ? ` 第 ${r.page} 頁` : ""}）：${clip(r.body, 200)}`).join("\n")}`);
-  return clip(lines.join("\n\n"), 7000);
+  return clip(lines.join("\n\n"), 9000);
 }
 
 type PaperRow = { title: string; authors: unknown; venue: string | null; year: number | null; doi: string | null; arxiv_id: string | null; abstract: string | null; pdf_key: string | null };
@@ -125,7 +148,20 @@ export async function paperContext(db: Queryable, storage: Storage, deck: { id: 
   if (!pdfKey) {
     pdfKey = (await db.query<{ file_key: string | null }>("SELECT file_key FROM slide_references WHERE deck_id=$1 AND file_key IS NOT NULL ORDER BY is_default DESC, created_at LIMIT 1", [deck.id])).rows[0]?.file_key ?? null;
   }
-  if (pdfKey && extractText) {
+  let full = false;
+  if (pdfKey && paper?.pdf_key === pdfKey) {
+    // Library PDF: the sectioned full text (cached per PDF, shared with the agent's read_paper).
+    try {
+      const ft = await paperFullText(storage, pdfKey);
+      if (ft && ft.chars > 500) {
+        lines.push(`論文全文（依章節節錄，〔p. N〕為頁碼；公式可能因 PDF 擷取而不完整）：\n${digest(ft, 18_000)}`);
+        full = true;
+      }
+    } catch {
+      // fall back to the plain first pages below
+    }
+  }
+  if (pdfKey && extractText && !full) {
     try {
       const pdf = await storage.getBuffer(pdfKey);
       if (pdf) {
@@ -136,7 +172,7 @@ export async function paperContext(db: Queryable, storage: Storage, deck: { id: 
       // A broken PDF only means less context.
     }
   }
-  return { data: clip(lines.join("\n"), 12_000), title, subtitle };
+  return { data: clip(lines.join("\n"), full ? 24_000 : 12_000), title, subtitle };
 }
 
 const SYSTEM = `你是實驗室的簡報助手，產生 Quarto revealjs 投影片的本體。

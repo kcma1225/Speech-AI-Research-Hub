@@ -102,6 +102,7 @@ export const zh = {
   "dash.activity": "最近活動",
   "dash.activity.empty": "還沒有任何活動",
   "dash.kind.study_created": "建立了研究",
+  "dash.kind.study_renamed": "重新命名研究",
   "dash.kind.stage_changed": "進入階段",
   "dash.kind.milestone_done": "完成里程碑",
   "dash.kind.task_done": "完成待辦",
@@ -213,6 +214,11 @@ export const zh = {
   "common.close": "關閉",
   "common.showPassword": "顯示密碼",
   "common.hidePassword": "隱藏密碼",
+  "discard.title": "要放棄未儲存的變更嗎？",
+  "discard.description": "關閉後，剛才輸入的內容不會保留。",
+  "discard.busyDescription": "作業仍在進行中，關閉會中止它，剛才的內容也不會保留。",
+  "discard.keep": "繼續編輯",
+  "discard.confirm": "放棄變更",
 } as const;
 
 export const en: Record<keyof typeof zh, string> = {
@@ -319,6 +325,7 @@ export const en: Record<keyof typeof zh, string> = {
   "dash.activity": "Recent activity",
   "dash.activity.empty": "Nothing has happened yet",
   "dash.kind.study_created": "created the study",
+  "dash.kind.study_renamed": "renamed the study",
   "dash.kind.stage_changed": "moved to stage",
   "dash.kind.milestone_done": "completed milestone",
   "dash.kind.task_done": "completed task",
@@ -430,4 +437,9 @@ export const en: Record<keyof typeof zh, string> = {
   "common.close": "Close",
   "common.showPassword": "Show password",
   "common.hidePassword": "Hide password",
+  "discard.title": "Discard unsaved changes?",
+  "discard.description": "If you close now, what you just entered won't be kept.",
+  "discard.busyDescription": "Work is still in progress. Closing will stop it, and what you entered won't be kept.",
+  "discard.keep": "Keep editing",
+  "discard.confirm": "Discard changes",
 };

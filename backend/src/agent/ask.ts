@@ -10,12 +10,42 @@ export const QUESTION_TYPES = ["single_choice", "multi_choice", "short_text", "l
 export type QuestionType = (typeof QUESTION_TYPES)[number];
 
 const option = z.object({
-  value: z.string().trim().min(1).max(80).describe("Stable value (returned in the answer)"),
+  value: z.string().trim().min(1).max(80).describe("Stable value (returned in the answer); defaults to the label"),
   label: z.string().trim().min(1).max(120).describe("What the user sees"),
   description: z.string().trim().max(200).optional().describe("One short line under the label"),
 });
 
-export const questionSchema = z.object({
+/**
+ * Forgiving input for small models (they often omit `value` or name the question `question`/`text`): fills
+ * `prompt` from an alias and each option's missing `value` from its label (or `o<n>`), before validation.
+ */
+function normaliseQuestion(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const q = { ...(raw as Record<string, unknown>) };
+  if (typeof q.prompt !== "string" || !q.prompt.trim()) {
+    const alias = [q.question, q.text, q.title, q.label].find((v) => typeof v === "string" && v.trim());
+    if (alias) q.prompt = alias;
+  }
+  if (Array.isArray(q.options)) {
+    const used = new Set<string>();
+    q.options = q.options.map((o, i) => {
+      if (typeof o === "string") o = { label: o };
+      if (!o || typeof o !== "object") return o;
+      const opt = { ...(o as Record<string, unknown>) };
+      if (typeof opt.value !== "string" || !opt.value.trim()) {
+        const label = typeof opt.label === "string" ? opt.label.trim() : "";
+        let value = label && label.length <= 80 ? label : `o${i + 1}`;
+        if (used.has(value)) value = `o${i + 1}`;
+        opt.value = value;
+      }
+      used.add(String(opt.value).trim());
+      return opt;
+    });
+  }
+  return q;
+}
+
+const questionObject = z.object({
   id: z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9_-]+$/).describe("Short unique id, e.g. q1 or data_type"),
   prompt: z.string().trim().min(1).max(300).describe("The question (user's language)"),
   type: z.enum(QUESTION_TYPES).describe("single_choice/multi_choice need options; scale uses 1–5 unless scale_labels is given"),
@@ -25,7 +55,8 @@ export const questionSchema = z.object({
   placeholder: z.string().trim().max(120).optional(),
   scale_labels: z.array(z.string().trim().min(1).max(40)).min(2).max(10).optional().describe("Scale: custom point labels (low → high)"),
 });
-export type Question = z.infer<typeof questionSchema>;
+export const questionSchema = z.preprocess(normaliseQuestion, questionObject);
+export type Question = z.infer<typeof questionObject>;
 
 export const askUserInput = z
   .object({

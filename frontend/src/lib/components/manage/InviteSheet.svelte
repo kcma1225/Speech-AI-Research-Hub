@@ -80,7 +80,7 @@
   }
 </script>
 
-<Sheet bind:open side="right" title={created ? t("manage.invites.ready") : t("manage.invites.sheet.title")} description={created ? created.summary : t("manage.invites.sheet.desc")}>
+<Sheet bind:open side="right" dirty={created ? false : undefined} title={created ? t("manage.invites.ready") : t("manage.invites.sheet.title")} description={created ? created.summary : t("manage.invites.sheet.desc")}>
   {#snippet children()}
     {#if created}
       <div class="flex flex-col gap-4 pt-2">

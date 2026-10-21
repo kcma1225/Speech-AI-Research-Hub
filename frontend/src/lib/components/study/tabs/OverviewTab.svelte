@@ -13,7 +13,6 @@
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import DatePicker from "#lib/components/ui/DatePicker.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
-  import Segmented from "#lib/components/ui/Segmented.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
@@ -50,12 +49,10 @@
   // ───── Summary ─────
   let editingSummary = $state(false);
   let summaryDraft = $state("");
-  let formatDraft = $state<"prose" | "bullets">("prose");
   let summaryLayout = $state<"split" | "edit" | "preview">(session.user?.preferences.editor.layout ?? "split");
   let savingSummary = $state(false);
   function editSummary() {
     summaryDraft = study.summary_md;
-    formatDraft = study.summary_format;
     editingSummary = true;
   }
   // 「從檔案匯入」: while editing, the Markdown goes into the draft; otherwise it becomes a suggestion to review.
@@ -72,7 +69,7 @@
   const uploadImage = (file: File) => uploadMdImage(`study:${study.id}`, file);
   async function saveSummary() {
     savingSummary = true;
-    const ok = await run(() => api.patch(base, { summary_md: summaryDraft, summary_format: formatDraft }), t("studies.summary.saved"));
+    const ok = await run(() => api.patch(base, { summary_md: summaryDraft }), t("studies.summary.saved"));
     savingSummary = false;
     if (ok !== undefined) editingSummary = false;
   }
@@ -144,6 +141,20 @@
 
   // ───── Settings ─────
   const statuses: StudyStatus[] = ["active", "paused", "completed"];
+  // ───── Rename (the slug stays) ─────
+  let titleDraft = $state("");
+  let savingTitle = $state(false);
+  $effect.pre(() => {
+    titleDraft = study.title;
+  });
+  async function saveTitle(e: SubmitEvent) {
+    e.preventDefault();
+    const title = titleDraft.trim();
+    if (!title || title === study.title) return;
+    savingTitle = true;
+    await run(() => api.patch(base, { title }), t("studies.rename.saved"));
+    savingTitle = false;
+  }
   const setStatus = (status: StudyStatus) => run(() => api.patch(base, { status }), t("studies.settings.saved"));
   const setMaturity = (maturity: string) => run(() => api.patch(base, { maturity: maturity || null }), t("studies.maturity.saved"));
   let confirmDelete = $state(false);
@@ -170,12 +181,6 @@
       {#if !editingSummary}<SummaryReview bind:this={summaryReview} studyId={study.id} summary={study.summary_md} onApplied={reload} />{/if}
       {#if editingSummary}
         <div class="flex flex-col gap-3">
-          <Segmented
-            bind:value={formatDraft}
-            label={t("studies.field.format")}
-            class="w-fit"
-            options={[{ value: "prose", label: t("studies.format.prose") }, { value: "bullets", label: t("studies.format.bullets") }]}
-          />
           <MarkdownEditor bind:value={summaryDraft} bind:layout={summaryLayout} fontSize={session.user?.preferences.editor.fontSize ?? 15} label={t("studies.summary")} imageUpload={uploadImage} onImport={() => (importOpen = true)} />
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onclick={() => (editingSummary = false)}>{t("action.cancel")}</Button>
@@ -196,7 +201,6 @@
       <DocImportSheet
         bind:open={importOpen}
         target={editingSummary ? { kind: "draft", purpose: "study_summary", studyId: study.id } : { kind: "summary", studyId: study.id, hasText: !!study.summary_md.trim() }}
-        style={editingSummary ? formatDraft : study.summary_format}
         onMarkdown={importedIntoDraft}
         onSuggestion={importedAsSuggestion}
       />
@@ -297,6 +301,12 @@
       <Card>
         <CardHeader title={t("studies.settings")} />
         <div class="flex flex-col gap-4">
+          {#if canEdit}
+            <form class="flex items-end gap-2" onsubmit={saveTitle}>
+              <TextField label={t("studies.field.title")} bind:value={titleDraft} maxlength={200} hint={t("studies.rename.hint")} class="min-w-0 flex-1" />
+              <Button type="submit" size="sm" variant="secondary" class="mb-[26px] h-11" loading={savingTitle} disabled={!titleDraft.trim() || titleDraft.trim() === study.title}>{t("action.save")}</Button>
+            </form>
+          {/if}
           {#if study.status !== "archived"}
             <div class="flex flex-col gap-1.5">
               <span class="text-[13px] font-medium text-ink-2">{t("studies.settings.status")}</span>

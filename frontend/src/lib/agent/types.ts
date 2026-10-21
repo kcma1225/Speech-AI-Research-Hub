@@ -62,6 +62,8 @@ export type Message = {
   answers?: StoredAnswers | null;
   /** Ids of every version of this user message (oldest first) when it was edited / regenerated. */
   versions?: string[] | null;
+  /** References attached to this user message (`components/agent/attach`). */
+  attachments?: import("#lib/components/agent/attach/types.ts").Attachment[];
   hidden?: boolean;
   created_at: string;
 };
@@ -155,7 +157,6 @@ export type StudyPlan = {
   open_questions?: string[];
   first_steps?: { title: string }[];
   title: string;
-  summary_format: "prose" | "bullets";
   summary_md: string;
   stages: { name: string; description?: string }[];
   milestones?: { title: string; due_on?: string | null; stage?: string }[];

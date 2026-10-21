@@ -291,14 +291,14 @@ describe.skipIf(!hasTestDb)("agent branches + ask_user", () => {
     expect(JSON.stringify(requests[1]!.messages)).toContain("王教授");
     s = await state(conv);
     const card2 = s.toolCalls.find((c: any) => c.tool === "ask_user" && c.id !== seed.id);
-    const exploring = { maturity: "exploring", title: "語音情緒（暫定）", summary_format: "bullets", summary_md: "## 研究方向\n語音情緒\n## 待釐清的問題\n- 資料：待探討", stages: [{ name: "題目發想" }, { name: "文獻探討" }], open_questions: ["要用哪個資料集？"], first_steps: [{ title: "整理 10 篇相關論文" }] };
+    const exploring = { maturity: "exploring", title: "語音情緒（暫定）", summary_md: "## 研究方向\n語音情緒\n## 待釐清的問題\n- 資料：待探討", stages: [{ name: "題目發想" }, { name: "文獻探討" }], open_questions: ["要用哪個資料集？"], first_steps: [{ title: "整理 10 篇相關論文" }] };
     script = [calls(["propose_study_plan", exploring]), say("草案好了")];
     await send(conv, { answers: { tool_call_id: card2.id, answers: [{ id: "area", value: "語音情緒" }, { id: "advisor", value: "undecided" }] } });
     s = await state(conv);
     expect(s.toolCalls.filter((c: any) => c.tool === "propose_study_plan").map((c: any) => c.args.maturity)).toEqual(["exploring"]);
 
     // the student changes the first answer → the interview re-runs from there; only the new plan is visible
-    const wellDefined = { maturity: "well_defined", title: "以 wav2vec2 做中文語音情緒辨識", summary_format: "bullets", summary_md: "## 研究方向\n…\n## 方法\nwav2vec2\n## 資料\nNNIME\n## 評估\nUAR", stages: [{ name: "實驗" }, { name: "撰寫" }] };
+    const wellDefined = { maturity: "well_defined", title: "以 wav2vec2 做中文語音情緒辨識", summary_md: "## 研究方向\n…\n## 方法\nwav2vec2\n## 資料\nNNIME\n## 評估\nUAR", stages: [{ name: "實驗" }, { name: "撰寫" }] };
     script = [calls(["propose_study_plan", wellDefined]), say("新草案")];
     const e = await edit(conv, first.id, { answers: { tool_call_id: seed.id, answers: [{ id: "maturity", value: "well_defined" }] } });
     expect(e.statusCode, e.body).toBe(202);

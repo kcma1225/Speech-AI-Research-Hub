@@ -53,14 +53,15 @@ describe.skipIf(!hasTestDb)("studies API", () => {
     const response = await send(alice, "POST", "/api/studies", {
       title: "語音情緒辨識",
       summary_md: "- 問題：情緒\n- 方法：SSL",
-      summary_format: "bullets",
+      summary_format: "bullets", // legacy field: accepted and ignored
       members: [{ userId: bob.id, role: "member" }, { userId: prof.id, role: "advisor" }],
     });
     expect(response.statusCode).toBe(201);
     const body = json(response);
     study = { id: body.study.id, slug: body.study.slug };
     expect(body.study.slug).toMatch(/^study-\d{4}-\d{2}-\d{2}$/);
-    expect(body.study).toMatchObject({ title: "語音情緒辨識", summary_format: "bullets", status: "active" });
+    expect(body.study).toMatchObject({ title: "語音情緒辨識", status: "active" });
+    expect(body.study).not.toHaveProperty("summary_format");
     expect(body.stages.map((s: any) => s.name)).toEqual(["題目發想", "文獻探討", "實驗", "撰寫", "投稿/口試"]);
     expect(body.stages[0]).toMatchObject({ is_current: true, completed_at: null });
     expect(body.stages[0].started_at).toBeTruthy();
@@ -102,6 +103,23 @@ describe.skipIf(!hasTestDb)("studies API", () => {
     expect(archived.study.archived_at).toBeTruthy();
     expect(json(await send(alice, "PATCH", `/api/studies/${study.id}`, { status: "active" })).study.archived_at).toBeNull();
     expect((await get(alice, "/api/studies/no-such-study")).statusCode).toBe(404);
+  });
+
+  it("renames a study (members only), keeps the slug and records study_renamed", async () => {
+    const created = json(await send(alice, "POST", "/api/studies", { title: "Rename me", members: [{ userId: bob.id, role: "member" }, { userId: prof.id, role: "advisor" }] }));
+    const id = created.study.id;
+    const slugBefore = created.study.slug;
+    for (const who of [carol, prof]) expect((await send(who, "PATCH", `/api/studies/${id}`, { title: "Hijacked" })).statusCode).toBe(403);
+    expect((await send(bob, "PATCH", `/api/studies/${id}`, { title: "   " })).statusCode).toBe(400);
+    expect((await send(bob, "PATCH", `/api/studies/${id}`, { title: "x".repeat(201) })).statusCode).toBe(400);
+    const renamed = json(await send(bob, "PATCH", `/api/studies/${id}`, { title: "  Renamed study  ", summary_format: "prose" }));
+    expect(renamed.study).toMatchObject({ title: "Renamed study", slug: slugBefore });
+    expect(json(await get(carol, `/api/studies/${slugBefore}`)).study.title).toBe("Renamed study");
+    // Same title again: no new timeline entry.
+    await send(bob, "PATCH", `/api/studies/${id}`, { title: "Renamed study" });
+    const rows = (await t.db.query("SELECT actor_id,title,url,metadata FROM study_activity WHERE study_id=$1 AND kind='study_renamed'", [id])).rows;
+    expect(rows).toEqual([{ actor_id: bob.id, title: "Renamed study", url: `/studies/${slugBefore}`, metadata: { from: "Rename me" } }]);
+    expect((await send(alice, "DELETE", `/api/studies/${id}`)).statusCode).toBe(200);
   });
 
   it("manages members: advisors must be professors, transfer, leave", async () => {

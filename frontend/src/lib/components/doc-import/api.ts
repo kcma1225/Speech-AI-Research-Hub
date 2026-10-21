@@ -62,22 +62,20 @@ export function importFormats() {
 }
 
 /** Extracts (and optionally condenses with AI) without saving anything: prefill forms, insert into notes. */
-export function importDocument(file: File, opts: { mode: ImportMode; purpose: ImportPurpose; style?: "prose" | "bullets"; studyId?: string }) {
+export function importDocument(file: File, opts: { mode: ImportMode; purpose: ImportPurpose; studyId?: string }) {
   const form = new FormData();
   form.set("mode", opts.mode);
   form.set("purpose", opts.purpose);
-  if (opts.style) form.set("style", opts.style);
   if (opts.studyId) form.set("study_id", opts.studyId);
   form.set("file", file);
   return send<{ markdown: string; document: ImportedDocument }>("/doc-import", form);
 }
 
 /** Existing study: the imported text becomes a `study_summary` suggestion. */
-export function importIntoSummary(studyId: string, file: File, opts: { mode: ImportMode; placement: "append" | "replace"; style?: "prose" | "bullets" }) {
+export function importIntoSummary(studyId: string, file: File, opts: { mode: ImportMode; placement: "append" | "replace" }) {
   const form = new FormData();
   form.set("mode", opts.mode);
   form.set("placement", opts.placement);
-  if (opts.style) form.set("style", opts.style);
   form.set("file", file);
   return send<{ suggestion: Suggestion; document: ImportedDocument }>(`/studies/${studyId}/summary/import`, form);
 }

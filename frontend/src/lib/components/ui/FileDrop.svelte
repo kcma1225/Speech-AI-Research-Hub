@@ -3,6 +3,7 @@
   import { FileUp, FolderUp, X } from "@lucide/svelte";
   import { i18n, t } from "#lib/i18n.svelte.ts";
   import { droppedFolder, pickedFolder, type Folder } from "#lib/slides/folder.ts";
+  import { markFormDirty } from "./close-guard.svelte.ts";
 
   /**
    * Custom drop zone (the native file inputs stay visually hidden but keyboard-reachable).
@@ -24,6 +25,7 @@
   let input = $state<HTMLInputElement | null>(null);
   let folderInput = $state<HTMLInputElement | null>(null);
   const uid = $props.id();
+  const markDirty = markFormDirty();
 
   async function drop(data: DataTransfer | null) {
     if (onFolder) {
@@ -31,7 +33,7 @@
       const pending = droppedFolder(data);
       const files = data?.files;
       const folder = await pending.catch(() => null);
-      if (folder) return onFolder(folder);
+      if (folder) return markDirty(), onFolder(folder);
       return take(files);
     }
     take(data?.files);
@@ -44,6 +46,7 @@
     if (!ok) return onError?.(t("upload.badType", { types: accept.split(",").map(a => a.trim()).join(i18n.locale === "en" ? ", " : "、") }));
     if (maxBytes && next.size > maxBytes) return onError?.(t("upload.tooLarge", { size: formatBytes(maxBytes) }));
     file = next;
+    markDirty();
   }
   export function formatBytes(n: number) {
     return n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;

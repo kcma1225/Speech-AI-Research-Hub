@@ -42,6 +42,7 @@
 
 <Sheet
   bind:open
+  guard={false}
   {title}
   {description}
   side="center"

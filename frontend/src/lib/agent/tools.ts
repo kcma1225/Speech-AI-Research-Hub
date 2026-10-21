@@ -1,7 +1,7 @@
 import type { Component } from "svelte";
 import {
-  BookOpen, BookPlus, BookX, Brain, FilePen, FilePlus, FileText, Flag, FolderKanban, Gauge, Globe, ListChecks, ListPlus, ListTodo, Milestone, Presentation,
-  Search, Sparkles, Trash2, Wrench,
+  BookOpen, BookOpenText, BookPlus, FileDown, ScanEye, BookX, Brain, FilePen, FilePlus, FileText, Flag, FolderKanban, Gauge, Globe, ListChecks, ListPlus, ListTodo, Milestone, Presentation,
+  Search, Sparkles, Trash2, Wrench, LayoutTemplate, GalleryVertical,
 } from "@lucide/svelte";
 import { i18n } from "#lib/i18n.svelte.ts";
 import type { ToolCall, ToolLink } from "./types.ts";
@@ -32,6 +32,13 @@ const ICONS: Record<string, Component> = {
   search: Search,
   list_decks: Presentation,
   get_deck: Presentation,
+  create_deck: Presentation,
+  get_deck_pages: GalleryVertical,
+  review_deck_layout: LayoutTemplate,
+  review_latex_layout: LayoutTemplate,
+  read_paper: BookOpenText,
+  view_paper_pages: ScanEye,
+  fetch_paper_pdf: FileDown,
   suggest_deck_edit: FilePen,
   remember: Brain,
   propose_study_plan: Sparkles,
@@ -51,7 +58,8 @@ export function cardKind(c: ToolCall): "write" | "destructive" | "memory" | "out
 /** One-line argument summary for timeline rows (no raw JSON). */
 export function argsSummary(c: ToolCall): string {
   const a = c.args ?? {};
-  const pick = ["query", "q", "title", "content", "identifier", "stage", "status"].map((k) => a[k]).find((v) => typeof v === "string" && v);
+  const pick = ["query", "q", "title", "content", "identifier", "section", "stage", "status"].map((k) => a[k]).find((v) => typeof v === "string" && v);
+  if (!pick && Array.isArray(a.pages) && a.pages.length) return `p. ${a.pages.slice(0, 6).join(", ")}`;
   return typeof pick === "string" ? (pick.length > 60 ? `${pick.slice(0, 60)}…` : pick) : "";
 }
 

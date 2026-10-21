@@ -48,7 +48,7 @@ export type StudyCardFilter = {
 };
 
 type CardRow = {
-  id: string; slug: string; title: string; status: StudyStatus; summary_format: "prose" | "bullets"; summary_md: string;
+  id: string; slug: string; title: string; status: StudyStatus; summary_md: string;
   created_at: string; updated_at: string; activity_at: string;
   current_stage: { id: string; name: string; position: number } | null;
   stage_count: number; stages_done: number;
@@ -64,7 +64,7 @@ const escapeLike = (value: string) => value.replace(/[\\%_]/g, match => `\\${mat
 export async function studyCards(db: Queryable, viewerId: string, filter: StudyCardFilter = {}) {
   const q = filter.q?.trim() ? `%${escapeLike(filter.q.trim())}%` : null;
   const rows = (await db.query<CardRow>(
-    `SELECT s.id,s.slug,s.title,s.status,s.summary_format,s.summary_md,s.created_at,s.updated_at,s.activity_at,
+    `SELECT s.id,s.slug,s.title,s.status,s.summary_md,s.created_at,s.updated_at,s.activity_at,
             CASE WHEN cs.id IS NULL THEN NULL ELSE json_build_object('id',cs.id,'name',cs.name,'position',cs.position) END AS current_stage,
             (SELECT count(*)::int FROM study_stages g WHERE g.study_id=s.id) AS stage_count,
             (SELECT count(*)::int FROM study_stages g WHERE g.study_id=s.id AND g.completed_at IS NOT NULL) AS stages_done,

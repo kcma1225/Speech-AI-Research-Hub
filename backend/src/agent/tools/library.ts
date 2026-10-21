@@ -4,6 +4,7 @@ import { badRequest, conflict, HttpError, isUniqueViolation, notFound } from "..
 import { SourceError } from "../../lib/library/http.js";
 import { authorDisplayName } from "../../lib/library/normalize.js";
 import { DEFAULT_SEARCH_SOURCES, parseIdentifier } from "../../lib/library/service.js";
+import { autoFetchPdf, autoPdfText, type AutoPdfOutcome } from "../../lib/library/auto-pdf.js";
 import { libraryService } from "../../lib/library/settings.js";
 import { addPaperToStudy, findPaperMatches, getPaper, insertPaper, likeEscape, mergeIntoPaper, type PaperRow } from "../../lib/library/store.js";
 import type { PaperRecord } from "../../lib/library/types.js";
@@ -19,7 +20,7 @@ const compactPaper = (p: PaperRow) => ({ id: p.id, title: scrub(p.title), author
 
 /** Per-user throttle for agent-initiated online lookups (shares the spirit of /library/search: 20/min). */
 const hits = new Map<string, number[]>();
-function throttle(userId: string) {
+export function throttle(userId: string) {
   const now = Date.now();
   const list = (hits.get(userId) ?? []).filter((t) => now - t < 60_000);
   if (list.length >= 20) throw new HttpError(429, "搜尋太頻繁，請稍等一分鐘再試。");
@@ -140,7 +141,7 @@ registerAgentTool({
   titleEn: "Import paper",
   risk: "write",
   openWorld: true,
-  description: "Import a paper by identifier (DOI, arXiv id, ACL Anthology / OpenAlex / Semantic Scholar URL) into the lab library and add it to a study's reading list. An existing lab copy is reused (no duplicates).",
+  description: "Import a paper by identifier (DOI, arXiv id, ACL Anthology / OpenAlex / Semantic Scholar URL) into the lab library and add it to a study's reading list. An existing lab copy is reused (no duplicates). The open-access PDF is fetched automatically when available (result `pdf.status`: stored / exists / queued (background) / not_found / failed).",
   input: z.object({ study: studyRef, identifier: z.string().trim().min(3).max(300) }),
   summarize: (a) => `匯入論文 ${a.identifier}`,
   target: async (a, ctx) => ({ ...studyTarget(await editStudy(ctx, a.study)), url: undefined }),
@@ -174,8 +175,19 @@ registerAgentTool({
       const r = await linkIntoStudy(ctx, client, locked, paper);
       return { paper, created, ...r };
     });
+    // Full text right away when it is open access (≤ ~20 s, else a background job): the assistant should read the paper.
+    const pdf = await autoFetchPdf(ctx.db, ctx.app.storage, out.paper, ctx.user.id, { signal: ctx.signal }).catch((e): AutoPdfOutcome => {
+      ctx.app.log.warn({ err: e, paperId: out.paper.id }, "auto pdf fetch failed");
+      return { status: "failed" };
+    });
+    const hasPdf = pdf.status === "stored" || pdf.status === "exists";
     return {
-      data: { paper: compactPaper(out.paper), created_in_library: out.created, added_to_study: out.inserted, cite_key: out.citeKey },
+      data: {
+        paper: { ...compactPaper(out.paper), has_pdf: hasPdf },
+        created_in_library: out.created, added_to_study: out.inserted, cite_key: out.citeKey,
+        pdf: { status: pdf.status, ...(pdf.source ? { source: pdf.source } : {}), message: autoPdfText(pdf) },
+        next: hasPdf ? "Use read_paper with this paper_id to read the full text before explaining it." : undefined,
+      },
       untrusted: true,
       links: [{ label: clip(out.paper.title, 60), url: studyUrl(access.study.slug, "papers"), kind: "paper" }],
     };

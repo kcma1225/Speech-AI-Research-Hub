@@ -11,6 +11,7 @@
   import Switch from "#lib/components/ui/Switch.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import AiErrorPanel from "../AiErrorPanel.svelte";
+  import ProviderIcon from "../ProviderIcon.svelte";
   import DynamicField from "./DynamicField.svelte";
   import TestResultView from "./TestResultView.svelte";
 
@@ -157,7 +158,7 @@
             class="h-11 w-full rounded-xl border border-line-2 bg-surface pr-3 pl-10 text-[15px] outline-none placeholder:text-ink-3 focus:border-ink sm:text-sm"
           />
         </div>
-        <div class="-mx-1 overflow-x-auto px-1 pb-1 [scrollbar-width:none]"><Segmented bind:value={cat} options={cats} label={t("aiAdmin.sheet.pickVendor")} class="min-w-max" /></div>
+        <div class="-mx-1 overflow-x-auto px-1 pb-1 [scrollbar-width:none]"><Segmented bind:value={cat} guardIgnore options={cats} label={t("aiAdmin.sheet.pickVendor")} class="min-w-max" /></div>
         <ul class="flex flex-col gap-1.5" aria-label={t("aiAdmin.sheet.pickVendor")}>
           {#each filtered as e (e.id)}
             <li>
@@ -166,7 +167,7 @@
                 onclick={() => pick(e)}
                 class="flex w-full items-start gap-3 rounded-2xl border border-line px-3.5 py-3 text-left transition-colors hover:border-line-2 hover:bg-surface-2 focus-visible:border-ink"
               >
-                <span class="grid size-9 shrink-0 place-items-center rounded-xl bg-surface-3 text-[13px] font-semibold text-ink-2">{L(e.label).slice(0, 1)}</span>
+                <ProviderIcon kind={e.id} label={L(e.label)} size="md" />
                 <span class="min-w-0 flex-1">
                   <span class="flex flex-wrap items-center gap-1.5">
                     <span class="text-[14px] font-medium text-ink">{L(e.label)}</span>

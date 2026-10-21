@@ -8,7 +8,7 @@ import { guardStream, modelsDetail, send, sseEvents, timedProbe, type Call } fro
 import type { ChatEvent, ChatMessage, ChatRequest, StopReason, Usage } from "../types.js";
 import type { Codec, CodecContext } from "./codec.js";
 import { listOpenAiModels, openAiEmbed } from "./openai-chat.js";
-import { assistantParts, blocksOf, ensureToolsSupported, finishBody, imageDataUrl, makeState, num, stateFor, textOf, toolResultText, ToolCalls } from "./shared.js";
+import { assistantParts, blocksOf, ensureToolsSupported, finishBody, imageDataUrl, makeState, num, stateFor, textOf, toolResultImages, toolResultText, ToolCalls } from "./shared.js";
 
 export interface ResponsesState {
   /** Raw reasoning output items (with encrypted_content), replayed verbatim before the turn. */
@@ -28,6 +28,9 @@ export function toResponsesInput(messages: ChatMessage[]): { instructions?: stri
     seenNonSystem = true;
     if (m.role === "tool") {
       for (const b of m.content) input.push({ type: "function_call_output", call_id: b.tool_use_id, output: toolResultText(b) || (b.is_error ? "error" : "") });
+      // function_call_output is text only: tool images (page renders) follow as one user message.
+      const imgs = m.content.flatMap((b) => toolResultImages(b));
+      if (imgs.length) input.push({ role: "user", content: [{ type: "input_text", text: "(Images returned by the tool call above.)" }, ...imgs.map((i) => ({ type: "input_image", image_url: imageDataUrl(i) }))] });
     } else if (m.role === "user") {
       const blocks = blocksOf(m.content);
       for (const b of blocks) if (b.type === "tool_result") input.push({ type: "function_call_output", call_id: b.tool_use_id, output: toolResultText(b) || (b.is_error ? "error" : "") });

@@ -20,20 +20,17 @@
   let {
     open = $bindable(false),
     target,
-    style: initialStyle = "prose",
     onMarkdown,
     onSuggestion,
   }: {
     open?: boolean;
     target: Target;
-    style?: "prose" | "bullets";
     onMarkdown?: (markdown: string, doc: ImportedDocument) => void;
     onSuggestion?: (suggestion: Suggestion, doc: ImportedDocument) => void;
   } = $props();
 
   let file = $state<File | null>(null);
   let mode = $state<ImportMode>("markdown");
-  let style = $state<"prose" | "bullets">("prose");
   let placement = $state<"append" | "replace">("append");
   let busy = $state(false);
   let error = $state<{ message: string; hint?: string } | null>(null);
@@ -48,7 +45,6 @@
     file = null;
     error = null;
     busy = false;
-    style = initialStyle;
     placement = target.kind === "summary" && target.hasText ? "append" : "replace";
     void importFormats().then(f => {
       accept = f.accept;
@@ -65,10 +61,10 @@
     error = null;
     try {
       if (target.kind === "summary") {
-        const r = await importIntoSummary(target.studyId, file, { mode, placement, style: purpose === "study_summary" ? style : undefined });
+        const r = await importIntoSummary(target.studyId, file, { mode, placement });
         onSuggestion?.(r.suggestion, r.document);
       } else {
-        const r = await importDocument(file, { mode, purpose, style: purpose === "study_summary" ? style : undefined, studyId: target.studyId });
+        const r = await importDocument(file, { mode, purpose, studyId: target.studyId });
         onMarkdown?.(r.markdown, r.document);
       }
       open = false;
@@ -95,13 +91,6 @@
       <p class="text-[12px] text-ink-3">{mode === "condense" ? t("docimport.mode.condenseHint") : t("docimport.mode.markdownHint")}</p>
       {#if !aiOk && aiStatus.loaded}<p class="text-[12px] text-ink-3">{t("docimport.aiUnavailable")}</p>{/if}
     </div>
-
-    {#if mode === "condense" && purpose === "study_summary"}
-      <div class="flex flex-col gap-1.5">
-        <span class="text-[13px] font-medium text-ink-2">{t("docimport.style")}</span>
-        <Segmented bind:value={style} label={t("docimport.style")} class="w-fit" options={[{ value: "prose", label: t("studies.format.prose") }, { value: "bullets", label: t("studies.format.bullets") }]} />
-      </div>
-    {/if}
 
     {#if target.kind === "summary" && target.hasText}
       <div class="flex flex-col gap-1.5">

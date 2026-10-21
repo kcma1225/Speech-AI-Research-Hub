@@ -26,7 +26,7 @@ registerAgentTool({
   title: "列出會議",
   titleEn: "List meetings",
   risk: "read",
-  description: "List lab meetings (newest first, or soonest first for `when: upcoming`) with id, title, time, status, studies and per-study draft status. Filter by study (id or slug) or by person (`me` or a user id).",
+  description: "List lab meetings (newest first, or soonest first for `when: upcoming`) with id, title, time, status, studies and per-study draft status. Filter by study (id or slug) or by person (`me` or a user id). `past` excludes meetings that started less than an hour ago; for 「上次會議」 prefer the default `all` and take the latest one held before now.",
   input: z.object({
     study: z.string().trim().min(1).max(80).optional().describe("Study id (uuid) or slug"),
     person: z.string().trim().max(40).optional().describe("`me` or a user id: meetings they created or attended"),

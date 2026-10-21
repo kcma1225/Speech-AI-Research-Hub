@@ -37,7 +37,6 @@ export type StudyCard = {
   slug: string;
   title: string;
   status: StudyStatus;
-  summary_format: "prose" | "bullets";
   summary_excerpt: string;
   created_at: string;
   updated_at: string;
@@ -57,7 +56,6 @@ export type StudyDetail = {
     slug: string;
     title: string;
     summary_md: string;
-    summary_format: "prose" | "bullets";
     /** 研究成熟度 (AI interview; null = not set). */
     maturity?: import("#lib/agent/types.ts").StudyMaturity | null;
     status: StudyStatus;

@@ -4,6 +4,7 @@
   import type { Tone } from "#lib/components/ui/Pill.svelte";
   import { stateTone, type Health } from "#lib/ai/routing.ts";
   import type { MessageKey } from "#lib/messages.ts";
+  import ProviderIcon from "../../ProviderIcon.svelte";
 
   /**
    * One LEGO brick: an account-coloured block with studs on top. The first stud is the health light
@@ -20,6 +21,7 @@
     compact = false,
     mono = true,
     lifted = false,
+    vendor,
     badges,
     trailing,
     class: cls = "",
@@ -34,6 +36,8 @@
     compact?: boolean;
     mono?: boolean;
     lifted?: boolean;
+    /** Registry vendor id (+ label) of the model's account: shows its mark before the title. */
+    vendor?: { kind: string | null; label?: string };
     badges?: Snippet;
     trailing?: Snippet;
     class?: string;
@@ -53,6 +57,7 @@
   {#if seq}
     <span class="grid h-6 min-w-6 shrink-0 place-items-center rounded-md bg-[var(--bi)] px-1 text-[11px] font-bold text-[var(--b)] tabular-nums" title={seqTitle}>{seq}</span>
   {/if}
+  {#if vendor}<ProviderIcon kind={vendor.kind} label={vendor.label} size="xs" />{/if}
   <span class="min-w-0 flex-1">
     <span class="block truncate {mono ? 'font-mono text-[12.5px]' : 'text-[13.5px]'} font-semibold text-[var(--bi)]" title={title}>{title}</span>
     {#if subtitle || badges}

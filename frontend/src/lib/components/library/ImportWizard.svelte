@@ -173,6 +173,7 @@
 
 <WideSheet
   bind:open
+  dirty={step === "preview" || (step === "choose" && (file !== null || zKey.trim() !== ""))}
   title={t("library.import.title")}
   description={step === "preview" && batch ? t("library.import.previewSubtitle", { file: batch.file_name ?? batch.format, n: batch.items.length }) : study.title}
 >
