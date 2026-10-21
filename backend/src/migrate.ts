@@ -3,6 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyBaseLogger } from "fastify";
 import type { Db } from "./db.js";
+import { backfillUsernames } from "./lib/users/username.js";
+
+/** Data steps that need application code; each runs right after its migration file, in the same transaction. */
+const DATA_STEPS: Record<string, (client: Pick<Db, "query">) => Promise<void>> = {
+  "0103_usernames.sql": backfillUsernames,
+};
 
 const MIGRATION_LOCK = 473921;
 export const migrationsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../migrations");
@@ -24,6 +30,7 @@ export async function migrate(pool: Db, log: Pick<FastifyBaseLogger, "info">, di
       await client.query("BEGIN");
       try {
         await client.query(sql);
+        await DATA_STEPS[name]?.(client);
         await client.query("INSERT INTO schema_migrations(name) VALUES($1)", [name]);
         await client.query("COMMIT");
         log.info({ migration: name }, "applied migration");

@@ -39,10 +39,12 @@ export function toOllamaMessages(messages: ChatMessage[], providerId: string) {
   return out;
 }
 
-function options(ctx: CodecContext, extra: Record<string, unknown> = {}) {
+/** Ollama allocates `num_ctx` tokens (its 4096 default silently truncates): the model profile's manual context window, else 8192. */
+export const OLLAMA_DEFAULT_NUM_CTX = 8192;
+
+function options(ctx: CodecContext, extra: Record<string, unknown> = {}, contextLength?: number) {
   const o: Record<string, unknown> = { ...extra };
-  const numCtx = num(Number(ctx.config.numCtx));
-  if (numCtx) o.num_ctx = numCtx;
+  o.num_ctx = num(contextLength) ?? num(Number(ctx.config.numCtx)) ?? OLLAMA_DEFAULT_NUM_CTX;
   const user = ctx.config.options;
   if (user && typeof user === "object") Object.assign(o, user);
   return o;
@@ -55,7 +57,7 @@ export function buildOllamaBody(ctx: CodecContext, req: ChatRequest): Record<str
   if (req.temperature !== undefined) opt.temperature = req.temperature;
   if (req.topP !== undefined) opt.top_p = req.topP;
   if (req.stop?.length) opt.stop = req.stop;
-  const body: Record<string, unknown> = { model: req.model, messages: toOllamaMessages(req.messages, ctx.entry.id), stream: true, options: options(ctx, opt) };
+  const body: Record<string, unknown> = { model: req.model, messages: toOllamaMessages(req.messages, ctx.entry.id), stream: true, options: options(ctx, opt, req.contextLength) };
   if (ctx.config.keepAlive) body.keep_alive = ctx.config.keepAlive;
   if (req.tools?.length && req.toolChoice !== "none") {
     body.tools = req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description ?? "", parameters: t.inputSchema } }));
@@ -117,13 +119,46 @@ async function* parseOllamaStream(ctx: CodecContext, res: Response, call: Call, 
   };
 }
 
+/** Profile facts from `POST /api/show`: context length / embedding size from model_info, capabilities list (Ollama ≥ 0.6). */
+export function parseOllamaShow(json: unknown): Partial<ModelInfo> {
+  const j = (json ?? {}) as { model_info?: Record<string, unknown>; capabilities?: unknown; details?: Record<string, unknown> };
+  const info = j.model_info ?? {};
+  const arch = typeof info["general.architecture"] === "string" ? (info["general.architecture"] as string) : "";
+  const out: Partial<ModelInfo> = {};
+  const ctxLen = num(info[`${arch}.context_length`]);
+  if (ctxLen) out.contextWindow = ctxLen;
+  const caps = Array.isArray(j.capabilities) ? (j.capabilities as unknown[]).map(String) : null;
+  if (caps) {
+    out.kind = caps.includes("embedding") && !caps.includes("completion") ? "embedding" : "chat";
+    out.hints = { vision: caps.includes("vision"), tools: caps.includes("tools"), reasoning: caps.includes("thinking") };
+  }
+  const dims = num(info[`${arch}.embedding_length`]);
+  if (dims && out.kind === "embedding") out.dims = dims;
+  return out;
+}
+
 async function listOllamaModels(ctx: CodecContext, signal?: AbortSignal): Promise<ModelInfo[]> {
   const json = (await sendJson(ctx, { url: "/api/tags", signal })) as { models?: Array<Record<string, unknown>> };
-  return (json.models ?? []).map((m) => {
+  const base: ModelInfo[] = (json.models ?? []).map((m) => {
     const id = String(m.model ?? m.name);
     const fam = String((m.details as Record<string, unknown>)?.family ?? "");
     return { id, kind: /embed|bert/i.test(`${id} ${fam}`) ? "embedding" : "chat" } satisfies ModelInfo;
   });
+  // Details per model (bounded: local servers rarely hold more than a few dozen models).
+  const queue = base.slice(0, 60);
+  const worker = async () => {
+    for (let m = queue.shift(); m; m = queue.shift()) {
+      try {
+        const show = await sendJson(ctx, { url: "/api/show", body: { model: m.id }, signal, timeoutMs: 10_000 });
+        const extra = parseOllamaShow(show);
+        Object.assign(m, { ...extra, kind: extra.kind ?? m.kind });
+      } catch {
+        /* keep the tag-only entry */
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  return base;
 }
 
 async function ollamaEmbed(ctx: CodecContext, req: EmbedRequest) {

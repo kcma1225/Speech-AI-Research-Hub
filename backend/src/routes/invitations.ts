@@ -4,6 +4,7 @@ import { hashPassword } from "../bootstrap.js";
 import { transaction } from "../db.js";
 import { audit, createSession, randomToken, requireAdmin, sha256 } from "../lib/auth.js";
 import { badRequest, conflict, HttpError, idParams, isUniqueViolation, notFound, parse } from "../lib/http.js";
+import { realNameSchema, USERNAME_HINT, USERNAME_RE, USERNAME_TAKEN, usernameAvailable, usernameSchema } from "../lib/users/username.js";
 
 /** Expiry choices offered in the admin UI; `never` = no expiry. */
 export const EXPIRY_MINUTES = { "5m": 5, "30m": 30, "1h": 60, "2h": 120, "5h": 300, "1d": 1440, "3d": 4320, "5d": 7200, "7d": 10080, never: null } as const;
@@ -18,7 +19,8 @@ const createInput = z.object({
 const joinInput = z
   .object({
     token: z.string().min(32).max(200),
-    name: z.string().trim().min(1).max(80),
+    realName: realNameSchema,
+    username: usernameSchema,
     password: z.string().max(4096).refine(value => value.trim().length >= 8, { message: "密碼至少需要 8 個字元。" }),
     passwordConfirm: z.string().optional(),
   })
@@ -75,6 +77,17 @@ const invitations: FastifyPluginAsync = async app => {
     return { ok: true };
   });
 
+  /** Live check for the join form. Needs a valid invitation token (no anonymous enumeration); nginx rate-limits it. */
+  app.get("/join/username-available", async (request, reply) => {
+    const { u, token } = parse(z.object({ u: z.string().max(80), token: z.string().min(32).max(200) }), request.query);
+    reply.header("Cache-Control", "no-store");
+    if (!(await app.db.query(`SELECT 1 FROM invitations WHERE token_hash=$1 AND ${VALID_INVITE}`, [sha256(token)])).rowCount) throw invalidInvite();
+    const username = u.trim().toLowerCase();
+    if (!USERNAME_RE.test(username)) return { username, valid: false, available: false, error: USERNAME_HINT };
+    const available = await usernameAvailable(app.db, username);
+    return { username, valid: true, available, ...(available ? {} : { error: USERNAME_TAKEN }) };
+  });
+
   app.get("/join/:token", async (request, reply) => {
     const { token } = parse(z.object({ token: z.string().min(32).max(200) }), request.params);
     const result = await app.db.query<{ role: string; is_admin: boolean; expires_at: string | null }>(
@@ -88,7 +101,7 @@ const invitations: FastifyPluginAsync = async app => {
   });
 
   app.post("/join", async (request, reply) => {
-    const data = parse(joinInput, request.body, "邀請或帳號資料不正確。");
+    const data = parse(joinInput, request.body, "邀請或帳號資料不正確：請填寫真實姓名、使用者名稱與兩次相同的密碼。");
     const passwordHash = await hashPassword(data.password);
     try {
       const account = await transaction(app.db, async client => {
@@ -97,9 +110,10 @@ const invitations: FastifyPluginAsync = async app => {
           [sha256(data.token)],
         )).rows[0];
         if (!invite) throw invalidInvite();
-        const created = (await client.query<{ id: string; name: string }>(
-          "INSERT INTO users(name,password_hash,role,is_admin) VALUES($1,$2,$3,$4) RETURNING id,name",
-          [data.name, passwordHash, invite.role, invite.role === "admin"],
+        if (!(await usernameAvailable(client, data.username))) throw conflict(USERNAME_TAKEN);
+        const created = (await client.query<{ id: string; name: string; username: string }>(
+          "INSERT INTO users(username,real_name,password_hash,role,is_admin) VALUES($1,$2,$3,$4,$5) RETURNING id,name,username",
+          [data.username, data.realName, passwordHash, invite.role, invite.role === "admin"],
         )).rows[0]!;
         await client.query("INSERT INTO invitation_uses(invitation_id,user_id) VALUES($1,$2)", [invite.id, created.id]);
         await client.query("UPDATE invitations SET use_count=use_count+1 WHERE id=$1", [invite.id]);
@@ -113,7 +127,7 @@ const invitations: FastifyPluginAsync = async app => {
       await app.db.query("UPDATE users SET last_login_at=now() WHERE id=$1", [account.id]);
       return reply.code(201).send({ account });
     } catch (error) {
-      if (isUniqueViolation(error)) throw conflict("此名稱已被使用，請換一個。");
+      if (isUniqueViolation(error)) throw conflict(USERNAME_TAKEN);
       throw error;
     }
   });

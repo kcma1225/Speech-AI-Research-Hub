@@ -132,11 +132,11 @@ const oidc: FastifyPluginAsync = async app => {
     // Single use: the row is deleted by whoever presents the code first.
     const row = (await app.db.query<{
       client_id: string; redirect_uri: string; user_id: string; scope: string; nonce: string | null; code_challenge: string | null;
-      expired: boolean; name: string | null; disabled: boolean | null;
+      expired: boolean; name: string | null; username: string | null; disabled: boolean | null;
     }>(
       `WITH consumed AS (DELETE FROM oidc_codes WHERE code_hash=$1 RETURNING *)
        SELECT c.client_id,c.redirect_uri,c.user_id,c.scope,c.nonce,c.code_challenge,(c.expires_at <= now()) AS expired,
-              u.name,(u.disabled_at IS NOT NULL) AS disabled
+              u.name,u.username,(u.disabled_at IS NOT NULL) AS disabled
          FROM consumed c LEFT JOIN users u ON u.id=c.user_id`,
       [sha256(code)],
     )).rows[0];
@@ -147,10 +147,10 @@ const oidc: FastifyPluginAsync = async app => {
     } else if (verifier !== undefined) {
       return invalidGrant(); // a verifier for a code issued without a challenge: PKCE downgrade
     }
-    if (!row.name || row.disabled) return invalidGrant();
+    if (!row.name || !row.username || row.disabled) return invalidGrant();
 
     const now = Math.floor(Date.now() / 1000);
-    const user = { id: row.user_id, name: row.name };
+    const user = { id: row.user_id, name: row.name, username: row.username };
     const idToken = await signJwt(app.db, {
       iss: issuer,
       aud: c.clientId,
@@ -179,8 +179,8 @@ const oidc: FastifyPluginAsync = async app => {
     const header = request.headers.authorization;
     const token = header?.startsWith("Bearer ") ? header.slice(7).trim() : "";
     const row = token
-      ? (await app.db.query<{ id: string; name: string; scope: string }>(
-          `SELECT u.id,u.name,t.scope FROM oidc_access_tokens t JOIN users u ON u.id=t.user_id
+      ? (await app.db.query<{ id: string; name: string; username: string; scope: string }>(
+          `SELECT u.id,u.name,u.username,t.scope FROM oidc_access_tokens t JOIN users u ON u.id=t.user_id
             WHERE t.token_hash=$1 AND t.expires_at > now() AND u.disabled_at IS NULL`,
           [sha256(token)],
         )).rows[0]

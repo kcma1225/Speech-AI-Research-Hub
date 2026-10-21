@@ -24,9 +24,10 @@
     if (session.user) proceed();
   });
 
-  let accounts = $state<{ id: string; name: string }[]>([]);
-  let chosen = $state<{ id: string; name: string } | null>(null);
-  let name = $state("");
+  type Account = { id: string; name: string; username: string };
+  let accounts = $state<Account[]>([]);
+  let chosen = $state<Account | null>(null);
+  let username = $state("");
   let password = $state("");
   let error = $state<string | null>(null);
   let busy = $state(false);
@@ -35,10 +36,10 @@
 
   $effect(() => {
     const ids = rememberedAccounts();
-    if (ids.length) api.get<{ accounts: { id: string; name: string }[] }>(`/auth/accounts?ids=${ids.join(",")}`).then(r => (accounts = r.accounts), () => {});
+    if (ids.length) api.get<{ accounts: Account[] }>(`/auth/accounts?ids=${ids.join(",")}`).then(r => (accounts = r.accounts), () => {});
   });
 
-  function choose(account: { id: string; name: string } | null) {
+  function choose(account: Account | null) {
     chosen = account;
     error = null;
     password = "";
@@ -52,12 +53,12 @@
   async function submit(e: SubmitEvent) {
     e.preventDefault();
     // The button stays enabled (password managers may fill the fields without input events); check here instead.
-    if (!chosen && !name.trim()) return nameInput?.focus();
+    if (!chosen && !username.trim()) return nameInput?.focus();
     if (!password) return passwordInput?.focus();
     busy = true;
     error = null;
     try {
-      await session.login(chosen ? { userId: chosen.id, password } : { name: name.trim(), password });
+      await session.login(chosen ? { userId: chosen.id, password } : { username: username.trim().toLowerCase(), password });
       proceed();
     } catch (err) {
       error = (err as Error).message;
@@ -112,7 +113,10 @@
             <li class="group relative">
               <button type="button" onclick={() => choose(a)} class="flex w-full items-center gap-3 rounded-2xl border border-line bg-surface p-3 text-left transition-colors hover:border-ink-3">
                 <Avatar name={a.name} size={38} class="ring-0" />
-                <span class="flex-1 text-[15px] font-medium">{a.name}</span>
+                <span class="flex min-w-0 flex-1 flex-col">
+                  <span class="truncate text-[15px] font-medium">{a.name}</span>
+                  <span class="truncate text-[12.5px] text-ink-3">@{a.username}</span>
+                </span>
                 <ArrowRight class="mr-8 size-4 text-ink-3" />
               </button>
               <button
@@ -130,14 +134,17 @@
       <form class="flex flex-col gap-4 {accounts.length && !chosen ? '' : 'mt-8'}" onsubmit={submit} novalidate>
         {#if chosen}
           <!-- Lets password managers pair the saved password with the remembered account. -->
-          <input type="text" name="username" autocomplete="username" value={chosen.name} readonly hidden />
+          <input type="text" name="username" autocomplete="username" value={chosen.username} readonly hidden />
           <div class="flex items-center gap-3 rounded-2xl border border-line bg-surface p-3">
             <Avatar name={chosen.name} size={38} class="ring-0" />
-            <span class="flex-1 text-[15px] font-medium">{chosen.name}</span>
+            <span class="flex min-w-0 flex-1 flex-col">
+              <span class="truncate text-[15px] font-medium">{chosen.name}</span>
+              <span class="truncate text-[12.5px] text-ink-3">@{chosen.username}</span>
+            </span>
             <Button size="sm" variant="ghost" onclick={() => choose(null)}>{t("login.other")}</Button>
           </div>
         {:else}
-          <TextField bind:ref={nameInput} label={t("login.name")} name="username" bind:value={name} autocomplete="username" autocapitalize="none" spellcheck={false} required />
+          <TextField bind:ref={nameInput} label={t("login.name")} name="username" bind:value={username} autocomplete="username" autocapitalize="none" spellcheck={false} required />
         {/if}
         <TextField bind:ref={passwordInput} type="password" label={t("login.password")} name="password" bind:value={password} autocomplete="current-password" required error={error} />
         <Button type="submit" variant="primary" size="lg" class="mt-2 w-full" loading={busy}>

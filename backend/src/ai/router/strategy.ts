@@ -25,8 +25,8 @@ export function orderMembers(node: RouteNode, rng: Rng = Math.random): RouteNode
     case "fallback":
       return [...ms];
     case "round_robin": {
-      const n = rrCounters.get(node.id) ?? 0;
-      rrCounters.set(node.id, (n + 1) % 1_000_000);
+      const n = rrCounters.get(node.id ?? "") ?? 0;
+      rrCounters.set(node.id ?? "", (n + 1) % 1_000_000);
       const start = n % ms.length;
       return [...ms.slice(start), ...ms.slice(0, start)];
     }

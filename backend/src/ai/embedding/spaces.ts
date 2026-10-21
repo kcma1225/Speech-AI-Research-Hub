@@ -11,7 +11,12 @@ export type SpaceStatus = "building" | "ready" | "active" | "retired" | "failed"
 export type EmbeddingSpace = {
   id: string;
   label: string;
-  route_id: string | null;
+  /** Embedding model profile the space belongs to. */
+  model_ref: string | null;
+  /** Group serving the space (deployments of the same model), when not served by the model directly. */
+  group_id: string | null;
+  /** Request params of a direct model target (e.g. `dimensions`). */
+  params: Record<string, unknown>;
   provider_kind: string;
   model: string;
   dims: number;
@@ -26,7 +31,7 @@ export type EmbeddingSpace = {
   retired_at: Date | null;
 };
 
-const COLS = "id,label,route_id,provider_kind,model,dims,status,items_total,items_done,job_id,error,created_at,ready_at,activated_at,retired_at";
+const COLS = "id,label,model_ref,group_id,params,provider_kind,model,dims,status,items_total,items_done,job_id,error,created_at,ready_at,activated_at,retired_at";
 
 export const spaceIndexName = (id: string) => `embeddings_hnsw_${id.replace(/-/g, "")}`;
 const assertUuid = (id: string) => {
@@ -62,13 +67,13 @@ export async function storedFingerprint(db: Queryable, spaceId: string): Promise
 
 export async function insertSpace(
   db: Queryable,
-  s: { label: string; routeId: string; providerKind: string; model: string; dims: number; status: SpaceStatus; fingerprint: number[][]; createdBy: string | null },
+  s: { label: string; modelRef: string | null; groupId: string | null; params: Record<string, unknown>; providerKind: string; model: string; dims: number; status: SpaceStatus; fingerprint: number[][]; createdBy: string | null },
 ): Promise<EmbeddingSpace> {
   const space = (
     await db.query<EmbeddingSpace>(
-      `INSERT INTO embedding_spaces(label,route_id,provider_kind,model,dims,status,created_by,activated_at)
-       VALUES($1,$2,$3,$4,$5,$6,$7, CASE WHEN $6='active' THEN now() END) RETURNING ${COLS}`,
-      [s.label, s.routeId, s.providerKind, s.model, s.dims, s.status, s.createdBy],
+      `INSERT INTO embedding_spaces(label,model_ref,group_id,params,provider_kind,model,dims,status,created_by,activated_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9, CASE WHEN $8='active' THEN now() END) RETURNING ${COLS}`,
+      [s.label, s.modelRef, s.groupId, JSON.stringify(s.params ?? {}), s.providerKind, s.model, s.dims, s.status, s.createdBy],
     )
   ).rows[0]!;
   await db.query("INSERT INTO embedding_fingerprints(space_id,probe_version,dims,vectors) VALUES($1,$2,$3,$4)", [

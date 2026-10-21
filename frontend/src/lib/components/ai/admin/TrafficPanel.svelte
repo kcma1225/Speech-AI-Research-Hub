@@ -182,7 +182,7 @@
             <div class="min-w-0">
               <p class="truncate">
                 <span class="font-medium">{roleLabel(c.role)}</span>
-                {#if c.provider_name}<span class="text-ink-3"> · {c.provider_name} / </span><span class="font-mono text-[12px]">{c.model}</span>{/if}
+                {#if c.provider_name}<span class="text-ink-3"> · {c.provider_name} / </span><span class="font-mono text-[12px]">{c.model}</span>{/if}{#if c.group_name}<span class="text-ink-3"> · {t("aiAdmin.traffic.inGroup", { name: c.group_name })}</span>{/if}
               </p>
               <p class="truncate text-[12px] text-ink-3">
                 <time datetime={c.started_at} title={formatDate(c.started_at)}>{relativeTime(c.started_at)}</time>

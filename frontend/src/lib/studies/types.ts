@@ -58,6 +58,8 @@ export type StudyDetail = {
     title: string;
     summary_md: string;
     summary_format: "prose" | "bullets";
+    /** 研究成熟度 (AI interview; null = not set). */
+    maturity?: import("#lib/agent/types.ts").StudyMaturity | null;
     status: StudyStatus;
     current_stage_id: string | null;
     created_by: string | null;
@@ -93,7 +95,8 @@ export type DashboardData = {
   counts: { myStudies: number; labStudies: number; openTasks: number; overdueTasks: number; dueThisWeek: number };
 };
 
-export type DirectoryUser = { id: string; name: string; role: Role };
+/** `name` = real name; `username` = login id (shown as @username in pickers). */
+export type DirectoryUser = { id: string; name: string; username: string; role: Role };
 
 /** Stage progress 0..1: completed stages plus half of the current one. */
 export function stageProgress(card: { stage_count: number; stages_done: number; current_stage: { position: number } | null }) {

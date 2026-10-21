@@ -124,6 +124,11 @@ export interface ChatRequest {
   toolChoice?: ToolChoice;
   parallelToolCalls?: boolean;
   maxTokens?: number;
+  /**
+   * Context to allocate on servers that size it per request (Ollama `num_ctx`). The platform sets it from the
+   * model profile's manual context window; hosted APIs ignore it.
+   */
+  contextLength?: number;
   temperature?: number;
   topP?: number;
   stop?: string[];
@@ -205,9 +210,14 @@ export interface EmbedResult {
 export interface ModelInfo {
   id: string;
   label?: string;
-  kind?: "chat" | "embedding" | "other";
+  kind?: "chat" | "embedding" | "asr" | "other";
   contextWindow?: number;
   maxOutputTokens?: number;
+  /** Default vector size (embedding models). */
+  dims?: number;
+  /** USD per 1M tokens, when the listing publishes prices (OpenRouter, Together…). */
+  inputPrice?: number;
+  outputPrice?: number;
   /** Capability hints when the vendor publishes them. */
   hints?: { tools?: boolean; vision?: boolean; reasoning?: boolean; jsonSchema?: boolean; params?: string[] };
 }

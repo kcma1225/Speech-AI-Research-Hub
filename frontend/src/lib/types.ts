@@ -13,7 +13,10 @@ export type Preferences = {
 
 export type CurrentUser = {
   id: string;
+  /** Real name (真實姓名), shown wherever the person appears. */
   name: string;
+  /** Login id (使用者名稱), lower-case. */
+  username: string;
   role: Role;
   is_admin: boolean;
   is_owner: boolean;

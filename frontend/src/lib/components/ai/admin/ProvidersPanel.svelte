@@ -1,6 +1,6 @@
 <script lang="ts">
   import { DropdownMenu } from "bits-ui";
-  import { Ellipsis, KeyRound, LogIn, LogOut, Pencil, Plug, Plus, Power, Server, Trash2 } from "@lucide/svelte";
+  import { Cpu, Ellipsis, KeyRound, LogIn, LogOut, Pencil, Plug, Plus, Power, RefreshCw, Server, Trash2 } from "@lucide/svelte";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import { aiApi, toErrorBody, type AiErrorBody, type Category, type Family, type Provider, type TestResult } from "#lib/ai/admin.ts";
   import { adminStore } from "#lib/ai/admin-store.svelte.ts";
@@ -19,7 +19,7 @@
   import ProviderSheet from "./ProviderSheet.svelte";
   import TestResultView from "./TestResultView.svelte";
 
-  let { family, title }: { family: Family; title?: string } = $props();
+  let { family, title, onShowModels }: { family: Family; title?: string; onShowModels?: (providerId: string) => void } = $props();
 
   const list = $derived(adminStore.providers?.filter(p => p.family === family) ?? null);
   const groups = $derived(
@@ -61,9 +61,8 @@
     try {
       const result = await aiApi.post<TestResult>(`/admin/ai/providers/${p.id}/test`);
       results = { ...results, [p.id]: { result } };
-      if (result.models.length) adminStore.setModels(p.id, result.models.map(m => m.id));
-      if (result.probe.ok) toasts.show(t("aiAdmin.providers.testOk", { name: p.name }), "success");
-      await adminStore.reloadProviders();
+      if (result.probe.ok) toasts.show(result.models_synced != null ? t("aiAdmin.providers.testOkSynced", { name: p.name, n: result.models_synced }) : t("aiAdmin.providers.testOk", { name: p.name }), "success");
+      await Promise.all([adminStore.reloadProviders(), adminStore.reloadModels()]);
     } catch (e) {
       results = { ...results, [p.id]: { error: toErrorBody(e) } };
     } finally {
@@ -178,6 +177,9 @@
                   {#if set}<span class="inline-flex h-5 items-center gap-1 rounded-full bg-surface-3 px-2 text-[11px] text-ink-2"><KeyRound class="size-3" />••••</span>{/if}
                 {/each}
                 <span class="text-[12px] text-ink-3">{p.used_by.length ? t("aiAdmin.providers.usedBy", { n: p.used_by.length }) : t("aiAdmin.providers.unused")}</span>
+                {#if onShowModels}
+                  <button type="button" class="inline-flex h-7 items-center gap-1 rounded-full px-2 text-[12px] text-ink-2 hover:bg-surface-2 hover:text-ink" onclick={() => onShowModels(p.id)}><Cpu class="size-3.5" />{t("aiAdmin.providers.models", { n: p.model_count })}</button>
+                {/if}
               </div>
               {#if p.base_url}<p class="mt-2 truncate font-mono text-[11.5px] text-ink-3" title={p.base_url}>{p.base_url}</p>{/if}
 
@@ -205,7 +207,7 @@
                     }}><LogIn />{p.oauth_meta?.status === "connected" ? t("aiAdmin.providers.relogin") : t("aiAdmin.providers.login")}</Button
                   >
                 {/if}
-                <Button size="sm" variant="secondary" loading={testing === p.id} onclick={() => runTest(p)}><Plug />{t("aiAdmin.providers.test")}</Button>
+                <Button size="sm" variant="secondary" loading={testing === p.id} onclick={() => runTest(p)}>{#if p.family === "llm"}<RefreshCw />{t("aiAdmin.providers.testSync")}{:else}<Plug />{t("aiAdmin.providers.test")}{/if}</Button>
                 <Button size="sm" variant="ghost" onclick={() => edit(p)}><Pencil />{t("aiAdmin.providers.edit")}</Button>
               </div>
             </li>

@@ -80,7 +80,7 @@
   const confirmError = $derived(confirmPassword && newPassword.length >= 8 && confirmPassword !== newPassword ? t("settings.password.mismatch") : null);
   async function saveName() {
     savingName = true;
-    await save({ name: name.trim() });
+    await save({ realName: name.trim().replace(/\s+/g, " ") });
     savingName = false;
   }
   async function savePassword() {
@@ -260,9 +260,12 @@
       <Card>
         <div class="mb-6 flex items-center gap-4">
           <Avatar name={name || user.name} size={56} class="ring-0" />
-          <div>
-            <p class="text-[17px] font-semibold">{user.name}</p>
-            <div class="mt-1"><Pill tone="lilac" size="sm">{accountLabel(user)}</Pill></div>
+          <div class="min-w-0">
+            <p class="truncate text-[17px] font-semibold">{user.name}</p>
+            <div class="mt-1 flex flex-wrap items-center gap-2">
+              <span class="truncate text-[13px] text-ink-3">@{user.username}</span>
+              <Pill tone="lilac" size="sm">{accountLabel(user)}</Pill>
+            </div>
           </div>
         </div>
         <form
@@ -272,9 +275,14 @@
             void saveName();
           }}
         >
-          <TextField class="flex-1" label={t("settings.name")} hint={t("settings.name.hint")} bind:value={name} maxlength={80} autocomplete="username" />
+          <TextField class="flex-1" label={t("settings.name")} hint={t("settings.name.hint")} bind:value={name} maxlength={40} autocomplete="name" />
           <Button type="submit" variant="primary" loading={savingName} disabled={!name.trim() || name.trim() === user.name} class="sm:mb-[22px]">{t("action.save")}</Button>
         </form>
+        <div class="mt-5 flex flex-col gap-1.5 border-t border-line pt-5">
+          <span class="text-[13px] font-medium text-ink-2">{t("settings.username")}</span>
+          <p class="flex h-11 items-center rounded-xl bg-surface-2 px-3.5 font-mono text-[14px] text-ink-2 select-all">{user.username}</p>
+          <p class="text-[12.5px] text-ink-3">{t("settings.username.hint")}</p>
+        </div>
       </Card>
       <Card>
         <h2 class="text-[15px] font-semibold">{t("settings.password")}</h2>
@@ -286,7 +294,7 @@
             void savePassword();
           }}
         >
-          <input type="text" autocomplete="username" value={user.name} readonly hidden />
+          <input type="text" autocomplete="username" value={user.username} readonly hidden />
           <TextField type="password" label={t("settings.password.current")} bind:value={currentPassword} autocomplete="current-password" />
           <TextField type="password" label={t("settings.password.new")} bind:value={newPassword} autocomplete="new-password" error={newPasswordError} />
           <TextField type="password" label={t("settings.password.confirm")} bind:value={confirmPassword} autocomplete="new-password" error={confirmError} />

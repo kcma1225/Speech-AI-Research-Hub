@@ -36,8 +36,6 @@ describe("zip validation", () => {
     ["backslash", "a\\b.qmd", /不安全路徑/],
     ["dot segment", "./a.qmd", /不安全路徑/],
     [".env", ".env.local.txt", /禁止/],
-    ["disallowed extension", "run.sh", /不支援檔案類型/],
-    ["html", "index.html", /不支援檔案類型/],
     ["too deep", `${Array.from({ length: 12 }, (_, i) => `d${i}`).join("/")}/a.md`, /層級過深/],
   ])("rejects %s", async (_label, name, message) => {
     await expect(scan([qmd, { name, data: "x" }])).rejects.toThrow(message);
@@ -54,6 +52,13 @@ describe("zip validation", () => {
     const result = await scan([qmd, { name, data: "x" }]);
     expect(result.files).toBe(1);
     expect(result.qmd).toEqual(["index.qmd"]);
+  });
+
+  it("skips unsupported types (reported) and accepts pre-rendered HTML", async () => {
+    const result = await scan([qmd, { name: "run.sh", data: "x" }, { name: "tool.exe", data: "x" }, { name: "reports/talk.html", data: "<html></html>" }]);
+    expect(result.files).toBe(2);
+    expect(result.skipped).toEqual(["run.sh", "tool.exe"]);
+    expect(result.skippedCount).toBe(2);
   });
 
   it("rejects symbolic links", async () => {

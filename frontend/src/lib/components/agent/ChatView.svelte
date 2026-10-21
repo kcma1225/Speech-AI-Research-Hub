@@ -8,12 +8,14 @@
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import Composer from "./Composer.svelte";
+  import AskCard from "./AskCard.svelte";
   import MessageItem from "./MessageItem.svelte";
   import ThinkingLine from "./ThinkingLine.svelte";
   import ToolTimeline from "./ToolTimeline.svelte";
   import type { ChatSession } from "#lib/agent/chat.svelte.ts";
   import { contextLabel } from "#lib/agent/context.ts";
-  import type { AgentSettings, PageContext, StudyPlan, ToolCall } from "#lib/agent/types.ts";
+  import { answersByCall, askArgs } from "#lib/agent/ask.ts";
+  import type { AgentSettings, Answer, Message, PageContext, StudyPlan, ToolCall } from "#lib/agent/types.ts";
 
   /**
    * The chat: transcript (messages, tool timeline per step, consent cards), streaming answer, banners and composer.
@@ -35,7 +37,7 @@
     context?: PageContext | null;
     placeholder?: string;
     /** Interview: called with each new study plan proposal. */
-    onPlan?: (plan: StudyPlan, callId: string) => void;
+    onPlan?: (plan: StudyPlan | null, callId: string | null) => void;
     /** A new conversation was created by the first message. */
     onCreated?: (id: string) => void;
     empty?: Snippet<[(text: string) => void]>;
@@ -99,25 +101,89 @@
     return () => observer.disconnect();
   });
 
-  type Entry = { key: string; message?: (typeof session.messages)[number]; calls: ToolCall[] };
+  // Question cards (`ask_user`, done) render as cards, not timeline rows; once answered, the answer message shows them.
+  type Entry = { key: string; message: Message; calls: ToolCall[]; asks: ToolCall[]; laterUser: boolean };
+  const answered = $derived(answersByCall(session.messages));
+  const callById = $derived(new Map(session.toolCalls.map((c) => [c.id, c])));
   const entries = $derived.by(() => {
     const byMessage = new Map<string, ToolCall[]>();
     for (const c of session.toolCalls) byMessage.set(c.message_id, [...(byMessage.get(c.message_id) ?? []), c]);
     for (const list of byMessage.values()) list.sort((a, b) => a.position - b.position);
-    return session.messages.map((m): Entry => ({ key: m.id, message: m, calls: byMessage.get(m.id) ?? [] }));
+    const lastUserSeq = session.messages.findLast((m) => m.role === "user")?.seq ?? -1;
+    return session.messages.map((m): Entry => {
+      const calls = byMessage.get(m.id) ?? [];
+      const isAsk = (c: ToolCall) => c.tool === "ask_user" && c.status === "done" && !!askArgs(c);
+      return { key: m.id, message: m, calls: calls.filter((c) => !isAsk(c)), asks: calls.filter((c) => isAsk(c) && !answered.has(c.id)), laterUser: lastUserSeq > m.seq };
+    });
   });
+  const replying = $derived(running || run?.status === "awaiting_llm" || session.sending);
+  // 「重新產生」 on the latest assistant reply (after the last user message, nothing running).
+  const regenerateId = $derived.by(() => {
+    if (replying || run?.status === "awaiting_approval") return null;
+    const last = session.messages.findLast((m) => m.role === "user" || (m.role === "assistant" && m.text));
+    return last?.role === "assistant" && session.messages.some((m) => m.role === "user") ? last.id : null;
+  });
+
+  // Editing discards the replies after a message; warn when they include changes that were already applied.
+  let tailConfirm = $state(false);
+  let tailResolve: ((ok: boolean) => void) | null = null;
+  $effect(() => {
+    if (!tailConfirm && tailResolve) {
+      tailResolve(false);
+      tailResolve = null;
+    }
+  });
+  function confirmTail(m: Message): Promise<boolean> {
+    const seqOf = new Map(session.messages.map((x) => [x.id, x.seq]));
+    const applied = session.toolCalls.some((c) => (seqOf.get(c.message_id) ?? -1) > m.seq && c.risk !== "read" && c.status === "done" && c.undo !== "done");
+    if (!applied) return Promise.resolve(true);
+    tailConfirm = true;
+    return new Promise((resolve) => (tailResolve = resolve));
+  }
+  async function editMessage(m: Message, body: { text?: string; answers?: { tool_call_id: string; answers: Answer[] } }) {
+    if (!(await confirmTail(m))) return false;
+    try {
+      await session.edit(m.id, body);
+      atBottom = true;
+      return true;
+    } catch (e) {
+      toasts.show(`${t("agent.editFailed")}：${(e as Error).message}`, "error");
+      return false;
+    }
+  }
+  async function regenerate() {
+    const lastUser = session.messages.findLast((m) => m.role === "user");
+    if (!lastUser || !(await confirmTail(lastUser))) return;
+    try {
+      await session.regenerate();
+      atBottom = true;
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    }
+  }
+  async function switchVersion(id: string) {
+    try {
+      await session.activate(id);
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    }
+  }
+  async function answerCard(call: ToolCall, answers: Answer[]) {
+    await session.answer(call.id, answers);
+    atBottom = true;
+    toBottom();
+  }
   const lastUserAt = $derived(session.messages.findLast((m) => m.role === "user")?.created_at);
 
-  // Interview: report each finished proposal once.
-  let seenPlans = new Set<string>();
+  // Interview: the latest finished proposal of the current branch (null when the branch has none).
+  let lastPlan: string | null | undefined = undefined;
   $effect(() => {
     if (!onPlan) return;
-    for (const c of session.toolCalls) {
-      if (c.tool === "propose_study_plan" && c.status === "done" && !seenPlans.has(c.id)) {
-        seenPlans.add(c.id);
-        onPlan(c.args as unknown as StudyPlan, c.id);
-      }
-    }
+    const latest = session.toolCalls.findLast((c) => c.tool === "propose_study_plan" && c.status === "done") ?? null;
+    const id = latest?.id ?? null;
+    if (id === lastPlan || session.loading) return;
+    lastPlan = id;
+    untrack(() => onPlan(latest ? (latest.args as unknown as StudyPlan) : null, id));
   });
   let started = false;
   $effect(() => {
@@ -144,6 +210,24 @@
     if (!scroller) return;
     if (atBottom) queueMicrotask(() => toBottom());
     else unseen = true;
+  });
+
+  // A new question card scrolls to its top (not the bottom), so the question and its first options are visible.
+  const openCards = $derived(entries.reduce((n, e) => n + e.asks.length, 0));
+  let seenCards = 0;
+  $effect(() => {
+    const n = openCards;
+    if (n > seenCards && scroller) {
+      setTimeout(() => {
+        const cards = scroller?.querySelectorAll<HTMLElement>("section.ask-card");
+        const card = cards?.[cards.length - 1];
+        if (card && scroller) {
+          scroller.scrollTo({ top: Math.max(0, card.offsetTop - 12), behavior: "auto" });
+          unseen = false;
+        }
+      }, 60);
+    }
+    seenCards = n;
   });
 
   async function send(value: string) {
@@ -216,11 +300,29 @@
 
       {#each entries as entry (entry.key)}
         {#if entry.message}
-          <MessageItem message={entry.message} canRemember={memoryAvailable && !interview} conversationId={session.id} onContinue={retry} />
+          {@const m = entry.message}
+          {@const askCall = m.answers ? callById.get(m.answers.toolCallId) : undefined}
+          <MessageItem
+            message={m}
+            canRemember={memoryAvailable && !interview}
+            conversationId={session.id}
+            onContinue={retry}
+            busy={replying}
+            ask={askCall ? askArgs(askCall) : null}
+            onEdit={m.role === "user" && !m.answers ? (text) => editMessage(m, { text }) : undefined}
+            onEditAnswers={m.role === "user" && m.answers ? (answers) => editMessage(m, { answers: { tool_call_id: m.answers!.toolCallId, answers } }) : undefined}
+            onRegenerate={m.id === regenerateId ? () => void regenerate() : undefined}
+            onSwitch={m.versions ? (id) => void switchVersion(id) : undefined}
+          />
         {/if}
         {#if entry.calls.length}
           <ToolTimeline calls={entry.calls} {compact} onDecide={decide} />
         {/if}
+        {#each entry.asks as c (c.id)}
+          <div class={compact ? "" : "sm:ml-11"}>
+            <AskCard args={askArgs(c)!} deferred={entry.laterUser} disabled={replying} onSubmit={(a) => answerCard(c, a)} />
+          </div>
+        {/each}
       {/each}
 
       {#if running}
@@ -256,7 +358,7 @@
     </div>
   </div>
 
-  {#if unseen && !atBottom}
+  {#if unseen && !atBottom && !openCards}
     <div class="pointer-events-none relative z-10 -mt-12 flex justify-center pb-2">
       <button type="button" class="pointer-events-auto inline-flex h-9 items-center gap-1.5 rounded-full border border-line bg-surface px-3.5 text-[12.5px] font-medium shadow-pop" onclick={() => toBottom(true)}><ArrowDown class="size-3.5" />{t("agent.newContent")}</button>
     </div>
@@ -292,6 +394,18 @@
     </AiGate>
   </div>
 </div>
+
+<ConfirmDialog
+  bind:open={tailConfirm}
+  title={t("agent.editConfirmTitle")}
+  description={t("agent.editConfirmHint")}
+  confirmLabel={t("agent.editConfirm")}
+  onConfirm={() => {
+    const r = tailResolve;
+    tailResolve = null;
+    r?.(true);
+  }}
+/>
 
 <ConfirmDialog
   bind:open={explainOpen}

@@ -58,8 +58,29 @@ export type Message = {
   page_context: (PageContext & { studyTitle?: string }) | null;
   kind: string | null;
   memories: { id: string; content: string }[];
+  /** `ask_user` answers sent as this user turn. */
+  answers?: StoredAnswers | null;
+  /** Ids of every version of this user message (oldest first) when it was edited / regenerated. */
+  versions?: string[] | null;
+  hidden?: boolean;
   created_at: string;
 };
+
+export type QuestionType = "single_choice" | "multi_choice" | "short_text" | "long_text" | "number" | "date" | "scale" | "yes_no";
+export type AskQuestion = {
+  id: string;
+  prompt: string;
+  type: QuestionType;
+  options?: { value: string; label: string; description?: string }[];
+  allow_other?: boolean;
+  required?: boolean;
+  placeholder?: string;
+  scale_labels?: string[];
+};
+export type AskArgs = { intro?: string; questions: AskQuestion[] };
+export type AnswerValue = string | number | boolean | string[] | null;
+export type Answer = { id: string; value?: AnswerValue; other?: string; skipped?: boolean };
+export type StoredAnswers = { toolCallId: string; answers: Answer[] };
 
 export type Risk = "read" | "write" | "destructive";
 export type ToolStatus = "pending_approval" | "approved" | "denied" | "running" | "done" | "failed" | "cancelled" | "expired";
@@ -127,7 +148,12 @@ export type Memory = {
 
 export type McpToken = { id: string; name: string; prefix: string; scopes: ("read" | "suggest")[]; created_at: string; last_used_at: string | null; expires_at: string | null };
 
+export type StudyMaturity = "exploring" | "problem_defined" | "method_first" | "continuation" | "assigned" | "well_defined";
+
 export type StudyPlan = {
+  maturity?: StudyMaturity;
+  open_questions?: string[];
+  first_steps?: { title: string }[];
   title: string;
   summary_format: "prose" | "bullets";
   summary_md: string;

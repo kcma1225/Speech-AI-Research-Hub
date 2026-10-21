@@ -1,7 +1,7 @@
 /** Core study tools: studies, progress, stages, milestones, tasks, study summary suggestions. */
 import { z } from "zod";
 import { badRequest, notFound } from "../../lib/http.js";
-import { studyUrl } from "../../lib/studies/access.js";
+import { STUDY_MATURITY_ZH, studyUrl } from "../../lib/studies/access.js";
 import { recordActivity } from "../../lib/studies/activity.js";
 import { listMembers, listMilestones, listStages, MILESTONE_SELECT, studyCards } from "../../lib/studies/queries.js";
 import { createTask, getTask, TASK_SELECT, updateTask, type Task } from "../../lib/studies/tasks.js";
@@ -66,7 +66,7 @@ registerAgentTool({
     const s = access.study;
     return {
       data: {
-        study: { id: s.id, slug: s.slug, title: s.title, status: s.status, status_label: STUDY_STATUS_ZH[s.status] ?? s.status, summary_format: s.summary_format, summary_md: clip(scrub(s.summary_md), 8000), url: studyUrl(s.slug) },
+        study: { id: s.id, slug: s.slug, title: s.title, status: s.status, status_label: STUDY_STATUS_ZH[s.status] ?? s.status, summary_format: s.summary_format, maturity: s.maturity, maturity_label: s.maturity ? STUDY_MATURITY_ZH[s.maturity] : null, summary_md: clip(scrub(s.summary_md), 8000), url: studyUrl(s.slug) },
         stages: stages.map((g) => ({ id: g.id, name: g.name, current: g.is_current, done: !!g.completed_at, description: g.description || undefined })),
         milestones: milestones.map((m) => ({ id: m.id, title: m.title, due_on: m.due_on, done: !!m.done_at, stage_id: m.stage_id })),
         members: members.map((m) => ({ id: m.id, name: m.name, role: m.role, role_label: ROLE_ZH[m.role] ?? m.role })),

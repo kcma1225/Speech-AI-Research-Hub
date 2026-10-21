@@ -6,6 +6,7 @@
   import { t } from "#lib/i18n.svelte.ts";
   import AiGate from "#lib/components/ai/AiGate.svelte";
   import Button from "#lib/components/ui/Button.svelte";
+  import CheckCircle from "#lib/components/ui/CheckCircle.svelte";
   import DatePicker from "#lib/components/ui/DatePicker.svelte";
   import Segmented from "#lib/components/ui/Segmented.svelte";
   import Select from "#lib/components/ui/Select.svelte";
@@ -14,13 +15,16 @@
   import Textarea from "#lib/components/ui/Textarea.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { ChatSession } from "#lib/agent/chat.svelte.ts";
-  import type { StudyPlan } from "#lib/agent/types.ts";
+  import type { StudyMaturity, StudyPlan } from "#lib/agent/types.ts";
+  import { MATURITIES } from "#lib/agent/maturity.ts";
   import ChatView from "./ChatView.svelte";
 
   /**
-   * 「AI 訪談」 on /studies/new: an `interview` conversation asks one question at a time and ends with a study plan
-   * (summary + stages + milestones). The user edits the plan, then either fills the form or creates the study here
-   * (stages and milestones are written through the normal study API).
+   * 「AI 訪談」 on /studies/new: an `interview` conversation opens with a question card about how far the study is
+   * (研究成熟度), asks a few optional, mode-specific question cards (never schedules) and ends with a study draft
+   * (maturity, summary with confirmed vs open points, stages, optional undated first steps). Answers can be edited
+   * at any time (the interview re-runs from there); the draft always comes from the current branch. The user edits
+   * the draft, then fills the form or creates the study here (stages, tasks via the normal study API).
    */
   let { members = () => [], onFill }: { members?: () => { userId: string; role: "member" | "advisor" }[]; onFill: (plan: StudyPlan) => void } = $props();
 
@@ -29,6 +33,8 @@
   let plan = $state<StudyPlan | null>(null);
   let reviewOpen = $state(false);
   let creating = $state(false);
+  /** Open questions / first steps the user ticked to become tasks. */
+  let taskPicks = $state<Record<string, boolean>>({});
   let box = $state<HTMLElement | null>(null);
   // On phones the interview sits below the long form: bring it into view when it starts.
   $effect(() => {
@@ -36,19 +42,43 @@
   });
   $effect(() => () => session.destroy());
 
-  function onPlan(p: StudyPlan) {
+  const seenPlans = new Set<string>();
+  function onPlan(p: StudyPlan | null, callId: string | null) {
+    if (!p) {
+      plan = null;
+      reviewOpen = false;
+      return;
+    }
     const raw = JSON.parse(JSON.stringify(p)) as StudyPlan;
     // Models sometimes double-escape newlines in tool arguments ("…\\n…").
     const summary = typeof raw.summary_md === "string" && !raw.summary_md.includes("\n") ? raw.summary_md.replace(/(?:\\r)?\\n/g, "\n") : raw.summary_md;
-    plan = { ...raw, summary_md: summary, stages: raw.stages?.length ? raw.stages : [{ name: "題目發想" }], milestones: raw.milestones ?? [] };
-    untrack(() => (reviewOpen = true));
+    plan = { ...raw, summary_md: summary, stages: raw.stages?.length ? raw.stages : [{ name: "題目發想" }], milestones: raw.milestones ?? [], open_questions: raw.open_questions ?? [], first_steps: raw.first_steps ?? [] };
+    taskPicks = Object.fromEntries((raw.first_steps ?? []).map((s) => [`step:${s.title}`, true]));
+    // A new proposal opens the draft; switching back to a branch with an earlier one only refreshes it.
+    if (callId && !seenPlans.has(callId)) untrack(() => (reviewOpen = true));
+    if (callId) seenPlans.add(callId);
+  }
+  async function begin() {
+    started = true;
+    try {
+      await session.create();
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+      started = false;
+    }
   }
   function restart() {
     session.reset();
     plan = null;
-    started = false;
-    queueMicrotask(() => (started = true));
+    void begin();
   }
+  const taskTitles = $derived.by(() => {
+    if (!plan) return [] as { key: string; title: string }[];
+    return [
+      ...(plan.first_steps ?? []).map((s) => ({ key: `step:${s.title}`, title: s.title })),
+      ...(plan.open_questions ?? []).map((q) => ({ key: `q:${q}`, title: t("agent.interview.discuss", { q }) })),
+    ];
+  });
 
   async function create() {
     if (!plan || !plan.title.trim()) return;
@@ -58,6 +88,7 @@
         title: plan.title.trim(),
         summary_md: plan.summary_md,
         summary_format: plan.summary_format,
+        ...(plan.maturity ? { maturity: plan.maturity } : {}),
         members: members(),
       });
       const slug = detail.study.slug;
@@ -90,6 +121,10 @@
           .post(`/studies/${slug}/milestones`, { title: m.title.trim().slice(0, 200), due_on: m.due_on || null, stage_id: (m.stage && stageIds[m.stage]) || null })
           .catch(() => (partial = true));
       }
+      for (const task of taskTitles) {
+        if (!taskPicks[task.key]) continue;
+        await api.post(`/studies/${slug}/tasks`, { title: task.title.slice(0, 200) }).catch(() => (partial = true));
+      }
       toasts.show(partial ? t("agent.interview.partial") : t("agent.interview.created"), partial ? "error" : "success");
       reviewOpen = false;
       await goto(`/studies/${slug}`);
@@ -104,12 +139,12 @@
 {#if !started}
   <div class="mt-5">
     <AiGate role="assistant">
-      <Button variant="primary" onclick={() => (started = true)}><Sparkles />{t("agent.interview.start")}</Button>
+      <Button variant="primary" onclick={() => void begin()}><Sparkles />{t("agent.interview.start")}</Button>
     </AiGate>
   </div>
 {:else}
   <div bind:this={box} class="mt-5 flex h-[min(560px,70dvh)] flex-col overflow-hidden rounded-[22px] border border-line bg-canvas text-ink">
-    <ChatView {session} compact placeholder={t("agent.interview.placeholder")} autoStart={t("agent.interview.opening")} {onPlan} />
+    <ChatView {session} compact placeholder={t("agent.interview.placeholder")} {onPlan} />
   </div>
   <div class="mt-3 flex flex-wrap gap-2">
     {#if plan}<Button variant="primary" onclick={() => (reviewOpen = true)}><ClipboardList />{t("agent.interview.plan")}</Button>{/if}
@@ -121,6 +156,15 @@
   {#if plan}
     <div class="flex flex-col gap-5">
       <TextField label={t("agent.interview.title")} bind:value={plan.title} maxlength={200} />
+      <div class="flex flex-col gap-1.5">
+        <span class="text-[13px] font-medium text-ink-2">{t("studies.maturity")}</span>
+        <Select
+          bind:value={() => plan!.maturity ?? "", (v) => (plan!.maturity = (v || undefined) as StudyMaturity | undefined)}
+          label={t("studies.maturity")}
+          class="w-full"
+          options={[{ value: "", label: t("studies.maturity.none") }, ...MATURITIES.map((m) => ({ value: m, label: t(`studies.maturity.${m}`), hint: t(`studies.maturity.${m}.hint`) }))]}
+        />
+      </div>
       <div class="flex flex-col gap-2">
         <Segmented bind:value={plan.summary_format} label={t("studies.field.format")} options={[{ value: "prose", label: t("studies.format.prose") }, { value: "bullets", label: t("studies.format.bullets") }]} />
         <Textarea label={t("agent.interview.summary")} bind:value={plan.summary_md} rows={8} />
@@ -142,6 +186,20 @@
         <Button size="sm" variant="ghost" class="self-start" onclick={() => plan!.stages.push({ name: "" })}><Plus />{t("agent.interview.addStage")}</Button>
       </fieldset>
 
+      {#if taskTitles.length}
+        <fieldset class="flex flex-col gap-1">
+          <legend class="mb-1 text-[13px] font-medium text-ink-2">{t("agent.interview.tasks")}</legend>
+          <p class="mb-1 text-[12px] text-ink-3">{t("agent.interview.tasksHint")}</p>
+          {#each taskTitles as task (task.key)}
+            <div class="flex items-center gap-3 rounded-xl px-1 py-1">
+              <CheckCircle checked={!!taskPicks[task.key]} label={task.title} onToggle={(v) => (taskPicks[task.key] = v)} />
+              <span class="min-w-0 flex-1 text-[13.5px] {taskPicks[task.key] ? 'text-ink' : 'text-ink-3'}">{task.title}</span>
+            </div>
+          {/each}
+        </fieldset>
+      {/if}
+
+      {#if plan.milestones?.length}
       <fieldset class="flex flex-col gap-3">
         <legend class="mb-1 text-[13px] font-medium text-ink-2">{t("agent.interview.milestones")}</legend>
         {#each plan.milestones ?? [] as m, i (i)}
@@ -162,6 +220,7 @@
         {/each}
         <Button size="sm" variant="ghost" class="self-start" onclick={() => (plan!.milestones ??= []).push({ title: "", due_on: null })}><Plus />{t("agent.interview.addMilestone")}</Button>
       </fieldset>
+      {/if}
     </div>
   {/if}
   {#snippet footer()}

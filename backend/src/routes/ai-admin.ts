@@ -5,19 +5,27 @@ import { HttpError } from "../lib/http.js";
 import { isAiError, fromThrown } from "../ai/errors.js";
 import { AI_ROLES, aiFor, isPlatformError, PlatformError, type AiRole } from "../ai/platform/index.js";
 import {
-  bindRole,
+  addModel,
+  bindRoles,
   createProvider,
+  deleteGroup,
+  deleteModel,
   deleteProvider,
-  deleteRoute,
   draftProvider,
   exportSettings,
   getProviderRow,
+  groupAsRoute,
   importSettings,
+  patchModel,
+  publicBinding,
+  publicGroup,
+  publicModel,
   publicProvider,
-  publicRoute,
   registryPayload,
-  saveRoute,
+  routeInputToGroup,
+  saveGroup,
   updateProvider,
+  type TargetInput,
 } from "../ai/platform/admin-service.js";
 import { callStats, listCalls, STAT_WINDOWS, type StatWindow } from "../ai/platform/call-log.js";
 import { encryptJson, decryptJson, oauthAad, sessionAad } from "../ai/platform/crypto.js";
@@ -25,8 +33,10 @@ import { probeProvider } from "../ai/platform/health.js";
 import { clearTokens, saveTokens } from "../ai/platform/oauth-store.js";
 import { llmClient } from "../ai/platform/clients.js";
 import { loadSnapshot, type ProviderRecord } from "../ai/platform/store.js";
-import { detectVision, memberVision, refreshStaleHints, storeModelHints } from "../ai/platform/vision.js";
-import { leaves, resolveRoute } from "../ai/router/index.js";
+import { detectVision } from "../ai/platform/vision.js";
+import { recordApiFact, resolveProfile, syncModels, syncStaleModels } from "../ai/platform/models.js";
+import { PROFILE_FIELDS } from "../ai/catalog/index.js";
+import { leaves, resolveTarget } from "../ai/router/index.js";
 import { cancelSwitch, deleteRetiredSpace, embeddingOverview, flipSwitch, precheckRoute, startSwitch, summarize } from "../ai/embedding/switch.js";
 import {
   CHATGPT,
@@ -51,21 +61,38 @@ const config = z.record(z.string(), z.unknown());
 const secrets = z.record(z.string(), z.string().max(64 * 1024).nullable());
 const providerCreate = z.object({ family, kind, name, config: config.default({}), secrets: secrets.default({}), enabled: z.boolean().optional() });
 const providerPatch = z.object({ name: name.optional(), config: config.optional(), secrets: secrets.optional(), enabled: z.boolean().optional() });
+const capability = z.enum(["chat", "embedding", "asr"]);
+const modelIdText = z.string().trim().min(1).max(300);
 const memberInput = z.object({
+  model_id: uuid.nullish(),
   provider_id: uuid.nullish(),
-  model: z.string().trim().max(200).nullish(),
-  child_route_id: uuid.nullish(),
+  model: z.string().trim().max(300).nullish(),
+  child_group_id: uuid.nullish(),
   weight: z.number().int().min(1).max(1000).optional(),
   params: z.record(z.string(), z.unknown()).optional(),
   enabled: z.boolean().optional(),
 });
-const routeInput = z.object({
+const groupInput = z.object({
   name,
-  capability: z.enum(["chat", "embedding", "asr"]),
-  strategy: z.enum(["single", "fallback", "round_robin", "load_balance"]),
+  capability,
+  strategy: z.enum(["fallback", "round_robin", "load_balance"]),
   description: z.string().max(500).optional(),
   members: z.array(memberInput).max(32),
 });
+/** Deprecated v1 shape (scripts, older tests). */
+const routeInput = z.object({
+  name,
+  capability,
+  strategy: z.enum(["single", "fallback", "round_robin", "load_balance"]),
+  description: z.string().max(500).optional(),
+  members: z.array(memberInput.extend({ child_route_id: uuid.nullish() })).max(32),
+});
+const targetInput = z.union([
+  z.object({ model_id: uuid }).strict(),
+  z.object({ group_id: uuid }).strict(),
+  z.object({ provider_id: uuid, model: modelIdText }).strict(),
+]);
+const profilePatch = z.partialRecord(z.enum(PROFILE_FIELDS as [string, ...string[]]), z.union([z.string().max(200), z.number(), z.boolean(), z.null()]));
 
 /** Every admin AI error is `{ error, code, hint }` (plus `detail` for validation issues), all 繁中. */
 function parse<T extends z.ZodType>(schema: T, input: unknown): z.infer<T> {
@@ -155,17 +182,19 @@ export default async function aiAdmin(app: FastifyInstance) {
   const testBody = z.object({ model: z.string().trim().max(200).optional(), capability: z.enum(["chat", "embedding"]).optional() });
   async function runTest(p: ProviderRecord, body: z.infer<typeof testBody>, saved = false) {
     const probe = await probeProvider(app.db, p);
-    let models: Array<{ id: string; label?: string; kind?: string }> = [];
+    let models: Array<{ id: string; label?: string; kind?: string; vision?: boolean }> = [];
     let modelsError: { error: string; code: string; hint: string } | null = null;
-    if (p.family === "llm" && p.kind !== "claude-cli" && probe.ok) {
+    let synced: number | null = null;
+    if (probe.ok || p.family === "asr") {
       try {
-        const listed = await llmClient(app.db, p).listModels();
-        models = listed.map((m) => ({ id: m.id, label: m.label, kind: m.kind, ...(m.hints?.vision !== undefined ? { vision: m.hints.vision } : {}) }));
-        // Saved accounts keep the capability hints (vision detection for route members).
-        if (saved) {
-          await storeModelHints(app.db, p.id, listed);
-          platform.invalidate();
-        }
+        // Saved accounts store the listing as model profiles ("測試連線" = "同步模型").
+        const listed = saved ? await syncModels(app.db, p) : p.family === "llm" && p.kind !== "claude-cli" ? { models: await llmClient(app.db, p).listModels(), count: null } : { models: [], count: null };
+        synced = saved ? listed.count : null;
+        models = listed.models.map((m) => {
+          const prof = resolveProfile(p, { model_id: m.id, api: {}, overrides: {} });
+          return { id: m.id, label: m.label, kind: m.kind ?? prof.fields.capability, ...(m.hints?.vision !== undefined ? { vision: m.hints.vision } : {}) };
+        });
+        if (saved) platform.invalidate();
       } catch (e) {
         modelsError = fromThrown(e).toResponse();
       }
@@ -176,7 +205,10 @@ export default async function aiAdmin(app: FastifyInstance) {
       try {
         if (body.capability === "embedding") {
           const r = await llmClient(app.db, p).embed({ model: body.model, inputs: ["測試 test"], inputType: "query" });
-          check = { ok: true, latencyMs: Date.now() - t0, detail_zh: `向量維度 ${r.dims || r.vectors[0]?.length}。`, dims: r.dims || r.vectors[0]?.length };
+          const dims = r.dims || r.vectors[0]?.length;
+          check = { ok: true, latencyMs: Date.now() - t0, detail_zh: `向量維度 ${dims}。`, dims };
+          // A measured fact: the profile learns the model's vector size.
+          if (saved && dims) await recordApiFact(app.db, p.id, body.model, { embedding_dims: dims, capability: "embedding" });
         } else {
           const r = await platform.chatOnce(p, body.model);
           check = { ok: true, latencyMs: Date.now() - t0, detail_zh: `模型回應正常（${r.length} 字）。` };
@@ -186,7 +218,7 @@ export default async function aiAdmin(app: FastifyInstance) {
         check = { ok: false, latencyMs: Date.now() - t0, detail_zh: err?.message_zh ?? (e as PlatformError).message_zh, error: err?.toResponse() ?? (e as PlatformError).toResponse() };
       }
     }
-    return { probe, models, models_error: modelsError, check };
+    return { probe, models, models_error: modelsError, models_synced: synced, check };
   }
 
   app.post("/admin/ai/providers/:id/test", async (request) => {
@@ -337,83 +369,208 @@ export default async function aiAdmin(app: FastifyInstance) {
     return { ok: true, chatgpt_verification_url: p.kind === "chatgpt" ? CHATGPT.verificationUrl : undefined };
   });
 
-  // ---------------------------------------------------------------- routes
+  // ---------------------------------------------------------------- model profiles
 
-  app.get("/admin/ai/routes", async (request) => {
+  app.get("/admin/ai/models", async (request) => {
     await requireAdmin(request);
+    const q = parse(z.object({ provider_id: uuid.optional() }), request.query);
     const snap = await loadSnapshot(app.db);
-    const routes = [...snap.routes.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
-    const hints = await platform.visionHints();
-    return {
-      routes: routes.map((r) => {
-        const out = publicRoute(r, snap);
-        if (r.capability !== "chat") return out;
-        return {
-          ...out,
-          members: out.members.map((m) => {
-            const p = m.provider_id ? snap.providers.get(m.provider_id) : undefined;
-            return p && m.model ? { ...m, vision: memberVision(p, m.model, m.params ?? {}, hints) } : m;
-          }),
-        };
-      }),
-    };
+    const models = [...snap.models.values()].filter((m) => !q.provider_id || m.provider_id === q.provider_id);
+    return { models: models.map((m) => publicModel(m, snap)) };
   });
 
-  /** Vision detection for one account + model (route editor badge); re-reads a stale model listing first. */
+  /** Add a model id the listing does not show (or an account without a listing). */
+  app.post("/admin/ai/models", async (request, reply) => {
+    const user = await requireAdmin(request);
+    const body = parse(z.object({ provider_id: uuid, model_id: modelIdText, overrides: profilePatch.optional() }), request.body);
+    const m = await addModel(platform, body);
+    await audit(request, user.id, "ai.model.create", "ai_model", m.id, { model: body.model_id });
+    return reply.code(201).send({ model: m });
+  });
+
+  /** Enable/hide in pickers; manual overrides per field (`null` clears back to provider/catalog data). */
+  app.patch("/admin/ai/models/:id", async (request) => {
+    const user = await requireAdmin(request);
+    const { id } = parse(idParams, request.params);
+    const body = parse(z.object({ enabled: z.boolean().optional(), overrides: profilePatch.optional() }), request.body);
+    const m = await patchModel(platform, id, body);
+    await audit(request, user.id, "ai.model.update", "ai_model", id, { enabled: body.enabled, fields: Object.keys(body.overrides ?? {}) });
+    return { model: m };
+  });
+
+  /** Bulk enable/hide (e.g. "hide every image model"). */
+  app.post("/admin/ai/models/visibility", async (request) => {
+    const user = await requireAdmin(request);
+    const body = parse(z.object({ ids: z.array(uuid).min(1).max(5000), enabled: z.boolean() }), request.body);
+    const r = await app.db.query("UPDATE ai_models SET enabled=$2, updated_at=now() WHERE id = ANY($1::uuid[])", [body.ids, body.enabled]);
+    await audit(request, user.id, "ai.model.visibility", "ai_model", null, { count: r.rowCount, enabled: body.enabled });
+    platform.invalidate();
+    return { updated: r.rowCount ?? 0 };
+  });
+
+  app.delete("/admin/ai/models/:id", async (request) => {
+    const user = await requireAdmin(request);
+    const { id } = parse(idParams, request.params);
+    await deleteModel(platform, id);
+    await audit(request, user.id, "ai.model.delete", "ai_model", id);
+    return { ok: true };
+  });
+
+  /** 同步模型: re-read the account's model list into profiles. */
+  app.post("/admin/ai/providers/:id/sync", async (request) => {
+    await requireAdmin(request);
+    const { id } = parse(idParams, request.params);
+    const p = await getProviderRow(app.db, id);
+    let count: number;
+    try {
+      count = (await syncModels(app.db, p)).count;
+    } catch (e) {
+      throw isPlatformError(e) ? e : fromThrown(e);
+    }
+    platform.invalidate();
+    const snap = await loadSnapshot(app.db);
+    return { count, models: [...snap.models.values()].filter((m) => m.provider_id === id).map((m) => publicModel(m, snap)) };
+  });
+
+  /** Vision detection for one account + model (badges); re-reads a stale model listing first. */
   app.get("/admin/ai/vision", async (request) => {
     await requireAdmin(request);
     const q = parse(z.object({ provider_id: uuid, model: z.string().trim().min(1).max(300) }), request.query);
     const p = await getProviderRow(app.db, q.provider_id);
     if (p.family !== "llm") return { detected: false, source: "vendor" };
-    if ((await refreshStaleHints(app.db, [p])) > 0) platform.invalidate();
-    return detectVision(p, q.model, await platform.visionHints());
+    if ((await syncStaleModels(app.db, [p])) > 0) platform.invalidate();
+    const snap = await loadSnapshot(app.db);
+    const row = [...snap.models.values()].find((m) => m.provider_id === p.id && m.model_id === q.model);
+    return detectVision(p, q.model, row?.profile ?? resolveProfile(p, { model_id: q.model, api: {}, overrides: {} }));
+  });
+
+  // ---------------------------------------------------------------- groups
+
+  const listGroups = async () => {
+    const snap = await loadSnapshot(app.db);
+    return [...snap.groups.values()].sort((a, b) => a.name.localeCompare(b.name, "zh-Hant")).map((g) => publicGroup(g, snap));
+  };
+
+  app.get("/admin/ai/groups", async (request) => {
+    await requireAdmin(request);
+    return { groups: await listGroups() };
+  });
+
+  app.post("/admin/ai/groups", async (request, reply) => {
+    const user = await requireAdmin(request);
+    const body = parse(groupInput, request.body);
+    const r = await saveGroup(platform, null, body);
+    await audit(request, user.id, "ai.group.create", "ai_group", r.group.id, { name: body.name });
+    return reply.code(201).send(r);
+  });
+
+  app.put("/admin/ai/groups/:id", async (request) => {
+    const user = await requireAdmin(request);
+    const { id } = parse(idParams, request.params);
+    const body = parse(groupInput, request.body);
+    const r = await saveGroup(platform, id, body);
+    await audit(request, user.id, "ai.group.update", "ai_group", id, { name: body.name });
+    return r;
+  });
+
+  app.delete("/admin/ai/groups/:id", async (request) => {
+    const user = await requireAdmin(request);
+    const { id } = parse(idParams, request.params);
+    await deleteGroup(platform, id);
+    await audit(request, user.id, "ai.group.delete", "ai_group", id);
+    return { ok: true };
+  });
+
+  // ---------------------------------------------------------------- role bindings
+
+  const bindingsPayload = async () => {
+    const snap = await loadSnapshot(app.db);
+    const status = await platform.statusDetail();
+    return AI_ROLES.map((role) => ({ ...publicBinding(role, snap), status: status.find((s) => s.role === role) ?? null }));
+  };
+
+  app.get("/admin/ai/bindings", async (request) => {
+    await requireAdmin(request);
+    return { bindings: await bindingsPayload() };
+  });
+
+  /** Bulk bind: every role in `roles` → one model or group (`target: null` unbinds them). */
+  const bulkBody = z.object({ roles: z.array(z.enum(AI_ROLES)).min(1).max(AI_ROLES.length), target: targetInput.nullable(), params: z.record(z.string(), z.unknown()).optional() });
+  app.put("/admin/ai/bindings", async (request) => {
+    const user = await requireAdmin(request);
+    const body = parse(bulkBody, request.body);
+    const r = await bindRoles(platform, body.roles as AiRole[], body.target as TargetInput | null, body.params, user.id);
+    await audit(request, user.id, "ai.role.bind", "ai_role", null, { roles: body.roles, target: body.target });
+    await platform.recompute();
+    return { bindings: await bindingsPayload(), created_space: r.space, warnings: r.warnings };
+  });
+
+  app.put("/admin/ai/bindings/:role", async (request) => {
+    const user = await requireAdmin(request);
+    const { role } = parse(z.object({ role: z.enum(AI_ROLES) }), request.params);
+    const body = parse(bulkBody.omit({ roles: true }), request.body);
+    const r = await bindRoles(platform, [role as AiRole], body.target as TargetInput | null, body.params, user.id);
+    await audit(request, user.id, "ai.role.bind", "ai_role", null, { roles: [role], target: body.target });
+    await platform.recompute();
+    return { bindings: await bindingsPayload(), created_space: r.space, warnings: r.warnings };
+  });
+
+  /** Live chips for the routing diagram: per model (attempts) and per role (calls), last 24 h. */
+  app.get("/admin/ai/overview", async (request) => {
+    await requireAdmin(request);
+    const stats = await callStats(app.db, "24h");
+    return { window: stats.window, models: stats.members, roles: stats.roles };
+  });
+
+  // ---------------------------------------------------------------- legacy routes API (deprecated aliases)
+
+  app.get("/admin/ai/routes", async (request) => {
+    await requireAdmin(request);
+    return { routes: (await listGroups()).map(groupAsRoute) };
   });
 
   app.post("/admin/ai/routes", async (request, reply) => {
     const user = await requireAdmin(request);
     const body = parse(routeInput, request.body);
-    const r = await saveRoute(platform, null, body);
-    await audit(request, user.id, "ai.route.create", "ai_route", r.route.id, { name: body.name });
-    return reply.code(201).send(r);
+    const r = await saveGroup(platform, null, routeInputToGroup(body));
+    await audit(request, user.id, "ai.group.create", "ai_group", r.group.id, { name: body.name });
+    return reply.code(201).send({ route: groupAsRoute(r.group), group: r.group, warnings: r.warnings });
   });
 
   app.put("/admin/ai/routes/:id", async (request) => {
     const user = await requireAdmin(request);
     const { id } = parse(idParams, request.params);
     const body = parse(routeInput, request.body);
-    const r = await saveRoute(platform, id, body);
-    await audit(request, user.id, "ai.route.update", "ai_route", id, { name: body.name });
-    return r;
+    const r = await saveGroup(platform, id, routeInputToGroup(body));
+    await audit(request, user.id, "ai.group.update", "ai_group", id, { name: body.name });
+    return { route: groupAsRoute(r.group), group: r.group, warnings: r.warnings };
   });
 
   app.delete("/admin/ai/routes/:id", async (request) => {
     const user = await requireAdmin(request);
     const { id } = parse(idParams, request.params);
-    await deleteRoute(platform, id);
-    await audit(request, user.id, "ai.route.delete", "ai_route", id);
+    await deleteGroup(platform, id);
+    await audit(request, user.id, "ai.group.delete", "ai_group", id);
     return { ok: true };
   });
 
-  // ---------------------------------------------------------------- roles + health
-
   app.get("/admin/ai/roles", async (request) => {
     await requireAdmin(request);
-    const snap = await loadSnapshot(app.db);
-    const status = await platform.statusDetail();
-    return {
-      roles: AI_ROLES.map((role) => ({ role, route_id: snap.roles.get(role) ?? null, status: status.find((s) => s.role === role) ?? null })),
-    };
+    const b = await bindingsPayload();
+    return { roles: b.map((x) => ({ role: x.role, route_id: x.target?.type === "group" ? x.target.group_id : null, target: x.target, status: x.status })) };
   });
 
   app.put("/admin/ai/roles/:role", async (request) => {
     const user = await requireAdmin(request);
     const { role } = parse(z.object({ role: z.enum(AI_ROLES) }), request.params);
     const { route_id } = parse(z.object({ route_id: uuid.nullable() }), request.body);
-    const r = await bindRole(platform, role as AiRole, route_id, user.id);
-    await audit(request, user.id, "ai.role.bind", "ai_role", null, { role, route_id });
+    const r = await bindRoles(platform, [role as AiRole], route_id ? { group_id: route_id } : null, undefined, user.id);
+    await audit(request, user.id, "ai.role.bind", "ai_role", null, { roles: [role], target: route_id ? { group_id: route_id } : null });
     const status = await platform.recompute();
     return { role, route_id, status: status.find((s) => s.role === role) ?? null, created_space: r.space };
   });
+
+  // ---------------------------------------------------------------- health
 
   app.get("/admin/ai/health", async (request) => {
     await requireAdmin(request);
@@ -468,6 +625,16 @@ export default async function aiAdmin(app: FastifyInstance) {
 
   // ---------------------------------------------------------------- embeddings
 
+  /** `target` (model or group) or the deprecated `route_id` (= group id). */
+  const embeddingBody = z.object({ target: z.union([z.object({ model_id: uuid }), z.object({ group_id: uuid })]).optional(), route_id: uuid.optional(), params: z.record(z.string(), z.unknown()).optional() });
+  const embeddingTarget = (b: z.infer<typeof embeddingBody>) => {
+    const t = b.target as { model_id?: string; group_id?: string } | undefined;
+    if (t?.model_id) return { model_ref: t.model_id, group_id: null, params: b.params ?? {} };
+    const g = t?.group_id ?? b.route_id;
+    if (!g) throw new PlatformError("route_invalid", { message_zh: "請選擇 embedding 模型或群組。" });
+    return { model_ref: null, group_id: g, params: {} };
+  };
+
   app.get("/admin/ai/embedding", async (request) => {
     await requireAdmin(request);
     return embeddingOverview(platform);
@@ -475,10 +642,10 @@ export default async function aiAdmin(app: FastifyInstance) {
 
   app.post("/admin/ai/embedding/precheck", async (request) => {
     await requireAdmin(request);
-    const { route_id } = parse(z.object({ route_id: uuid }), request.body);
+    const target = embeddingTarget(parse(embeddingBody, request.body));
     const snap = await loadSnapshot(app.db);
-    const tree = resolveRoute(snap, route_id);
-    if (!leaves(tree).length) throw new PlatformError("route_invalid", { message_zh: "這條路由沒有成員。" });
+    const tree = resolveTarget(snap, target, "embedding", "embedding");
+    if (!leaves(tree).length) throw new PlatformError("route_invalid", { message_zh: "這個群組沒有成員。" });
     const pre = await precheckRoute(platform, tree);
     return {
       same_identity: pre.sameIdentity,
@@ -491,9 +658,9 @@ export default async function aiAdmin(app: FastifyInstance) {
 
   app.post("/admin/ai/embedding/switch", async (request, reply) => {
     const user = await requireAdmin(request);
-    const { route_id } = parse(z.object({ route_id: uuid }), request.body);
-    const space = await startSwitch(platform, await loadSnapshot(app.db), route_id, user.id);
-    await audit(request, user.id, "ai.embedding.switch_start", "embedding_space", space.id, { route_id });
+    const target = embeddingTarget(parse(embeddingBody, request.body));
+    const space = await startSwitch(platform, await loadSnapshot(app.db), target, user.id);
+    await audit(request, user.id, "ai.embedding.switch_start", "embedding_space", space.id, { target });
     return reply.code(201).send({ space });
   });
 

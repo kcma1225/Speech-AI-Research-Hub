@@ -47,7 +47,7 @@
   let notes = $state("");
   let savedNotes = $state("");
   let citeKey = $state("");
-  let notesLayout = $state<"split" | "edit" | "preview">("edit");
+  let notesLayout = $state<"split" | "edit" | "preview">(session.user?.preferences.editor.layout ?? "split");
   const canEditStudy = $derived(Boolean(study?.canEdit && sp));
 
   async function load() {

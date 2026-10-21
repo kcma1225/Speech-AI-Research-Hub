@@ -20,6 +20,7 @@ import type { ChatEvent, ContentBlock, ProviderState, TextBlock, ToolResultBlock
 import { transaction, type Queryable } from "../db.js";
 import { CURRENT_USER_COLUMNS, toCurrentUser, type CurrentUser } from "../lib/auth.js";
 import { conflict, HttpError, notFound } from "../lib/http.js";
+import { answersText, askUserInput, validateAnswers, type AnswersInput, type StoredAnswers } from "./ask.js";
 import { EventWriter, insertEvent } from "./events.js";
 import { memoriesForContext, stripMemoryMarkers, usedMemories } from "./memory.js";
 import { decide, grantScope } from "./policy.js";
@@ -29,8 +30,12 @@ import {
 } from "./prompt.js";
 import { getAgentSettings } from "./settings.js";
 import "./tools/index.js";
+import { INTERVIEW_INTRO, MATURITY_QUESTION } from "./tools/interview.js";
 import { getAgentTool, listAgentTools, toolJsonSchema, type AgentToolContext, type AgentToolDef } from "./tools/registry.js";
 import { conversationView, messageView, runView, toolCallView, type ConversationRow, type MessageRow, type RunRow, type ToolCallRow } from "./views.js";
+
+/** A user turn: free text and/or the answers to an `ask_user` card; page context from the page (or the edited message). */
+export type TurnInput = { text?: string; answers?: AnswersInput; context?: PageContext | null };
 
 export type ModelCall = (req: RoleChatRequest, ctx: { userId: string; signal: AbortSignal; onRoute?: (info: { model: string }) => void }) => AsyncIterable<ChatEvent>;
 export type FastCall = (req: RoleChatRequest, ctx: { userId: string }) => Promise<string>;
@@ -207,7 +212,7 @@ export class AgentRuntime {
 
   /** The last assistant message with tool_use blocks that has no tool message yet (the open step). */
   private async openStep(db: Queryable, conversationId: string) {
-    const last = (await db.query<MessageRow & { content: ContentBlock[] }>("SELECT * FROM agent_messages WHERE conversation_id=$1 AND role IN ('user','assistant','tool') ORDER BY seq DESC LIMIT 1", [conversationId])).rows[0];
+    const last = (await db.query<MessageRow & { content: ContentBlock[] }>("SELECT * FROM agent_messages WHERE conversation_id=$1 AND hidden_by IS NULL AND role IN ('user','assistant','tool') ORDER BY seq DESC LIMIT 1", [conversationId])).rows[0];
     if (!last || last.role !== "assistant" || !last.content.some((b) => b.type === "tool_use")) return null;
     return last;
   }
@@ -257,7 +262,33 @@ export class AgentRuntime {
       `INSERT INTO conversations(user_id,mode,context,study_id,autopilot,memory_enabled,title,title_source) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
       [user.id, input.mode ?? "chat", JSON.stringify(ctx ?? {}), ctx?.studyId ?? null, input.mode === "interview" ? false : (input.autopilot ?? settings.autopilot_default), input.mode === "interview" ? false : settings.memory_enabled, input.title?.slice(0, 120) ?? "", input.title ? "user" : "auto"],
     )).rows[0]!;
+    if (row.mode === "interview") await this.seedInterview(row.id, user.id);
     return conversationView(row);
+  }
+
+  /**
+   * The interview opens with a fixed question card (「這個研究目前進行到哪個程度？」) without a model call: a finished run
+   * whose assistant message holds one `ask_user` call, its result and the tool message (a valid transcript).
+   */
+  private async seedInterview(conversationId: string, userId: string) {
+    await transaction(this.db, async (client) => {
+      const run = (await client.query<{ id: string }>(
+        "INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,stop_reason,finished_at) VALUES($1,$2,'done',$3,'awaiting_input',now()) RETURNING id",
+        [conversationId, userId, this.limits.maxSteps],
+      )).rows[0]!;
+      const use: ToolUseBlock = { type: "tool_use", id: "seed_maturity", name: "ask_user", input: MATURITY_QUESTION };
+      const msg = (await client.query<{ id: string }>(
+        "INSERT INTO agent_messages(conversation_id,run_id,role,content,text) VALUES($1,$2,'assistant',$3,$4) RETURNING id",
+        [conversationId, run.id, JSON.stringify([{ type: "text", text: INTERVIEW_INTRO }, use]), INTERVIEW_INTRO],
+      )).rows[0]!;
+      const resultText = envelope("ask_user", "問題卡片已顯示給使用者；使用者的回答會是下一則使用者訊息。", { untrusted: false });
+      await client.query(
+        `INSERT INTO tool_calls(run_id,conversation_id,message_id,step,position,provider_call_id,tool,args,risk,status,summary,result,result_text,finished_at)
+         VALUES($1,$2,$3,0,0,$4,'ask_user',$5,'read','done',$6,$7,$8,now())`,
+        [run.id, conversationId, msg.id, use.id, JSON.stringify(MATURITY_QUESTION), "詢問 1 個問題", JSON.stringify({ data: { questions: 1, status: "shown_to_user" }, links: [], source: null, untrusted: false }), resultText],
+      );
+      await client.query("INSERT INTO agent_messages(conversation_id,run_id,role,content) VALUES($1,$2,'tool',$3)", [conversationId, run.id, JSON.stringify([{ type: "tool_result", tool_use_id: use.id, content: resultText }])]);
+    });
   }
 
   /** Validates and enriches the page context (study title; ids that do not resolve are dropped). */
@@ -282,15 +313,67 @@ export class AgentRuntime {
     return st === "ok" || st === "degraded";
   }
 
-  /** Adds a user message and starts a run. A pending step is superseded (its open approvals are denied). */
-  async postMessage(user: CurrentUser, conversationId: string, text: string, pageContext: PageContext | null) {
-    const ctx = await this.resolveContext(pageContext);
+  /**
+   * The content of a user turn: free text, or the answers to an `ask_user` card on the current branch (validated
+   * against its questions; `beforeSeq` = the edited message, so the card must come before it). Inside the lock.
+   */
+  private async buildTurn(client: Queryable, conversationId: string, input: TurnInput, ctx: PageContext | null, beforeSeq: number | null) {
+    const hint = pageContextText(ctx);
+    const head: TextBlock[] = hint ? [{ type: "text", text: hint }] : [];
+    const extra = input.text?.trim() ?? "";
+    if (!input.answers) {
+      if (!extra) throw new HttpError(400, "訊息不能是空的（最多 20 000 字）。");
+      return { blocks: [...head, { type: "text" as const, text: extra }], text: extra, answers: null as StoredAnswers | null };
+    }
+    const call = (await client.query<ToolCallRow & { mseq: string; hidden_by: string | null }>(
+      "SELECT tc.*, m.seq AS mseq, m.hidden_by FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id WHERE tc.id=$1 AND tc.conversation_id=$2",
+      [input.answers.tool_call_id, conversationId],
+    )).rows[0];
+    if (!call || call.tool !== "ask_user" || call.hidden_by || (beforeSeq !== null && Number(call.mseq) >= beforeSeq)) throw notFound("找不到這張問題卡片。");
+    if (call.status !== "done") throw conflict("這張問題卡片已經無法回答。");
+    const args = askUserInput.safeParse(call.edited_args ?? call.args);
+    if (!args.success) throw conflict("這張問題卡片的格式不正確。");
+    const answered = (await client.query(
+      "SELECT 1 FROM agent_messages WHERE conversation_id=$1 AND hidden_by IS NULL AND role='user' AND answers->>'toolCallId'=$2 AND ($3::bigint IS NULL OR seq<$3) LIMIT 1",
+      [conversationId, call.id, beforeSeq],
+    )).rowCount;
+    if (answered) throw conflict("這些問題已經回答過了；要改的話請按「修改答案」。");
+    const stored = validateAnswers(args.data, input.answers);
+    const out = answersText(args.data, stored);
+    const model = extra ? `${out.model}\n\n補充：${extra}` : out.model;
+    const display = extra ? `${out.display}\n\n${extra}` : out.display;
+    return { blocks: [...head, { type: "text" as const, text: model }], text: display, answers: stored };
+  }
+
+  /** Inserts the user turn, updates the conversation's context and opens a run (inside the lock). */
+  private async insertTurn(client: Queryable, conv: ConversationRow, user: CurrentUser, turn: Awaited<ReturnType<AgentRuntime["buildTurn"]>>, ctx: PageContext | null, versionOf: string | null) {
+    const msg = (await client.query<MessageRow>(
+      "INSERT INTO agent_messages(conversation_id,role,content,text,page_context,answers,version_of) VALUES($1,'user',$2,$3,$4,$5,$6) RETURNING *",
+      [conv.id, JSON.stringify(turn.blocks), turn.text, ctx ? JSON.stringify(ctx) : null, turn.answers ? JSON.stringify(turn.answers) : null, versionOf],
+    )).rows[0]!;
+    const conversation = (await client.query<ConversationRow>(
+      "UPDATE conversations SET updated_at=now(), context=CASE WHEN $2::jsonb IS NULL THEN context ELSE $2::jsonb END, study_id=CASE WHEN $2::jsonb IS NULL THEN study_id ELSE $3::uuid END WHERE id=$1 RETURNING *",
+      [conv.id, ctx ? JSON.stringify(ctx) : null, ctx?.studyId ?? null],
+    )).rows[0]!;
+    const run = (await client.query<RunRow>(
+      "INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,autopilot) VALUES($1,$2,'running',$3,$4) RETURNING *",
+      [conv.id, user.id, this.limits.maxSteps, conv.autopilot],
+    )).rows[0]!;
+    await client.query("UPDATE agent_messages SET run_id=$2 WHERE id=$1", [msg.id, run.id]);
+    return { msg: { ...msg, run_id: run.id }, run, conversation };
+  }
+
+  /** Adds a user message (text or `ask_user` answers) and starts a run. A pending step is superseded (its open approvals are denied). */
+  async postMessage(user: CurrentUser, conversationId: string, input: TurnInput | string, pageContext: PageContext | null = null) {
+    const turnInput: TurnInput = typeof input === "string" ? { text: input, context: pageContext } : input;
+    const ctx = await this.resolveContext(turnInput.context ?? null);
     const result = await transaction(this.db, async (client) => {
       const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, user.id])).rows[0];
       if (!conv) throw notFound("找不到這個對話。");
       const events: { type: "tool_call" | "message"; data: Record<string, unknown> }[] = [];
       const active = await this.activeRun(client, conv.id, true);
       if (active?.status === "running") throw conflict("AI 正在回覆中，請先按「停止」或等它完成。");
+      const turn = await this.buildTurn(client, conv.id, turnInput, ctx, null);
       if (active) {
         events.push(...(await this.closeStep(client, conv.id, active.status === "awaiting_approval" ? "supersede" : "cancel")));
         await client.query("UPDATE agent_runs SET status=$2, stop_reason=$3, finished_at=now(), updated_at=now() WHERE id=$1", [active.id, active.status === "awaiting_approval" ? "done" : "cancelled", "superseded"]);
@@ -298,22 +381,8 @@ export class AgentRuntime {
         // A run that stopped mid-step (crash, limit) leaves an open step: close it so the transcript stays valid.
         events.push(...(await this.closeStep(client, conv.id, "cancel")));
       }
-      const hint = pageContextText(ctx);
-      const blocks: TextBlock[] = [...(hint ? [{ type: "text" as const, text: hint }] : []), { type: "text", text }];
-      const msg = (await client.query<MessageRow>(
-        "INSERT INTO agent_messages(conversation_id,role,content,text,page_context) VALUES($1,'user',$2,$3,$4) RETURNING *",
-        [conv.id, JSON.stringify(blocks), text, ctx ? JSON.stringify(ctx) : null],
-      )).rows[0]!;
-      const conversation = (await client.query<ConversationRow>(
-        "UPDATE conversations SET updated_at=now(), context=CASE WHEN $2::jsonb IS NULL THEN context ELSE $2::jsonb END, study_id=CASE WHEN $2::jsonb IS NULL THEN study_id ELSE $3::uuid END WHERE id=$1 RETURNING *",
-        [conv.id, ctx ? JSON.stringify(ctx) : null, ctx?.studyId ?? null],
-      )).rows[0]!;
-      const run = (await client.query<RunRow>(
-        "INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,autopilot) VALUES($1,$2,'running',$3,$4) RETURNING *",
-        [conv.id, user.id, this.limits.maxSteps, conv.autopilot],
-      )).rows[0]!;
-      await client.query("UPDATE agent_messages SET run_id=$2 WHERE id=$1", [msg.id, run.id]);
-      return { events, msg: { ...msg, run_id: run.id }, run, conversation, superseded: active?.id ?? null };
+      const out = await this.insertTurn(client, conv, user, turn, ctx, null);
+      return { events, ...out, superseded: active?.id ?? null };
     });
     if (result.superseded) await this.emitRun(result.superseded);
     await this.emitAll(conversationId, result.superseded, result.events);
@@ -322,6 +391,101 @@ export class AgentRuntime {
     await insertEvent(this.db, conversationId, result.run.id, "run", { run: runView(result.run) });
     this.kick(result.run.id);
     return { message: messageView(result.msg), run: runView(result.run) };
+  }
+
+  /**
+   * Edit (or resubmit = regenerate) one user message of the current branch: the active run is cancelled first, every
+   * current-branch message from it on is hidden (`hidden_by` = that message; kept as the previous version), the new
+   * version is appended in the same version group and a run starts. `input` without text/answers resubmits the same
+   * content. Pending approvals in the discarded tail were cancelled by the cancel; executed writes are not undone.
+   */
+  async editMessage(user: CurrentUser, conversationId: string, messageId: string, input: TurnInput) {
+    await this.ownConversationOrThrow(user, conversationId);
+    await this.cancel(user, conversationId, "superseded");
+    const result = await transaction(this.db, async (client) => {
+      const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, user.id])).rows[0];
+      if (!conv) throw notFound("找不到這個對話。");
+      const target = (await client.query<MessageRow & { version_of: string | null; answers: StoredAnswers | null; content: TextBlock[] }>(
+        "SELECT * FROM agent_messages WHERE id=$1 AND conversation_id=$2 AND role='user' AND hidden_by IS NULL",
+        [messageId, conv.id],
+      )).rows[0];
+      if (!target) throw notFound("找不到這則訊息。");
+      if (await this.activeRun(client, conv.id, true)) throw conflict("AI 正在回覆中，請稍後再試。");
+      const events = await this.closeStep(client, conv.id, "cancel");
+      const seq = Number(target.seq);
+      const ctx = input.context !== undefined ? await this.resolveContext(input.context) : ((target.page_context as PageContext | null) ?? null);
+      let turn: Awaited<ReturnType<AgentRuntime["buildTurn"]>>;
+      if (input.answers || input.text?.trim()) {
+        if (target.answers && !input.answers) throw new HttpError(400, "這則是問題卡片的回答，請用「修改答案」。");
+        turn = await this.buildTurn(client, conv.id, input, ctx, seq);
+      } else if (target.answers) {
+        // Regenerate after an answered card: the same answers again.
+        turn = { blocks: target.content, text: target.text, answers: target.answers };
+      } else {
+        turn = await this.buildTurn(client, conv.id, { text: target.text }, ctx, seq);
+      }
+      const firstUser = (await client.query<{ id: string }>("SELECT id FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq LIMIT 1", [conv.id])).rows[0];
+      await this.hideFrom(client, conv.id, seq, target.id);
+      if (firstUser?.id === target.id) await client.query("UPDATE conversations SET title='' WHERE id=$1 AND title_source='auto'", [conv.id]);
+      const out = await this.insertTurn(client, conv, user, turn, ctx, target.version_of ?? target.id);
+      return { events, ...out };
+    });
+    await this.emitAll(conversationId, null, result.events);
+    await insertEvent(this.db, conversationId, null, "branch", { messageId: result.msg.id });
+    await insertEvent(this.db, conversationId, result.run.id, "message", { message: messageView(result.msg) });
+    await insertEvent(this.db, conversationId, result.run.id, "conversation", { conversation: conversationView(result.conversation) });
+    await insertEvent(this.db, conversationId, result.run.id, "run", { run: runView(result.run) });
+    this.kick(result.run.id);
+    return { message: messageView(result.msg), run: runView(result.run) };
+  }
+
+  /** 「重新產生」: resubmits the last user message of the current branch as a new version. */
+  async regenerate(user: CurrentUser, conversationId: string) {
+    await this.ownConversationOrThrow(user, conversationId);
+    const last = (await this.db.query<{ id: string }>("SELECT id FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq DESC LIMIT 1", [conversationId])).rows[0];
+    if (!last) throw conflict("這個對話還沒有可以重新產生的訊息。");
+    return this.editMessage(user, conversationId, last.id, {});
+  }
+
+  /**
+   * ‹ 1/2 ›: makes another version of a user message current. The current tail (from the current version on) is
+   * hidden under that version, and the chosen version's own tail comes back. No run starts.
+   */
+  async activateVersion(user: CurrentUser, conversationId: string, messageId: string) {
+    await this.ownConversationOrThrow(user, conversationId);
+    await this.cancel(user, conversationId, "superseded");
+    const changed = await transaction(this.db, async (client) => {
+      await this.lockConversation(client, conversationId);
+      const target = (await client.query<{ id: string; seq: string; version_of: string | null; hidden_by: string | null }>(
+        "SELECT id,seq,version_of,hidden_by FROM agent_messages WHERE id=$1 AND conversation_id=$2 AND role='user'", [messageId, conversationId],
+      )).rows[0];
+      if (!target) throw notFound("找不到這則訊息。");
+      if (!target.hidden_by) return false;
+      const group = target.version_of ?? target.id;
+      const current = (await client.query<{ id: string; seq: string }>(
+        "SELECT id,seq FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL AND coalesce(version_of,id)=$2 LIMIT 1", [conversationId, group],
+      )).rows[0];
+      if (target.hidden_by !== target.id || !current) throw conflict("這個版本目前無法切換。");
+      if (await this.activeRun(client, conversationId, true)) throw conflict("AI 正在回覆中，請稍後再試。");
+      await this.closeStep(client, conversationId, "cancel");
+      await this.hideFrom(client, conversationId, Number(current.seq), current.id);
+      await client.query("UPDATE agent_messages SET hidden_by=NULL WHERE conversation_id=$1 AND hidden_by=$2", [conversationId, target.id]);
+      await client.query("UPDATE conversations SET updated_at=now() WHERE id=$1", [conversationId]);
+      return true;
+    });
+    if (changed) await insertEvent(this.db, conversationId, null, "branch", { messageId });
+    return { ok: true, changed };
+  }
+
+  /** Hides the current branch from `seq` on under `by`; a compaction summary covering it is dropped (rebuilt on demand). */
+  private async hideFrom(client: Queryable, conversationId: string, seq: number, by: string) {
+    await client.query("UPDATE agent_messages SET hidden_by=$3 WHERE conversation_id=$1 AND hidden_by IS NULL AND seq>=$2", [conversationId, seq, by]);
+    await client.query("UPDATE conversations SET summary=NULL, summary_until=NULL WHERE id=$1 AND summary_until>=$2", [conversationId, seq]);
+  }
+
+  private async ownConversationOrThrow(user: CurrentUser, conversationId: string) {
+    const ok = (await this.db.query("SELECT 1 FROM conversations WHERE id=$1 AND user_id=$2", [conversationId, user.id])).rowCount;
+    if (!ok) throw notFound("找不到這個對話。");
   }
 
   /** Continue after a limit, a failure or an LLM outage (no new user message). */
@@ -335,7 +499,7 @@ export class AgentRuntime {
         const run = (await client.query<RunRow>("UPDATE agent_runs SET status='running', next_retry_at=NULL, updated_at=now() WHERE id=$1 RETURNING *", [active.id])).rows[0]!;
         return { run, events: [] as Awaited<ReturnType<AgentRuntime["closeStep"]>> };
       }
-      const last = (await client.query<{ role: string }>("SELECT role FROM agent_messages WHERE conversation_id=$1 AND role IN ('user','assistant','tool') ORDER BY seq DESC LIMIT 1", [conv.id])).rows[0];
+      const last = (await client.query<{ role: string }>("SELECT role FROM agent_messages WHERE conversation_id=$1 AND hidden_by IS NULL AND role IN ('user','assistant','tool') ORDER BY seq DESC LIMIT 1", [conv.id])).rows[0];
       if (!last) throw conflict("這個對話還沒有訊息。");
       const events = await this.closeStep(client, conv.id, "cancel");
       const run = (await client.query<RunRow>("INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,autopilot) VALUES($1,$2,'running',$3,$4) RETURNING *", [conv.id, user.id, this.limits.maxSteps, conv.autopilot])).rows[0]!;
@@ -348,13 +512,13 @@ export class AgentRuntime {
   }
 
   /** Stops the active run: the executor (if here) is aborted; pending calls are cancelled with synthetic results. */
-  async cancel(user: CurrentUser, conversationId: string) {
+  async cancel(user: CurrentUser, conversationId: string, reason: "cancelled" | "superseded" = "cancelled") {
     const out = await transaction(this.db, async (client) => {
       const conv = (await client.query("SELECT id FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, user.id])).rows[0];
       if (!conv) throw notFound("找不到這個對話。");
       const active = await this.activeRun(client, conversationId, true);
       if (!active) return null;
-      await client.query("UPDATE agent_runs SET status='cancelled', stop_reason='cancelled', finished_at=now(), updated_at=now(), next_retry_at=NULL WHERE id=$1", [active.id]);
+      await client.query("UPDATE agent_runs SET status='cancelled', stop_reason=$2, finished_at=now(), updated_at=now(), next_retry_at=NULL WHERE id=$1", [active.id, reason]);
       const local = this.controllers.get(active.id);
       // A local executor finalizes itself after it stops; otherwise close the step now.
       const events = local ? [] : await this.closeStep(client, conversationId, "cancel");
@@ -515,6 +679,13 @@ export class AgentRuntime {
         await writer.drain();
         await this.emitAll(conv.id, run.id, events);
         if (stopAfterStep) return this.finish(run, "done", { stopReason: "repeat", notice: stopAfterStep });
+        // A question card was shown: the turn ends here; the answers come back as the next user message.
+        const asked = await this.db.query("SELECT 1 FROM tool_calls WHERE message_id=$1 AND tool='ask_user' AND status='done' LIMIT 1", [step.id]);
+        if (asked.rowCount) {
+          await this.finish(run, "done", { stopReason: "awaiting_input" });
+          void this.maybeTitle(conv, user).catch(() => undefined);
+          return;
+        }
         continue;
       }
 
@@ -649,7 +820,9 @@ export class AgentRuntime {
   /** Keeps text streamed before a stop (marked 已中止); never tool calls of an unfinished step. */
   private async savePartial(run: RunRow, conv: ConversationRow, text: string, reasoning: string, writer: EventWriter) {
     const display = stripMemoryMarkers(text).trim();
-    if (!display) return writer.emit("step_discarded", { runId: run.id });
+    // An edit superseded the run: its tail is discarded, so a late partial must not land on the new branch.
+    const reason = (await this.db.query<{ stop_reason: string | null }>("SELECT stop_reason FROM agent_runs WHERE id=$1", [run.id])).rows[0]?.stop_reason;
+    if (!display || reason === "superseded") return writer.emit("step_discarded", { runId: run.id });
     const m = (await this.db.query<MessageRow>(
       "INSERT INTO agent_messages(conversation_id,run_id,role,content,text,reasoning,status) VALUES($1,$2,'assistant',$3,$4,$5,'cancelled') RETURNING *",
       [conv.id, run.id, JSON.stringify([{ type: "text", text }]), display, reasoning],
@@ -659,7 +832,7 @@ export class AgentRuntime {
 
   /** Model context with compaction: clear old tool results, then summarise older turns (role `fast`). */
   private async contextMessages(conv: ConversationRow, user: CurrentUser, system: string) {
-    const load = async () => (await this.db.query<StoredMessage>("SELECT id,seq,role,content,text,reasoning,provider_state,status FROM agent_messages WHERE conversation_id=$1 ORDER BY seq", [conv.id])).rows;
+    const load = async () => (await this.db.query<StoredMessage>("SELECT id,seq,role,content,text,reasoning,provider_state,status FROM agent_messages WHERE conversation_id=$1 AND hidden_by IS NULL ORDER BY seq", [conv.id])).rows;
     let rows = await load();
     const th = this.options.compaction ?? { clearAbove: 24_000, compactAbove: 40_000 };
     const base = { summary: conv.summary, summaryUntil: conv.summary_until ? Number(conv.summary_until) : null };
@@ -704,7 +877,7 @@ export class AgentRuntime {
     const prior = (await this.db.query<{ tool: string; args: unknown; status: string }>("SELECT tool,args,status FROM tool_calls WHERE run_id=$1", [run.id])).rows.map((r) => ({ ...r, key: `${r.tool}:${stable(r.args)}` }));
     const settings = await getAgentSettings(this.db, user.id);
     const memoryOn = conv.mode === "chat" && settings.memory_enabled && conv.memory_enabled;
-    const userText = (await this.db.query<{ text: string }>("SELECT text FROM agent_messages WHERE conversation_id=$1 AND role='user' ORDER BY seq DESC LIMIT 20", [conv.id])).rows.map((r) => r.text).join("\n");
+    const userText = (await this.db.query<{ text: string }>("SELECT text FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq DESC LIMIT 20", [conv.id])).rows.map((r) => r.text).join("\n");
     type Planned = { pos: number; use: ToolUseBlock; def: AgentToolDef | null; args: Record<string, unknown> | null; error: string | null; status?: string };
     const planned: Planned[] = calls.map((use, pos) => {
       const def = getAgentTool(use.name);
@@ -850,7 +1023,7 @@ export class AgentRuntime {
   private async maybeTitle(conv: ConversationRow, user: CurrentUser) {
     const cur = (await this.db.query<{ title: string; title_source: string }>("SELECT title,title_source FROM conversations WHERE id=$1", [conv.id])).rows[0];
     if (!cur || cur.title || cur.title_source === "user") return;
-    const first = (await this.db.query<{ text: string }>("SELECT text FROM agent_messages WHERE conversation_id=$1 AND role='user' ORDER BY seq LIMIT 1", [conv.id])).rows[0]?.text ?? "";
+    const first = (await this.db.query<{ text: string }>("SELECT text FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq LIMIT 1", [conv.id])).rows[0]?.text ?? "";
     if (!first) return;
     let title = "";
     try {

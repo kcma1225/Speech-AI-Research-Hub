@@ -58,21 +58,22 @@ describe.skipIf(!hasTestDb)("migration 0100 (admin role)", () => {
 
     await migrate(pool as never, log); // applies 0100 (and anything after it)
 
-    const users = (await pool.query("SELECT name,role,is_admin,is_owner FROM users ORDER BY lower(name)")).rows;
+    // Later migrations (0103) keep the old name as the username; the initial admin's display name becomes 系統管理員.
+    const users = (await pool.query("SELECT username AS name,role,is_admin,is_owner FROM users ORDER BY username")).rows;
     expect(users).toEqual([
       { name: "admin", role: "admin", is_admin: true, is_owner: true },
-      { name: "Bob", role: "student", is_admin: false, is_owner: false },
-      { name: "Carol", role: "student", is_admin: false, is_owner: false },
-      { name: "Prof", role: "professor", is_admin: false, is_owner: false },
+      { name: "bob", role: "student", is_admin: false, is_owner: false },
+      { name: "carol", role: "student", is_admin: false, is_owner: false },
+      { name: "prof", role: "professor", is_admin: false, is_owner: false },
     ]);
     const members = async (s: string) => (await pool.query("SELECT u.name,m.role FROM study_members m JOIN users u ON u.id=m.user_id WHERE study_id=$1 ORDER BY lower(u.name)", [s])).rows;
     expect(await members(shared)).toEqual([{ name: "Bob", role: "owner" }, { name: "Carol", role: "member" }, { name: "Prof", role: "advisor" }]);
-    expect(await members(lonely)).toEqual([{ name: "admin", role: "owner" }]); // nobody to hand it to
+    expect(await members(lonely)).toEqual([{ name: "系統管理員", role: "owner" }]); // nobody to hand it to
     expect(await members(others)).toEqual([{ name: "Carol", role: "owner" }]);
     expect((await pool.query("SELECT assignee_id FROM tasks")).rows[0].assignee_id).toBeNull();
     expect((await pool.query("SELECT is_admin FROM invitations")).rows[0].is_admin).toBe(false);
     // The new constraints hold.
-    await expect(pool.query("UPDATE users SET is_admin=true WHERE name='Bob'")).rejects.toThrow();
+    await expect(pool.query("UPDATE users SET is_admin=true WHERE real_name='Bob'")).rejects.toThrow();
     await expect(pool.query("UPDATE users SET disabled_at=now() WHERE is_owner")).rejects.toThrow();
   });
 });

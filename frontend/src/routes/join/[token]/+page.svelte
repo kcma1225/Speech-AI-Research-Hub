@@ -39,31 +39,80 @@
     void check();
   });
 
-  let name = $state("");
+  let realName = $state("");
+  let username = $state("");
   let password = $state("");
   let confirm = $state("");
-  let touched = $state({ password: false, confirm: false });
-  let nameError = $state<string | null>(null);
+  let touched = $state({ realName: false, username: false, password: false, confirm: false });
+  let usernameServerError = $state<string | null>(null);
   let formError = $state<string | null>(null);
   let busy = $state(false);
 
+  const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
+  const cleanRealName = $derived(realName.replace(/\s+/g, " ").trim());
+  const realNameOk = $derived([...cleanRealName].length >= 1 && [...cleanRealName].length <= 40);
+  const normalized = $derived(username.trim().toLowerCase());
+  const formatOk = $derived(USERNAME_RE.test(normalized));
+
+  // Live availability (debounced; the server is the final judge on submit).
+  type Availability = { for: string; state: "checking" | "available" | "taken" | "unknown"; message?: string };
+  let availability = $state<Availability | null>(null);
+  $effect(() => {
+    const value = normalized;
+    if (!formatOk || status !== "ready") {
+      availability = null;
+      return;
+    }
+    availability = { for: value, state: "checking" };
+    const timer = setTimeout(async () => {
+      try {
+        const r = await api.get<{ username: string; available: boolean; error?: string }>(
+          `/join/username-available?u=${encodeURIComponent(value)}&token=${encodeURIComponent(token)}`,
+        );
+        if (normalized === value) availability = { for: value, state: r.available ? "available" : "taken", message: r.error };
+      } catch {
+        // Rate-limited or offline: say nothing; submitting still validates.
+        if (normalized === value) availability = { for: value, state: "unknown" };
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  });
+
+  const realNameError = $derived(touched.realName && !realNameOk ? t("manage.join.realNameInvalid") : null);
+  const usernameError = $derived.by(() => {
+    if (usernameServerError) return usernameServerError;
+    if (normalized && !formatOk && (touched.username || normalized.length >= 3)) return t("manage.join.usernameFormat");
+    if (availability?.for === normalized && availability.state === "taken") return t("manage.join.usernameTaken");
+    return null;
+  });
+  const usernameHint = $derived.by(() => {
+    if (availability?.for === normalized && availability.state === "checking") return t("manage.join.usernameChecking");
+    if (availability?.for === normalized && availability.state === "available") return t("manage.join.usernameAvailable", { username: normalized });
+    return t("manage.join.usernameHint");
+  });
   const passwordError = $derived(touched.password && password && password.length < 8 ? t("manage.join.short") : null);
   const confirmError = $derived(touched.confirm && confirm && confirm !== password ? t("manage.join.mismatch") : null);
-  const valid = $derived(!!name.trim() && password.length >= 8 && confirm === password);
+  const valid = $derived(realNameOk && formatOk && availability?.state !== "taken" && password.length >= 8 && confirm === password);
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
-    touched = { password: true, confirm: true };
+    touched = { realName: true, username: true, password: true, confirm: true };
     if (!valid) return;
     busy = true;
-    nameError = formError = null;
+    usernameServerError = formError = null;
     try {
-      const result = await api.post<{ account: { id: string; name: string } }>("/join", { token, name: name.trim(), password, passwordConfirm: confirm });
+      const result = await api.post<{ account: { id: string; name: string; username: string } }>("/join", {
+        token,
+        realName: cleanRealName,
+        username: normalized,
+        password,
+        passwordConfirm: confirm,
+      });
       await session.load();
       toasts.show(t("manage.join.welcome", { name: result.account.name }), "success");
       await goto("/", { replace: true });
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) nameError = err.message;
+      if (err instanceof ApiError && err.status === 409) usernameServerError = err.message;
       else if (err instanceof ApiError && err.status === 410) status = "invalid";
       else formError = (err as Error).message;
     } finally {
@@ -139,14 +188,31 @@
 
         <form class="mt-8 flex flex-col gap-4" onsubmit={submit} novalidate>
           <TextField
-            label={t("manage.join.name")}
-            bind:value={name}
-            autocomplete="username"
-            maxlength={80}
+            label={t("manage.join.realName")}
+            bind:value={realName}
+            autocomplete="name"
+            maxlength={40}
             required
-            hint={t("manage.join.nameHint")}
-            error={nameError}
-            oninput={() => (nameError = null)}
+            hint={t("manage.join.realNameHint")}
+            error={realNameError}
+            onblur={() => (touched.realName = true)}
+          />
+          <TextField
+            label={t("manage.join.username")}
+            bind:value={username}
+            name="username"
+            autocomplete="username"
+            autocapitalize="none"
+            spellcheck={false}
+            maxlength={32}
+            required
+            hint={usernameHint}
+            error={usernameError}
+            oninput={() => (usernameServerError = null)}
+            onblur={() => {
+              touched.username = true;
+              username = normalized;
+            }}
           />
           <TextField
             type="password"

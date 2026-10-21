@@ -2,7 +2,7 @@
   import { Tabs, DropdownMenu } from "bits-ui";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { Activity, ArrowDownToLine, ArrowUpFromLine, AudioLines, Fingerprint, Link2, RefreshCw, Route, Server } from "@lucide/svelte";
+  import { Activity, ArrowDownToLine, ArrowUpFromLine, Boxes, Cpu, Fingerprint, Link2, Network, RefreshCw, Server } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import { session } from "#lib/stores/session.svelte.ts";
   import { adminStore } from "#lib/ai/admin-store.svelte.ts";
@@ -12,7 +12,9 @@
   import PageHeader from "#lib/components/ui/PageHeader.svelte";
   import AiErrorPanel from "#lib/components/ai/AiErrorPanel.svelte";
   import ProvidersPanel from "#lib/components/ai/admin/ProvidersPanel.svelte";
-  import RoutesPanel from "#lib/components/ai/admin/RoutesPanel.svelte";
+  import GroupsPanel from "#lib/components/ai/admin/GroupsPanel.svelte";
+  import ModelsPanel from "#lib/components/ai/admin/ModelsPanel.svelte";
+  import RoutingDiagram from "#lib/components/ai/admin/RoutingDiagram.svelte";
   import BindingsPanel from "#lib/components/ai/admin/BindingsPanel.svelte";
   import TrafficPanel from "#lib/components/ai/admin/TrafficPanel.svelte";
   import EmbeddingPanel from "#lib/components/ai/admin/EmbeddingPanel.svelte";
@@ -27,19 +29,22 @@
   });
 
   const tabs = [
+    { value: "overview", label: "aiAdmin.tab.overview", icon: Network },
     { value: "providers", label: "aiAdmin.tab.providers", icon: Server },
-    { value: "routes", label: "aiAdmin.tab.routes", icon: Route },
+    { value: "models", label: "aiAdmin.tab.models", icon: Cpu },
+    { value: "groups", label: "aiAdmin.tab.groups", icon: Boxes },
     { value: "bindings", label: "aiAdmin.tab.bindings", icon: Link2 },
-    { value: "speech", label: "aiAdmin.tab.speech", icon: AudioLines },
     { value: "traffic", label: "aiAdmin.tab.traffic", icon: Activity },
     { value: "embedding", label: "aiAdmin.tab.embedding", icon: Fingerprint },
   ] as const;
   type Tab = (typeof tabs)[number]["value"];
-  const fromUrl = (): Tab => (tabs.find(x => x.value === page.url.searchParams.get("tab"))?.value ?? "providers");
+  const fromUrl = (): Tab => (tabs.find(x => x.value === page.url.searchParams.get("tab"))?.value ?? "overview");
   let tab = $state<Tab>(fromUrl());
   $effect(() => {
-    if ((page.url.searchParams.get("tab") ?? "providers") !== tab) void goto(tab === "providers" ? page.url.pathname : `?tab=${tab}`, { shallow: true, replace: true });
+    if ((page.url.searchParams.get("tab") ?? "overview") !== tab) void goto(tab === "overview" ? page.url.pathname : `?tab=${tab}`, { shallow: true, replace: true });
   });
+  let editGroupId = $state<string | null>(null);
+  let modelsProvider = $state<string | null>(null);
 
   let transferOpen = $state(false);
   let transferMode = $state<"export" | "import">("export");
@@ -84,17 +89,19 @@
         </Tabs.Trigger>
       {/each}
     </Tabs.List>
-    <Tabs.Content value="providers" class="outline-none"><ProvidersPanel family="llm" /></Tabs.Content>
-    <Tabs.Content value="routes" class="outline-none"><RoutesPanel capabilities={["chat", "embedding"]} /></Tabs.Content>
-    <Tabs.Content value="bindings" class="outline-none">
-      <BindingsPanel roles={["assistant", "writing", "slides", "analysis", "fast", "embedding"]} onSwitchWizard={() => (tab = "embedding")} />
+    <Tabs.Content value="overview" class="outline-none"><RoutingDiagram onEditGroup={id => ((editGroupId = id), (tab = "groups"))} /></Tabs.Content>
+    <Tabs.Content value="providers" class="flex flex-col gap-10 outline-none">
+      <ProvidersPanel family="llm" title={t("aiAdmin.providers.llmTitle")} onShowModels={id => ((modelsProvider = id), (tab = "models"))} />
+      <div class="flex flex-col gap-3">
+        <p class="text-[13.5px] text-ink-3">{t("aiAdmin.speech.intro")} {t("aiAdmin.speech.taiwanese")}</p>
+        <ProvidersPanel family="asr" title={t("aiAdmin.speech.providers")} onShowModels={id => ((modelsProvider = id), (tab = "models"))} />
+      </div>
     </Tabs.Content>
-    <Tabs.Content value="speech" class="flex flex-col gap-10 outline-none">
-      <p class="text-[13.5px] text-ink-3">{t("aiAdmin.speech.intro")} {t("aiAdmin.speech.taiwanese")}</p>
-      <BindingsPanel roles={["asr", "asr_live"]} title={t("aiAdmin.speech.bindings")} />
-      <RoutesPanel capabilities={["asr"]} title={t("aiAdmin.speech.routes")} />
-      <ProvidersPanel family="asr" title={t("aiAdmin.speech.providers")} />
+    <Tabs.Content value="models" class="outline-none">
+      {#key modelsProvider}<ModelsPanel initialProvider={modelsProvider ?? ""} />{/key}
     </Tabs.Content>
+    <Tabs.Content value="groups" class="outline-none"><GroupsPanel bind:editId={editGroupId} /></Tabs.Content>
+    <Tabs.Content value="bindings" class="outline-none"><BindingsPanel onSwitchWizard={() => (tab = "embedding")} /></Tabs.Content>
     <Tabs.Content value="traffic" class="outline-none"><TrafficPanel /></Tabs.Content>
     <Tabs.Content value="embedding" class="outline-none"><EmbeddingPanel /></Tabs.Content>
   </Tabs.Root>

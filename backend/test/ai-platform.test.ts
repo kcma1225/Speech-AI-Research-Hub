@@ -18,7 +18,8 @@ const DIMS = 16;
 const h = (s: string) => parseInt(createHash("sha1").update(s).digest("hex").slice(0, 8), 16) / 0xffffffff;
 const fakeVec = (model: string, text: string) => Array.from({ length: DIMS }, (_, j) => Math.sin(h(model) * 97 * (j + 1) + h(text) * 13));
 
-describe.skipIf(!hasTestDb)("AI platform API", () => {
+// Uses the deprecated v1 admin shape (routes / roles) on purpose: it must keep working for scripts and callers.
+describe.skipIf(!hasTestDb)("AI platform API (v1 routes API compatibility)", () => {
   let t: TestContext;
   let admin: Session;
   let student: Session;
@@ -286,11 +287,11 @@ describe.skipIf(!hasTestDb)("AI platform API", () => {
     expect(plain.statusCode).toBe(200);
     expect(plain.body).not.toContain("sk-secret");
     const file = json(plain);
-    expect(file).toMatchObject({ format: "speech-ai-hub.ai-settings", version: 1, secret: false });
+    expect(file).toMatchObject({ format: "speech-ai-hub.ai-settings", version: 2, secret: false });
     const secret = json(await get(admin, "/api/admin/ai/export?include_secrets=1"));
     expect(JSON.stringify(secret)).toContain("sk-secret-A");
     const imp = json(await send(admin, "POST", "/api/admin/ai/import", { file: secret, include_secrets: true }));
-    expect(imp).toMatchObject({ providers_created: 0, providers_updated: 2, routes_created: 0 });
+    expect(imp).toMatchObject({ providers_created: 0, providers_updated: 2, groups_created: 0 });
     expect(imp.warnings).toEqual([]);
     expect(json(await send(admin, "POST", "/api/admin/ai/import", { file: { format: "nope" } })).code).toBe("import_invalid");
     const r = await platform.chat("writing", { messages: [{ role: "user", content: "hi" }] });

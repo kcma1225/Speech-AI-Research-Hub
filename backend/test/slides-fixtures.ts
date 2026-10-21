@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { zlib } from "./slides-zlib.js";
 import type { Db } from "../src/db.js";
 import { sha256 } from "../src/lib/auth.js";
+import { testUsername } from "./helpers.js";
 
 export type ZipEntry = { name: string; data?: string | Buffer; mode?: number };
 
@@ -79,7 +80,7 @@ export function multipart(fields: Record<string, string>, file?: { field?: strin
 export async function userSession(db: Db, role: "owner" | "admin" | "student" | "professor", name = `${role}-${randomBytes(3).toString("hex")}`) {
   const id = role === "owner"
     ? (await db.query<{ id: string }>("SELECT id FROM users WHERE is_owner")).rows[0]!.id
-    : (await db.query<{ id: string }>("INSERT INTO users(name,password_hash,role,is_admin) VALUES($1,'x',$2,$3) RETURNING id", [name, role, role === "admin"])).rows[0]!.id;
+    : (await db.query<{ id: string }>("INSERT INTO users(username,real_name,password_hash,role,is_admin) VALUES($1,$2,'x',$3,$4) RETURNING id", [testUsername(name), name, role, role === "admin"])).rows[0]!.id;
   const token = randomBytes(32).toString("base64url");
   await db.query("INSERT INTO sessions(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '1 day')", [id, sha256(token)]);
   return { id, cookie: `hub_session=${token}` };

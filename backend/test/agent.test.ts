@@ -475,17 +475,21 @@ describe.skipIf(!hasTestDb)("agent runtime", () => {
     expect(s.messages.filter((m: any) => m.role === "user")).toHaveLength(4);
   });
 
-  it("interview mode offers only propose_study_plan", async () => {
+  it("interview mode offers the interview tools and starts with the seeded maturity card", async () => {
     const conv = await newConversation(alice, { mode: "interview" });
-    const plan = { title: "中文語音情緒辨識", summary_format: "prose", summary_md: "研究問題……", stages: [{ name: "題目發想" }, { name: "實驗" }], milestones: [{ title: "完成 baseline", due_on: "2026-12-01", stage: "實驗" }] };
-    script = [say("你的研究想解決什麼問題？"), calls(["propose_study_plan", plan]), say("草案在右側。")];
+    const seeded = await state(conv);
+    expect(seeded.toolCalls).toHaveLength(1);
+    expect(seeded.toolCalls[0]).toMatchObject({ tool: "ask_user", status: "done" });
+    const plan = { maturity: "exploring", title: "中文語音情緒辨識", summary_format: "bullets", summary_md: "## 研究方向\n語音情緒辨識\n## 待釐清的問題\n資料：待探討", stages: [{ name: "題目發想" }, { name: "文獻探討" }], open_questions: ["要用哪個資料集？"], first_steps: [{ title: "整理 10 篇相關論文" }] };
+    script = [say("你對哪個方向有興趣？"), calls(["propose_study_plan", plan]), say("草案在右側。")];
     await send(conv, "開始");
-    expect(requests[0]!.tools!.map((x) => x.name)).toEqual(["propose_study_plan"]);
-    expect(JSON.stringify(requests[0]!.messages[0])).toContain("一次只問一個問題");
+    expect(requests[0]!.tools!.map((x) => x.name).sort()).toEqual(["ask_user", "list_lab_members", "propose_study_plan"]);
+    expect(JSON.stringify(requests[0]!.messages[0])).toContain("絕對不要問實驗或研究何時完成");
     await send(conv, "語音情緒辨識，先這樣");
     const s = await state(conv);
-    expect(s.toolCalls[0]).toMatchObject({ tool: "propose_study_plan", status: "done" });
-    expect(s.toolCalls[0].args.title).toBe("中文語音情緒辨識");
+    const proposal = s.toolCalls.find((c: any) => c.tool === "propose_study_plan");
+    expect(proposal).toMatchObject({ status: "done" });
+    expect(proposal.args).toMatchObject({ title: "中文語音情緒辨識", maturity: "exploring", open_questions: ["要用哪個資料集？"] });
     expect(json(await get(alice, "/api/agent/conversations")).conversations.some((c: any) => c.id === conv)).toBe(false);
     expect(json(await get(alice, "/api/agent/conversations?mode=interview")).conversations.some((c: any) => c.id === conv)).toBe(true);
   });

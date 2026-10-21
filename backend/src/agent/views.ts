@@ -87,7 +87,12 @@ export type MessageRow = {
   status: "complete" | "cancelled";
   model: string | null;
   created_at: string;
+  version_of?: string | null;
+  hidden_by?: string | null;
+  answers?: { toolCallId: string; answers: unknown[] } | null;
   memories?: { id: string; content: string }[];
+  /** Ids of every version of this user message (oldest first), when it has more than one. */
+  versions?: string[];
 };
 
 export const messageView = (m: MessageRow) => ({
@@ -102,6 +107,10 @@ export const messageView = (m: MessageRow) => ({
   // Notices carry their kind (limit_steps, repeat, expired…) for the UI's action buttons.
   kind: m.role === "notice" && Array.isArray(m.content) ? ((m.content[0] as { kind?: string } | undefined)?.kind ?? null) : null,
   memories: m.memories ?? [],
+  // `ask_user` answers of this user turn (the card renders them; 「修改答案」 edits them as a new version).
+  answers: m.answers ?? null,
+  versions: m.versions && m.versions.length > 1 ? m.versions : null,
+  hidden: !!m.hidden_by,
   created_at: m.created_at,
 });
 

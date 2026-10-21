@@ -6,13 +6,16 @@ import { badRequest } from "../http.js";
 export const ALLOWED_EXTENSIONS = new Set([
   ".qmd", ".md", ".css", ".scss", ".yml", ".yaml", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".pdf", ".bib",
   ".csl", ".json", ".js", ".woff", ".woff2", ".ttf", ".otf", ".txt", ".csv", ".mp4", ".webm", ".mp3", ".wav", ".m4a",
+  // Pre-rendered output, notebooks and other harmless assets decks commonly ship with.
+  ".html", ".htm", ".ipynb", ".xml", ".tsv", ".ico", ".bmp", ".avif", ".tif", ".tiff", ".ogg", ".mov", ".m4v",
 ]);
 /** Tool/OS junk (e.g. macOS Finder adds __MACOSX and .DS_Store) is skipped, matching the worker's extractor. */
 const SKIPPED_DIRS = new Set([".git", "node_modules", "__MACOSX", "_site", ".quarto"]);
 const SKIPPED_FILES = new Set([".DS_Store", "Thumbs.db"]);
 export const ZIP_LIMITS = { files: 2000, totalBytes: 500 * 1024 * 1024, fileBytes: 100 * 1024 * 1024, depth: 12 };
 
-export type ZipScan = { qmd: string[]; files: number; bytes: number };
+/** `skipped`: files with other extensions, left out of the deck instead of failing the upload (first 20 names). */
+export type ZipScan = { qmd: string[]; files: number; bytes: number; skipped: string[]; skippedCount: number };
 
 /** Normalises a ZIP entry name or user-supplied entry path; throws on anything that could escape the root. */
 export function safeEntryName(name: string): string {
@@ -33,6 +36,8 @@ export function scanZip(zipPath: string): Promise<ZipScan> {
       let files = 0;
       let bytes = 0;
       const qmd: string[] = [];
+      const skipped: string[] = [];
+      let skippedCount = 0;
       const fail = (cause: unknown) => {
         zip.close();
         if (cause instanceof Error && "status" in cause) return reject(cause);
@@ -57,18 +62,24 @@ export function scanZip(zipPath: string): Promise<ZipScan> {
             return;
           }
           if (entry.isEncrypted()) throw badRequest("ZIP 不可加密。");
+          const extension = path.posix.extname(name).toLowerCase();
+          if (!ALLOWED_EXTENSIONS.has(extension)) {
+            // Unknown types are not extracted by the worker either; report them instead of rejecting the whole ZIP.
+            if (skipped.length < 20) skipped.push(name);
+            skippedCount++;
+            zip.readEntry();
+            return;
+          }
           files++;
           bytes += entry.uncompressedSize;
           if (files > ZIP_LIMITS.files || bytes > ZIP_LIMITS.totalBytes || entry.uncompressedSize > ZIP_LIMITS.fileBytes) throw badRequest("ZIP 超過檔案數量或容量限制。");
-          const extension = path.posix.extname(name).toLowerCase();
-          if (!ALLOWED_EXTENSIONS.has(extension)) throw badRequest(`不支援檔案類型：${extension || name}`);
           if (extension === ".qmd") qmd.push(name);
           zip.readEntry();
         } catch (cause) {
           fail(cause);
         }
       });
-      zip.on("end", () => resolve({ qmd, files, bytes }));
+      zip.on("end", () => resolve({ qmd, files, bytes, skipped, skippedCount }));
       zip.on("error", fail);
       zip.readEntry();
     });

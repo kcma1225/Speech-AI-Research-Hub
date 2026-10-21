@@ -78,6 +78,17 @@ export class Runner {
     await this.listener?.end().catch(() => {});
   }
 
+  /** Retries until LISTEN is back (e.g. while the database restarts); polling keeps claiming jobs meanwhile. */
+  private reconnectListener(delayMs = 2000) {
+    setTimeout(() => {
+      if (this.stopping) return;
+      this.connectListener().catch(err => {
+        this.log.error({ err }, "LISTEN reconnect failed; retrying");
+        this.reconnectListener(Math.min(delayMs * 2, 30_000));
+      });
+    }, delayMs).unref();
+  }
+
   private async connectListener() {
     const client = new pg.Client(this.listenerConfig);
     client.on("notification", () => this.wake?.());
@@ -85,7 +96,7 @@ export class Runner {
       this.listening = false;
       this.log.warn({ err: error }, "LISTEN connection lost; reconnecting");
       void client.end().catch(() => {});
-      if (!this.stopping) setTimeout(() => void this.connectListener().catch(err => this.log.error({ err }, "LISTEN reconnect failed")), 2000).unref();
+      if (!this.stopping) this.reconnectListener();
     });
     await client.connect();
     await client.query("LISTEN jobs_new");

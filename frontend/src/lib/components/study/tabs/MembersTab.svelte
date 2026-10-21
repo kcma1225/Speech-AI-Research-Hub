@@ -159,7 +159,7 @@
             bind:value={pick}
             label={t("members.pick")}
             class="w-full"
-            options={[{ value: "", label: "—" }, ...candidates.map(u => ({ value: u.id, label: u.name, hint: t(`role.${u.role}` as MessageKey) }))]}
+            options={[{ value: "", label: "—" }, ...candidates.map(u => ({ value: u.id, label: u.name, hint: `@${u.username} · ${t(`role.${u.role}` as MessageKey)}` }))]}
           />
         </div>
         <div class="flex flex-col gap-1.5">

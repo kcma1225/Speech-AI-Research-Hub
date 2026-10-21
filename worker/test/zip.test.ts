@@ -46,12 +46,13 @@ describe("classifyEntry", () => {
     expect(classifyEntry("deck/node_modules/x/index.node", false, 0o100644, 1)).toEqual({ skip: true });
     expect(classifyEntry("deck/.DS_Store", false, 0o100644, 1)).toEqual({ skip: true });
   });
-  it("rejects .env, symlinks, unknown extensions, deep and huge files", () => {
+  it("rejects .env, symlinks, deep and huge files; skips unknown extensions", () => {
     expect(() => classifyEntry(".env", false, 0o100644, 1)).toThrow(/\.env/);
     expect(() => classifyEntry("deck/.env.local", false, 0o100644, 1)).toThrow(/\.env/);
     expect(() => classifyEntry("link.png", false, 0o120777, 1)).toThrow(/symbolic/);
-    expect(() => classifyEntry("run.sh", false, 0o100755, 1)).toThrow(/不支援/);
-    expect(() => classifyEntry("Makefile", false, 0o100644, 1)).toThrow(/不支援/);
+    expect(classifyEntry("run.sh", false, 0o100755, 1)).toEqual({ skip: true });
+    expect(classifyEntry("reports/talk.html", false, 0o100644, 1)).toEqual({ skip: false, path: "reports/talk.html" });
+    expect(classifyEntry("Makefile", false, 0o100644, 1)).toEqual({ skip: true });
     expect(() => classifyEntry(Array(13).fill("d").join("/") + "/a.md", false, 0o100644, 1)).toThrow(/層級/);
     expect(() => classifyEntry("big.mp4", false, 0o100644, 101 * 1024 * 1024)).toThrow(/容量/);
   });
@@ -77,9 +78,17 @@ describe("extractZip", () => {
     expect((await readdir(target)).sort()).toEqual(["deck"]);
   });
 
-  it("rejects a forbidden entry and writes nothing after it", async () => {
+  it("leaves unsupported types out and extracts the rest", async () => {
     const zip = await makeZip([{ name: "a.qmd" }, { name: "evil.exe" }, { name: "b.qmd" }]);
-    await expect(extractZip(zip, path.join(dir, "out"))).rejects.toThrow(/不支援檔案類型/);
+    await extractZip(zip, path.join(dir, "out"));
+    const out = await readdir(path.join(dir, "out"));
+    expect(out).toContain("b.qmd");
+    expect(out).not.toContain("evil.exe");
+  });
+
+  it("rejects a forbidden entry and writes nothing after it", async () => {
+    const zip = await makeZip([{ name: "a.qmd" }, { name: ".env" }, { name: "b.qmd" }]);
+    await expect(extractZip(zip, path.join(dir, "out"))).rejects.toThrow(/\.env/);
     expect(await readdir(path.join(dir, "out"))).not.toContain("b.qmd");
   });
 

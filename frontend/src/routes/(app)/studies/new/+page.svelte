@@ -1,6 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
-  import { ArrowLeft, Info, Sparkles, X } from "@lucide/svelte";
+  import { ArrowLeft, FileInput, Info, Sparkles, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
@@ -15,14 +15,25 @@
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import MarkdownEditor from "#lib/components/markdown/MarkdownEditor.svelte";
+  import DocImportSheet from "#lib/components/doc-import/DocImportSheet.svelte";
+  import type { ImportedDocument } from "#lib/components/doc-import/api.ts";
   import type { DirectoryUser, StudyDetail } from "#lib/studies/types.ts";
   import { STUDY_SLUG_RE } from "#lib/studies/ui.ts";
+  import { MATURITIES } from "#lib/agent/maturity.ts";
 
   let title = $state("");
   let slug = $state("");
   let summary = $state("");
   let format = $state<"prose" | "bullets">("prose");
-  let layout = $state<"split" | "edit" | "preview">("edit");
+  let maturity = $state("");
+  // 「從檔案匯入」: prefill the summary (and the title when it is still empty) from a document.
+  let importOpen = $state(false);
+  function imported(markdown: string, doc: ImportedDocument) {
+    summary = summary.trim() ? `${summary.replace(/\s+$/, "")}\n\n${markdown}` : markdown;
+    if (!title.trim() && doc.title) title = doc.title.slice(0, 200);
+    toasts.show(doc.truncated ? t("docimport.truncated") : t("docimport.done", { name: doc.filename }), "success");
+  }
+  let layout = $state<"split" | "edit" | "preview">(session.user?.preferences.editor.layout ?? "split");
   let members = $state<string[]>([]);
   let advisors = $state<string[]>([]);
   let directory = $state<DirectoryUser[]>([]);
@@ -66,6 +77,7 @@
         ...(slug ? { slug } : {}),
         summary_md: summary,
         summary_format: format,
+        ...(maturity ? { maturity } : {}),
         members: [...members.map(userId => ({ userId, role: "member" })), ...advisors.map(userId => ({ userId, role: "advisor" }))],
       });
       toasts.show(t("studies.new.created"), "success");
@@ -99,10 +111,24 @@
       <div class="flex flex-col gap-2">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <span class="text-[13px] font-medium text-ink-2">{t("studies.field.summary")}</span>
-          <Segmented bind:value={format} label={t("studies.field.format")} options={[{ value: "prose", label: t("studies.format.prose") }, { value: "bullets", label: t("studies.format.bullets") }]} />
+          <div class="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="ghost" onclick={() => (importOpen = true)}><FileInput />{t("docimport.title")}</Button>
+            <Segmented bind:value={format} label={t("studies.field.format")} options={[{ value: "prose", label: t("studies.format.prose") }, { value: "bullets", label: t("studies.format.bullets") }]} />
+          </div>
         </div>
-        <MarkdownEditor bind:value={summary} bind:layout fontSize={session.user?.preferences.editor.fontSize ?? 15} label={t("studies.field.summary")} />
+        <MarkdownEditor bind:value={summary} bind:layout fontSize={session.user?.preferences.editor.fontSize ?? 15} label={t("studies.field.summary")} onImport={() => (importOpen = true)} />
+        <DocImportSheet bind:open={importOpen} target={{ kind: "draft", purpose: "study_summary" }} style={format} onMarkdown={imported} />
         <p class="text-[12.5px] text-ink-3">{t("studies.field.summaryHint")}</p>
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <span class="text-[13px] font-medium text-ink-2">{t("studies.maturity")}</span>
+        <Select
+          bind:value={maturity}
+          label={t("studies.maturity")}
+          class="w-full sm:w-80"
+          options={[{ value: "", label: t("studies.maturity.none") }, ...MATURITIES.map(m => ({ value: m, label: t(`studies.maturity.${m}`), hint: t(`studies.maturity.${m}.hint`) }))]}
+        />
       </div>
 
       {#snippet people(label: MessageKey, ids: string[], remove: (id: string) => void, choices: DirectoryUser[], add: MessageKey, pick: "member" | "advisor")}
@@ -120,9 +146,9 @@
           {/if}
           {#if choices.length}
             {#if pick === "member"}
-              <Select bind:value={pickMember} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: u.name, hint: t(`role.${u.role}` as MessageKey) }))]} />
+              <Select bind:value={pickMember} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: u.name, hint: `@${u.username} · ${t(`role.${u.role}` as MessageKey)}` }))]} />
             {:else}
-              <Select bind:value={pickAdvisor} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: u.name }))]} />
+              <Select bind:value={pickAdvisor} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: u.name, hint: `@${u.username}` }))]} />
             {/if}
           {/if}
         </div>
@@ -151,6 +177,7 @@
         title = plan.title;
         summary = plan.summary_md;
         format = plan.summary_format;
+        maturity = plan.maturity ?? "";
         // On phones the form is below the interview now: bring it into view.
         document.getElementById("study-form")?.scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
       }}

@@ -75,11 +75,12 @@ export function safeEqual(a: string, b: string) {
 export const pkceS256 = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
 
 /** Claims about the user released for the granted scopes (ID token and userinfo). */
-export function userClaims(user: { id: string; name: string }, scope: string) {
+/** `name` = real name (真實姓名), `preferred_username` = the hub username. */
+export function userClaims(user: { id: string; name: string; username: string }, scope: string) {
   const scopes = new Set(scope.split(" "));
   return {
     sub: user.id,
-    ...(scopes.has("profile") ? { name: user.name, preferred_username: user.name } : {}),
+    ...(scopes.has("profile") ? { name: user.name, preferred_username: user.username } : {}),
     // email_verified: Aldine (OIDC_EMAIL_VERIFIED=require) ignores unverified addresses. Safe because the
     // address is synthetic: nobody can receive mail there, and Aldine never links an SSO identity to a
     // password account or to another subject that merely shares the address.

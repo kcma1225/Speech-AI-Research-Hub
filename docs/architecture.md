@@ -25,7 +25,7 @@ meetings `0080–0089`, search/embeddings `0090–0099`, QA fixes `0100+`.
 
 | Service | Dir | Responsibility |
 |---|---|---|
-| nginx | `nginx/` | TLS (or behind a TLS proxy: `TRUSTED_PROXIES` → real client IP from X-Forwarded-For), strict rate limit on `/api/auth/login` and `/api/join` (and 60/min on `/api/oidc/token`), serves `frontend/` build, proxies `/api/` (WebSocket upgrade + 1 h timeouts on `/api/collab` and `/api/meetings/<id>/live`; no buffering, 900 s read timeout for SSE on `/api/ai/`, `/api/agent/`, `/api/notes/<id>/ai/`) |
+| nginx | `nginx/` | TLS (or behind a TLS proxy: `TRUSTED_PROXIES` → real client IP from X-Forwarded-For), strict rate limit on `/api/auth/login` and `/api/join` (30/min on `/api/join/username-available`, and 60/min on `/api/oidc/token`), serves `frontend/` build, proxies `/api/` (WebSocket upgrade + 1 h timeouts on `/api/collab` and `/api/meetings/<id>/live`; no buffering, 900 s read timeout for SSE on `/api/ai/`, `/api/agent/`, `/api/notes/<id>/ai/`) |
 | frontend | `frontend/` | SvelteKit 2 + Svelte 5, `adapter-static`, SPA (`ssr = false`). Built into the nginx image |
 | backend | `backend/` | All HTTP API, auth, RBAC, migrations, file streaming from S3, job enqueue + finalize |
 | ai-worker | `backend/` (`src/ai-worker/`) | Same image as backend, other command: claims `ai_*` jobs (ASR, analysis, embeddings…), has internet egress + ffmpeg; see "AI platform" |
@@ -72,6 +72,17 @@ participant or task assignee; not listed by `/users/directory`). `is_admin` is k
 `role = 'admin'` (CHECK). `is_owner` marks the initial admin (初始管理員, the bootstrap account: exactly one, always an
 enabled admin, cannot be changed or disabled). Students/professors cannot be granted admin; admin accounts are created
 by an `admin` invitation, and at least one enabled admin always remains.
+
+Names (migration `0103_usernames.sql`, helpers `lib/users/username.ts`): `users.username` is the **login id**
+(使用者名稱; `^[a-z0-9][a-z0-9._-]{2,31}$`, stored lower-case, unique on `lower(username)`, chosen at join, changed only
+by an admin). `users.real_name` (真實姓名, 1–40 chars after whitespace collapse, may repeat) is what every screen shows;
+the user edits it in Settings. `users.name` is a **generated read-only copy of `real_name`**, kept so every `u.name`
+read (and every API field `name`) means the real name: write `real_name`, never `name`. API objects that describe a
+person keep `name` = real name and add `username` where a login id is useful (current user, account hints, directory,
+admin list). 0103's data step (`backfillUsernames`, run by `migrate()` in the same transaction) derived usernames from
+the old names: pinyin for Han characters (林雅婷 → `linyating`), accent-folded ASCII slug otherwise, numeric suffix on
+collision, `user<N>` when nothing is left; the initial admin keeps its old ASCII name as username and gets the real
+name 系統管理員 (also what bootstrap creates: username = `ADMIN_NAME` lower-cased/slugged).
 
 Study membership (`study_members.role`): `owner` (creator, transferable, exactly one), `member`, `advisor` (must be a
 professor account; a professor can also be owner/member of their own study). Everyone signed in can read every study.
@@ -131,6 +142,7 @@ Defined in `backend/src/lib/storage.ts` `keys`; the worker receives full keys in
 | `latex/<projectId>/versions/<versionId>.json` | named version: every file `{path, key, size, sha256, fileId, kind, role, contentType}` + project settings |
 | `library/papers/<paperId>/<fileId>.pdf` | stored paper PDF (`paper_files.key`; the newest is `papers.pdf_key`). Lab-internal only, streamed by `GET /library/papers/:id/pdf` |
 | `library/imports/<batchId>/upload.pdf` | PDF of an unconfirmed PDF import (moved to `library/papers/…` on confirm, deleted on cancel) |
+| `md-images/<studyId>/<imageId>.<png\|jpg\|gif\|webp>` | image inserted into a note / the study summary (`md_images.object_key`), served by `GET /api/md-images/:id`; the prefix is removed when the study is deleted (cleanup hook `md-images`) |
 
 ## Jobs
 
@@ -252,17 +264,18 @@ All under `/api`. `→` describes the response body. Unless noted, routes need a
 | Method & path | Access | Notes |
 |---|---|---|
 | GET `/health`, `/health/ready`, `/config` | public | done (`health.ts`) |
-| GET `/auth/accounts?ids=a,b` | public | names for device-remembered account hints → `{accounts:[{id,name}]}` (only enabled users, max 10 ids) |
-| GET `/auth/me` | public | `{user: CurrentUser \| null}`; `CurrentUser = {id, name, role: "student"\|"professor", is_admin, is_owner, auth_mode, theme, locale: "zh-TW"\|"en", preferences: Preferences}` (preferences with defaults filled in, see below) |
-| POST `/auth/login` `{userId?, name?, password}` | public | argon2 verify; 401 on failure; `two_factor` users → 403 (Passkey not implemented); sets session; updates `last_login_at` → `{account:{id,name}}` |
+| GET `/auth/accounts?ids=a,b` | public | names for device-remembered account hints → `{accounts:[{id,name,username}]}` (only enabled users, max 10 ids) |
+| GET `/auth/me` | public | `{user: CurrentUser \| null}`; `CurrentUser = {id, name (real name), username, role: "student"\|"professor"\|"admin", is_admin, is_owner, auth_mode, theme, locale: "zh-TW"\|"en", preferences: Preferences}` (preferences with defaults filled in, see below) |
+| POST `/auth/login` `{userId?, username?, password}` | public | by remembered id or by **username** (case-insensitive; `name` accepted as a legacy alias of `username`; the real name never signs in); argon2 verify; 401 on failure; `two_factor` users → 403 (Passkey not implemented); sets session; updates `last_login_at` → `{account:{id,name,username}}` |
 | POST `/auth/logout` | user | clears session |
-| PATCH `/auth/profile` `{name?, theme?, locale?, preferences?, currentPassword?, newPassword?}` | user | password change requires current password; revokes other sessions. `preferences` is a deep-partial `Preferences` merged into the stored value (unknown keys / out-of-range values → 400) → `{user: CurrentUser}` |
+| PATCH `/auth/profile` `{realName? (legacy alias name), theme?, locale?, preferences?, currentPassword?, newPassword?}` | user | password change requires current password; revokes other sessions. `preferences` is a deep-partial `Preferences` merged into the stored value (unknown keys / out-of-range values → 400) → `{user: CurrentUser}` |
 | GET `/auth/sessions`, DELETE `/auth/sessions/:id` | user | list / revoke own sessions |
-| POST `/join` `{token, name, password}` | public | consume invitation atomically (row lock, `use_count < max_uses`, not expired/revoked), create user, session |
+| POST `/join` `{token, realName, username, password, passwordConfirm?}` | public | consume invitation atomically (row lock, `use_count < max_uses`, not expired/revoked), create user, session → 201 `{account:{id,name,username}}`; bad real name / username format → 400 with the rule in 繁中; username taken (case-insensitive) → 409 「這個使用者名稱已被使用。」 (invitation not used) |
+| GET `/join/username-available?u=&token=` | public + valid invitation token (else 410) | live check for the join form → `{username (normalised), valid, available, error?}`; nginx `join_check_limit` 30/min, burst 15 |
 | GET `/join/:token` | public | validate token → `{role, isAdmin, expiresAt}` or 404 |
-| GET `/users/directory` | user | enabled student/professor accounts for pickers (admins never listed) → `{users:[{id,name,role}]}` (by name) |
-| GET `/users` | admin | all users: `id,name,role,is_admin,is_owner,auth_mode,disabled,disabled_at,created_at,last_login_at` (initial admin first) |
-| PATCH `/users/:id` `{role?: "student"\|"professor", disabled?}` | admin | role only between student/professor (admin accounts keep their role → 400; `is_admin` is not accepted → 400); the initial admin and yourself cannot be changed (404/400); disabling the last enabled admin → 409; disabling revokes sessions; demoting a study advisor to student → 409; audit |
+| GET `/users/directory` | user | enabled student/professor accounts for pickers (admins never listed) → `{users:[{id,name,username,role}]}` (by real name; pickers show `@username` and match either) |
+| GET `/users` | admin | all users: `id,name,username,role,is_admin,is_owner,auth_mode,disabled,disabled_at,created_at,last_login_at` (initial admin first) |
+| PATCH `/users/:id` `{role?: "student"\|"professor", disabled?, realName?, username?}` | admin | `realName` / `username` editable on every account (also the initial admin's and one's own; username taken → 409, audit `user_username_changed` / `user_real_name_changed`); role only between student/professor (admin accounts keep their role → 400; `is_admin` is not accepted → 400); the role / disabled state of the initial admin and of yourself cannot be changed (404/400); disabling the last enabled admin → 409; disabling revokes sessions; demoting a study advisor to student → 409; audit |
 | GET `/invitations` | admin | with derived state: active / expired / exhausted / revoked (a used-up link stays `exhausted` after its expiry), `is_admin` |
 | POST `/invitations` `{role: "student"\|"professor"\|"admin", isAdmin?: boolean (legacy, must equal role === "admin"), expiresIn: "5m"\|"30m"\|"1h"\|"2h"\|"5h"\|"1d"\|"3d"\|"5d"\|"7d"\|"never", maxUses: 1\|null}` | admin | returns the raw token **once** → `{invitation, token, url}` (`url` = `<APP_ORIGIN>/join/<token>`); the joined account gets `role` (`is_admin` = role is admin) |
 | DELETE `/invitations/:id` | admin | revoke (soft) |
@@ -290,7 +303,7 @@ finished/failed → `mediaTranscoded`, new review → `reviews`, reply → `repl
 ### Studies, stages, milestones, tasks (`studies.ts`, `lib/studies/`)
 
 Tables (baseline): `studies` (`slug` unique, never UUID-shaped; `summary_md`, `summary_format prose|bullets`,
-`status active|paused|completed|archived`, `current_stage_id` → `study_stages`, `activity_at` = last change, `archived_at`),
+`status active|paused|completed|archived`, `current_stage_id` → `study_stages`, `activity_at` = last change, `archived_at`, `maturity` 研究成熟度 (0105, nullable)),
 `study_members` (PK study+user, `role owner|member|advisor`, one owner), `study_stages` (`position` 0-based, unique per study,
 `started_at`, `completed_at`), `milestones` (`stage_id?`, `due_on date?`, `done_at`, `done_by`), `tasks` (`assignee_id?` must be
 a member, `due_on?`, `status open|done|dropped`, `source manual|meeting|ai`, `source_ref?`, `completed_at/by`),
@@ -303,9 +316,9 @@ secrets must be encrypted by the owning module; helpers `getSetting` / `setSetti
 | Method & path | Access | Notes |
 |---|---|---|
 | GET `/studies?member=<uuid>\|me&status=&stage=&q=` | user | `{studies: StudyCard[]}` newest `activity_at` first. `status` omitted = all but archived, `all` = everything; `stage` = current stage name (exact); `q` = title/slug/summary substring (LIKE-escaped) |
-| POST `/studies` `{title, slug?, summary_md?, summary_format?, templateId?, members?: [{userId, role: member\|advisor}]}` | user | creator becomes owner; stages copied from the template (default), the first one current and started; slug from the title when omitted (ASCII words; titles with CJK get `-YYYY-MM-DD`, CJK-only → `study-YYYY-MM-DD`; `-2`, `-3`… when taken; a given slug that is taken → 409); advisors must be professors (400); activity `study_created` → 201 `StudyDetail` |
+| POST `/studies` `{title, slug?, summary_md?, summary_format?, maturity?, templateId?, members?: [{userId, role: member\|advisor}]}` | user | creator becomes owner; stages copied from the template (default), the first one current and started; slug from the title when omitted (ASCII words; titles with CJK get `-YYYY-MM-DD`, CJK-only → `study-YYYY-MM-DD`; `-2`, `-3`… when taken; a given slug that is taken → 409); advisors must be professors (400); activity `study_created` → 201 `StudyDetail` |
 | GET `/studies/:ref` | user | `StudyDetail` |
-| PATCH `/studies/:ref` `{title?, slug?, summary_md?, summary_format?, status?}` | editor; `status` to/from `archived`: manager | → `StudyDetail` |
+| PATCH `/studies/:ref` `{title?, slug?, summary_md?, summary_format?, maturity? (exploring|problem_defined|method_first|continuation|assigned|well_defined|null), status?}` | editor; `status` to/from `archived`: manager | → `StudyDetail` |
 | DELETE `/studies/:ref` | manager | runs study cleanup hooks (decks: cancel jobs, delete S3 prefixes after commit), cascades everything |
 | GET `/studies/:ref/members` | user | `{members, permissions}` |
 | POST `/studies/:ref/members` `{userId, role: member\|advisor}` | manager | enabled accounts only; advisor must be professor (400); already a member → 409; notifies the added user (`kind:'study'`); activity `member_added` → 201 `{members}` |
@@ -332,7 +345,7 @@ secrets must be encrypted by the owning module; helpers `getSetting` / `setSetti
 type StudyCard = { id, slug, title, status, summary_format, summary_excerpt /* plain text ≤160 */, created_at, updated_at, activity_at,
   current_stage: {id,name,position} | null, stage_count, stages_done, members: {id,name,role,account_role}[] /* owner, members, advisors */,
   next_milestone: {id,title,due_on} | null, open_task_count, my_role: "owner"|"member"|"advisor"|null };
-type StudyDetail = { study: {id,slug,title,summary_md,summary_format,status,current_stage_id,created_by,created_at,updated_at,activity_at,archived_at},
+type StudyDetail = { study: {id,slug,title,summary_md,summary_format,maturity,status,current_stage_id,created_by,created_at,updated_at,activity_at,archived_at},
   stages: {id,position,name,description,started_at,completed_at,is_current}[], milestones: Milestone[],
   members: {id,name,account_role,role,disabled,added_at}[], counts: {openTasks, doneTasks},
   permissions: {edit, manage, comment, role} };
@@ -396,12 +409,40 @@ Suggestion targets registered: `note` (Yjs; accepted hunks add a version `接受
 `study_summary` (plain text `studies.summary_md`, id = study id; activity `summary_suggestion_applied`); slides registers
 `deck_source`. Study deletion removes note documents and suggestions (study cleanup hook `notes`).
 
+### Document import and Markdown images (`doc-import.ts` → child plugin `md-images.ts`; `lib/doc-import/`)
+
+Import a document as Markdown (研究簡述「從檔案匯入」 on `/studies/<slug>` and `/studies/new`, 「匯入文件」 in the note
+editor). Every upload is checked twice: the extension must be in the allow list, and **Google Magika** (content-based
+detection, model `standard_v3_3`, vendored in `backend/assets/magika/`, run with onnxruntime-web WASM in-process — the
+production CPU has no AVX, so the Rust CLI / tfjs-node cannot run; ~0.1 s per file, model loaded once and cached) must
+report a content type that belongs to that format. Mismatch → 415 `content_mismatch` 「檔案內容與副檔名不符。」 (hint names
+what was detected); executables/archives/images/unknown → 415 `not_document`; > 30 MB → 413; encrypted/corrupt/empty
+(e.g. scanned PDF without text) → 422. Formats: PDF (pdf.js), DOCX (mammoth → Turndown), DOC (word-extractor), ODT/ODP/ODS,
+PPTX/XLSX, EPUB (zip + XML, zip-bomb limits), RTF (own parser, code pages via ICU), HTML (Turndown, scripts stripped),
+TXT/MD, CSV/TSV/XLSX/ODS (tables capped at 200 rows × 30 columns), legacy PPT (OLE via `cfb`: slide titles, bullets,
+notes). Legacy `.xls` is refused (415 `legacy_format` 「舊版 Excel (.xls) 請先另存為 .xlsx 或 CSV。」). A file whose content is
+another supported format (RTF saved as .doc, ppt↔pptx) is parsed by the right parser. No raw HTML, images or scripts reach
+the Markdown; only http/https/mailto links are kept. Extracted text is capped at 200 000 characters (`truncated: true`).
+Extraction runs in-process (≈ 0.1–0.4 s per file; first call loads the model ≈ 1.3 s).
+
+| Route | Who | Notes |
+|---|---|---|
+| GET `/doc-import/formats` | user | `{formats:[{format, extensions}], accept /* for <input accept> */, maxBytes}` |
+| POST `/doc-import` (multipart: `mode` markdown\|condense, `purpose` study_summary\|note, `style?` prose\|bullets, `study_id?`, file) | user; with `study_id`: study editor | stateless → `{markdown, document: {filename, format, detected:{label,score}, title, chars, truncated, pages?, warnings}}`. `condense`: role `writing` rewrites the text (≤ 24 000 chars of input) into the summary format or note structure; 503 `llm_unavailable` when the role is down |
+| POST `/studies/:ref/summary/import` (multipart: `mode`, `placement` append\|replace, `style?`, file) | study editor | → 201 `{suggestion, document}`: a **`study_summary` suggestion** (title 「從檔案匯入：<file>」 `source:user`, or 「AI 摘要文件：<file>」 `source:ai`); append keeps the current text, replace (condense) merges it into the new version. Never writes directly |
+| POST `/md-images` (multipart: `scope` = `study:<id>` \| `note:<id>`, file ≤ 10 MB) | study editor | Magika must say png/jpeg/gif/webp (SVG refused) → 201 `{image:{id, url:"/api/md-images/<id>"}}`; identical bytes in the same study → 200 with the existing image |
+| GET `/md-images/:id` | user | the image (`Content-Type` from the row, `nosniff`, sandbox CSP, `private, immutable`) |
+
+Table `md_images` (`0106_md_images.sql`): `study_id` (cascade), `note_id?`, `object_key`, `mime`, `bytes`, `sha256`, `original_name`, `created_by`.
+Frontend: `components/doc-import/` (`DocImportSheet` — file drop, mode/format/placement; `SummaryReview` — banner
+「有 N 項研究簡述的建議待審」 + sheet with `SuggestionPanel` for `study_summary` suggestions on the overview; `api.ts`).
+
 ### Slides (`slides.ts`, `slide-reviews.ts`, `slide-view.ts`)
 
 | Method & path | Access | Notes |
 |---|---|---|
 | GET `/slides?studyId=<id\|slug>&q=&kind=progress\|paper_report` | user | `{slides, limits}`: decks (`kind`, `paper_id`, `metadata`, `has_source`, `study_id`, `study {id,slug,title}`) with active version, status of latest version, `reference_count`, `review_count`, `author_name` (uploader of the active version, fallback deck creator), `published_at` (active version's publish time or null), `thumbnailUrl` (`/api/slides/<id>/thumbnail?v=<activeVersionId>` or null). `limits = {zipBytes, deckBytes, deckTypes: [".zip",".pdf",".pptx"], referenceBytes}` (`zipBytes` = `deckBytes` = `MAX_SLIDE_ZIP_BYTES`, the limit for every deck upload; `MAX_REFERENCE_BYTES`). `latest_status` may be `review` |
-| POST `/slides` (multipart: `studyId`, `title`, `slug`, `kind?` `progress`\|`paper_report`, `paperId?`, `paperTitle?`, `paperUrl?`, `entry?`, `public?`, file `.zip`/`.pdf`/`.pptx`) | study editor (of `studyId`; missing → 400, unknown → 404) | detect + validate the deck (see "Deck uploads"), create project + version 1, upload the file, enqueue render (202) → `{id, slug, studyId, versionId, version, jobId, sourceType, entry: string\|null, scan: {files,bytes,qmd}\|null}`. Unknown `paperId` → 400 |
+| POST `/slides` (multipart: `studyId`, `title`, `slug`, `kind?` `progress`\|`paper_report`, `paperId?`, `paperTitle?`, `paperUrl?`, `entry?`, `public?`, file `.zip`/`.pdf`/`.pptx`) | study editor (of `studyId`; missing → 400, unknown → 404) | detect + validate the deck (see "Deck uploads"), create project + version 1, upload the file, enqueue render (202) → `{id, slug, studyId, versionId, version, jobId, sourceType, entry: string\|null, scan: {files,bytes,qmd,skipped,skippedCount}\|null}`. Unknown `paperId` → 400 |
 | POST `/slides` (JSON) `{studyId, title, slug?, kind="progress", paperId?, paper?: {title, url?, abstract?}, public?, source: "editor"\|"ai", template?: progress\|paper_report\|blank}` | study editor | a deck with an in-app source tree from the Lab-Hub template (default by `kind`), no version yet; slug from the title's ASCII words + `-YYMMDD` (`deck-…` when there are none, `-2`… when taken) → 201 `{id, slug, studyId, source, template}`. `source:"ai"` only records intent: the SPA then calls POST `…/ai/generate` |
 | GET `/slides/:id` | user | detail: project (incl. `creator_name`), versions (see "Version object"), `activeVersion` (the active **published** version object, also for pdf/pptx decks without a `viewUrl`), references, reviews (see "Review object", + replies, author names), `study {id,slug,title}` (null for anonymous), `viewUrl` for active version (null for pdf/pptx), `pdfUrl`, `thumbnailUrl` (same format; null for anonymous by-slug viewers), `permissions {manage /* study editor */, review /* professors only */, reply /* any member of the deck's study */}`, `limits` (as in the list; not in by-slug) |
 | GET `/slides/:id/thumbnail` | user | streams the active version's thumbnail (`thumbnail_key`): `image/png` (quarto) or `image/webp` (pdf/pptx), `Cache-Control: private, max-age=300`, `X-Content-Type-Options: nosniff`, `ETag: "<versionId>"` (`If-None-Match` → 304); 404 when there is no active version, no thumbnail or the object is missing |
@@ -494,8 +535,9 @@ PDF's text (pdf.js, 12 pages). Data goes in a `<資料>` block marked as data, n
 rules (`LABHUB_RULES`).
 
 ZIP validation (backend, before upload, from a temp file using yauzl; the worker re-validates while
-extracting): only these extensions `.qmd .md .css .scss .yml .yaml .png .jpg .jpeg .gif .svg .webp .pdf .bib
-.csl .json .js .woff .woff2 .ttf .otf .txt .csv .mp4 .webm .mp3 .wav .m4a`; ≤2000 files, ≤500 MB uncompressed,
+extracting): these extensions are extracted `.qmd .md .css .scss .yml .yaml .png .jpg .jpeg .gif .svg .webp .pdf .bib
+.csl .json .js .woff .woff2 .ttf .otf .txt .csv .mp4 .webm .mp3 .wav .m4a .html .htm .ipynb .xml .tsv .ico .bmp .avif .tif .tiff .ogg .mov .m4v`;
+files with any other extension are **left out** (not extracted, not fatal) and reported in the upload response as `scan.skipped` (first 20 names) / `scan.skippedCount`; ≤2000 files, ≤500 MB uncompressed,
 ≤100 MB per file, depth ≤12, no absolute paths / `..` / backslashes / NUL, no symlinks, no `.env*`; junk directories
 are skipped (see "Behaviour notes"). Entry: explicit `entry` if given and present, else root
 `index.qmd`, else the only `.qmd`; otherwise 400 asking for the entry path.
@@ -508,8 +550,9 @@ Deck uploads (`lib/slides/source.ts`, by extension + magic bytes; one file ≤ `
 else → 400. The worker re-checks (PDF via `pdfinfo`: encrypted/unreadable/> 500 pages fail the job).
 
 ZIP validation (backend, before upload, from a temp file using yauzl; the worker re-validates while
-extracting): only these extensions `.qmd .md .css .scss .yml .yaml .png .jpg .jpeg .gif .svg .webp .pdf .bib
-.csl .json .js .woff .woff2 .ttf .otf .txt .csv .mp4 .webm .mp3 .wav .m4a`; ≤2000 files, ≤500 MB uncompressed,
+extracting): these extensions are extracted `.qmd .md .css .scss .yml .yaml .png .jpg .jpeg .gif .svg .webp .pdf .bib
+.csl .json .js .woff .woff2 .ttf .otf .txt .csv .mp4 .webm .mp3 .wav .m4a .html .htm .ipynb .xml .tsv .ico .bmp .avif .tif .tiff .ogg .mov .m4v`;
+files with any other extension are **left out** (not extracted, not fatal) and reported in the upload response as `scan.skipped` (first 20 names) / `scan.skippedCount`; ≤2000 files, ≤500 MB uncompressed,
 ≤100 MB per file, depth ≤12, no absolute paths / `..` / backslashes / NUL, no symlinks, no `.env*`; junk directories
 are skipped (see "Behaviour notes"). Entry: explicit `entry` if given and present, else root
 `index.qmd`, else the only `.qmd`; otherwise 400 asking for the entry path.
@@ -665,7 +708,7 @@ not filtered by membership; `setSearchAccessFilter(fn)` (`lib/search/service.ts`
   「目前使用關鍵字搜尋」) when there is no active space, the `embedding` role is unbound
   (`unconfigured`) or unavailable, or embedding the query fails. Search itself never fails because of the AI platform.
 - **Enabling semantic search**: `/admin/models` → add an account with an embedding model (e.g. OpenAI
-  `text-embedding-3-small`, a local TEI/Ollama `bge-m3`, Voyage, Jina…) → a route with capability `embedding` → bind the
+  `text-embedding-3-small`, a local TEI/Ollama `bge-m3`, Voyage, Jina…) → its model profile (or a group of its deployments) → bind the
   `embedding` role. The first binding creates the active space and runs `ai_embedding_reindex` over every source; changing
   the model later goes through the switch wizard. Unbinding the role turns semantic search off (vectors stay).
 - **Notes list**: `setNoteSearchProvider` returns the hybrid note ranking in semantic mode, else null (notes keep their own ILIKE).
@@ -932,12 +975,15 @@ Tables (`0070_agent.sql`):
 - `conversations` (`user_id`, `title` + `title_source auto|user`, `mode chat|interview`, `context` = latest page context,
   `study_id` (scope for study memories), `autopilot`, `memory_enabled`, `summary` + `summary_until` = compaction).
 - `agent_messages` (`seq` global order; `role user|assistant|tool|notice|compaction`; `content` = unified `ChatMessage`
-  blocks the model sees, `text` = what the UI shows; `provider_state` replayed to the vendor; `status complete|cancelled`).
+  blocks the model sees, `text` = what the UI shows; `provider_state` replayed to the vendor; `status complete|cancelled`;
+  branches `0104_agent_branches.sql`: `version_of` (first message of a user message's version group), `hidden_by`
+  (NULL = current branch), `answers` (`ask_user` answers of this user turn `{toolCallId, answers:[{id,value,other?,skipped?}]}`)).
   The transcript is always valid: every assistant `tool_use` gets one `tool` message with a result per call.
 - `agent_runs` (`status running|awaiting_approval|awaiting_llm|done|cancelled|failed`, `step`/`max_steps` 25, `tainted` +
   `taint_sources` (provenance labels), `autopilot_writes`, tokens, `active_ms`, `stop_reason
   limit_steps|limit_time|limit_tokens|repeat|expired|cancelled|superseded`, `error {error,code,hint}`, `llm_waits`,
-  `next_retry_at`, lease `lease_owner/lease_expires_at`).
+  `next_retry_at`, lease `lease_owner/lease_expires_at`; also `awaiting_input` = ended after an `ask_user` card, `superseded` =
+  cancelled by an edit / a new message).
 - `tool_calls` (`message_id`+`position`, `provider_call_id`, `tool`, `args`, `edited_args`, `risk read|write|destructive`,
   `status pending_approval|approved|denied|running|done|failed|cancelled|expired`, `approved_via user|conversation_grant|autopilot`,
   `approval_reason write|destructive|memory|tainted|outbound|autopilot_limit`, `summary`, `target {studyId,label,url}`,
@@ -974,6 +1020,40 @@ Tables (`0070_agent.sql`):
    the UI keeps the full history; fallback when `fast` fails: older turns dropped with a note).
 9. Title: role `fast` after the first step (fallback: first 24 chars of the message).
 
+**Branches** (edit / regenerate / ‹ 1/2 ›): the current branch is always `agent_messages WHERE hidden_by IS NULL ORDER BY seq`
+(the model context, `openStep`, titles, GET, list previews and memory-use lookups all read only it). Editing user message M
+(text, or the answers of a card) first cancels the active run (`stop_reason superseded`; a late partial of that run is never
+saved; pending approvals of the tail become `cancelled` with synthetic results, so the hidden tail stays a valid transcript),
+then sets `hidden_by = M.id` on every current-branch message from M on, appends the new version (`version_of` = group root)
+and starts a run. 「重新產生」 = resubmitting the last user message unchanged. Switching to version V hides the current tail
+from the active version A (`hidden_by = A.id`) and un-hides `hidden_by = V.id` (works for nested edits; no run starts).
+A compaction summary that covers the changed point is dropped (`summary_until >= seq`; rebuilt on demand). Executed
+writes in a discarded tail are **not** undone (the UI warns before editing); `tool_calls`, `memory_uses` and `agent_runs`
+of hidden messages are kept so a switch back restores them. Each change emits a `branch` event: clients reload the
+conversation (GET + SSE from the new `resumeFrom`), so replay never shows events of a hidden branch; `message` views carry
+`hidden` and clients drop hidden ones. GET's `run` is the latest run of the current branch.
+
+**`ask_user`** (`src/agent/ask.ts`, `tools/ask.ts`; risk read, never asks for consent, chat + interview, not on MCP):
+`{intro?, questions: 1–6 × {id, prompt, type single_choice|multi_choice|short_text|long_text|number|date|scale|yes_no,
+options?: [{value,label,description?}] (2–12, required for choices), allow_other?, required? (default false), placeholder?,
+scale_labels?}}`. The call only shows the card; after its step the run ends (`done`, `stop_reason awaiting_input`) without
+another model call. The answers are a **user turn**: `POST …/messages {answers: {tool_call_id, answers}}` (validated against
+the questions: required, option values, number/date/scale ranges → 400; card must be on the current branch and not already
+answered → 404/409); the model gets a clean `<user_answers>` list (question → answer labels, 「（略過）」 for skipped). A normal
+message instead of answering leaves the card answerable (「繼續回答」). 「修改答案」 = editing that answer message (a branch).
+`list_lab_members {role?}` (read) lists active student/professor accounts for advisor/member choices.
+
+**Interview** (`mode interview`): creating the conversation seeds a finished run with one assistant message holding a fixed
+`ask_user` card (`MATURITY_QUESTION`, `tools/interview.ts`: 「這個研究目前進行到哪個程度？」 exploring / problem_defined /
+method_first / continuation / assigned / well_defined + 其他) and its tool result — no model call. The system prompt then
+asks 2–4 optional, mode-specific question cards per round (「還不確定」 options; never schedules, deadlines or timelines;
+advisors from `list_lab_members`), proposes within 2–3 rounds for exploring / problem_defined, and calls
+`propose_study_plan {maturity, title, summary_format, summary_md (## 研究方向 / 動機 / 目前的想法 / 待釐清的問題, + 方法 / 資料 /
+評估 when well_defined; unknowns 待探討), open_questions?, stages, first_steps? (≤ 3, undated), milestones? (only when the user
+gave dates and asked)}`. The SPA shows the latest proposal **of the current branch**; editing an earlier answer re-runs the
+interview from there. `studies.maturity` (`0105_study_maturity.sql`, same six values or NULL) is set on create, shown and
+editable on the overview (「研究成熟度」), and returned by `get_study` (`maturity`, `maturity_label`) for later AI features.
+
 Decisions (`POST /agent/tool-calls/:id/decision`): row lock, must be `pending_approval` (else 409). `approve` (+ optional
 `edited_args`, re-validated with zod — the memory card's edited text) → `approved`; `approve_conversation` also inserts the
 grant (write tools only; never destructive/memory) and approves other pending calls of the step covered by it; `deny` →
@@ -1000,10 +1080,13 @@ stripped from the text).
 | GET `/agent/pending` | user | pending approvals across my conversations → `{count, conversations:[{id,title,mode,n}]}` (badges) |
 | GET `/agent/conversations?mode=chat\|interview&q=&limit=` | user (own) | `{conversations: (Conversation & {last_text, run_status, pending})[]}` newest first |
 | POST `/agent/conversations` `{mode?, context?, autopilot?, title?}` | user | autopilot / memory default from settings (interview: both off) → 201 `{conversation}` |
-| GET `/agent/conversations/:id` | owner | `{conversation, messages (user/assistant/notice/compaction, each with memories), toolCalls, run (latest), grants, settings, resumeFrom}` |
+| GET `/agent/conversations/:id` | owner | current branch only: `{conversation, messages (user/assistant/notice/compaction, each with memories, answers, versions: ids \| null), toolCalls, run (latest of the branch), grants, settings, resumeFrom}` |
 | PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?}` | owner | memory needs the user setting (409); emits `conversation` |
 | DELETE `/agent/conversations/:id` | owner | cancels the active run first; memories stay |
-| POST `/agent/conversations/:id/messages` `{text ≤ 20000, context?: PageContext}` | owner | 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; 409 while running → 202 `{message, run}` |
+| POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext}` | owner | text and/or `ask_user` answers; 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; 409 while running → 202 `{message, run}` |
+| POST `/agent/conversations/:id/messages/:messageId/edit` `{text?, answers?, context?}` | owner | current-branch user message → new version (cancels the active run first; empty body = resubmit unchanged); an answer message takes only `answers` (400) → 202 `{message, run}` |
+| POST `/agent/conversations/:id/regenerate` | owner | 「重新產生」: resubmits the last user message → 202 `{message, run}`; 409 when there is none |
+| POST `/agent/conversations/:id/messages/:messageId/activate` | owner | ‹ 1/2 ›: make that version current (cancels the active run) → `{ok, changed}`; 409 when it cannot be switched |
 | POST `/agent/conversations/:id/cancel` · `/continue` | owner | stop the active run · retry now (`awaiting_llm`) or start a new run on the same transcript → `{run}` |
 | POST `/agent/tool-calls/:id/decision` `{decision: approve\|approve_conversation\|deny, reason?, edited_args?}` | conversation owner | 409 when already decided → `{toolCall, resumed}` |
 | POST `/agent/tool-calls/:id/undo` | conversation owner | 「復原」 a `done` call that ran **without a card** (`approved_via` autopilot / conversation_grant) and carries an undo recipe (`tool_calls.result.undo`, never sent to the model): `create_task` / `create_note` → delete the object, only if the caller created it and its `updated_at` (+ note `version`) is unchanged since the call; `suggest_study_summary` under autopilot → put back the previous summary, only if the text is still what the AI wrote. Sets `result.undone_at`, emits `tool_call`; refused → 409 `內容在那之後已被修改…` / `這個操作已經復原過了。` → `{toolCall}` |
@@ -1015,7 +1098,8 @@ stripped from the text).
 
 SSE event types (data = JSON): `run {run}`, `conversation {conversation}`, `message {message}`, `tool_call {toolCall}`,
 `step_start {runId, step}` (GET's `resumeFrom` points before the current step's start so a reload replays its deltas),
-`text {runId, text}`, `reasoning {runId, text}`, `tool_input {runId, index, name, title}`, `step_discarded {runId}`.
+`text {runId, text}`, `reasoning {runId, text}`, `tool_input {runId, index, name, title}`, `step_discarded {runId}`,
+`branch {messageId}` (the current branch changed: reload).
 
 ```ts
 type PageContext = { path?, studyId?, studySlug?, noteId?, deckId?, page?, meetingId?, paperId? }; // server resolves studyTitle
@@ -1060,7 +1144,8 @@ Core tools: read `list_studies`, `get_study`, `get_study_progress`, `list_notes`
 `list_decks`, `get_deck`; write `create_note`, `suggest_note_edit` (full text or exact `before`/`after` edits),
 `suggest_study_summary`, `create_task`, `update_task`, `add_milestone`, `set_stage`, `import_paper` (open-world: resolves
 the identifier online, reuses a same/likely lab copy), `add_paper_to_study`, `remember` (memory); destructive `delete_task`,
-`delete_note`, `remove_paper_from_study`; interview-only `propose_study_plan` (read, no side effects).
+`delete_note`, `remove_paper_from_study`; `ask_user` + `list_lab_members` (chat and interview); interview-only
+`propose_study_plan` (read, no side effects).
 
 **MCP** (`routes/mcp.ts`, Streamable HTTP with JSON responses; no sessions, no server stream; protocol `2025-11-25`,
 `2025-06-18`, `2025-03-26`): `Authorization: Bearer hubmcp_…` only — the cookie is never accepted, so `POST /api/mcp` is the
@@ -1076,7 +1161,12 @@ Frontend: `/assistant[/<id>]` (`components/agent/AssistantWorkspace`), the globa
 `sm`, a floating button above the tab bar on phones; full-screen sheet on phones; page context from the URL via
 `lib/agent/context.ts`), `ChatView` (shared by page, panel and interview), `ConsentCard`, `ToolTimeline`/`ToolRow`,
 `Composer`, `MemorySettings` + `McpTokens` (settings tab 「AI 助理」), `StudyInterview` (`/studies/new` 「AI 訪談」:
-`interview` conversation → `propose_study_plan` → editable plan → `POST /studies` + stage/milestone API calls).
+`interview` conversation (seeded maturity card) → question cards → `propose_study_plan` → editable draft (maturity, stages,
+optional tasks from first steps / 「與教授討論：…」 open questions) → `POST /studies` + stage/task(/milestone) API calls), `AskCard`
+(question card: one question per step with progress bar, option cards, 其他, Back/Skip/Next, review step, sticky footer;
+keys 1–9 / Enter / Shift+Tab on the first control; older unanswered cards collapse to 「繼續回答」), `MessageItem` user actions
+(編輯 inline, 複製, ‹ i/n ›; hover/focus with a fine pointer, ⋯ menu or long press on touch; answer messages show a summary with
+「修改答案」), 「重新產生」 on the latest reply; editing over executed writes asks first (ConfirmDialog).
 State: `lib/agent/chat.svelte.ts` (`ChatSession`: load, SSE with replay, rAF-batched deltas), `lib/agent/panel.svelte.ts`.
 The composer's context chip names the page (「目前頁面：研究「…」」, from `<title>`); after an answer the composer gets focus
 back (not on touch devices); `ToolRow` shows 「復原」 for calls with `undo: "available"`. On phones `/studies/new` shows the
@@ -1124,7 +1214,7 @@ fetches discovery server-side and requires https). Requirements read from Aldine
 | GET `/oidc/userinfo` | Bearer access token | same user claims as the ID token; 401 `invalid_token` (+ `WWW-Authenticate`) otherwise. Aldine only calls it when the ID token lacks email/name (never, today) |
 
 - ID token (ES256, `kid` = RFC 7638 thumbprint, 300 s): `iss`, `aud` = client id, `sub` = hub user id, `iat`, `exp`,
-  `nonce` (when sent); scope `profile` → `name`, `preferred_username` (hub name); scope `email` →
+  `nonce` (when sent); scope `profile` → `name` (real name), `preferred_username` (hub username); scope `email` →
   `email` = `<hub user id>@users.speech-ai-hub.invalid`, `email_verified: true`. Hub users have no email; Aldine needs
   one for admins (`ALDINE_ADMIN_EMAILS`) and collaborator invites. The synthetic address is stable across renames,
   `.invalid` cannot receive mail, and Aldine never links an SSO identity to a password account with the same email.
@@ -1189,59 +1279,90 @@ fragments/controls/keyboard.
 
 ## AI platform (`backend/src/ai/`, routes `ai-status.ts` + `ai-admin.ts`, `ai-worker/`)
 
-Three layers (spec §3/§4/§8): **provider accounts → routes → role bindings**. Code asks for a *role*
-(`assistant|writing|slides|analysis|fast|embedding|asr|asr_live`), never a model. Vendor libraries:
-`docs/ai-providers.md` (chat/embedding codecs + registry), `docs/ai-asr-oauth.md` (ASR, subscription OAuth).
+Layers: **provider accounts → model profiles → (groups) → role bindings** — ONE routing configuration. Code asks for a
+*role* (`assistant|writing|slides|analysis|fast|embedding|asr|asr_live`), never a model. Vendor libraries:
+`docs/ai-providers.md` (chat/embedding codecs, registry, listing metadata, model catalog), `docs/ai-asr-oauth.md`
+(ASR, subscription OAuth).
 
 | Dir | Contents |
 |---|---|
-| `ai/router/` | `resolveRoute`/`resolveRole` (tree, nested child routes, cycle + depth check), strategies, `runRoute` (retry + fallback) |
-| `ai/platform/` | `AiPlatform` (public API), DB store + snapshot cache, AES-GCM crypto, call log + stats, health/status, param whitelist, subscription entries + OAuth token store, admin service |
+| `ai/catalog/` | built-in model catalog (`families.ts`: defaults for GPT/o-series, Claude, Gemini/Gemma, DeepSeek, Qwen, GLM, Kimi, MiniMax, Llama, Mistral, Grok, Cohere, embedding and ASR families), `normalizeModelId`, `catalogLookup`, profile field types |
+| `ai/router/` | `resolveRole`/`resolveGroup`/`resolveTarget` (tree, nested groups, cycle + depth ≤ 6), strategies, `runRoute` (retry + fallback) |
+| `ai/platform/` | `AiPlatform` (public API), DB store + snapshot cache, model profiles (`models.ts`: merge, sync, overrides), AES-GCM crypto, call log + stats, health/status, param whitelist, vision, subscription entries + OAuth token store, admin service |
 | `ai/embedding/` | identity fingerprint, vector spaces (`embeddings` + per-space HNSW), switch wizard, content-source registry, `ai_embedding_reindex` job |
 | `ai-worker/` | entrypoint `main.ts`, job runner, `registerAiJob`, `handlers.ts` (one import line per module) |
 
-**Tables** (migrations `0020_ai_platform.sql`, `0021_embedding_spaces.sql`):
+**Tables** (migrations `0020_ai_platform.sql`, `0021_embedding_spaces.sql`, `0101_ai_models_routing.sql`):
 - `ai_providers` — `family` (`llm`\|`asr` registry), `kind` (registry id; plus `chatgpt`, `claude-oauth`, `claude-cli`),
-  `category` (`external`\|`local`\|`subscription`), `name` (unique per family), `config` jsonb (non-secret form fields),
-  `secrets` bytea + `secret_keys`, `oauth_tokens` bytea + `oauth_meta` (`status none|connected|needs_reauth`, email,
-  plan, expiry), `enabled`, `last_probe` (`{ok, latencyMs, detail_zh, code?, hint_zh?, modelCount?}`; the test endpoints return the same shape as `probe`). Ciphertexts: AES-256-GCM, key env `PROVIDER_TOKEN_KEY` (32 B base64,
-  never `AUTH_SECRET`), AAD `<provider id>:secrets` / `:oauth`. API responses only expose `secrets_set: {key: bool}`.
-- `ai_routes` (`capability chat|embedding|asr`, `strategy single|fallback|round_robin|load_balance`),
-  `ai_route_members` (`position`; `provider_id+model` **or** `child_route_id`; `weight`; `params` validated against
-  the entry whitelist + platform knobs `timeout_ms`, `max_retries`, `temperature`, `top_p`, `max_tokens`,
-  `reasoning_effort`, `dimensions`, ASR `language`/`diarization`/`convert_script`/`prompt_template`…; `enabled`).
-- `ai_role_routes` (role → route), `ai_role_status` (derived health cache), `ai_call_log`, `ai_oauth_sessions`
-  (pending device-code / PKCE logins, encrypted, 10–15 min), `ai_job_state` (ai-worker checkpoint + backoff step).
-- `embedding_spaces` (one per model identity: `provider_kind`, `model`, `dims ≤ 4000`, `route_id`,
-  `status building|ready|active|retired|failed`, progress), `embedding_fingerprints`, `embedding_identity`
-  (singleton `active_space_id`), `embeddings(space_id, owner_type, owner_id, chunk_index, content_hash, vec halfvec)`.
-  Each space has a partial index `embeddings_hnsw_<id>` on `(vec::halfvec(<dims>)) halfvec_cosine_ops WHERE space_id=…`;
-  queries must filter `space_id` and cast to the space's dims (`searchSpace()` does).
+  `category` (`external`\|`local`\|`subscription`), `name` (unique per family), `config` jsonb (non-secret **connection**
+  settings only — no context/output limits), `secrets` bytea + `secret_keys`, `oauth_tokens` bytea + `oauth_meta`
+  (`status none|connected|needs_reauth`, email, plan, expiry), `enabled`, `last_probe` (`{ok, latencyMs, detail_zh, code?,
+  hint_zh?, modelCount?}`), `models_synced_at`. Ciphertexts: AES-256-GCM, key env `PROVIDER_TOKEN_KEY` (32 B base64, never
+  `AUTH_SECRET`), AAD `<provider id>:secrets` / `:oauth`. API responses only expose `secrets_set: {key: bool}`.
+- `ai_models` — one **model profile** per (account, `model_id`): `origin sync|manual`, `listed` (in the latest listing),
+  `enabled` (shown in pickers; bindings keep working when hidden), `api` jsonb (fields the provider's list-models API
+  reported), `overrides` jsonb (admin), `refreshed_at`. Fields: `display_name, capability (chat|embedding|asr),
+  context_window, max_output_tokens, vision, tools, reasoning, json_schema, embedding_dims, input_price, output_price`
+  (USD / 1M tokens). The **effective profile is computed in code** per field: manual > `provider_api` > catalog (the
+  catalog is code, so updated defaults apply without a migration), with `sources[field]`; an ASR account's models are
+  always `asr`; without any source the capability is guessed (embedding-looking id → embedding, else chat). Filled by
+  sync (「測試並同步」/「同步模型」, new accounts right after saving, the probe leader every 6 h for bound accounts),
+  by an admin (add / override), implicitly when a binding or group names an unknown model id (origin `manual`), and by
+  measured facts (an embedding test call records `embedding_dims`). Sync upserts listed rows, marks missing ones
+  unlisted and deletes unlisted `sync` rows nobody uses and nobody edited; non-text models (image, TTS, moderation,
+  rerank, kind `other`) start hidden.
+- `ai_groups` (`name` unique, `capability chat|embedding|asr`, `strategy fallback|load_balance|round_robin`,
+  `description`) and `ai_group_members` (`position`; `model_ref` → ai_models **or** `child_group_id` (nesting); `weight`;
+  `params`; `enabled`). Cycles and nesting deeper than 6 levels are rejected on save; a child must have the group's
+  capability.
+- `ai_role_bindings` (role PK → `model_ref` **or** `group_id`, plus `params` for a direct model binding).
+- `params` (group members and direct bindings) are **request-shaping only**, validated against the registry whitelist
+  + platform knobs `timeout_ms`, `max_retries`, `temperature`, `top_p`, `reasoning_effort`, `dimensions`, ASR
+  `language`/`diarization`/`convert_script`/`prompt_template`… — limits and capabilities (`max_tokens`, `vision`) are
+  not params (they live in the profile).
+- `ai_role_status` (derived health cache), `ai_call_log`, `ai_oauth_sessions` (pending device-code / PKCE logins,
+  encrypted, 10–15 min), `ai_job_state` (ai-worker checkpoint + backoff step).
+- `embedding_spaces` — one per embedding model identity: `model_ref` (the model profile), `group_id` (when a group of
+  deployments of that same model serves it), `params` (a direct target's request params, e.g. `dimensions`),
+  `provider_kind`, `model`, `dims ≤ 4000`, `status building|ready|active|retired|failed`, progress;
+  `embedding_fingerprints`, `embedding_identity` (singleton `active_space_id`), `embeddings(space_id, owner_type,
+  owner_id, chunk_index, content_hash, vec halfvec)`. Each space has a partial index `embeddings_hnsw_<id>` on
+  `(vec::halfvec(<dims>)) halfvec_cosine_ops WHERE space_id=…`; queries must filter `space_id` and cast to the space's
+  dims (`searchSpace()` does).
 
-**Routing.** Strategy order, then failover: `single` = first member only; `fallback` = position order;
-`round_robin` = rotating start (per process); `load_balance` = weighted random, rest weighted. A member is retried
-(`max_retries`, default 1; ASR 0) on `rate_limited|overloaded|unavailable`, honouring Retry-After (≤ 8 s). It falls
-back on pre-stream `rate_limited|overloaded|unavailable|timeout|auth_failed|quota_exhausted|model_not_found|unsupported`
-(an `error` event before any content counts as pre-stream); `bad_request|context_too_long|content_filtered|cancelled`
-are thrown as-is. All members failed / role unbound → `PlatformError` **`llm_unavailable`** (503,
-`detail.attempts[{providerKind, model, code}]`, `detail.reason unconfigured|all_failed`). Mid-stream errors arrive as
-the final `{type:"error"}` event (no fallback). Disabled accounts and dead OAuth logins are skipped. Member params
-override the caller (except `max_tokens`: the smaller wins). Child routes must have the same capability.
+Migration `0101` converted v1 named routes: a route with exactly one model member became a **direct model binding**
+(roles bound to it get `model_ref` + the member's params; parents that nested it get the model inline); every other
+route became a group with the same id (`single` → `fallback`); route-member `vision` params became profile overrides;
+`max_tokens` params were dropped; Ollama `numCtx` became the models' manual `context_window`; Anthropic
+`defaultMaxTokens` left the config; `ai_model_hints` rows became profiles; spaces got `model_ref/group_id/params`;
+`ai_call_log.route_id` became `group_id` (+ backfilled `model_ref`).
 
-**Vision** (`ai/platform/vision.ts`, migration `0022_ai_model_hints.sql`: `ai_model_hints(provider_id, model, hints jsonb)` +
-`ai_providers.model_hints_at`). A chat member accepts images when its param `vision` (`yes`\|`no`, admin override; absent = auto)
-says so, else detection: `claude-cli` / registry `capabilities.vision=false` → no; the vendor's model listing hint
-(`ModelInfo.hints.vision`, e.g. the gateway's `capabilities.vision`) → that; a model-name heuristic (gpt-4o/4.1/5, o3/o4-mini,
-claude, gemini, `-vl`, llava, pixtral, glm-…v…) → yes; Anthropic/Gemini codecs → yes; otherwise unknown = no. Hints are refreshed by
-the probe leader for bound accounts at most every 6 h (cheap listing) and by the admin 「測試」 button. **Image requests**
-(`hasImages`: image blocks in user content or tool results) skip members without vision (skip code `no_vision`, not logged); when no
-member with vision is left the call throws `PlatformError` **`vision_unavailable`** (422), never `llm_unavailable`, so the role
-is not marked down and ai-worker does not wait. Images are never stripped silently (a layout review without them would be
-invented). Role flag: `detail.vision` = some member that is not down accepts images; public status and `ai.capabilities(role)`
-report it. Codecs map `image` blocks (base64 PNG/JPEG/WebP): openai-chat/cohere `image_url` data URLs, responses `input_image`,
-anthropic `image` base64 source, gemini `inlineData`, bedrock `image.source.bytes` (base64 only), ollama `images[]` (base64 only).
+**Routing.** A direct model binding is a single-member tree (strategy `single`). Groups: `fallback` = position order;
+`round_robin` = rotating start (per process); `load_balance` = weighted random, rest weighted; every strategy ends in
+failover through the remaining members, recursing into child groups. A member is retried (`max_retries`, default 1;
+ASR 0) on `rate_limited|overloaded|unavailable`, honouring Retry-After (≤ 8 s). It falls back on pre-stream
+`rate_limited|overloaded|unavailable|timeout|auth_failed|quota_exhausted|model_not_found|unsupported` (an `error` event
+before any content counts as pre-stream); `bad_request|context_too_long|content_filtered|cancelled` are thrown as-is.
+All members failed / role unbound → `PlatformError` **`llm_unavailable`** (503, `detail.attempts[{providerKind, model,
+code}]`, `detail.reason unconfigured|all_failed`). Mid-stream errors arrive as the final `{type:"error"}` event (no
+fallback). Disabled accounts and dead OAuth logins are skipped. Member params override the caller. **Limits from the
+profile:** the caller's `maxTokens` is clamped to the model's `max_output_tokens`; codecs that require max_tokens
+(anthropic-messages, bedrock-converse) get `min(max_output_tokens ?? 8192, 8192)` when the caller sets none; a
+**manual** `context_window` is sent as `ChatRequest.contextLength` (Ollama `num_ctx`; default 8192 otherwise).
+`ai.limits(role)` returns the smallest context window / max output across the role's models.
 
-**Public API** (`import { ai, aiFor } from "../ai/platform/index.js"`; `aiFor(app)` = the instance bound to the pool):
+**Vision** (`ai/platform/vision.ts`). A model accepts images when its profile says so (manual → `override`, listing →
+`model_list`, catalog → `catalog`), else a model-name heuristic (gpt-4o/4.1/5, o3/o4-mini, claude, gemini, `-vl`,
+llava, pixtral, glm-…v…) → `name`; else Anthropic/Gemini codecs → `vendor`; `claude-cli` / registry
+`capabilities.vision=false` → no; unknown = no. **Image requests** (`hasImages`: image blocks in user content or tool
+results) skip members without vision (skip code `no_vision`, not logged); when none is left the call throws
+`PlatformError` **`vision_unavailable`** (422), never `llm_unavailable`, so the role is not marked down and ai-worker
+does not wait. Images are never stripped silently. Role flag: `detail.vision` = some member that is not down accepts
+images; public status and `ai.capabilities(role)` report it. Codecs map `image` blocks (base64 PNG/JPEG/WebP):
+openai-chat/cohere `image_url` data URLs, responses `input_image`, anthropic `image` base64 source, gemini
+`inlineData`, bedrock `image.source.bytes`, ollama `images[]`.
+
+**Public API** (unchanged for callers; `import { ai, aiFor } from "../ai/platform/index.js"`):
 ```ts
 ai.chat(role: ChatRole, req: Omit<ChatRequest,"model">, ctx?: { userId?, jobId?, signal?, onRoute? }) → ChatResult & { route }
 ai.chatStream(role, req, ctx) → AsyncGenerator<ChatEvent>          // SSE passthrough; ctx.onRoute(info) before the first event
@@ -1252,28 +1373,34 @@ ai.transcribe(req: TranscribeRequest minus resume/onCheckpoint, { role?: "asr", 
 ai.liveTranscribe(opts: LiveOptions, { role?: "asr_live" }) → LiveSession & { route }
 ai.status() → { roles: {<role>: { state: ok|degraded|unavailable|unconfigured, message_zh, vision }}, search_mode, updated_at }
 ai.capabilities(role) → { vision: boolean }                          // an image request would be served now
+ai.platform.limits(role) → { contextWindow, maxOutputTokens }         // smallest across the role's models (null = unknown)
 ai.onStatus(listener) → unsubscribe
 ```
-Embedding helpers for the search module (`ai/embedding/spaces.ts`): `upsertVectors`, `deleteOwnerVectors`,
-`searchSpace`, `chunkHashes`, `contentHash`; `registerEmbeddingSource(ownerType, {count, iterate})` feeds re-indexing.
-ASR checkpoints: `onCheckpoint` gives `{memberId, model, asr}`; save it (e.g. `saveCheckpoint` in ai-worker) and pass it
-back as `resume` — it is reused only on the same member.
+`route` (`RouteInfo`) = `{role, groupId (null for a direct binding), modelRef, providerId, providerKind, model,
+fallbackIndex, routeId}` (`routeId` = deprecated alias of `groupId ?? ""`). Embedding helpers for the search module
+(`ai/embedding/spaces.ts`): `upsertVectors`, `deleteOwnerVectors`, `searchSpace`, `chunkHashes`, `contentHash`;
+`registerEmbeddingSource(ownerType, {count, iterate})` feeds re-indexing. ASR checkpoints: `onCheckpoint` gives
+`{memberId, model, asr}` (`memberId` = group member id, or `binding:<role>` for a direct binding); pass it back as
+`resume` — reused only on the same member.
 
 **Call log** (`ai_call_log`): one row per member attempt (after its retries), never prompt/response content. Rows
 of one logical call share `call_id`; `final` marks the outcome (an extra final row without a member when every member
-failed: `error_code llm_unavailable`). Columns: role, capability, route/provider/kind/model, stream, started_at,
-latency_ms, ttft_ms, tokens in/out, ok, error_code, retries, fallback_index, job_id, user_id. Buffered inserts;
-kept 90 days. Stats: per role (final rows) and per provider/model (all rows): calls, success rate, p50/p95, TTFT p50,
-tokens, retries, fallbacks; error distribution; time series.
+failed: `error_code llm_unavailable`). Columns: role, capability, `group_id` (group holding the member; null for a
+direct binding), `model_ref`, provider/kind/model, stream, started_at, latency_ms, ttft_ms, tokens in/out, ok,
+error_code, retries, fallback_index, job_id, user_id. Buffered inserts; kept 90 days. Stats: per role (final rows) and
+per provider/model/`model_ref` (all rows): calls, success rate, p50/p95, TTFT p50, tokens, retries, fallbacks,
+`last_used`; error distribution; time series.
 
 **Health.** Member health: account disabled / needs re-login → down; the latest call of that provider+model within
 10 min (if newer than the probe) decides (down only for infra codes); else the probe (≤ 5 min old); else unknown.
-Role: `unconfigured` (no route), `ok` (first member usable), `degraded` (serving from a fallback; for
+Role: `unconfigured` (no binding), `ok` (first member usable), `degraded` (serving from a fallback; for
 round-robin/load-balance: some member down), `unavailable` (none usable, or the latest real call ended
-`llm_unavailable` < 2 min ago with no newer success). Probes (cheap listing/health endpoints, never paid
-generations) run every 60 s only in the process holding advisory lock `473931`; recompute writes `ai_role_status`
-and `NOTIFY ai_status`; every process `LISTEN`s `ai_status` / `ai_config` (config change → cache drop). The backend
-starts this runtime in `routes/ai-status.ts` `onReady` (not when `NODE_ENV=test` or `AI_PLATFORM_BACKGROUND=0`).
+`llm_unavailable` < 2 min ago with no newer success). Detail: `{target: model|group, groupId?, groupName?, modelRef?,
+members[{memberId, modelRef, groupId, providerId, providerName, model, health, reason?, vision?}], activeIndex}`.
+Probes (cheap listing/health endpoints, never paid generations) run every 60 s only in the process holding advisory
+lock `473931`; recompute writes `ai_role_status` and `NOTIFY ai_status`; every process `LISTEN`s `ai_status` /
+`ai_config` (config change → cache drop). The backend starts this runtime in `routes/ai-status.ts` `onReady` (not when
+`NODE_ENV=test` or `AI_PLATFORM_BACKGROUND=0`).
 
 **Subscription logins (EXPERIMENTAL).** `chatgpt` (openai-responses codec → `chatgpt.com/backend-api/codex`, device
 code), `claude-oauth` (anthropic codec, copy-code PKCE or pasted setup-token), `claude-cli` (runs `claude` in
@@ -1282,39 +1409,45 @@ tokens from `getTokens()`: `SELECT … FOR UPDATE` → `refreshIfNeeded` → `UP
 permanent refresh failure → `oauth_meta.status = needs_reauth`. UI shows the `*_WARNINGS_ZH` texts.
 
 **Embedding identity.** Probe set v1 (8 fixed zh/en sentences). A model/deployment has the same identity when every
-probe vector has cosine ≥ 0.95 with the stored fingerprint (same dims). Binding the `embedding` role or editing a route
-inside its tree is checked: members of one embedding route must agree with each other (`route_invalid` otherwise);
-no active space → the route's model becomes the active space at once (empty) + `ai_embedding_reindex` job; same
-identity → rebind; different → 409 **`embedding_model_change_requires_switch`** (`detail.comparison`). Switch wizard:
-precheck → `switch` builds a `building` space with its own route (job fills it from all sources; indexers write to
-both live spaces via `embedForIndex`) → `ready` → `flip` (old → `retired`, identity + role binding move) → retired
-spaces can be deleted. Semantic search is `keyword_only` without an active space or while `embedding` is unavailable.
+probe vector has cosine ≥ 0.95 with the stored fingerprint (same dims). Binding the `embedding` role (to a model or a
+group) or editing a group inside its tree is checked: members of one embedding group must agree with each other
+(`route_invalid` otherwise); no active space → the target's model becomes the active space at once (empty) +
+`ai_embedding_reindex` job; same identity → rebind (the space's target moves); different → 409
+**`embedding_model_change_requires_switch`** (`detail.comparison`). Switch wizard: precheck → `switch` builds a
+`building` space for the new target (job fills it from all sources; indexers write to both live spaces via
+`embedForIndex`) → `ready` → `flip` (old → `retired`, identity + role binding move) → retired spaces can be deleted.
+Semantic search is `keyword_only` without an active space or while `embedding` is unavailable.
 
 ### API
 
 All `/api/admin/ai/*` require `requireAdmin`; every error is `{ error, code, hint }` 繁中 (+ `detail` with
 `issues[{key|index, message_zh}]`, fingerprint scores, cycle path…). Non-AI HTTP errors get codes
-`invalid_input|unauthorized|forbidden|not_found|conflict`.
+`invalid_input|unauthorized|forbidden|not_found|conflict`. `Target` = `{model_id}` (ai_models.id) | `{group_id}` |
+`{provider_id, model}` (vendor model id on an account; the profile is created).
 
 | Method & path | Notes |
 |---|---|
 | `GET /api/ai/status` | any signed-in user; `{roles: {<role>: {state, message_zh, vision}}, search_mode, updated_at}` — no providers/models/errors |
 | `GET /api/ai/status/stream` | SSE `event: status` (same body) on change, `: ping` every 25 s, `retry: 5000` |
-| `GET /admin/ai/registry` | `{llm[], asr[], roles[], platform_params{chat,embedding,asr}, live_kinds[], secrets_key_configured}` (public registry entries: form fields, capabilities, param whitelist, warnings) |
-| `GET/POST /admin/ai/providers`, `PATCH/DELETE /admin/ai/providers/:id` | create `{family, kind, name, config, secrets, enabled?}`; patch `secrets` only lists changed keys (`null` clears); delete 409 `provider_in_use` |
-| `POST /admin/ai/providers/:id/test` · `POST /admin/ai/providers/test` | probe + model list (+ optional `{model, capability}` 1-shot check); the second tests an unsaved form (`base_id` reuses stored secrets) |
-| `POST /admin/ai/providers/:id/oauth/start` | ChatGPT `{session_id, flow:"chatgpt_device", user_code, verification_url, interval_sec, expires_at}`; Claude `{session_id, flow:"claude_pkce", authorize_url, expires_at}` |
-| `POST /admin/ai/oauth/sessions/:id/poll` · `…/complete {code}` | ChatGPT polling → `{status: pending}` or `{status: complete, oauth}`; Claude pasted `code#state` |
-| `POST /admin/ai/providers/:id/oauth/token {token}` · `…/oauth/logout` | Claude setup-token; sign out (ChatGPT revoke, best effort) |
-| `GET /admin/ai/vision?provider_id=&model=` | `{detected, source: override\|model_list\|name\|vendor\|unknown}` (re-reads a stale model list first). Also: `GET /admin/ai/routes` chat members carry `vision {vision, detected, source, overridden}`; account tests return `models[].vision` and store the hints; role status members carry `vision`, `vision_source`, the role `detail.vision` |
-| `GET/POST /admin/ai/routes`, `PUT/DELETE /admin/ai/routes/:id` | body `{name, capability, strategy, description?, members[{provider_id+model \| child_route_id, weight?, params?, enabled?}]}` (PUT replaces members) → `{route, warnings[]}`; `route_cycle`, `route_invalid`, `capability_mismatch`, `embedding_model_change_requires_switch`, delete 409 `route_in_use` |
-| `GET /admin/ai/roles` · `PUT /admin/ai/roles/:role {route_id \| null}` | bindings with health detail (members up/down/unknown, active index); embedding bind may return `created_space` |
+| `GET /admin/ai/registry` | `{llm[], asr[], roles[], platform_params{chat,embedding,asr}, live_kinds[], secrets_key_configured}` |
+| `GET/POST /admin/ai/providers`, `PATCH/DELETE /admin/ai/providers/:id` | create `{family, kind, name, config, secrets, enabled?}`; patch `secrets` only lists changed keys (`null` clears); provider rows carry `used_by[{kind: group\|role, id, name}]`, `model_count`, `models_synced_at`; delete 409 `provider_in_use` |
+| `POST /admin/ai/providers/:id/test` · `POST /admin/ai/providers/test` | probe + model list (+ optional `{model, capability}` 1-shot check) → `{probe, models[{id, label, kind, vision?}], models_error, models_synced, check}`; a saved account's test also **syncs its profiles**; the second tests an unsaved form (`base_id` reuses stored secrets) |
+| `POST /admin/ai/providers/:id/sync` | 同步模型 → `{count, models: PublicModel[]}` |
+| `GET /admin/ai/models?provider_id=` · `POST /admin/ai/models {provider_id, model_id, overrides?}` | `PublicModel = {id, provider_id, provider_name, provider_kind, provider_family, model_id, origin, listed, enabled, refreshed_at, fields, sources{field: manual\|provider_api\|catalog}, api, overrides, catalog, catalog_id, vision{vision, detected, source, overridden}, used_by[]}` |
+| `PATCH /admin/ai/models/:id {enabled?, overrides?}` · `POST /admin/ai/models/visibility {ids[], enabled}` · `DELETE /admin/ai/models/:id` | overrides per field (`null` clears; bad values 400 `route_invalid`); a used model cannot change capability (`capability_mismatch`) or be deleted (409 `route_in_use`) |
+| `GET /admin/ai/vision?provider_id=&model=` | `{detected, source: override\|model_list\|catalog\|name\|vendor\|unknown}` (syncs a stale listing first) |
+| `GET/POST /admin/ai/groups`, `PUT/DELETE /admin/ai/groups/:id` | body `{name, capability, strategy fallback\|load_balance\|round_robin, description?, members[{model_id \| provider_id+model \| child_group_id, weight?, params?, enabled?}]}` (PUT replaces members) → `{group: {…, members[+model_id, provider_name, child_group_name], bound_roles[], used_by[]}, warnings[]}`; `route_cycle`, `route_invalid` (issues per member index, depth > 6), `capability_mismatch`, `embedding_model_change_requires_switch`; delete 409 `route_in_use` |
+| `GET /admin/ai/bindings` | `{bindings[{role, target: {type:model, model_id, name} \| {type:group, group_id, name} \| null, params, updated_at, status}]}` |
+| `PUT /admin/ai/bindings {roles[], target: Target \| null, params?}` | **bulk bind** every listed role to one target in one transaction (all roles must need the target's capability, else `capability_mismatch`); `null` unbinds; → `{bindings, created_space, warnings[]}` (e.g. assistant on a model without tools) |
+| `PUT /admin/ai/bindings/:role {target, params?}` | one role (quick change) |
+| `GET /admin/ai/overview` | diagram live chips (24 h): `{window, models[{model_ref, provider_id, model, calls, ok, success_rate, p50_ms, last_used…}], roles[…]}` |
+| `GET/POST /admin/ai/routes`, `PUT/DELETE /admin/ai/routes/:id`, `GET /admin/ai/roles`, `PUT /admin/ai/roles/:role {route_id \| null}` | **deprecated v1 aliases** kept for scripts/tests: a route is a group (`single` → `fallback`, members `{provider_id, model}` / `child_route_id`), `route_id` binds that group |
 | `GET /admin/ai/health` · `POST /admin/ai/health/probe` | detailed role status; probe now |
-| `GET /admin/ai/calls` | filters `role, provider_id, model, ok, error_code, from, to, final, probes`, cursor `before`, `limit ≤ 200` → `{calls, next}` |
+| `GET /admin/ai/calls` | filters `role, provider_id, model, ok, error_code, from, to, final, probes`, cursor `before`, `limit ≤ 200` → `{calls[+group_id, group_name, model_ref], next}` |
 | `GET /admin/ai/stats?window=1h\|24h\|7d\|30d` | `{roles[], members[], errors[], series[]}` |
-| `GET /admin/ai/embedding` · `POST …/embedding/precheck {route_id}` · `POST …/embedding/switch {route_id}` · `POST …/embedding/spaces/:id/flip` · `…/cancel` · `DELETE …/embedding/spaces/:id` | identity overview; fingerprint comparison (`action bind\|switch`); switch wizard steps |
-| `GET /admin/ai/export?include_secrets=0\|1` | `{format:"speech-ai-hub.ai-settings", version:1, secret, exported_at, providers, routes, roles}`; secrets (and OAuth tokens) only with `1` (file name `…-SECRET.json`); audited |
-| `POST /admin/ai/import {file, include_secrets}` | upsert by name (accounts per family, routes); secrets used only when the file says `secret:true` and the flag is set; the `embedding` binding is never imported (warning) |
+| `GET /admin/ai/embedding` · `POST …/embedding/precheck {target: {model_id}\|{group_id}, params?}` · `POST …/embedding/switch {target, params?}` · `POST …/embedding/spaces/:id/flip` · `…/cancel` · `DELETE …/embedding/spaces/:id` | identity overview; fingerprint comparison (`action bind\|switch`); switch wizard steps (`route_id` still accepted as a group id) |
+| `GET /admin/ai/export?include_secrets=0\|1` | `{format:"speech-ai-hub.ai-settings", version:2, secret, exported_at, providers, models[{provider, model_id, enabled, overrides}] (edited/used/hidden ones), groups[{name, capability, strategy, members[{model \| child_group, weight, params, enabled}]}], bindings{role: {model, params} \| {group}}}`; secrets only with `1` (`…-SECRET.json`); audited |
+| `POST /admin/ai/import {file, include_secrets}` | versions 1 and 2 (v1 routes are converted like migration 0101); upsert by name (accounts per family, groups) and (account, model id); secrets used only when the file says `secret:true` and the flag is set; the `embedding` binding is never imported (warning) |
 
 ### ai-worker
 
@@ -1341,10 +1474,22 @@ chunking), optional `claude` CLI. It runs the platform runtime too (status notif
 
 `lib/ai/status.svelte.ts` (`aiStatus`: `watch()` ref-counted SSE + 30 s poll, `of(role)`, `available(role)` = ok|degraded, `vision(role)`,
 `all`, `searchMode`); every AI entry point is wrapped in `<AiGate role=…>` (shows 「維護中」 otherwise);
-`AiStatusBadge` (topbar dot + role list); admin UI `/admin/models` (`lib/components/ai/admin/*`, client `lib/ai/admin.ts`
-keeps `{error, code, hint, detail}`; errors render as 發生什麼事 / 建議怎麼做 / 技術細節 via `AiErrorPanel`).
-Vision UI (`lib/components/vision/`, i18n `vision.*`): `VisionBadge` 「視覺」 on route members (override param `vision` =
-自動偵測/支援/不支援 in the params form) and role bindings; `SlideLayoutReview` (deck editor toolbar: preview shots; deck page:
+`AiStatusBadge` (topbar dot + role list). Admin UI `/admin/models` (`lib/components/ai/admin/*`, store
+`lib/ai/admin-store.svelte.ts`, pure helpers `lib/ai/routing.ts`, client `lib/ai/admin.ts` keeps `{error, code, hint, detail}`;
+errors render as 發生什麼事 / 建議怎麼做 / 技術細節 via `AiErrorPanel`). Tabs (`?tab=`): **總覽** `RoutingDiagram` — left→right
+LEGO flow: function blocks → bound model brick or group baseplate (stacked `BrickFace` bricks: account colour, studs
+with the health light, order chip `1 2 3` / weight `%` / `↻`; nested groups are nested plates, `diagram/GroupStack`) →
+provider blocks; SVG connectors (role colour = health, provider wires dotted), hover highlights one path; live chips
+(p50 · success · last used) from `/admin/ai/overview`; zoom/pan (Ctrl/⌘+wheel, drag background, + − 0 and arrows when
+focused); pointer drag (`diagram/dnd.svelte.ts`: brick reorder/move between groups, model or group onto a function, model
+shelf → function/group) with a menu/keyboard equivalent on every brick (⋯ menu: up/down, move to group, bind to
+function, remove; Alt+↑↓); phones get one vertical stack per target, no canvas. **供應商** (LLM + speech accounts,
+「測試並同步」), **模型** (`ModelsPanel` + `ModelSheet`: profiles with source tags API/預設/手動, per-field override + reset,
+picker visibility, manual add, per-account sync), **群組** (`GroupsPanel` + `GroupEditor`: strategy, brick stack with
+drag/↑↓, weights, request params), **功能綁定** (`BindingsPanel`: tick several roles → 「綁定到…」 `TargetPicker` with
+models grouped by account + profile badges and groups; per-role quick change), 流量, Embedding (switch wizard picks a
+model or group). Vision UI (`lib/components/vision/`, i18n `vision.*`): `VisionBadge` 「視覺」 on role bindings and models
+(the profile's vision; manual override in the 模型 tab); `SlideLayoutReview` (deck editor toolbar: preview shots; deck page:
 the shown version) and `LatexLayoutReview` (LaTeX toolbar, pdf.js + `SyncClient.pageSources`) render only when
 `aiStatus.vision(role)`, else the hint 「目前的模型不支援影像，無法檢查排版」; results in `ReviewResults` (fix → suggestion).
 
@@ -1367,6 +1512,17 @@ the shown version) and `LatexLayoutReview` (LaTeX toolbar, pdf.js + `SyncClient.
   (accepted body: `{roles: {<role>: {status, message_zh?, hint_zh?}}}`; 404/errors = unavailable).
 - Reusable pieces: `components/markdown/MarkdownEditor|MarkdownView`, `components/audio/*` (`lib/audio/time.ts`), slides
   components, `ui/DatePicker` (`clearable`), `ui/CheckCircle`, `study/{StudyCard,StageBar,AvatarStack,DueLabel,TaskRow,TaskSheet}`.
+- Markdown editor (`components/markdown/MarkdownEditor.svelte`, used by notes (collaborative), study summary, new study,
+  paper notes): CodeMirror 6 + `lib/editor/` modules — `editor-actions.ts` (one action list for toolbar, slash menu and
+  shortcut sheet), `MarkdownToolbar` (ranked buttons, the rest in 「更多」; table tools while the cursor is in a table),
+  `markdown-commands.ts`, `markdown-table.ts` (GFM table find/format/add/delete/align, Tab navigation), `markdown-slash.ts`
+  (`/` menu on @codemirror/autocomplete), `markdown-paste.ts` (HTML → Markdown via Turndown + GFM, image paste/drop →
+  `imageUpload`), `SearchPanel.svelte` (find & replace), `markdown-text.ts` (CJK-aware counts, outline), `scroll-sync.ts`
+  (editor ↔ preview by `data-line`), `InsertDialogs`, `ShortcutsSheet` (Mod-/), `OutlinePanel`, `EditorStatus`; fullscreen
+  Mod-Shift-F. Layout defaults to `preferences.editor.layout` (default `split`); below `lg` split shows as edit/preview.
+  Preview `renderMarkdown(src, {sourceLines})` adds footnotes (markdown-it-footnote), callouts `> [!NOTE|TIP|IMPORTANT|WARNING|CAUTION]`,
+  code language labels and ```mermaid diagrams rendered lazily by `components/markdown/mermaid.ts` (strict, SVG sanitized).
+  Unit tests: `frontend/src/lib/editor/editor.test.ts` (`npm test`).
 - Shared editor stack (`docs/editor-collab.md`): `lib/editor/` (CodeMirror 6 `CodeEditor.svelte`, theme, Markdown commands,
   `ToolbarButton`, `MarkdownTools`), `lib/collab/` (`openCollab` → `CollabSession`, `ConnectionStatus`, `PresenceAvatars`,
   `userColor`), `components/suggest/` (`SuggestionReview`, `suggestionReview()` CodeMirror extension, `SuggestionPanel`,

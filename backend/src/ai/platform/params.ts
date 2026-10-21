@@ -1,12 +1,13 @@
 /**
- * Route-member params: per-use settings validated against a whitelist built from the registry entry
- * (vendor passthrough `ParamSpec`s) plus platform-level knobs (timeout, retries, sampling, dimensions, ASR options).
+ * Request-shaping params of a group member or a direct model binding, validated against a whitelist built from the
+ * registry entry (vendor passthrough `ParamSpec`s) plus platform-level knobs (timeout, retries, sampling, reasoning
+ * effort, dimensions, ASR options). Limits (context window, max output) and capabilities (vision, tools) are not
+ * params: they live in the model profile (models.ts).
  */
 import { ASR_MEMBER_PARAMS, getAsrEntry } from "../asr/index.js";
 import type { ReasoningEffort } from "../types.js";
 import { getProvider, type Bilingual, type ParamSpec } from "../providers/index.js";
 import type { RouteCapability } from "./roles.js";
-import { VISION_PARAM } from "./vision.js";
 
 export type ParamField = {
   key: string;
@@ -54,9 +55,7 @@ export const CHAT_PLATFORM_PARAMS: ParamField[] = [
   RETRIES,
   { key: "temperature", type: "number", label: L("溫度", "Temperature"), min: 0, max: 2, scope: "platform", help_zh: "推理模型通常不接受，留空即可。" },
   { key: "top_p", type: "number", label: L("Top-P", "Top-P"), min: 0, max: 1, scope: "platform" },
-  { key: "max_tokens", type: "integer", label: L("最大輸出 tokens", "Max output tokens"), min: 1, max: 1_000_000, scope: "platform", help_zh: "上限；呼叫端要求更少時以呼叫端為準。" },
   { key: "reasoning_effort", type: "select", label: L("推理強度", "Reasoning effort"), options: EFFORTS, scope: "platform" },
-  VISION_PARAM,
 ];
 
 export const EMBED_PLATFORM_PARAMS: ParamField[] = [
@@ -158,7 +157,6 @@ export function splitChatParams(capability: RouteCapability, kind: string, param
     maxRetries: num("max_retries"),
     temperature: num("temperature"),
     topP: num("top_p"),
-    maxTokens: num("max_tokens"),
     dimensions: num("dimensions"),
     reasoningEffort: typeof params.reasoning_effort === "string" ? (params.reasoning_effort as ReasoningEffort) : undefined,
     passthrough,

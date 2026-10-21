@@ -88,9 +88,10 @@ run("slides routes", () => {
     expect((await upload("/api/slides", member.cookie, { title: "P", slug: "p", kind: "poster" }, deckZip())).statusCode).toBe(400);
     expect((await upload("/api/slides", member.cookie, { title: "Dup", slug: "week-1" }, deckZip())).statusCode).toBe(409);
     expect((await upload("/api/slides", member.cookie, { title: "Bad", slug: "Bad Slug" }, deckZip())).statusCode).toBe(400);
-    const traversal = await upload("/api/slides", member.cookie, { title: "T", slug: "t" }, makeZip([{ name: "index.qmd" }, { name: "x.sh", data: "rm -rf /" }]));
-    expect(traversal.statusCode).toBe(400);
-    expect(json(traversal).error).toMatch(/不支援檔案類型/);
+    // Unsupported types are left out (and reported), not fatal; pre-rendered HTML is fine.
+    const skipped = await upload("/api/slides", member.cookie, { title: "T", slug: "t" }, makeZip([{ name: "index.qmd" }, { name: "x.sh", data: "rm -rf /" }, { name: "index.html", data: "<html></html>" }]));
+    expect(skipped.statusCode).toBe(202);
+    expect(json(skipped).scan).toMatchObject({ files: 2, skipped: ["x.sh"], skippedCount: 1 });
     const multi = await upload("/api/slides", member.cookie, { title: "M", slug: "multi" }, makeZip([{ name: "a.qmd" }, { name: "b.qmd" }]));
     expect(json(multi).error).toMatch(/多個 QMD/);
     const chosen = await upload("/api/slides", member.cookie, { title: "M", slug: "multi", entry: "b.qmd" }, makeZip([{ name: "a.qmd" }, { name: "b.qmd" }]));

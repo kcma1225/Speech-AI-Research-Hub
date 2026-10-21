@@ -69,7 +69,9 @@
   const memberIds = $derived([...new Set(value.studies.flatMap(s => s.members.map(m => m.id)))]);
   const peopleList = $derived.by(() => {
     const q = peopleQuery.trim().toLowerCase();
-    const list = directory.filter(u => !q || u.name.toLowerCase().includes(q));
+    // Matches the real name or the username (with or without a leading @).
+    const handle = q.replace(/^@/, "");
+    const list = directory.filter(u => !q || u.name.toLowerCase().includes(q) || (!!handle && u.username?.includes(handle)));
     // Members of the chosen studies first.
     return [...list].sort((a, b) => Number(memberIds.includes(b.id)) - Number(memberIds.includes(a.id)));
   });

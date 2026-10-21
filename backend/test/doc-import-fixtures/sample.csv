@@ -1,0 +1,3 @@
+模型,CER,WER
+Baseline,23.4,31.2
+Ours,15.1,22.8

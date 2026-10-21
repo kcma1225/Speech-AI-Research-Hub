@@ -49,7 +49,7 @@ const ENTRIES: ProviderEntry[] = [
     codec: "anthropic-messages",
     defaultBaseUrl: "https://api.anthropic.com/v1",
     auth: { type: "oauth" },
-    fields: [{ key: "defaultMaxTokens", label: { zh: "預設最大輸出", en: "Default max tokens" }, type: "number", default: 8192 }, timeoutField],
+    fields: [timeoutField],
     capabilities: { chat: true, tools: true, vision: true, reasoning: true, embeddings: false, listModels: true, jsonSchema: true },
     params: [],
     quirks: { warnings_zh: [...CLAUDE_OAUTH_WARNINGS_ZH] },

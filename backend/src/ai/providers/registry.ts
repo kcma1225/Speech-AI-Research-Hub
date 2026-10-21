@@ -227,7 +227,6 @@ const entries: ProviderEntry[] = [
       F.apiKey(),
       F.baseUrl("https://api.anthropic.com/v1"),
       { key: "betas", label: { zh: "Beta 功能", en: "Beta headers" }, type: "text", help_zh: "以逗號分隔，會送出 anthropic-beta 標頭。" },
-      { key: "defaultMaxTokens", label: { zh: "預設最大輸出", en: "Default max tokens" }, type: "number", default: 8192, help_zh: "Anthropic 每次都必須指定 max_tokens；呼叫端沒給時用這個值。" },
       ...COMMON_TAIL(),
     ],
     capabilities: caps({ vision: true, reasoning: true, jsonSchema: true }),
@@ -680,7 +679,6 @@ const entries: ProviderEntry[] = [
     fields: [
       F.baseUrl("http://ollama:11434", true),
       F.apiKey(false, "連 ollama.com 雲端時才需要。"),
-      { key: "numCtx", label: { zh: "上下文長度（num_ctx）", en: "Context length (num_ctx)" }, type: "number", default: 8192, help_zh: "Ollama 預設只有 4096，長文件會被默默截斷；建議至少 8192（受顯示卡記憶體限制）。" },
       { key: "keepAlive", label: { zh: "模型常駐時間", en: "keep_alive" }, type: "text", default: "5m", help_zh: "例如 5m、1h；-1 代表一直保留在記憶體。" },
       {
         key: "think",
@@ -695,8 +693,8 @@ const entries: ProviderEntry[] = [
       ...COMMON_TAIL({ body: true }),
     ],
     capabilities: caps({ vision: true, reasoning: true, embeddings: true, jsonSchema: true }),
-    params: [P.int("options.top_k", "Top-K", "top_k"), P.num("options.min_p", "Min-P", "min_p"), P.int("options.seed", "亂數種子", "seed"), P.num("options.repeat_penalty", "重複懲罰", "repeat_penalty"), P.int("options.num_ctx", "上下文長度", "num_ctx")],
-    quirks: { warnings_zh: ["Ollama 預設上下文只有 4096 tokens，請設定 num_ctx（建議 8192 以上），否則長內容會被截斷。"] },
+    params: [P.int("options.top_k", "Top-K", "top_k"), P.num("options.min_p", "Min-P", "min_p"), P.int("options.seed", "亂數種子", "seed"), P.num("options.repeat_penalty", "重複懲罰", "repeat_penalty")],
+    quirks: { warnings_zh: ["Ollama 預設上下文只有 4096 tokens：平台預設送出 num_ctx 8192；要更長請到「模型」分頁設定該模型的上下文長度（受顯示卡記憶體限制）。"] },
     docsUrl: "https://docs.ollama.com/api/introduction",
     help_zh: "使用 Ollama 原生 API（/api/chat）。模型需要有 tools 能力才能呼叫工具。",
   },

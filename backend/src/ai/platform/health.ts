@@ -22,9 +22,13 @@ export type RoleStatus = {
   message_zh: string;
   /** Admin-only detail (never sent by the public status endpoint). */
   detail: {
-    routeId?: string;
-    routeName?: string;
-    members?: Array<{ memberId: string; providerId: string; providerName: string; model: string; health: MemberHealth; reason?: string; vision?: boolean; vision_source?: string }>;
+    /** `model` (direct binding) or `group`. */
+    target?: "model" | "group";
+    groupId?: string;
+    groupName?: string;
+    /** Direct binding: the bound model profile. */
+    modelRef?: string;
+    members?: Array<{ memberId: string; modelRef: string; groupId: string | null; providerId: string; providerName: string; model: string; health: MemberHealth; reason?: string; vision?: boolean; vision_source?: string }>;
     activeIndex?: number;
     error?: string;
     /** An image request can be served: some member that is not down supports images (see vision.ts). */
@@ -63,7 +67,7 @@ function messageFor(role: AiRole, state: RoleState): string {
     case "unavailable":
       return role === "embedding" ? "語意搜尋維護中，搜尋暫時改用關鍵字。" : `${label}維護中，服務恢復後會自動繼續。`;
     case "unconfigured":
-      return role === "embedding" ? "尚未設定語意搜尋，目前使用關鍵字搜尋。" : `${label}尚未設定，請管理員到「模型設定」選擇路由。`;
+      return role === "embedding" ? "尚未設定語意搜尋，目前使用關鍵字搜尋。" : `${label}尚未設定，請管理員到「模型設定 → 功能綁定」選擇模型或群組。`;
   }
 }
 
@@ -85,7 +89,7 @@ export function deriveRoleStatus(
   const ls = leaves(tree);
   const members = ls.map((l) => {
     const h = memberHealth(l, recent, now);
-    return { memberId: l.memberId, providerId: l.provider.id, providerName: l.provider.name, model: l.model, health: h.health, reason: h.reason };
+    return { memberId: l.memberId, modelRef: l.modelRef, groupId: l.groupId, providerId: l.provider.id, providerName: l.provider.name, model: l.model, health: h.health, reason: h.reason };
   });
   const usable = members.map((m) => m.health !== "down");
   let state: RoleState;
@@ -104,7 +108,8 @@ export function deriveRoleStatus(
     });
     if (!newerOk) state = "unavailable";
   }
-  return { role, state, message_zh: messageFor(role, state), detail: { routeId: tree.id, routeName: tree.name, members, activeIndex } };
+  const target = tree.id ? { target: "group" as const, groupId: tree.id, groupName: tree.name } : { target: "model" as const, modelRef: ls[0]?.modelRef };
+  return { role, state, message_zh: messageFor(role, state), detail: { ...target, members, activeIndex } };
 }
 
 export async function loadRecent(db: Queryable): Promise<{ recent: Map<string, RecentCall>; roleCalls: Map<AiRole, RoleFailure> }> {
@@ -136,7 +141,7 @@ export function boundProviders(snap: ConfigSnapshot): ProviderRecord[] {
       const tree = resolveRole(snap, role);
       if (tree) for (const l of leaves(tree)) out.set(l.provider.id, l.provider);
     } catch {
-      /* invalid routes surface as unavailable */
+      /* invalid bindings surface as unavailable */
     }
   }
   return [...out.values()];

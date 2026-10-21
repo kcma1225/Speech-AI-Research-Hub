@@ -102,4 +102,7 @@ export const keys = {
   slideProjectPrefix: (projectId: string) => `slides/${projectId}/`,
   reference: (projectId: string, referenceId: string) => `references/${projectId}/${referenceId}`,
   referenceProjectPrefix: (projectId: string) => `references/${projectId}/`,
+  /** Images in Markdown documents (notes, study summary): table `md_images`, served by GET /api/md-images/:id. */
+  mdImage: (studyId: string, imageId: string, ext: string) => `md-images/${studyId}/${imageId}.${ext}`,
+  mdImagePrefix: (studyId: string) => `md-images/${studyId}/`,
 };

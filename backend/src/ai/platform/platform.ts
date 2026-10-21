@@ -10,7 +10,8 @@ import { startLiveSession, transcribe as asrTranscribe, type AsrCheckpoint, type
 import { AiError } from "../errors.js";
 import { runClaudeCli } from "../oauth/index.js";
 import { aggregateChat, type ChatEvent, type ChatRequest, type ChatResult, type EmbedResult, type Usage } from "../providers/index.js";
-import { resolveRole, resolveRoute, runRoute, RouteExhausted, type AttemptFailure, type ModelLeaf, type RouteNode, type RunHooks } from "../router/index.js";
+import { leaves, resolveRole, resolveTarget, runRoute, RouteExhausted, type AttemptFailure, type GroupNode, type ModelLeaf, type RunHooks } from "../router/index.js";
+import { getProvider } from "../providers/index.js";
 import { activeSpace, getSpace, liveSpaces, type EmbeddingSpace } from "../embedding/spaces.js";
 import { CallLogger, CallRecorder, pruneCallLog, type CallContext } from "./call-log.js";
 import { asrConfig, forgetClients, llmClient, type ClientFactoryOptions } from "./clients.js";
@@ -20,10 +21,29 @@ import { forgetCachedTokens } from "./oauth-store.js";
 import { splitChatParams } from "./params.js";
 import { AI_ROLES, type AiRole, type ChatRole, type RoleState } from "./roles.js";
 import { loadSnapshot, providerSecrets, type ConfigSnapshot, type ProviderRecord } from "./store.js";
-import { hasImages, loadHints, memberVision, refreshStaleHints, type HintMap } from "./vision.js";
+import { hasImages, modelVision } from "./vision.js";
+import { resolveProfile, syncStaleModels } from "./models.js";
 
 export type RoleChatRequest = Omit<ChatRequest, "model">;
-export type RouteInfo = { role: AiRole; routeId: string; providerId: string; providerKind: string; model: string; fallbackIndex: number };
+/** Which model served a call. `routeId` is a deprecated alias of `groupId ?? ""`. */
+export type RouteInfo = { role: AiRole; routeId: string; groupId: string | null; modelRef: string; providerId: string; providerKind: string; model: string; fallbackIndex: number };
+/** Smallest limits across the role's models (null when no model reports one). */
+export type RoleLimits = { contextWindow: number | null; maxOutputTokens: number | null };
+
+const routeInfo = (role: AiRole, l: ModelLeaf, fallbackIndex: number): RouteInfo => ({
+  role,
+  routeId: l.groupId ?? "",
+  groupId: l.groupId,
+  modelRef: l.modelRef,
+  providerId: l.provider.id,
+  providerKind: l.provider.kind,
+  model: l.model,
+  fallbackIndex,
+});
+
+/** Codecs whose wire format requires max_tokens on every request. */
+const NEEDS_MAX_TOKENS = new Set(["anthropic-messages", "bedrock-converse"]);
+const DEFAULT_REQUIRED_MAX_TOKENS = 8192;
 export type AiCallContext = CallContext & {
   signal?: AbortSignal;
   /** Called once the member that will serve the call is known (before the first event). */
@@ -67,7 +87,6 @@ export class AiPlatform {
   private recomputeTimer?: NodeJS.Timeout;
   private stopped = false;
   private lastPrune = 0;
-  private hintsCache?: { at: number; map: Promise<HintMap> };
 
   constructor(readonly db: Db, readonly log: FastifyBaseLogger | Pick<FastifyBaseLogger, "warn" | "info" | "error">, readonly opts: PlatformOptions = {}) {
     this.logger = new CallLogger(db, log);
@@ -93,7 +112,6 @@ export class AiPlatform {
   /** Drop caches after a config change (admin writes call this, other processes get NOTIFY ai_config). */
   invalidate() {
     this.snap = undefined;
-    this.hintsCache = undefined;
     forgetClients();
     forgetCachedTokens();
     this.scheduleRecompute(200);
@@ -103,9 +121,9 @@ export class AiPlatform {
     return { signal: ctx?.signal, rng: this.opts.rng, sleep: this.opts.sleep, ...extra };
   }
 
-  private async tree(role: AiRole, rec: CallRecorder): Promise<RouteNode> {
+  private async tree(role: AiRole, rec: CallRecorder): Promise<GroupNode> {
     const snap = await this.snapshot();
-    let tree: RouteNode | null;
+    let tree: GroupNode | null;
     try {
       tree = resolveRole(snap, role);
     } catch (e) {
@@ -120,7 +138,7 @@ export class AiPlatform {
   }
 
   /** Records the failure of a call and converts router errors into platform errors. */
-  private fail(role: AiRole, rec: CallRecorder, e: unknown, routeId: string): never {
+  private fail(role: AiRole, rec: CallRecorder, e: unknown, routeId: string | null): never {
     if (e instanceof RouteExhausted) {
       rec.failures(e.failures);
       rec.exhausted("llm_unavailable", routeId);
@@ -137,19 +155,9 @@ export class AiPlatform {
 
   // ---------------------------------------------------------------- vision
 
-  /** Stored model capability hints (cached 60 s). */
-  visionHints(): Promise<HintMap> {
-    if (!this.hintsCache || Date.now() - this.hintsCache.at > 60_000) {
-      const map = loadHints(this.db);
-      this.hintsCache = { at: Date.now(), map };
-      map.catch(() => (this.hintsCache = undefined));
-    }
-    return this.hintsCache.map;
-  }
-
-  /** Vision support of one route member (override param, else detection). */
-  async leafVision(leaf: Pick<ModelLeaf, "provider" | "model" | "params">) {
-    return memberVision(leaf.provider, leaf.model, leaf.params, await this.visionHints());
+  /** Vision support of one member's model (profile, else detection). */
+  leafVision(leaf: Pick<ModelLeaf, "provider" | "model" | "profile">) {
+    return modelVision(leaf.provider, leaf.model, leaf.profile);
   }
 
   /** What a role can do right now: `vision` = an image request would find a member that accepts images. */
@@ -160,21 +168,13 @@ export class AiPlatform {
 
   /** Annotates chat roles' status with per-member vision and the role's `vision` flag. */
   private async annotateVision(roles: RoleStatus[]) {
-    let hints: HintMap;
-    try {
-      hints = await this.visionHints();
-    } catch {
-      return;
-    }
     const snap = await this.snapshot();
-    const params = new Map<string, Record<string, unknown>>();
-    for (const r of snap.routes.values()) for (const m of r.members) params.set(m.id, m.params ?? {});
     for (const s of roles) {
-      if (!s.detail.members?.length || !s.detail.routeId || snap.routes.get(s.detail.routeId)?.capability !== "chat") continue;
+      if (!s.detail.members?.length || (s.role !== "assistant" && s.role !== "writing" && s.role !== "slides" && s.role !== "analysis" && s.role !== "fast")) continue;
       for (const m of s.detail.members) {
         const p = snap.providers.get(m.providerId);
         if (!p) continue;
-        const v = memberVision(p, m.model, params.get(m.memberId) ?? {}, hints);
+        const v = modelVision(p, m.model, snap.models.get(m.modelRef)?.profile);
         m.vision = v.vision;
         m.vision_source = v.source;
       }
@@ -182,21 +182,47 @@ export class AiPlatform {
     }
   }
 
+  /** Smallest context window / max output across the role's models (for callers that budget prompts). */
+  async limits(role: AiRole): Promise<RoleLimits> {
+    const snap = await this.snapshot();
+    let tree: GroupNode | null = null;
+    try {
+      tree = resolveRole(snap, role);
+    } catch {
+      /* invalid binding: no limits */
+    }
+    const ls = tree ? leaves(tree) : [];
+    const min = (xs: Array<number | undefined>) => {
+      const v = xs.filter((x): x is number => typeof x === "number");
+      return v.length ? Math.min(...v) : null;
+    };
+    return { contextWindow: min(ls.map((l) => l.profile.fields.context_window)), maxOutputTokens: min(ls.map((l) => l.profile.fields.max_output_tokens)) };
+  }
+
   // ---------------------------------------------------------------- chat
 
-  private chatRequest(leaf: ModelLeaf, req: RoleChatRequest): ChatRequest {
+  private chatRequest(leaf: Pick<ModelLeaf, "provider" | "model" | "params" | "profile">, req: RoleChatRequest): ChatRequest {
     const p = splitChatParams("chat", leaf.provider.kind, leaf.params);
     const out: ChatRequest = { ...req, model: leaf.model };
+    const prof = leaf.profile.fields;
     if (p.temperature !== undefined) out.temperature = p.temperature;
     if (p.topP !== undefined) out.topP = p.topP;
-    if (p.maxTokens !== undefined) out.maxTokens = req.maxTokens ? Math.min(req.maxTokens, p.maxTokens) : p.maxTokens;
+    // Limits come from the model profile: never ask for more output than the model allows.
+    if (prof.max_output_tokens && out.maxTokens) out.maxTokens = Math.min(out.maxTokens, prof.max_output_tokens);
+    if (out.maxTokens === undefined) {
+      const entry = getProvider(leaf.provider.kind);
+      const codec = entry?.codecFor?.(leaf.provider.config) ?? entry?.codec;
+      if (codec && NEEDS_MAX_TOKENS.has(codec)) out.maxTokens = Math.min(prof.max_output_tokens ?? DEFAULT_REQUIRED_MAX_TOKENS, Math.max(DEFAULT_REQUIRED_MAX_TOKENS, Number(leaf.provider.config.defaultMaxTokens) || 0));
+    }
+    // Local servers that allocate context per request (Ollama num_ctx) get the admin's manual context window.
+    if (leaf.profile.sources.context_window === "manual" && prof.context_window) out.contextLength = prof.context_window;
     if (p.timeoutMs !== undefined) out.timeoutMs = p.timeoutMs;
     if (p.reasoningEffort) out.reasoning = { ...req.reasoning, effort: p.reasoningEffort };
     if (Object.keys(p.passthrough).length) out.params = { ...req.params, ...p.passthrough };
     return out;
   }
 
-  private async startChat(leaf: ModelLeaf, req: RoleChatRequest, signal?: AbortSignal) {
+  private async startChat(leaf: Pick<ModelLeaf, "provider" | "model" | "params" | "profile">, req: RoleChatRequest, signal?: AbortSignal) {
     const r = { ...this.chatRequest(leaf, req), signal };
     let gen: AsyncGenerator<ChatEvent>;
     if (leaf.provider.kind === "claude-cli") {
@@ -225,8 +251,8 @@ export class AiPlatform {
     const rec = new CallRecorder(this.logger, { role, capability: "chat", stream: true, ctx });
     const tree = await this.tree(role, rec);
     // Image requests only go to members that accept images (never silently stripped; see vision.ts).
-    const hints = hasImages(req.messages) ? await this.visionHints().catch(() => new Map() as HintMap) : null;
-    const skip = hints ? (leaf: ModelLeaf) => (memberVision(leaf.provider, leaf.model, leaf.params, hints).vision ? null : ("no_vision" as const)) : undefined;
+    const hints = hasImages(req.messages);
+    const skip = hints ? (leaf: ModelLeaf) => (modelVision(leaf.provider, leaf.model, leaf.profile).vision ? null : ("no_vision" as const)) : undefined;
     let run;
     try {
       run = await runRoute(tree, (leaf) => this.startChat(leaf, req, ctx.signal), this.hooks(ctx, skip ? { skip } : {}));
@@ -244,7 +270,7 @@ export class AiPlatform {
     }
     rec.failures(run.failures.filter((f) => f.skipped !== "no_vision"));
     const { leaf } = run;
-    ctx.onRoute?.({ role, routeId: leaf.routeId, providerId: leaf.provider.id, providerKind: leaf.provider.kind, model: leaf.model, fallbackIndex: run.fallbackIndex });
+    ctx.onRoute?.(routeInfo(role, leaf, run.fallbackIndex));
     const usage: Usage = {};
     let ok = false;
     let errorCode: string | undefined = "cancelled";
@@ -276,7 +302,9 @@ export class AiPlatform {
 
   /** Admin "test" button: one tiny generation on a specific account + model (bypasses routing; not logged). */
   async chatOnce(provider: ProviderRecord, model: string): Promise<string> {
-    const leaf: ModelLeaf = { type: "model", memberId: "test", routeId: "", provider, model, params: {}, weight: 1 };
+    const snap = await this.snapshot();
+    const row = [...snap.models.values()].find((m) => m.provider_id === provider.id && m.model_id === model);
+    const leaf = { provider, model, params: {}, profile: row?.profile ?? resolveProfile(provider, { model_id: model, api: {}, overrides: {} }) };
     const { first, gen } = await this.startChat(leaf, { messages: [{ role: "user", content: "Reply with the single word OK." }], maxTokens: 16 });
     async function* all() {
       if (!first.done) yield first.value;
@@ -294,7 +322,7 @@ export class AiPlatform {
 
   // ---------------------------------------------------------------- embeddings
 
-  async embedWithLeaf(leaf: ModelLeaf, inputs: string[], inputType: "query" | "document", signal?: AbortSignal): Promise<EmbedResult> {
+  async embedWithLeaf(leaf: Pick<ModelLeaf, "provider" | "model" | "params">, inputs: string[], inputType: "query" | "document", signal?: AbortSignal): Promise<EmbedResult> {
     const p = splitChatParams("embedding", leaf.provider.kind, leaf.params);
     return llmClient(this.db, leaf.provider, this.opts).embed({ model: leaf.model, inputs, inputType, dimensions: p.dimensions, timeoutMs: p.timeoutMs, signal });
   }
@@ -306,12 +334,18 @@ export class AiPlatform {
   async embed(inputs: string[], inputType: "query" | "document", opts: AiCallContext & { spaceId?: string } = {}): Promise<EmbedResult & { spaceId: string }> {
     const rec = new CallRecorder(this.logger, { role: "embedding", capability: "embedding", stream: false, ctx: opts });
     const space = opts.spaceId ? await getSpace(this.db, opts.spaceId) : await activeSpace(this.db);
-    if (!space?.route_id) {
+    if (!space?.model_ref && !space?.group_id) {
       rec.exhausted("llm_unavailable");
       throw llmUnavailable("embedding", "unconfigured");
     }
     const snap = await this.snapshot();
-    const tree = resolveRoute(snap, space.route_id);
+    let tree: GroupNode;
+    try {
+      tree = resolveTarget(snap, { model_ref: space.model_ref, group_id: space.group_id, params: space.params ?? {} }, "embedding", "embedding");
+    } catch (e) {
+      rec.exhausted("route_invalid", space.group_id);
+      throw e;
+    }
     let run;
     try {
       run = await runRoute(
@@ -347,7 +381,7 @@ export class AiPlatform {
     if (!space) return { mode: "keyword_only", space: null, reason_zh: "尚未設定語意搜尋。" };
     const st = (await this.statusDetail()).find((s) => s.role === "embedding");
     if (st?.state === "unavailable") return { mode: "keyword_only", space, reason_zh: st.message_zh };
-    // An unbound role means the admin turned semantic search off, even though the space still remembers its route.
+    // An unbound role means the admin turned semantic search off, even though the space still remembers its model.
     if (!st || st.state === "unconfigured") return { mode: "keyword_only", space, reason_zh: "尚未設定語意搜尋。" };
     return { mode: "semantic", space };
   }
@@ -389,8 +423,7 @@ export class AiPlatform {
     }
     rec.failures(run.failures);
     rec.finish(run.leaf, { ok: true, startedAt: run.startedAt, retries: run.retries, fallbackIndex: run.fallbackIndex });
-    const l = run.leaf;
-    return { ...run.value, route: { role, routeId: l.routeId, providerId: l.provider.id, providerKind: l.provider.kind, model: l.model, fallbackIndex: run.fallbackIndex } };
+    return { ...run.value, route: routeInfo(role, run.leaf, run.fallbackIndex) };
   }
 
   /** Opens a live caption session on the `asr_live` route (vendor keys stay server-side). */
@@ -418,8 +451,7 @@ export class AiPlatform {
     }
     rec.failures(run.failures);
     rec.finish(run.leaf, { ok: true, startedAt: run.startedAt, fallbackIndex: run.fallbackIndex });
-    const l = run.leaf;
-    return Object.assign(run.value, { route: { role, routeId: l.routeId, providerId: l.provider.id, providerKind: l.provider.kind, model: l.model, fallbackIndex: run.fallbackIndex } });
+    return Object.assign(run.value, { route: routeInfo(role, run.leaf, run.fallbackIndex) });
   }
 
   // ---------------------------------------------------------------- health
@@ -513,8 +545,8 @@ export class AiPlatform {
         ]);
       }),
     );
-    // Model capability hints (vision): cheap listing, at most every 6 h per account.
-    if ((await refreshStaleHints(this.db, boundProviders(snap), this.opts)) > 0) this.hintsCache = undefined;
+    // Model profiles (limits, vision, tools…): cheap listing, at most every 6 h per bound account.
+    await syncStaleModels(this.db, boundProviders(snap), this.opts);
     this.snap = undefined;
   }
 

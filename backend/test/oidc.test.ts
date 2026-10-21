@@ -81,6 +81,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
 
   it("runs the code flow with PKCE and issues a verifiable ID token", async () => {
     const member = await t.login("student", "陳冠宇");
+    await t.db.query("UPDATE users SET username='guanyu.chen' WHERE id=$1", [member.id]);
     const { verifier, challenge } = pkce();
     const params = await codeFor(member.cookie, { code_challenge: challenge, code_challenge_method: "S256" });
     expect(params.get("state")).toBe("st-1");
@@ -97,7 +98,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
     const claims = verifyJwt(body.id_token, keys)!;
     expect(claims).not.toBeNull();
     expect(claims).toMatchObject({
-      iss: ISSUER, aud: CLIENT_ID, sub: member.id, nonce: "n-1", name: "陳冠宇",
+      iss: ISSUER, aud: CLIENT_ID, sub: member.id, nonce: "n-1", name: "陳冠宇", preferred_username: "guanyu.chen",
       email: `${member.id}@users.speech-ai-hub.invalid`, email_verified: true,
     });
     expect((claims.exp as number) - (claims.iat as number)).toBe(300);
@@ -109,7 +110,7 @@ describe.skipIf(!hasTestDb)("oidc provider", () => {
 
     const info = await t.app.inject({ method: "GET", url: "/api/oidc/userinfo", headers: { authorization: `Bearer ${body.access_token}` } });
     expect(info.statusCode).toBe(200);
-    expect(info.json()).toMatchObject({ sub: member.id, name: "陳冠宇", email: `${member.id}@users.speech-ai-hub.invalid` });
+    expect(info.json()).toMatchObject({ sub: member.id, name: "陳冠宇", preferred_username: "guanyu.chen", email: `${member.id}@users.speech-ai-hub.invalid` });
     expect((await t.app.inject({ method: "GET", url: "/api/oidc/userinfo", headers: { authorization: "Bearer nope" } })).statusCode).toBe(401);
 
     const audit = await t.db.query("SELECT 1 FROM audit_log WHERE action='oidc_sign_in' AND actor_id=$1", [member.id]);

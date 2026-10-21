@@ -1,6 +1,6 @@
 /**
- * Route execution: walk the strategy order, retry a member on transient errors, fall back to the next member on
- * pre-stream failures, recurse into child routes. Content errors (bad request, filtered, too long) and
+ * Group execution: walk the strategy order, retry a member on transient errors, fall back to the next member on
+ * pre-stream failures, recurse into child groups. Content errors (bad request, filtered, too long) and
  * cancellation are thrown to the caller as-is: another model would not fix them.
  */
 import { AiError, fromThrown, type AiErrorCode } from "../errors.js";
@@ -67,7 +67,7 @@ const defaultSleep = (ms: number, signal?: AbortSignal) =>
 export async function runRoute<T>(node: RouteNode, attempt: (leaf: ModelLeaf, info: AttemptInfo) => Promise<T>, hooks: RunHooks = {}, depth = { index: 0 }): Promise<RunSuccess<T>> {
   const failures: AttemptFailure[] = [];
   for (const member of orderMembers(node, hooks.rng)) {
-    if (member.node.type === "route") {
+    if (member.node.type === "group") {
       try {
         const r = await runRoute(member.node, attempt, hooks, depth);
         return { ...r, failures: [...failures, ...r.failures] };

@@ -6,6 +6,15 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build && npm prune --omit=dev
+# Document import (src/lib/doc-import): onnxruntime-web runs Magika on its single-threaded WASM backend in Node, which
+# needs only the Node bundle + the SIMD WASM; drop the other ~100 MB of builds and sources.
+RUN cd node_modules/onnxruntime-web \
+  && find dist -type f ! -name ort.node.min.mjs ! -name ort-wasm-simd-threaded.mjs ! -name ort-wasm-simd-threaded.wasm -delete \
+  && rm -rf lib docs \
+  && rm -rf ../@mixmark-io/domino/test
+# pdf.js (text extraction only) loads the optional @napi-rs/canvas when present; its prebuilt binary needs AVX and
+# kills the process with SIGILL on the production CPU (Xeon X5650). Without it pdf.js just warns and extracts text.
+RUN rm -rf node_modules/@napi-rs
 
 FROM node:22.21.1-alpine3.22
 ENV NODE_ENV=production
@@ -17,6 +26,8 @@ COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --chown=node:node package.json ./
 COPY --chown=node:node migrations ./migrations
+# Magika content-type model (doc-import), resolved from dist/ as /app/assets.
+COPY --chown=node:node assets ./assets
 USER node
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=6 \

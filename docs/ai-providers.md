@@ -63,7 +63,7 @@ Mapping runs in this order: the entry's `quirks.mapError` (Zhipu business codes,
 | `auth: AuthSpec` | One of `none`; `api_key` (header, scheme, optional); `google_service_account`; `azure` (`authMode` `api_key`\|`entra`); `aws` (`authMode` `sigv4`\|`bedrock_api_key`); `oauth` (token from `ClientOptions.oauthTokenProvider` or `secrets.accessToken`) |
 | `fields: FormField[]` | Admin form: `key`, `label{zh,en}`, `type` (`text`\|`url`\|`secret`\|`select`\|`number`\|`boolean`\|`json`), `required`, `default`, `help_zh`, `options`, `showIf`, `multiline`. Values of `secret` fields go in `secrets`; all other values go in `accountConfig` |
 | `capabilities` | `chat`, `tools`, `vision`, `reasoning`, `embeddings`, `listModels`, `jsonSchema`. On local servers the account's `supportsTools` overrides `tools` |
-| `params: ParamSpec[]` | Whitelist of passthrough request params (`key`, which may be dotted like `options.num_ctx`; `type`; `default`; `sendDefault`). `ChatRequest.params` keys that are not in the whitelist are dropped |
+| `params: ParamSpec[]` | Whitelist of passthrough request params (`key`, which may be dotted like `options.top_k`; `type`; `default`; `sendDefault`). `ChatRequest.params` keys that are not in the whitelist are dropped. Only request-shaping params belong here: context and output limits are per model (see "Model metadata") |
 | `quirks` | Data-only vendor differences (see below) |
 | `resolveHeaders?`, `resolveQuirks?` | Headers and quirks computed from the config (OpenAI org/project, OpenRouter referer, toggles on the generic endpoint) |
 
@@ -87,7 +87,41 @@ Mapping runs in this order: the entry's `quirks.mapError` (Zhipu business codes,
 | `reasoning_object` | `reasoning` object | OpenRouter, Together |
 | `none` | nothing | |
 
-The common account fields are `timeoutMs` (default 120 s; it bounds both the time to first byte and the gap between stream chunks), `extraHeaders` and `extraBody` (both JSON). Embedding vendors also take `queryTemplate` / `documentTemplate` (with `{text}` and `{task}` placeholders), `taskInstruction`, `normalize` (L2, default on) and `batchSize`.
+Account fields are **connection settings only** (URL, keys, region, timeouts, wire toggles): there are no per-account context-window or max-output fields (`numCtx` / `defaultMaxTokens` were removed; legacy configs are still honoured as a fallback). The common account fields are `timeoutMs` (default 120 s; it bounds both the time to first byte and the gap between stream chunks), `extraHeaders` and `extraBody` (both JSON). Embedding vendors also take `queryTemplate` / `documentTemplate` (with `{text}` and `{task}` placeholders), `taskInstruction`, `normalize` (L2, default on) and `batchSize`.
+
+## Model metadata (listings → model profiles)
+
+`client.listModels()` returns `ModelInfo[]`: `id`, `label`, `kind` (`chat|embedding|asr|other`), `contextWindow`,
+`maxOutputTokens`, `dims`, `inputPrice` / `outputPrice` (USD per 1M tokens), `hints{tools, vision, reasoning, jsonSchema,
+params}` — only what the vendor reports. The platform stores it as the `provider_api` layer of each model profile
+(`ai/platform/models.ts`); the built-in catalog (`ai/catalog/`) fills what is missing and the admin can override any field.
+
+| Vendor / server | What the listing gives (parser) |
+|---|---|
+| OpenAI-compatible gateways (9Router, OpenRouter, LiteLLM…) | `context_length`/`context_window`/`max_context_length`, `max_completion_tokens`/`max_output_tokens`/`top_provider.max_completion_tokens`, `capabilities{vision, tools, reasoning, contextWindow, maxOutput, structured_outputs}`, `architecture.input_modalities`, `supported_parameters` (tools / reasoning / structured_outputs), OpenRouter `pricing.prompt/completion` (per token) (`parseModelList` in `codecs/openai-chat.ts`) |
+| vLLM / SGLang | `max_model_len` |
+| LM Studio | `type llm\|vlm\|embeddings`, `max_context_length` |
+| Groq | `context_window`, `max_completion_tokens` |
+| Together | `type chat\|embedding\|transcribe\|image…`, `context_length`, `pricing.input/output` (per 1M) |
+| Fireworks | `context_length`, `supports_chat`, `supports_image_input`, `supports_tools` |
+| Mistral | `max_context_length`, `capabilities{completion_chat, function_calling, vision}` |
+| Moonshot | `context_length`, `supports_image_in`, `supports_reasoning` |
+| Anthropic (`/v1/models`) | `max_input_tokens`, `max_tokens`, `capabilities{image_input, thinking, structured_outputs}` |
+| Gemini (`models.list`) | `inputTokenLimit`, `outputTokenLimit`, `supportedGenerationMethods` (generateContent → chat, embedContent → embedding), `thinking` |
+| Ollama (`/api/tags` + `/api/show` per model, ≤ 60, 4 at a time) | `model_info["<arch>.context_length"]`, `"<arch>.embedding_length"`, `capabilities[completion, tools, vision, thinking, embedding]` (`parseOllamaShow`) |
+| Cohere | `context_length`, endpoints |
+| TEI | `/info` `max_input_length` |
+| DeepSeek, xAI, Zhipu, Perplexity, Cerebras… | ids only → catalog defaults |
+
+**Catalog** (`ai/catalog/families.ts`): first match wins on `normalizeModelId(id)` (last path segment; Bedrock region/vendor
+prefixes and `:0` versions dropped; Ollama tags `qwen3:30b` → `qwen3-30b`; Fireworks `llama-v3p1` → `llama-3.1`; Claude
+`4.5` → `4-5`). Entries carry `capability`, `context_window`, `max_output_tokens`, `vision`, `tools`, `reasoning`,
+`json_schema?`, `embedding_dims` (no prices: they change too often). Embedding families are matched before chat families.
+Ids that look like image/TTS/moderation/rerank models are hidden from pickers on sync (`looksNonText`).
+
+**Per-model request limits:** the platform clamps `maxTokens` to the profile's `max_output_tokens`, supplies max_tokens to
+codecs that require it (Anthropic, Bedrock) and sends a **manual** context window as `ChatRequest.contextLength`
+(Ollama `options.num_ctx`, default 8192).
 
 ## Public API
 

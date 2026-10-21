@@ -84,9 +84,10 @@ export async function createTestContext(env: Record<string, string> = {}): Promi
     app, db, storage, config, finalizer,
     async login(role, userName) {
       const hash = await hashPassword(OWNER_PASSWORD);
+      const realName = userName ?? `${role}-${randomBytes(3).toString("hex")}`;
       const id = (await db.query<{ id: string }>(
-        "INSERT INTO users(name,password_hash,role,is_admin) VALUES($1,$2,$3,$4) RETURNING id",
-        [userName ?? `${role}-${randomBytes(3).toString("hex")}`, hash, role, role === "admin"],
+        "INSERT INTO users(username,real_name,password_hash,role,is_admin) VALUES($1,$2,$3,$4,$5) RETURNING id",
+        [testUsername(realName), realName, hash, role, role === "admin"],
       )).rows[0]!.id;
       return { id, cookie: await sessionFor(id) };
     },
@@ -104,4 +105,10 @@ export async function createTestContext(env: Record<string, string> = {}): Promi
       if (hasTestS3) await storage.deletePrefix("").catch(() => {});
     },
   };
+}
+
+/** Username for a test account: the lower-cased real name when it is a valid username, else a random one. */
+export function testUsername(realName: string) {
+  const lower = realName.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9._-]{2,31}$/.test(lower) ? lower : `u-${randomBytes(5).toString("hex")}`;
 }

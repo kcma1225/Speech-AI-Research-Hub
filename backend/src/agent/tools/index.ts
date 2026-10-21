@@ -6,6 +6,7 @@ import "./search.js";
 import "./decks.js";
 import "./memory.js";
 import "./interview.js";
+import "./ask.js";
 
 export * from "./registry.js";
 export { setAgentSearchProvider, type AgentSearchHit, type AgentSearchProvider, type AgentSearchQuery } from "./search.js";

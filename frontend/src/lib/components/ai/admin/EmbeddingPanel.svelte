@@ -2,7 +2,7 @@
   import { onDestroy } from "svelte";
   import { Check, CircleCheck, CircleX, Database, Fingerprint, Search, Trash2 } from "@lucide/svelte";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
-  import { aiApi, toErrorBody, type AiErrorBody, type EmbeddingOverview, type EmbeddingSpace, type Precheck } from "#lib/ai/admin.ts";
+  import { aiApi, toErrorBody, type AiErrorBody, type EmbeddingOverview, type EmbeddingSpace, type Precheck, type TargetInput } from "#lib/ai/admin.ts";
   import { adminStore } from "#lib/ai/admin-store.svelte.ts";
   import { aiStatus } from "#lib/ai/status.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
@@ -13,13 +13,14 @@
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import Pill from "#lib/components/ui/Pill.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
-  import Select from "#lib/components/ui/Select.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import AiErrorPanel from "../AiErrorPanel.svelte";
+  import TargetPicker from "./TargetPicker.svelte";
 
   let overview = $state<EmbeddingOverview | null>(null);
   let loadError = $state<AiErrorBody | null>(null);
-  let routeId = $state("");
+  let choice = $state<{ target: TargetInput; label: string } | null>(null);
+  let pickerOpen = $state(false);
   let pre = $state<Precheck | null>(null);
   let busy = $state<"check" | "start" | "flip" | "bind" | null>(null);
   let error = $state<AiErrorBody | null>(null);
@@ -47,16 +48,17 @@
 
   const active = $derived(overview?.spaces.find(s => s.id === overview?.activeSpaceId) ?? null);
   const pending = $derived(overview?.spaces.find(s => s.status === "building" || s.status === "ready" || s.status === "failed") ?? null);
-  const embRoutes = $derived((adminStore.routes ?? []).filter(r => r.capability === "embedding" && r.id !== active?.route_id));
+  const hasTargets = $derived((adminStore.models ?? []).some(m => m.enabled && m.fields.capability === "embedding") || (adminStore.groups ?? []).some(g => g.capability === "embedding"));
+  const activeKey = $derived(active ? (active.group_id ? `group:${active.group_id}` : active.model_ref ? `model:${active.model_ref}` : null) : null);
   const step = $derived(pending ? (pending.status === "ready" ? 3 : 2) : pre ? 1 : 0);
 
   async function precheck() {
-    if (!routeId) return;
+    if (!choice) return;
     busy = "check";
     error = null;
     pre = null;
     try {
-      pre = await aiApi.post<Precheck>("/admin/ai/embedding/precheck", { route_id: routeId });
+      pre = await aiApi.post<Precheck>("/admin/ai/embedding/precheck", { target: choice.target });
     } catch (e) {
       error = toErrorBody(e);
     } finally {
@@ -67,11 +69,12 @@
     busy = "bind";
     error = null;
     try {
-      await aiApi.put("/admin/ai/roles/embedding", { route_id: routeId });
+      if (!choice) return;
+      await adminStore.bind(["embedding"], choice.target);
       toasts.show(t("aiAdmin.emb.bound"), "success");
       pre = null;
-      routeId = "";
-      await Promise.all([load(), adminStore.reloadRoles(), adminStore.reloadRoutes()]);
+      choice = null;
+      await load();
     } catch (e) {
       error = toErrorBody(e);
     } finally {
@@ -82,7 +85,7 @@
     busy = "start";
     error = null;
     try {
-      await aiApi.post("/admin/ai/embedding/switch", { route_id: routeId });
+      await aiApi.post("/admin/ai/embedding/switch", { target: choice?.target });
       pre = null;
       await load();
     } catch (e) {
@@ -98,8 +101,8 @@
     try {
       overview = await aiApi.post<EmbeddingOverview>(`/admin/ai/embedding/spaces/${pending.id}/flip`);
       toasts.show(t("aiAdmin.emb.flipped"), "success");
-      routeId = "";
-      await Promise.all([adminStore.reloadRoles(), adminStore.reloadRoutes()]);
+      choice = null;
+      await adminStore.reloadRouting();
       void aiStatus.refresh();
     } catch (e) {
       error = toErrorBody(e);
@@ -181,21 +184,17 @@
       </div>
     {:else if !active}
       <p class="text-[13px] text-ink-3">{t("aiAdmin.emb.firstSpace")}</p>
-    {:else if !embRoutes.length}
+    {:else if !hasTargets}
       <p class="text-[13px] text-ink-3">{t("aiAdmin.emb.noRoutes")}</p>
     {:else}
       <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div class="flex min-w-0 flex-1 flex-col gap-1.5">
           <span class="text-[13px] font-medium text-ink-2">{t("aiAdmin.emb.pickRoute")}</span>
-          <Select
-            bind:value={routeId}
-            label={t("aiAdmin.emb.pickRoute")}
-            class="w-full"
-            options={[{ value: "", label: t("aiAdmin.routes.member.pickChild") }, ...embRoutes.map(r => ({ value: r.id, label: r.name }))]}
-            onValueChange={() => (pre = null)}
-          />
+          <button type="button" class="flex h-11 w-full items-center rounded-xl border border-line-2 bg-surface px-3.5 text-left text-[14px] hover:border-ink-3" onclick={() => (pickerOpen = true)}>
+            <span class="min-w-0 flex-1 truncate {choice ? 'font-mono text-[13px]' : 'text-ink-3'}">{choice?.label ?? t("aiAdmin.emb.pickPlaceholder")}</span>
+          </button>
         </div>
-        <Button variant="secondary" disabled={!routeId} loading={busy === "check"} onclick={precheck}><Fingerprint />{t("aiAdmin.emb.precheck")}</Button>
+        <Button variant="secondary" disabled={!choice} loading={busy === "check"} onclick={precheck}><Fingerprint />{t("aiAdmin.emb.precheck")}</Button>
       </div>
       {#if pre}
         <div class="mt-4 rounded-2xl border border-line p-4" aria-live="polite">
@@ -261,3 +260,12 @@
 
 <ConfirmDialog bind:open={confirmCancel} title={t("aiAdmin.emb.cancelTitle")} description={t("aiAdmin.emb.cancelHint")} confirmLabel={t("aiAdmin.emb.cancel")} onConfirm={cancel} />
 <ConfirmDialog bind:open={confirmDelete} title={t("aiAdmin.emb.deleteTitle")} description={t("aiAdmin.emb.deleteHint")} confirmLabel={t("aiAdmin.providers.delete")} onConfirm={del} />
+
+<TargetPicker
+  bind:open={pickerOpen}
+  capability="embedding"
+  title={t("aiAdmin.emb.pickRoute")}
+  exclude={new Set(activeKey?.startsWith("group:") ? [activeKey.slice(6)] : [])}
+  current={activeKey}
+  onPick={(target, label) => ((choice = { target, label }), (pre = null))}
+/>

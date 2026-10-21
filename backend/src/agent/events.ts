@@ -15,7 +15,8 @@ export type AgentEventType =
   | "step_discarded" // {runId} partial text of the current step was dropped (LLM outage)
   | "text" // {runId, text}
   | "reasoning" // {runId, text}
-  | "tool_input"; // {runId, index, name, title}
+  | "tool_input" // {runId, index, name, title}
+  | "branch"; // {messageId} the current branch changed (edit / regenerate / version switch): reload the conversation
 
 export type AgentEventRow = { seq: string; type: AgentEventType; data: Record<string, unknown>; run_id: string | null; created_at: string };
 

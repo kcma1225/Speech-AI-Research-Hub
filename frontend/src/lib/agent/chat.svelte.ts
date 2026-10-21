@@ -1,5 +1,5 @@
 import { api } from "#lib/api.ts";
-import type { AgentSettings, Conversation, ConversationDetail, ConversationMode, Message, PageContext, Run, ToolCall } from "./types.ts";
+import type { AgentSettings, Answer, Conversation, ConversationDetail, ConversationMode, Message, PageContext, Run, ToolCall } from "./types.ts";
 
 export type Streaming = { runId: string; text: string; reasoning: string; inputs: { index: number; name: string; title: string }[]; startedAt: number };
 
@@ -95,6 +95,58 @@ export class ChatSession {
     }
   }
 
+  /** Answers an `ask_user` card (a special user turn). */
+  async answer(toolCallId: string, answers: Answer[]) {
+    if (!this.id) return;
+    this.sending = true;
+    try {
+      const r = await api.post<{ message: Message; run: Run }>(`/agent/conversations/${this.id}/messages`, { answers: { tool_call_id: toolCallId, answers } });
+      this.upsertMessage(r.message);
+      this.setRun(r.run);
+    } finally {
+      this.sending = false;
+    }
+  }
+
+  /**
+   * Edits a user message (text, or the answers of a card): the server cancels the running reply, keeps the later
+   * messages as the previous version and answers again. The transcript is reloaded (the branch changed).
+   */
+  async edit(messageId: string, body: { text?: string; answers?: { tool_call_id: string; answers: Answer[] } }) {
+    if (!this.id) return;
+    this.sending = true;
+    try {
+      await api.post(`/agent/conversations/${this.id}/messages/${messageId}/edit`, body);
+      await this.reload();
+    } finally {
+      this.sending = false;
+    }
+  }
+
+  /** 「重新產生」 the latest reply. */
+  async regenerate() {
+    if (!this.id) return;
+    this.sending = true;
+    try {
+      await api.post(`/agent/conversations/${this.id}/regenerate`);
+      await this.reload();
+    } finally {
+      this.sending = false;
+    }
+  }
+
+  /** ‹ 1/2 ›: shows another version of a user message (and the replies that followed it). */
+  async activate(messageId: string) {
+    if (!this.id) return;
+    await api.post(`/agent/conversations/${this.id}/messages/${messageId}/activate`);
+    await this.reload();
+  }
+
+  /** Re-reads the conversation after a branch change (no ghost events: the stream restarts after the new state). */
+  async reload() {
+    if (this.id) await this.open(this.id);
+  }
+
   async decide(call: ToolCall, decision: "approve" | "approve_conversation" | "deny", opts: { reason?: string; editedArgs?: Record<string, unknown> } = {}) {
     const r = await api.post<{ toolCall: ToolCall }>(`/agent/tool-calls/${call.id}/decision`, { decision, ...(opts.reason ? { reason: opts.reason } : {}), ...(opts.editedArgs ? { edited_args: opts.editedArgs } : {}) });
     this.upsertCall(r.toolCall);
@@ -145,6 +197,8 @@ export class ChatSession {
     on("tool_call", (d) => this.upsertCall(d.toolCall));
     on("run", (d) => this.setRun(d.run));
     on("conversation", (d) => (this.conversation = d.conversation));
+    // Another tab (or this one) edited / switched versions: the transcript changed under us.
+    on("branch", () => void this.reload());
     on("step_start", (d) => {
       this.flush();
       this.streaming = { runId: d.runId, text: "", reasoning: "", inputs: [], startedAt: Date.now() };
@@ -180,6 +234,7 @@ export class ChatSession {
   }
 
   private upsertMessage(m: Message) {
+    if (m.hidden) return;
     if (m.role === "assistant" && this.streaming?.runId === m.run_id) {
       this.pending = { text: "", reasoning: "" };
       this.streaming = null;

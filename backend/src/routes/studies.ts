@@ -6,6 +6,7 @@ import { badRequest, conflict, forbidden, isUniqueViolation, notFound, parse } f
 import {
   loadStudyAccess, permissionsOf, requireStudyEditor, requireStudyManager, requireStudyReader, STUDY_MISSING, studyUrl,
   type Study, type StudyAccess,
+  STUDY_MATURITIES,
 } from "../lib/studies/access.js";
 import { recordActivity } from "../lib/studies/activity.js";
 import { runStudyCleanups } from "../lib/studies/cleanup.js";
@@ -24,6 +25,7 @@ const slug = z.string().trim().toLowerCase().max(80).refine(validStudySlug);
 const summary = z.string().max(100000);
 const summaryFormat = z.enum(["prose", "bullets"]);
 const status = z.enum(["active", "paused", "completed", "archived"]);
+const maturity = z.enum(STUDY_MATURITIES).nullable();
 const stageName = z.string().trim().min(1).max(60);
 const stageDescription = z.string().trim().max(2000);
 
@@ -32,6 +34,7 @@ const createInput = z.object({
   slug: slug.optional(),
   summary_md: summary.optional(),
   summary_format: summaryFormat.optional(),
+  maturity: maturity.optional(),
   templateId: z.uuid().optional(),
   members: z.array(z.object({ userId: z.uuid(), role: z.enum(["member", "advisor"]) })).max(50).optional(),
 });
@@ -40,6 +43,7 @@ const patchInput = z.object({
   slug: slug.optional(),
   summary_md: summary.optional(),
   summary_format: summaryFormat.optional(),
+  maturity: maturity.optional(),
   status: status.optional(),
 });
 const listQuery = z.object({
@@ -102,7 +106,7 @@ async function studyDetail(db: Queryable, access: StudyAccess) {
   ]);
   return {
     study: {
-      id: study.id, slug: study.slug, title: study.title, summary_md: study.summary_md, summary_format: study.summary_format,
+      id: study.id, slug: study.slug, title: study.title, summary_md: study.summary_md, summary_format: study.summary_format, maturity: study.maturity,
       status: study.status, current_stage_id: study.current_stage_id, created_by: study.created_by,
       created_at: study.created_at, updated_at: study.updated_at, activity_at: study.activity_at, archived_at: study.archived_at,
     },
@@ -169,8 +173,8 @@ const studies: FastifyPluginAsync = async app => {
           .slice(0, 20)
           .map(stage => ({ name: stage.name.trim().slice(0, 60), description: (stage.description ?? "").slice(0, 2000) }));
         const study = (await client.query<{ id: string }>(
-          `INSERT INTO studies(slug,title,summary_md,summary_format,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$5) RETURNING id`,
-          [slugValue, input.title, input.summary_md ?? "", input.summary_format ?? "prose", user.id],
+          `INSERT INTO studies(slug,title,summary_md,summary_format,maturity,created_by,updated_by) VALUES($1,$2,$3,$4,$6,$5,$5) RETURNING id`,
+          [slugValue, input.title, input.summary_md ?? "", input.summary_format ?? "prose", user.id, input.maturity ?? null],
         )).rows[0]!;
         let first: string | null = null;
         for (const [position, stage] of (stageList.length ? stageList : FALLBACK_STAGES).entries()) {
@@ -212,7 +216,7 @@ const studies: FastifyPluginAsync = async app => {
       return await transaction(app.db, async client => {
         const access = await lockedAccess(client, params.ref, user);
         if (!access.canEdit && !access.canManage) throw forbidden("只有研究成員可以修改。");
-        const contentChange = input.title !== undefined || input.slug !== undefined || input.summary_md !== undefined || input.summary_format !== undefined;
+        const contentChange = input.title !== undefined || input.slug !== undefined || input.summary_md !== undefined || input.summary_format !== undefined || input.maturity !== undefined;
         if (contentChange && !access.canEdit) throw forbidden("只有研究成員可以修改。");
         // Archiving (and un-archiving) is a management action; other statuses are ordinary edits.
         if (input.status !== undefined && (input.status === "archived" || access.study.status === "archived") && !access.canManage) {
@@ -223,9 +227,10 @@ const studies: FastifyPluginAsync = async app => {
           `UPDATE studies SET title=COALESCE($2,title),slug=COALESCE($3,slug),summary_md=COALESCE($4,summary_md),
                   summary_format=COALESCE($5,summary_format),status=COALESCE($6,status),
                   archived_at=CASE WHEN $6::text IS NULL THEN archived_at WHEN $6='archived' THEN COALESCE(archived_at,now()) ELSE NULL END,
+                  maturity=CASE WHEN $8::boolean THEN $9 ELSE maturity END,
                   updated_by=$7,updated_at=now(),activity_at=now()
             WHERE id=$1`,
-          [access.study.id, input.title ?? null, input.slug ?? null, input.summary_md ?? null, input.summary_format ?? null, input.status ?? null, user.id],
+          [access.study.id, input.title ?? null, input.slug ?? null, input.summary_md ?? null, input.summary_format ?? null, input.status ?? null, user.id, input.maturity !== undefined, input.maturity ?? null],
         );
         return studyDetail(client, await loadStudyAccess(client, access.study.id, user));
       });

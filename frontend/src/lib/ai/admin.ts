@@ -93,7 +93,6 @@ export type ParamField = {
 export type Family = "llm" | "asr";
 export type Category = "external" | "local" | "subscription";
 export type Capability = "chat" | "embedding" | "asr";
-export type Strategy = "single" | "fallback" | "round_robin" | "load_balance";
 
 export type RegistryEntry = {
   id: string;
@@ -138,55 +137,116 @@ export type Provider = {
   enabled: boolean;
   last_probe: ProbeSummary | null;
   last_probe_at: string | null;
+  models_synced_at: string | null;
   label: Bilingual | null;
-  used_by: Array<{ route_id: string; route_name: string }>;
+  used_by: UsageRef[];
+  model_count: number;
   warnings_zh: string[];
   created_at: string;
   updated_at: string;
 };
 
-export type Member = {
+export type ModelCapability = "chat" | "embedding" | "asr";
+export type FieldSource = "manual" | "provider_api" | "catalog";
+export type ProfileFields = {
+  display_name?: string;
+  capability?: ModelCapability;
+  context_window?: number;
+  max_output_tokens?: number;
+  vision?: boolean;
+  tools?: boolean;
+  reasoning?: boolean;
+  json_schema?: boolean;
+  embedding_dims?: number;
+  input_price?: number;
+  output_price?: number;
+};
+export type ProfileField = keyof ProfileFields;
+export const PROFILE_FIELDS: ProfileField[] = ["display_name", "capability", "context_window", "max_output_tokens", "vision", "tools", "reasoning", "json_schema", "embedding_dims", "input_price", "output_price"];
+
+export type UsageRef = { kind: "group" | "role"; id: string; name: string };
+export type VisionSource = "override" | "model_list" | "catalog" | "name" | "vendor" | "unknown";
+export type MemberVision = { vision: boolean; detected: boolean; source: VisionSource; overridden: boolean };
+
+/** A model profile (per account + model id). */
+export type ModelProfile = {
+  id: string;
+  provider_id: string;
+  provider_name: string | null;
+  provider_kind: string | null;
+  provider_family: Family | null;
+  model_id: string;
+  origin: "sync" | "manual";
+  listed: boolean;
+  enabled: boolean;
+  refreshed_at: string | null;
+  updated_at: string;
+  fields: ProfileFields & { capability: ModelCapability };
+  sources: Partial<Record<ProfileField, FieldSource>>;
+  api: ProfileFields;
+  overrides: ProfileFields;
+  catalog: ProfileFields;
+  catalog_id: string | null;
+  vision: MemberVision | null;
+  used_by: UsageRef[];
+};
+
+export type GroupStrategy = "fallback" | "load_balance" | "round_robin";
+export type GroupMember = {
   id?: string;
   position?: number;
-  provider_id: string | null;
-  model: string | null;
-  child_route_id: string | null;
+  model_ref: string | null;
+  child_group_id: string | null;
   weight: number;
   params: Record<string, unknown>;
   enabled: boolean;
+  model_id?: string | null;
+  provider_id?: string | null;
   provider_name?: string | null;
   provider_kind?: string | null;
-  child_route_name?: string | null;
-  /** Chat members: effective image support (override or detection). */
-  vision?: MemberVision;
+  child_group_name?: string | null;
 };
-export type VisionSource = "override" | "model_list" | "name" | "vendor" | "unknown";
-export type MemberVision = { vision: boolean; detected: boolean; source: VisionSource; overridden: boolean };
-export type Route = {
+export type Group = {
   id: string;
   name: string;
   capability: Capability;
-  strategy: Strategy;
+  strategy: GroupStrategy;
   description: string;
-  members: Member[];
+  members: GroupMember[];
   bound_roles: AiRole[];
-  used_by: Array<{ route_id: string; route_name: string }>;
+  used_by: Array<{ id: string; name: string }>;
+  created_at: string;
   updated_at: string;
 };
 
-export type MemberHealth = { memberId: string; providerId: string; providerName: string; model: string; health: "up" | "down" | "unknown"; reason?: string; vision?: boolean; vision_source?: VisionSource };
+export type Target = { type: "model"; model_id: string; name: string | null } | { type: "group"; group_id: string; name: string | null };
+export type TargetInput = { model_id: string } | { group_id: string };
+
+export type MemberHealth = {
+  memberId: string;
+  modelRef: string;
+  groupId: string | null;
+  providerId: string;
+  providerName: string;
+  model: string;
+  health: "up" | "down" | "unknown";
+  reason?: string;
+  vision?: boolean;
+  vision_source?: VisionSource;
+};
 export type RoleStatusDetail = {
   role: AiRole;
   state: AiRoleState;
   message_zh: string;
-  detail: { routeId?: string; routeName?: string; members?: MemberHealth[]; activeIndex?: number; error?: string; vision?: boolean };
+  detail: { target?: "model" | "group"; groupId?: string; groupName?: string; modelRef?: string; members?: MemberHealth[]; activeIndex?: number; error?: string; vision?: boolean };
 };
-export type RoleBinding = { role: AiRole; route_id: string | null; status: RoleStatusDetail | null };
+export type Binding = { role: AiRole; target: Target | null; params: Record<string, unknown>; updated_at: string | null; status: RoleStatusDetail | null };
 
 export type TestResult = {
   probe: ProbeSummary;
   models: Array<{ id: string; label?: string; kind?: string }>;
   models_error: AiErrorBody | null;
+  models_synced?: number | null;
   check: { ok: boolean; latencyMs: number; detail_zh: string; dims?: number; error?: AiErrorBody } | null;
 };
 
@@ -196,6 +256,8 @@ export type StatRow = {
   provider_name?: string | null;
   provider_kind?: string | null;
   model?: string | null;
+  model_ref?: string | null;
+  last_used?: string | null;
   calls: number;
   ok: number;
   success_rate: number | null;
@@ -207,6 +269,7 @@ export type StatRow = {
   retries: number;
   fallbacks?: number;
 };
+export type LiveStats = { window: string; models: StatRow[]; roles: StatRow[] };
 export type Stats = { window: string; roles: StatRow[]; members: StatRow[]; errors: Array<{ error_code: string; count: number }>; series: Array<{ bucket: string; calls: number; ok: number }> };
 export type CallRow = {
   id: string;
@@ -214,7 +277,9 @@ export type CallRow = {
   final: boolean;
   role: AiRole | null;
   capability: string;
-  route_name: string | null;
+  group_id: string | null;
+  group_name: string | null;
+  model_ref: string | null;
   provider_id: string | null;
   provider_name: string | null;
   provider_kind: string | null;
@@ -236,7 +301,8 @@ export type CallRow = {
 export type EmbeddingSpace = {
   id: string;
   label: string;
-  route_id: string | null;
+  model_ref: string | null;
+  group_id: string | null;
   provider_kind: string;
   model: string;
   dims: number;

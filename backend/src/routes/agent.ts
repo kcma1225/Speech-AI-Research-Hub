@@ -8,6 +8,7 @@ import { z } from "zod";
 import { requireUser } from "../lib/auth.js";
 import { HttpError, notFound, parse } from "../lib/http.js";
 import { closeEventHub, eventHub, eventsAfter, insertEvent, lastSeq } from "../agent/events.js";
+import { answersInput } from "../agent/ask.js";
 import { agentFor } from "../agent/runtime.js";
 import { afterUndo, undoToolCall } from "../agent/undo.js";
 import { getAgentSettings, saveAgentSettings } from "../agent/settings.js";
@@ -33,7 +34,11 @@ export const pageContextSchema = z
   .optional();
 const createInput = z.object({ mode: z.enum(["chat", "interview"]).optional(), context: pageContextSchema, autopilot: z.boolean().optional(), title: z.string().trim().min(1).max(120).optional() });
 const patchInput = z.object({ title: z.string().trim().min(1).max(120).optional(), autopilot: z.boolean().optional(), memory_enabled: z.boolean().optional() });
-const messageInput = z.object({ text: z.string().trim().min(1).max(20000), context: pageContextSchema });
+const messageInput = z
+  .object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema })
+  .refine((v) => !!v.answers || !!v.text, { message: "empty" });
+const editInput = z.object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema });
+const messageParams = z.object({ id: z.uuid(), messageId: z.uuid() });
 const decisionInput = z.object({ decision: z.enum(["approve", "approve_conversation", "deny"]), reason: z.string().max(500).optional(), edited_args: z.record(z.string(), z.unknown()).optional() });
 const listQuery = z.object({ mode: z.enum(["chat", "interview"]).optional(), q: z.string().max(100).optional(), limit: z.coerce.number().int().min(1).max(200).optional() });
 const settingsInput = z.object({ memory_enabled: z.boolean().optional(), autopilot_default: z.boolean().optional(), autopilot_explained: z.boolean().optional() });
@@ -97,7 +102,7 @@ export default async function agent(app: FastifyInstance) {
     const like = q.q?.trim() ? `%${q.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
     const rows = (await app.db.query<ConversationRow & { last_text: string | null; run_status: string | null; pending: number }>(
       `SELECT c.*,
-              (SELECT m.text FROM agent_messages m WHERE m.conversation_id=c.id AND m.role IN ('user','assistant') AND m.text<>'' ORDER BY m.seq DESC LIMIT 1) AS last_text,
+              (SELECT m.text FROM agent_messages m WHERE m.conversation_id=c.id AND m.hidden_by IS NULL AND m.role IN ('user','assistant') AND m.text<>'' ORDER BY m.seq DESC LIMIT 1) AS last_text,
               (SELECT r.status FROM agent_runs r WHERE r.conversation_id=c.id ORDER BY r.started_at DESC LIMIT 1) AS run_status,
               (SELECT count(*)::int FROM tool_calls tc WHERE tc.conversation_id=c.id AND tc.status='pending_approval') AS pending
          FROM conversations c
@@ -122,17 +127,30 @@ export default async function agent(app: FastifyInstance) {
     const user = await requireUser(request);
     const { id } = parse(idParams, request.params, "找不到這個對話。");
     const conv = await ownConversation(app, user.id, id);
-    const [messages, calls, run, grants, settings, uses] = await Promise.all([
-      app.db.query<MessageRow>("SELECT * FROM agent_messages WHERE conversation_id=$1 AND role IN ('user','assistant','notice','compaction') ORDER BY seq", [id]),
-      app.db.query<ToolCallRow>("SELECT tc.* FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id WHERE tc.conversation_id=$1 ORDER BY m.seq, tc.position", [id]),
-      app.db.query<RunRow>("SELECT * FROM agent_runs WHERE conversation_id=$1 ORDER BY started_at DESC LIMIT 1", [id]),
+    // Only the current branch (hidden_by IS NULL); other versions are listed per user message in `versions`.
+    const [messages, calls, run, grants, settings, uses, versions] = await Promise.all([
+      app.db.query<MessageRow>("SELECT * FROM agent_messages WHERE conversation_id=$1 AND hidden_by IS NULL AND role IN ('user','assistant','notice','compaction') ORDER BY seq", [id]),
+      app.db.query<ToolCallRow>("SELECT tc.* FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL ORDER BY m.seq, tc.position", [id]),
+      // The latest run of the current branch (an active run, or one with a visible message).
+      app.db.query<RunRow>(
+        `SELECT r.* FROM agent_runs r WHERE r.conversation_id=$1
+            AND (r.status IN ('running','awaiting_approval','awaiting_llm') OR EXISTS (SELECT 1 FROM agent_messages m WHERE m.run_id=r.id AND m.hidden_by IS NULL))
+          ORDER BY r.started_at DESC LIMIT 1`,
+        [id],
+      ),
       app.db.query<{ tool: string; scope: string }>("SELECT tool,scope FROM conversation_grants WHERE conversation_id=$1 ORDER BY created_at", [id]),
       getAgentSettings(app.db, user.id),
       app.db.query<{ message_id: string; id: string; content: string }>(
-        "SELECT mu.message_id,m.id,m.content FROM memory_uses mu JOIN memories m ON m.id=mu.memory_id JOIN agent_messages am ON am.id=mu.message_id WHERE am.conversation_id=$1",
+        "SELECT mu.message_id,m.id,m.content FROM memory_uses mu JOIN memories m ON m.id=mu.memory_id JOIN agent_messages am ON am.id=mu.message_id WHERE am.conversation_id=$1 AND am.hidden_by IS NULL",
+        [id],
+      ),
+      app.db.query<{ g: string; ids: string[] }>(
+        "SELECT coalesce(version_of,id) AS g, array_agg(id ORDER BY seq) AS ids FROM agent_messages WHERE conversation_id=$1 AND role='user' GROUP BY 1 HAVING count(*)>1",
         [id],
       ),
     ]);
+    const groups = new Map<string, string[]>();
+    for (const v of versions.rows) for (const m of v.ids) groups.set(m, v.ids);
     const latest = run.rows[0] ?? null;
     const provenance = latest?.status === "awaiting_approval" ? latest.taint_sources.slice(-3) : [];
     let resumeFrom = await lastSeq(app.db, id);
@@ -146,7 +164,7 @@ export default async function agent(app: FastifyInstance) {
     reply.header("Cache-Control", "no-store");
     return {
       conversation: conversationView(conv),
-      messages: messages.rows.map((m) => messageView({ ...m, memories: byMessage.get(m.id) ?? [] })),
+      messages: messages.rows.map((m) => messageView({ ...m, memories: byMessage.get(m.id) ?? [], versions: groups.get(m.id) })),
       toolCalls: calls.rows.map((c) => toolCallView(c, { provenance: c.status === "pending_approval" ? provenance : [] })),
       run: latest ? runView(latest) : null,
       grants: grants.rows,
@@ -190,9 +208,42 @@ export default async function agent(app: FastifyInstance) {
     const { id } = parse(idParams, request.params, "找不到這個對話。");
     const input = parse(messageInput, request.body, "訊息不能是空的（最多 20 000 字）。");
     await ownConversation(app, user.id, id);
-    if (!(await runtime.available())) throw new HttpError(503, "AI 助理維護中，請稍後再試。", { code: "llm_unavailable", hint: "其他功能照常可用；管理員可到「模型設定」檢查 AI 助理的路由。" });
+    await requireAvailable();
     reply.code(202);
-    return runtime.postMessage(user, id, input.text, input.context ?? null);
+    return runtime.postMessage(user, id, { text: input.text, answers: input.answers, context: input.context ?? null });
+  });
+
+  const requireAvailable = async () => {
+    if (!(await runtime.available())) throw new HttpError(503, "AI 助理維護中，請稍後再試。", { code: "llm_unavailable", hint: "其他功能照常可用；管理員可到「模型設定」檢查 AI 助理的路由。" });
+  };
+
+  /** Edit a user message (text, or the answers of a question card) → new version; the later tail is kept as the old version. */
+  app.post("/agent/conversations/:id/messages/:messageId/edit", async (request, reply) => {
+    const user = await requireUser(request);
+    const { id, messageId } = parse(messageParams, request.params, "找不到這則訊息。");
+    const input = parse(editInput, request.body ?? {}, "訊息最多 20 000 字。");
+    await ownConversation(app, user.id, id);
+    await requireAvailable();
+    reply.code(202);
+    return runtime.editMessage(user, id, messageId, { text: input.text, answers: input.answers, ...(input.context !== undefined ? { context: input.context } : {}) });
+  });
+
+  /** 「重新產生」 the latest reply (resubmits the last user message as a new version). */
+  app.post("/agent/conversations/:id/regenerate", async (request, reply) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params, "找不到這個對話。");
+    await ownConversation(app, user.id, id);
+    await requireAvailable();
+    reply.code(202);
+    return runtime.regenerate(user, id);
+  });
+
+  /** ‹ 1/2 ›: make another version of a user message (and its replies) the current branch. */
+  app.post("/agent/conversations/:id/messages/:messageId/activate", async (request) => {
+    const user = await requireUser(request);
+    const { id, messageId } = parse(messageParams, request.params, "找不到這則訊息。");
+    await ownConversation(app, user.id, id);
+    return runtime.activateVersion(user, id, messageId);
   });
 
   app.post("/agent/conversations/:id/cancel", async (request) => {

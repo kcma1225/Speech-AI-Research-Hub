@@ -5,7 +5,10 @@ import type { Role } from "#lib/types.ts";
 
 export type AdminUser = {
   id: string;
+  /** Real name (真實姓名). */
   name: string;
+  /** Login id (使用者名稱). */
+  username: string;
   role: Role;
   is_admin: boolean;
   is_owner: boolean;

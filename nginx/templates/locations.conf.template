@@ -13,6 +13,10 @@
         limit_req zone=auth_limit burst=5 nodelay;
         include /etc/nginx/snippets/proxy-backend.conf;
     }
+    location = /api/join/username-available {
+        limit_req zone=join_check_limit burst=15 nodelay;
+        include /etc/nginx/snippets/proxy-backend.conf;
+    }
     location = /api/oidc/token {
         limit_req zone=oidc_limit burst=20 nodelay;
         include /etc/nginx/snippets/proxy-backend.conf;

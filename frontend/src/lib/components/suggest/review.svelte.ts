@@ -104,7 +104,14 @@ export class SuggestionReview {
     for (const s of this.list) {
       for (const h of s.hunks) {
         if (h.status !== "pending") continue;
-        const at = this.opts.doc ? placeHunk(this.opts.doc, text, h) : text.slice(h.from, h.to) === h.before ? { from: h.from, to: h.to } : null;
+        // Plain-text targets: the server's `current` range first (it follows earlier accepted hunks), then the original offsets.
+        const at = this.opts.doc
+          ? placeHunk(this.opts.doc, text, h)
+          : h.current && text.slice(h.current.from, h.current.to) === h.before
+            ? h.current
+            : text.slice(h.from, h.to) === h.before
+              ? { from: h.from, to: h.to }
+              : null;
         // Stale hunks are drawn where they were last known (server-side `current`, else the original offset).
         const fallback = h.current ?? { from: Math.min(h.from, text.length), to: Math.min(h.from, text.length) };
         live.push({ suggestionId: s.id, hunkId: h.id, from: (at ?? fallback).from, to: (at ?? fallback).to, before: h.before, after: h.after, stale: !at, title: s.title, author: s.creator_name });

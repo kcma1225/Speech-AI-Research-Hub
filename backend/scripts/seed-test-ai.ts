@@ -1,6 +1,7 @@
 /**
  * Staging/testing seed (NOT a migration): registers the user's test gateway as a generic OpenAI-compatible account,
- * a route「測試（最便宜）」(glm/glm-5.3-flash → fallback glm/glm-5-turbo) and binds the chat roles to it.
+ * syncs its model profiles, saves a fallback group「測試（最便宜）」(glm/glm-5.3-flash → glm/glm-5-turbo) and
+ * bulk-binds the chat roles to it.
  * Idempotent; talks to a running hub through the admin API, so it works against any stack.
  *
  *   set -a; . <scratchpad>/test-llm.env; set +a
@@ -16,7 +17,7 @@ if (!base || !key) {
   process.exit(2);
 }
 const PROVIDER_NAME = "測試閘道（OpenAI 相容）";
-const ROUTE_NAME = "測試（最便宜）";
+const GROUP_NAME = "測試（最便宜）";
 const ROLES = ["assistant", "writing", "slides", "analysis", "fast"];
 const origin = new URL(HUB).origin;
 let cookie = "";
@@ -35,7 +36,7 @@ async function api<T = any>(method: string, path: string, body?: unknown): Promi
   return data as T;
 }
 
-await api("POST", "/auth/login", { name: process.env.HUB_OWNER_NAME ?? "admin", password: process.env.HUB_OWNER_PASSWORD ?? "" });
+await api("POST", "/auth/login", { username: process.env.HUB_OWNER_NAME ?? "admin", password: process.env.HUB_OWNER_PASSWORD ?? "" });
 
 const { providers } = await api<{ providers: Array<{ id: string; name: string; family: string }> }>("GET", "/admin/ai/providers");
 let provider = providers.find((p) => p.family === "llm" && p.name === PROVIDER_NAME);
@@ -44,24 +45,29 @@ if (provider) await api("PATCH", `/admin/ai/providers/${provider.id}`, form);
 else provider = (await api("POST", "/admin/ai/providers", { family: "llm", kind: "openai-compatible", name: PROVIDER_NAME, ...form })).provider;
 console.log(`provider: ${PROVIDER_NAME} (${provider!.id})`);
 
-const { routes } = await api<{ routes: Array<{ id: string; name: string }> }>("GET", "/admin/ai/routes");
-const routeBody = {
-  name: ROUTE_NAME,
+const sync = await api<{ count: number; models: Array<{ id: string; model_id: string }> }>("POST", `/admin/ai/providers/${provider!.id}/sync`);
+console.log(`models synced: ${sync.count}`);
+const modelRef = (id: string) => {
+  const m = sync.models.find((x) => x.model_id === id);
+  return m ? { model_id: m.id } : { provider_id: provider!.id, model: id };
+};
+
+const { groups } = await api<{ groups: Array<{ id: string; name: string }> }>("GET", "/admin/ai/groups");
+const groupBody = {
+  name: GROUP_NAME,
   capability: "chat",
   strategy: "fallback",
   description: "測試用：最便宜的模型，失敗時改用 glm-5-turbo。",
   members: [
-    { provider_id: provider!.id, model: "glm/glm-5.3-flash", params: { timeout_ms: 120_000, max_retries: 1 } },
-    { provider_id: provider!.id, model: "glm/glm-5-turbo", params: { timeout_ms: 120_000, max_retries: 1 } },
+    { ...modelRef("glm/glm-5.3-flash"), params: { timeout_ms: 120_000, max_retries: 1 } },
+    { ...modelRef("glm/glm-5-turbo"), params: { timeout_ms: 120_000, max_retries: 1 } },
   ],
 };
-const existing = routes.find((r) => r.name === ROUTE_NAME);
-const route = existing ? (await api("PUT", `/admin/ai/routes/${existing.id}`, routeBody)).route : (await api("POST", "/admin/ai/routes", routeBody)).route;
-console.log(`route: ${ROUTE_NAME} (${route.id})`);
+const existing = groups.find((g) => g.name === GROUP_NAME);
+const group = existing ? (await api("PUT", `/admin/ai/groups/${existing.id}`, groupBody)).group : (await api("POST", "/admin/ai/groups", groupBody)).group;
+console.log(`group: ${GROUP_NAME} (${group.id})`);
 
-for (const role of ROLES) {
-  const r = await api("PUT", `/admin/ai/roles/${role}`, { route_id: route.id });
-  console.log(`bound ${role} → ${r.status?.state ?? "?"}`);
-}
+const bound = await api<{ bindings: Array<{ role: string; status: { state: string } | null }> }>("PUT", "/admin/ai/bindings", { roles: ROLES, target: { group_id: group.id } });
+for (const b of bound.bindings.filter((x) => ROLES.includes(x.role))) console.log(`bound ${b.role} → ${b.status?.state ?? "?"}`);
 const test = await api("POST", `/admin/ai/providers/${provider!.id}/test`, {});
 console.log(`probe: ${test.probe.ok ? "ok" : "failed"} — ${test.probe.detail_zh}`);

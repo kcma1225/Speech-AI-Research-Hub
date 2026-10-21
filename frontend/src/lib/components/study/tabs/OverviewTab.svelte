@@ -1,7 +1,7 @@
 <script lang="ts">
   import { DropdownMenu } from "bits-ui";
   import { goto } from "$app/navigation";
-  import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, Ellipsis, Flag, PenLine, Plus, Trash2, X } from "@lucide/svelte";
+  import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Check, Ellipsis, FileInput, Flag, PenLine, Plus, Trash2, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
@@ -21,9 +21,13 @@
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import MarkdownEditor from "#lib/components/markdown/MarkdownEditor.svelte";
   import MarkdownView from "#lib/components/markdown/MarkdownView.svelte";
+  import DocImportSheet from "#lib/components/doc-import/DocImportSheet.svelte";
+  import SummaryReview from "#lib/components/doc-import/SummaryReview.svelte";
+  import { uploadMdImage, type ImportedDocument } from "#lib/components/doc-import/api.ts";
   import type { Milestone, StudyStage, StudyStatus } from "#lib/studies/types.ts";
   import DueLabel from "../DueLabel.svelte";
   import type { StudyTabProps } from "./registry.ts";
+  import { MATURITIES } from "#lib/agent/maturity.ts";
 
   let { detail, reload }: StudyTabProps = $props();
   const study = $derived(detail.study);
@@ -47,13 +51,25 @@
   let editingSummary = $state(false);
   let summaryDraft = $state("");
   let formatDraft = $state<"prose" | "bullets">("prose");
-  let summaryLayout = $state<"split" | "edit" | "preview">("edit");
+  let summaryLayout = $state<"split" | "edit" | "preview">(session.user?.preferences.editor.layout ?? "split");
   let savingSummary = $state(false);
   function editSummary() {
     summaryDraft = study.summary_md;
     formatDraft = study.summary_format;
     editingSummary = true;
   }
+  // 「從檔案匯入」: while editing, the Markdown goes into the draft; otherwise it becomes a suggestion to review.
+  let importOpen = $state(false);
+  let summaryReview = $state<ReturnType<typeof SummaryReview> | null>(null);
+  function importedIntoDraft(markdown: string, doc: ImportedDocument) {
+    summaryDraft = summaryDraft.trim() ? `${summaryDraft.replace(/\s+$/, "")}\n\n${markdown}` : markdown;
+    toasts.show(doc.truncated ? t("docimport.truncated") : t("docimport.done", { name: doc.filename }), "success");
+  }
+  async function importedAsSuggestion() {
+    toasts.show(t("docimport.doneSuggestion"), "success");
+    await summaryReview?.show();
+  }
+  const uploadImage = (file: File) => uploadMdImage(`study:${study.id}`, file);
   async function saveSummary() {
     savingSummary = true;
     const ok = await run(() => api.patch(base, { summary_md: summaryDraft, summary_format: formatDraft }), t("studies.summary.saved"));
@@ -129,6 +145,7 @@
   // ───── Settings ─────
   const statuses: StudyStatus[] = ["active", "paused", "completed"];
   const setStatus = (status: StudyStatus) => run(() => api.patch(base, { status }), t("studies.settings.saved"));
+  const setMaturity = (maturity: string) => run(() => api.patch(base, { maturity: maturity || null }), t("studies.maturity.saved"));
   let confirmDelete = $state(false);
   async function deleteStudy() {
     await api.del(base);
@@ -144,9 +161,13 @@
     <Card>
       <CardHeader title={t("studies.summary")}>
         {#snippet actions()}
-          {#if canEdit && !editingSummary}<Button size="sm" variant="ghost" onclick={editSummary}><PenLine />{t("studies.summary.edit")}</Button>{/if}
+          {#if canEdit && !editingSummary}
+            <Button size="sm" variant="ghost" aria-label={t("docimport.title")} onclick={() => (importOpen = true)}><FileInput /><span class="hidden sm:inline">{t("docimport.title")}</span></Button>
+            <Button size="sm" variant="ghost" onclick={editSummary}><PenLine />{t("studies.summary.edit")}</Button>
+          {/if}
         {/snippet}
       </CardHeader>
+      {#if !editingSummary}<SummaryReview bind:this={summaryReview} studyId={study.id} summary={study.summary_md} onApplied={reload} />{/if}
       {#if editingSummary}
         <div class="flex flex-col gap-3">
           <Segmented
@@ -155,13 +176,14 @@
             class="w-fit"
             options={[{ value: "prose", label: t("studies.format.prose") }, { value: "bullets", label: t("studies.format.bullets") }]}
           />
-          <MarkdownEditor bind:value={summaryDraft} bind:layout={summaryLayout} fontSize={session.user?.preferences.editor.fontSize ?? 15} label={t("studies.summary")} />
+          <MarkdownEditor bind:value={summaryDraft} bind:layout={summaryLayout} fontSize={session.user?.preferences.editor.fontSize ?? 15} label={t("studies.summary")} imageUpload={uploadImage} onImport={() => (importOpen = true)} />
           <div class="flex justify-end gap-2">
             <Button variant="ghost" onclick={() => (editingSummary = false)}>{t("action.cancel")}</Button>
             <Button variant="primary" loading={savingSummary} onclick={saveSummary}>{t("action.save")}</Button>
           </div>
         </div>
       {:else if study.summary_md.trim()}
+        {#if study.maturity}<p class="mb-3"><span class="inline-flex h-7 items-center rounded-full bg-[var(--pill-lilac)] px-3 text-[12px] font-medium text-[var(--pill-lilac-ink)]" title={t(`studies.maturity.${study.maturity}.hint`)}>{t("studies.maturity")}：{t(`studies.maturity.${study.maturity}`)}</span></p>{/if}
         <MarkdownView source={study.summary_md} fontSize={session.user?.preferences.editor.fontSize} />
       {:else}
         <EmptyState title={t("studies.summary.empty")} hint={canEdit ? t("studies.summary.emptyHint") : undefined} class="py-6">
@@ -169,6 +191,16 @@
         </EmptyState>
       {/if}
     </Card>
+
+    {#if canEdit}
+      <DocImportSheet
+        bind:open={importOpen}
+        target={editingSummary ? { kind: "draft", purpose: "study_summary", studyId: study.id } : { kind: "summary", studyId: study.id, hasText: !!study.summary_md.trim() }}
+        style={editingSummary ? formatDraft : study.summary_format}
+        onMarkdown={importedIntoDraft}
+        onSuggestion={importedAsSuggestion}
+      />
+    {/if}
 
     <!-- Stage timeline -->
     <Card>
@@ -274,6 +306,18 @@
                 class="w-full"
                 options={statuses.map(s => ({ value: s, label: t(`studies.status.${s}` as MessageKey) }))}
                 onValueChange={v => setStatus(v)}
+              />
+            </div>
+          {/if}
+          {#if canEdit}
+            <div class="flex flex-col gap-1.5">
+              <span class="text-[13px] font-medium text-ink-2">{t("studies.maturity")}</span>
+              <Select
+                value={study.maturity ?? ""}
+                label={t("studies.maturity")}
+                class="w-full"
+                options={[{ value: "", label: t("studies.maturity.none") }, ...MATURITIES.map(m => ({ value: m, label: t(`studies.maturity.${m}`), hint: t(`studies.maturity.${m}.hint`) }))]}
+                onValueChange={v => setMaturity(v)}
               />
             </div>
           {/if}

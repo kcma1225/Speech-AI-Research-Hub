@@ -41,8 +41,8 @@ export const session = {
     config = cfg;
     loaded = true;
   },
-  async login(credentials: { userId?: string; name?: string; password: string }) {
-    const result = await api.post<{ account: { id: string; name: string } }>("/auth/login", credentials);
+  async login(credentials: { userId?: string; username?: string; password: string }) {
+    const result = await api.post<{ account: { id: string; name: string; username: string } }>("/auth/login", credentials);
     rememberAccount(result.account.id);
     await this.load();
   },
@@ -53,7 +53,8 @@ export const session = {
     user = null;
   },
   /** PATCH /auth/profile; the server returns the updated user. Optimistic for theme/locale. */
-  async update(patch: { name?: string; theme?: ThemePref; locale?: Locale; preferences?: DeepPartial<Preferences>; currentPassword?: string; newPassword?: string }) {
+  /** `realName` changes the real name (真實姓名); the username can only be changed by an admin. */
+  async update(patch: { realName?: string; theme?: ThemePref; locale?: Locale; preferences?: DeepPartial<Preferences>; currentPassword?: string; newPassword?: string }) {
     if (patch.theme) theme.set(patch.theme);
     if (patch.locale) i18n.set(patch.locale);
     const result = await api.patch<{ user: CurrentUser } | CurrentUser>("/auth/profile", patch);

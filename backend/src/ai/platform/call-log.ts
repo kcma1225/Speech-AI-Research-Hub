@@ -17,7 +17,10 @@ export type CallLogRow = {
   final: boolean;
   role: AiRole | null;
   capability: CallCapability;
-  route_id: string | null;
+  /** Group that held the member (null for a direct model binding). */
+  group_id: string | null;
+  /** ai_models.id of the member. */
+  model_ref: string | null;
   provider_id: string | null;
   provider_kind: string | null;
   model: string | null;
@@ -39,7 +42,7 @@ export type CallLogRow = {
 export type CallContext = { userId?: string | null; jobId?: string | null };
 
 const COLS: (keyof CallLogRow)[] = [
-  "call_id", "final", "role", "capability", "route_id", "provider_id", "provider_kind", "model", "stream", "probe", "started_at",
+  "call_id", "final", "role", "capability", "group_id", "model_ref", "provider_id", "provider_kind", "model", "stream", "probe", "started_at",
   "latency_ms", "ttft_ms", "tokens_in", "tokens_out", "ok", "error_code", "retries", "fallback_index", "job_id", "user_id",
 ];
 
@@ -100,7 +103,8 @@ export class CallRecorder {
       final: false,
       role: this.base.role,
       capability: this.base.capability,
-      route_id: leaf?.routeId ?? null,
+      group_id: leaf?.groupId ?? null,
+      model_ref: leaf?.modelRef ?? null,
       provider_id: leaf?.provider.id ?? null,
       provider_kind: leaf?.provider.kind ?? null,
       model: leaf?.model ?? null,
@@ -134,7 +138,7 @@ export class CallRecorder {
     }
   }
 
-  /** Final row. `leaf` null when the role has no route. */
+  /** Final row. `leaf` null when the role has no binding. */
   finish(leaf: ModelLeaf | null, o: { ok: boolean; startedAt: Date; errorCode?: string; retries?: number; fallbackIndex?: number; ttftMs?: number; usage?: Usage }) {
     this.rows.push(
       this.row(leaf, {
@@ -153,9 +157,9 @@ export class CallRecorder {
     this.logger?.add(this.rows.splice(0));
   }
 
-  /** All members failed (or no route): one extra final row without a member carries the outcome. */
-  exhausted(errorCode = "llm_unavailable", routeId: string | null = null) {
-    this.rows.push(this.row(null, { final: true, ok: false, started_at: new Date(), error_code: errorCode, route_id: routeId }));
+  /** All members failed (or no binding): one extra final row without a member carries the outcome. */
+  exhausted(errorCode = "llm_unavailable", groupId: string | null = null) {
+    this.rows.push(this.row(null, { final: true, ok: false, started_at: new Date(), error_code: errorCode, group_id: groupId || null }));
     this.logger?.add(this.rows.splice(0));
   }
 }
@@ -166,6 +170,8 @@ export type CallFilters = {
   role?: string;
   providerId?: string;
   model?: string;
+  modelRef?: string;
+  groupId?: string;
   ok?: boolean;
   errorCode?: string;
   from?: Date;
@@ -186,6 +192,8 @@ export async function listCalls(db: Queryable, f: CallFilters) {
   if (f.role) add("l.role = ?", f.role);
   if (f.providerId) add("l.provider_id = ?", f.providerId);
   if (f.model) add("l.model = ?", f.model);
+  if (f.modelRef) add("l.model_ref = ?", f.modelRef);
+  if (f.groupId) add("l.group_id = ?", f.groupId);
   if (f.ok !== undefined) add("l.ok = ?", f.ok);
   if (f.errorCode) add("l.error_code = ?", f.errorCode);
   if (f.from) add("l.started_at >= ?", f.from);
@@ -196,11 +204,11 @@ export async function listCalls(db: Queryable, f: CallFilters) {
   const limit = Math.min(Math.max(f.limit ?? 50, 1), 200);
   const rows = (
     await db.query(
-      `SELECT l.id::text AS id, l.call_id, l.final, l.role, l.capability, l.route_id, r.name AS route_name, l.provider_id, p.name AS provider_name,
+      `SELECT l.id::text AS id, l.call_id, l.final, l.role, l.capability, l.group_id, g.name AS group_name, g.name AS route_name, l.model_ref, l.provider_id, p.name AS provider_name,
               l.provider_kind, l.model, l.stream, l.probe, l.started_at, l.latency_ms, l.ttft_ms, l.tokens_in, l.tokens_out, l.ok, l.error_code,
               l.retries, l.fallback_index, l.job_id, l.user_id, u.name AS user_name
          FROM ai_call_log l
-         LEFT JOIN ai_routes r ON r.id = l.route_id
+         LEFT JOIN ai_groups g ON g.id = l.group_id
          LEFT JOIN ai_providers p ON p.id = l.provider_id
          LEFT JOIN users u ON u.id = l.user_id
         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
@@ -226,12 +234,12 @@ export async function callStats(db: Queryable, window: StatWindow) {
       coalesce(sum(tokens_in),0)::bigint AS tokens_in, coalesce(sum(tokens_out),0)::bigint AS tokens_out,
       sum(retries)::int AS retries`;
   const [roles, members, errors, series] = await Promise.all([
-    db.query(`SELECT role, ${agg}, count(*) FILTER (WHERE ok AND fallback_index > 0)::int AS fallbacks
+    db.query(`SELECT role, max(started_at) AS last_used, ${agg}, count(*) FILTER (WHERE ok AND fallback_index > 0)::int AS fallbacks
                 FROM ai_call_log WHERE final AND NOT probe AND started_at >= ${since} GROUP BY role ORDER BY role`),
-    db.query(`SELECT l.provider_id, p.name AS provider_name, l.provider_kind, l.model, ${agg.replaceAll("latency_ms", "l.latency_ms")}
+    db.query(`SELECT l.provider_id, p.name AS provider_name, l.provider_kind, l.model, l.model_ref, max(l.started_at) AS last_used, ${agg.replaceAll("latency_ms", "l.latency_ms")}
                 FROM ai_call_log l LEFT JOIN ai_providers p ON p.id = l.provider_id
                WHERE l.provider_id IS NOT NULL AND NOT l.probe AND l.started_at >= ${since}
-               GROUP BY l.provider_id, p.name, l.provider_kind, l.model ORDER BY calls DESC LIMIT 100`),
+               GROUP BY l.provider_id, p.name, l.provider_kind, l.model, l.model_ref ORDER BY calls DESC LIMIT 200`),
     db.query(`SELECT error_code, count(*)::int AS count FROM ai_call_log
                WHERE NOT ok AND NOT probe AND started_at >= ${since} GROUP BY error_code ORDER BY count DESC`),
     db.query(`SELECT date_bin('${window === "1h" ? "5 minutes" : window === "24h" ? "1 hour" : "1 day"}', started_at, '2000-01-01') AS bucket,

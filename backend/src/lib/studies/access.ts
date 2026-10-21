@@ -6,6 +6,12 @@ import { forbidden, notFound } from "../http.js";
 
 export type StudyStatus = "active" | "paused" | "completed" | "archived";
 export type StudyMemberRole = "owner" | "member" | "advisor";
+export const STUDY_MATURITIES = ["exploring", "problem_defined", "method_first", "continuation", "assigned", "well_defined"] as const;
+export type StudyMaturity = (typeof STUDY_MATURITIES)[number];
+export const STUDY_MATURITY_ZH: Record<StudyMaturity, string> = {
+  exploring: "探索中", problem_defined: "有問題、方法未定", method_first: "有方法、找應用",
+  continuation: "延續或復現", assigned: "指派的題目或計畫", well_defined: "方向明確",
+};
 
 export type Study = {
   id: string;
@@ -13,6 +19,8 @@ export type Study = {
   title: string;
   summary_md: string;
   summary_format: "prose" | "bullets";
+  /** 研究成熟度 (AI interview; NULL = not set). */
+  maturity: StudyMaturity | null;
   status: StudyStatus;
   current_stage_id: string | null;
   created_by: string | null;
@@ -43,7 +51,7 @@ export type StudyAccess = {
 };
 
 export const STUDY_MISSING = "研究不存在。";
-export const STUDY_COLUMNS = "s.id,s.slug,s.title,s.summary_md,s.summary_format,s.status,s.current_stage_id,s.created_by,s.updated_by,s.created_at,s.updated_at,s.activity_at,s.archived_at";
+export const STUDY_COLUMNS = "s.id,s.slug,s.title,s.summary_md,s.summary_format,s.maturity,s.status,s.current_stage_id,s.created_by,s.updated_by,s.created_at,s.updated_at,s.activity_at,s.archived_at";
 
 const isUuid = (value: string) => z.uuid().safeParse(value).success;
 

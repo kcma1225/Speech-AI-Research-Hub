@@ -264,19 +264,36 @@ export function parseModelList(json: unknown): ModelInfo[] {
       else if (typeof m.display_name === "string") info.label = m.display_name;
       const ctxLen = num(m.context_length) ?? num(m.context_window) ?? num(m.max_context_length) ?? num(m.max_model_len) ?? num((m.top_provider as Record<string, unknown>)?.context_length) ?? num(caps.contextWindow) ?? num(caps.context_window);
       if (ctxLen) info.contextWindow = ctxLen;
-      const maxOut = num(m.max_output_tokens) ?? num(caps.maxOutput) ?? num(caps.max_output_tokens);
+      const top = (m.top_provider ?? {}) as Record<string, unknown>;
+      const maxOut = num(m.max_output_tokens) ?? num(m.max_completion_tokens) ?? num(top.max_completion_tokens) ?? num(caps.maxOutput) ?? num(caps.max_output_tokens);
       if (maxOut) info.maxOutputTokens = maxOut;
+      // Kind: explicit type (Together "chat"/"embedding"/"audio", LM Studio "llm"/"vlm"/"embeddings"), then the id.
       if (/embed/i.test(type) || /embed/i.test(id)) info.kind = "embedding";
-      else if (type === "chat" || type === "llm" || caps.completion_chat === true) info.kind = "chat";
+      else if (/^(transcribe|audio|stt|speech-to-text)$/i.test(type)) info.kind = "asr";
+      else if (/^(image|moderation|rerank|tts|audio-tts|language-image)$/i.test(type)) info.kind = "other";
+      else if (type === "chat" || type === "llm" || type === "vlm" || type === "language" || caps.completion_chat === true || m.supports_chat === true) info.kind = "chat";
+      const dims = num(m.dimensions) ?? num(m.embedding_dimensions) ?? num(caps.dimensions);
+      if (dims && info.kind === "embedding") info.dims = dims;
+      // Prices → USD per 1M tokens. OpenRouter: strings per token; Together: numbers per 1M tokens.
+      const pricing = m.pricing as Record<string, unknown> | undefined;
+      if (pricing && typeof pricing === "object") {
+        const perToken = (v: unknown) => (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) * 1e6 : undefined);
+        const inP = perToken(pricing.prompt) ?? (typeof pricing.input === "number" && pricing.input >= 0 ? pricing.input : undefined);
+        const outP = perToken(pricing.completion) ?? (typeof pricing.output === "number" && pricing.output >= 0 ? pricing.output : undefined);
+        if (inP !== undefined) info.inputPrice = Math.round(inP * 10000) / 10000;
+        if (outP !== undefined) info.outputPrice = Math.round(outP * 10000) / 10000;
+      }
       const hints: NonNullable<ModelInfo["hints"]> = {};
       const b = (v: unknown) => (typeof v === "boolean" ? v : undefined);
-      hints.tools = b(caps.function_calling) ?? b(caps.tools) ?? b(caps.tool_calling) ?? b(caps.trained_for_tool_use);
-      hints.vision = b(caps.vision) ?? b(caps.image_input);
-      hints.reasoning = b(caps.reasoning) ?? b(caps.thinking);
+      hints.tools = b(caps.function_calling) ?? b(caps.tools) ?? b(caps.tool_calling) ?? b(caps.trained_for_tool_use) ?? b(m.supports_tools) ?? b(m.supports_function_calling);
+      hints.vision = b(caps.vision) ?? b(caps.image_input) ?? b(m.supports_image_input) ?? b(m.supports_image_in) ?? b(m.supports_vision) ?? (type === "vlm" ? true : undefined);
+      hints.reasoning = b(caps.reasoning) ?? b(caps.thinking) ?? b(m.supports_reasoning);
+      hints.jsonSchema = b(caps.structured_outputs) ?? b(caps.json_schema) ?? b(m.supports_response_schema);
       if (Array.isArray(m.supported_parameters)) {
         hints.params = m.supported_parameters.map(String);
         hints.tools ??= hints.params.includes("tools");
-        hints.reasoning ??= hints.params.includes("reasoning");
+        hints.reasoning ??= hints.params.includes("reasoning") || hints.params.includes("include_reasoning") ? true : undefined;
+        hints.jsonSchema ??= hints.params.includes("structured_outputs") ? true : undefined;
       }
       const arch = m.architecture as Record<string, unknown> | undefined;
       if (Array.isArray(arch?.input_modalities)) hints.vision ??= (arch.input_modalities as unknown[]).includes("image");

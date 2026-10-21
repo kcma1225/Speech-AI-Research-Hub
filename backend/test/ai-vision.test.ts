@@ -10,8 +10,10 @@ import { toOllamaMessages } from "../src/ai/codecs/ollama-native.js";
 import { parseModelList, toOpenAiMessages } from "../src/ai/codecs/openai-chat.js";
 import { toResponsesInput } from "../src/ai/codecs/openai-responses.js";
 import { aiFor, type AiPlatform } from "../src/ai/platform/index.js";
-import { detectVision, hasImages, hintKey, memberVision } from "../src/ai/platform/vision.js";
+import { detectVision, hasImages, modelVision } from "../src/ai/platform/vision.js";
+import { resolveProfile } from "../src/ai/platform/models.js";
 import { validateMemberParams } from "../src/ai/platform/params.js";
+import type { ProfileFields } from "../src/ai/catalog/index.js";
 import type { ChatMessage } from "../src/ai/types.js";
 import { createTestContext, hasTestDb, ORIGIN, type TestContext } from "./helpers.js";
 import { MockServer, sse } from "./ai-providers-mock.js";
@@ -32,26 +34,26 @@ const msgs: ChatMessage[] = [
 ];
 
 describe("vision detection", () => {
-  const p = (kind: string) => ({ id: "p1", kind });
-  it("prefers the override, then the model listing, then the name, then the vendor", () => {
-    const hints = new Map([[hintKey("p1", "glm/glm-5.3-flash"), true], [hintKey("p1", "glm/glm-5-turbo"), false], [hintKey("p1", "gpt-4o-x"), false]]);
-    expect(detectVision(p("openai-compatible"), "glm/glm-5.3-flash", hints)).toEqual({ detected: true, source: "model_list" });
-    expect(detectVision(p("openai-compatible"), "glm/glm-5-turbo", hints)).toEqual({ detected: false, source: "model_list" });
-    // The listing beats the name heuristic.
-    expect(detectVision(p("openai-compatible"), "gpt-4o-x", hints).detected).toBe(false);
-    expect(detectVision(p("openai-compatible"), "qwen2.5-vl-7b", new Map())).toEqual({ detected: true, source: "name" });
-    expect(detectVision(p("openai-compatible"), "llama3.1:8b", new Map())).toEqual({ detected: false, source: "unknown" });
-    expect(detectVision(p("openai"), "o3-mini", new Map()).detected).toBe(false);
-    expect(detectVision(p("anthropic"), "some-future-model", new Map())).toEqual({ detected: true, source: "vendor" });
-    expect(detectVision(p("claude-cli"), "claude-sonnet-4", new Map())).toEqual({ detected: false, source: "vendor" });
-    expect(memberVision(p("openai-compatible"), "llama3.1:8b", { vision: "yes" }, new Map())).toMatchObject({ vision: true, detected: false, source: "override", overridden: true });
-    expect(memberVision(p("openai-compatible"), "glm/glm-5.3-flash", { vision: "no" }, hints)).toMatchObject({ vision: false, detected: true, overridden: true });
+  const p = (kind: string) => ({ kind });
+  const prof = (model: string, api: ProfileFields = {}, overrides: ProfileFields = {}) => resolveProfile({ family: "llm" }, { model_id: model, api, overrides });
+  it("prefers the manual profile value, then the model listing, then the catalog, then the name, then the vendor", () => {
+    expect(detectVision(p("openai-compatible"), "glm/glm-5.3-flash", prof("glm/glm-5.3-flash", { vision: true }))).toEqual({ detected: true, source: "model_list" });
+    expect(detectVision(p("openai-compatible"), "glm/glm-5-turbo", prof("glm/glm-5-turbo", { vision: false }))).toEqual({ detected: false, source: "model_list" });
+    // The listing beats the catalog and the name heuristic.
+    expect(detectVision(p("openai-compatible"), "gpt-4o-x", prof("gpt-4o-x", { vision: false })).detected).toBe(false);
+    expect(detectVision(p("openai-compatible"), "gpt-4o-mini", prof("gpt-4o-mini"))).toEqual({ detected: true, source: "catalog" });
+    expect(detectVision(p("openai-compatible"), "qwen2.5-vl-7b", null)).toEqual({ detected: true, source: "name" });
+    expect(detectVision(p("openai-compatible"), "llama3.1:8b", prof("llama3.1:8b"))).toEqual({ detected: false, source: "catalog" });
+    expect(detectVision(p("openai-compatible"), "my-finetune", prof("my-finetune"))).toEqual({ detected: false, source: "unknown" });
+    expect(detectVision(p("openai"), "o3-mini", prof("o3-mini")).detected).toBe(false);
+    expect(detectVision(p("anthropic"), "some-future-model", prof("some-future-model"))).toEqual({ detected: true, source: "vendor" });
+    expect(detectVision(p("claude-cli"), "claude-sonnet-4", prof("claude-sonnet-4"))).toEqual({ detected: false, source: "vendor" });
+    expect(modelVision(p("openai-compatible"), "llama3.1:8b", prof("llama3.1:8b", {}, { vision: true }))).toMatchObject({ vision: true, source: "override", overridden: true });
+    expect(modelVision(p("openai-compatible"), "glm/glm-5.3-flash", prof("glm/glm-5.3-flash", { vision: true }, { vision: false }))).toMatchObject({ vision: false, overridden: true });
   });
 
-  it("validates the tri-state param and reads gateway capability hints", () => {
-    expect(validateMemberParams("chat", "openai-compatible", { vision: "yes" })).toEqual({ params: { vision: "yes" }, issues: [] });
-    expect(validateMemberParams("chat", "openai-compatible", { vision: "maybe" }).issues).toHaveLength(1);
-    expect(validateMemberParams("chat", "openai-compatible", { vision: "" }).params).toEqual({});
+  it("vision is no longer a member param; gateway capability hints are read from listings", () => {
+    expect(validateMemberParams("chat", "openai-compatible", { vision: "yes" }).issues).toHaveLength(1);
     const list = parseModelList({ data: [{ id: "glm/glm-5.3-flash", capabilities: { vision: true, tools: true } }, { id: "glm/glm-5", capabilities: { vision: false } }] });
     expect(list.map((m) => m.hints?.vision)).toEqual([true, false]);
   });
@@ -139,26 +141,24 @@ describe.skipIf(!hasTestDb)("image-aware routing", () => {
     await S.stop();
   });
 
-  it("stores listing hints on test and reports detection", async () => {
+  it("stores the listing as model profiles on test and reports detection", async () => {
     const r = json(await send("POST", `/api/admin/ai/providers/${ids.p}/test`, {}));
     expect(r.models).toEqual(expect.arrayContaining([expect.objectContaining({ id: "seer", vision: true })]));
+    expect(r.models_synced).toBe(2);
+    const models = json(await get(admin, `/api/admin/ai/models?provider_id=${ids.p}`)).models;
+    ids.seer = models.find((m: { model_id: string }) => m.model_id === "seer").id;
+    ids.text = models.find((m: { model_id: string }) => m.model_id === "text-only").id;
+    expect(models.find((m: { model_id: string }) => m.model_id === "seer")).toMatchObject({ fields: { vision: true }, sources: { vision: "provider_api" } });
     expect(json(await get(admin, `/api/admin/ai/vision?provider_id=${ids.p}&model=seer`))).toEqual({ detected: true, source: "model_list" });
     expect(json(await get(admin, `/api/admin/ai/vision?provider_id=${ids.p}&model=text-only`))).toEqual({ detected: false, source: "model_list" });
     expect((await get(student, `/api/admin/ai/vision?provider_id=${ids.p}&model=seer`)).statusCode).toBe(403);
   });
 
   it("sends image requests only to members with vision; text requests keep the order", async () => {
-    const route = await send("POST", "/api/admin/ai/routes", {
-      name: "視覺備援",
-      capability: "chat",
-      strategy: "fallback",
-      members: [{ provider_id: ids.p, model: "text-only" }, { provider_id: ids.p, model: "seer" }],
-    });
-    expect(route.statusCode).toBe(201);
-    ids.route = json(route).route.id;
-    expect((await send("PUT", "/api/admin/ai/roles/slides", { route_id: ids.route })).statusCode).toBe(200);
-    const routes = json(await get(admin, "/api/admin/ai/routes")).routes;
-    expect(routes.find((r: { id: string }) => r.id === ids.route).members.map((m: { vision: { vision: boolean } }) => m.vision.vision)).toEqual([false, true]);
+    const group = await send("POST", "/api/admin/ai/groups", { name: "視覺備援", capability: "chat", strategy: "fallback", members: [{ model_id: ids.text }, { model_id: ids.seer }] });
+    expect(group.statusCode).toBe(201);
+    ids.group = json(group).group.id;
+    expect((await send("PUT", "/api/admin/ai/bindings", { roles: ["slides"], target: { group_id: ids.group } })).statusCode).toBe(200);
 
     S.requests.length = 0;
     const text = await platform.chat("slides", { messages: [{ role: "user", content: "hi" }] });
@@ -179,7 +179,7 @@ describe.skipIf(!hasTestDb)("image-aware routing", () => {
   });
 
   it("fails with vision_unavailable (not llm_unavailable) when no member takes images; override fixes it", async () => {
-    await send("PUT", `/api/admin/ai/routes/${ids.route}`, { name: "視覺備援", capability: "chat", strategy: "fallback", members: [{ provider_id: ids.p, model: "text-only" }] });
+    await send("PUT", `/api/admin/ai/groups/${ids.group}`, { name: "視覺備援", capability: "chat", strategy: "fallback", members: [{ model_id: ids.text }] });
     await platform.recompute();
     expect(await platform.capabilities("slides")).toEqual({ vision: false });
     const err = await platform.chat("slides", { messages: msgs }).catch((e) => e);
@@ -188,7 +188,9 @@ describe.skipIf(!hasTestDb)("image-aware routing", () => {
     // The role is not marked down by an image request it cannot serve.
     expect((await platform.recompute()).find((s) => s.role === "slides")?.state).toBe("ok");
 
-    await send("PUT", `/api/admin/ai/routes/${ids.route}`, { name: "視覺備援", capability: "chat", strategy: "fallback", members: [{ provider_id: ids.p, model: "text-only", params: { vision: "yes" } }] });
+    // Manual profile override (per model, not per member).
+    const patched = await t.app.inject({ method: "PATCH", url: `/api/admin/ai/models/${ids.text}`, headers: { origin: ORIGIN, cookie: admin.cookie }, payload: { overrides: { vision: true } } });
+    expect(json(patched).model).toMatchObject({ fields: { vision: true }, sources: { vision: "manual" }, vision: { source: "override" } });
     await platform.recompute();
     expect(await platform.capabilities("slides")).toEqual({ vision: true });
     expect((await platform.chat("slides", { messages: msgs })).text).toBe("來自 text-only");

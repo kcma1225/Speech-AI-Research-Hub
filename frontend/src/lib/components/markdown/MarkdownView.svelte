@@ -1,14 +1,25 @@
 <script lang="ts">
   import "katex/dist/katex.min.css";
   import { renderMarkdown } from "#lib/markdown.ts";
+  import { theme } from "#lib/theme.svelte.ts";
+  import { renderMermaidIn } from "./mermaid.ts";
 
-  /** Rendered, sanitized Markdown with the hub's prose styles. `fontSize` scales the whole block (px). */
-  let { source, fontSize, class: cls = "" }: { source: string; fontSize?: number; class?: string } = $props();
-  const html = $derived(renderMarkdown(source));
+  /**
+   * Rendered, sanitized Markdown with the hub's prose styles. `fontSize` scales the whole block (px).
+   * `sourceLines` adds `data-line` attributes (editor scroll sync); ```mermaid blocks render lazily.
+   */
+  let { source, fontSize, class: cls = "", sourceLines = false, element = $bindable(null) }: { source: string; fontSize?: number; class?: string; sourceLines?: boolean; element?: HTMLElement | null } = $props();
+  const html = $derived(renderMarkdown(source, { sourceLines }));
+
+  $effect(() => {
+    void html;
+    const dark = theme.resolved === "dark";
+    if (element && element.querySelector(".md-mermaid")) void renderMermaidIn(element, dark);
+  });
 </script>
 
 <!-- sanitized by DOMPurify in renderMarkdown -->
-<div class="md {cls}" style={fontSize ? `font-size:${fontSize}px` : undefined}>{@html html}</div>
+<div bind:this={element} class="md {cls}" style={fontSize ? `font-size:${fontSize}px` : undefined}>{@html html}</div>
 
 <style>
   .md {
@@ -206,5 +217,108 @@
   .md :global(img) {
     max-width: 100%;
     border-radius: 12px;
+  }
+  .md :global(pre[data-lang]) {
+    position: relative;
+  }
+  .md :global(pre[data-lang])::before {
+    content: attr(data-lang);
+    position: absolute;
+    top: 0.45em;
+    right: 0.8em;
+    font-family: "Inter Variable", "Noto Sans TC Variable", sans-serif;
+    font-size: 0.68em;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  /* GitHub-style callouts: a tinted card with a title line, tones from the pill palette (light/dark aware). */
+  .md :global(blockquote.md-callout) {
+    --tone: var(--pill-sky);
+    --tone-ink: var(--pill-sky-ink);
+    padding: 0.7em 1em 0.75em;
+    border: 1px solid color-mix(in srgb, var(--tone-ink) 22%, transparent);
+    border-left: 4px solid var(--tone-ink);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--tone) 55%, transparent);
+    color: var(--ink);
+  }
+  .md :global(blockquote.md-callout > :nth-child(2)) {
+    margin-top: 0.25em;
+  }
+  .md :global(blockquote.md-callout > :last-child) {
+    margin-bottom: 0;
+  }
+  .md :global(.md-callout-title) {
+    margin: 0;
+    font-size: 0.86em;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    color: var(--tone-ink);
+  }
+  .md :global(.md-callout-tip) {
+    --tone: var(--pill-mint);
+    --tone-ink: var(--pill-mint-ink);
+  }
+  .md :global(.md-callout-important) {
+    --tone: var(--pill-lilac);
+    --tone-ink: var(--pill-lilac-ink);
+  }
+  .md :global(.md-callout-warning) {
+    --tone: var(--pill-butter);
+    --tone-ink: var(--pill-butter-ink);
+  }
+  .md :global(.md-callout-caution) {
+    --tone: var(--pill-peach);
+    --tone-ink: var(--danger);
+  }
+  .md :global(.md-footnotes) {
+    margin-top: 2em;
+    padding-top: 0.8em;
+    border-top: 1px solid var(--line);
+    font-size: 0.88em;
+    color: var(--ink-2);
+  }
+  .md :global(.md-footnotes-list) {
+    list-style: decimal;
+  }
+  .md :global(.footnote-ref a),
+  .md :global(a.footnote-backref) {
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .md :global(.footnote-ref) {
+    font-size: 0.75em;
+    line-height: 0;
+  }
+  .md :global(.md-mermaid) {
+    margin: 0.85em 0;
+    overflow-x: auto;
+    padding: 0.8em;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--surface);
+    text-align: center;
+  }
+  .md :global(.md-mermaid svg) {
+    max-width: 100%;
+    height: auto;
+  }
+  .md :global(.md-mermaid-src) {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    text-align: left;
+    white-space: pre-wrap;
+    font-size: 0.84em;
+    color: var(--ink-3);
+  }
+  .md :global(.md-mermaid-error) {
+    margin-top: 0.5em;
+    font-size: 0.8em;
+    color: var(--danger);
+    text-align: left;
   }
 </style>

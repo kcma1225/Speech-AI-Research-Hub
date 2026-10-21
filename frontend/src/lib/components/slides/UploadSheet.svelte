@@ -140,7 +140,9 @@
     sent = 0;
     try {
       const path = isVersion ? `/slides/${projectId}/versions` : "/slides";
-      const result = await uploadForm<{ id?: string; slug?: string; version: number }>(path, form, f => (sent = f));
+      const result = await uploadForm<{ id?: string; slug?: string; version: number; scan?: { skipped?: string[]; skippedCount?: number } | null }>(path, form, f => (sent = f));
+      const skipped = result.scan?.skippedCount ?? 0;
+      if (skipped) toasts.show(t("slides.upload.skippedFiles", { n: skipped, names: (result.scan?.skipped ?? []).slice(0, 3).join("、") }), "default", 6000);
       const id = result.id ?? projectId!;
       created = { id, version: result.version };
       void jobsStore.refresh();

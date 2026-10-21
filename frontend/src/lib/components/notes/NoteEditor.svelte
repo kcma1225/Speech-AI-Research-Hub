@@ -4,7 +4,7 @@
   import { EditorView } from "@codemirror/view";
   import { DropdownMenu } from "bits-ui";
   import {
-    ArrowLeft, BookmarkPlus, Columns2, CopyPlus, Download, Ellipsis, Eye, History, ListTree, Mic, PenLine, PenTool, Scissors, SpellCheck, Sparkles, Trash2, Wand2, X,
+    ArrowLeft, BookmarkPlus, CopyPlus, Download, Ellipsis, History, ListTree, Mic, PenLine, PenTool, Scissors, SpellCheck, Sparkles, Trash2, Wand2, X,
   } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
@@ -16,10 +16,10 @@
   import ConnectionStatus from "#lib/collab/ConnectionStatus.svelte";
   import PresenceAvatars from "#lib/collab/PresenceAvatars.svelte";
   import { openCollab } from "#lib/collab/session.svelte.ts";
-  import CodeEditor from "#lib/editor/CodeEditor.svelte";
-  import MarkdownTools from "#lib/editor/MarkdownTools.svelte";
   import ToolbarButton from "#lib/editor/ToolbarButton.svelte";
-  import MarkdownView from "#lib/components/markdown/MarkdownView.svelte";
+  import MarkdownEditor from "#lib/components/markdown/MarkdownEditor.svelte";
+  import DocImportSheet from "#lib/components/doc-import/DocImportSheet.svelte";
+  import { uploadMdImage, type ImportedDocument } from "#lib/components/doc-import/api.ts";
   import { revealHunk, suggestionReview } from "#lib/components/suggest/extension.ts";
   import { SuggestionReview } from "#lib/components/suggest/review.svelte.ts";
   import SuggestionPanel from "#lib/components/suggest/SuggestionPanel.svelte";
@@ -29,7 +29,6 @@
   import DatePicker from "#lib/components/ui/DatePicker.svelte";
   import { menuContent, menuItem, menuSeparator } from "#lib/components/ui/menu.ts";
   import Pill from "#lib/components/ui/Pill.svelte";
-  import Segmented from "#lib/components/ui/Segmented.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import Textarea from "#lib/components/ui/Textarea.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
@@ -56,7 +55,6 @@
   const editable = $derived(canEdit && !collab.readOnly && collab.status !== "denied");
 
   let view = $state<EditorView | null>(null);
-  let preview = $state(initial.note.content_md);
   let selectionEmpty = $state(true);
   let title = $state(initial.note.title);
   let date = $state(initial.note.event_date ?? "");
@@ -67,33 +65,14 @@
   let draftInstruction = $state("");
   let deleting = $state(false);
   let panelOpen = $state(false);
+  let importOpen = $state(false);
 
   type Layout = "split" | "edit" | "preview";
   let layout = $state<Layout>(session.user?.preferences.editor.layout ?? "split");
   const fontSize = $derived(session.user?.preferences.editor.fontSize ?? 15);
-  const effective = $derived<Layout>(!viewport.desktop && layout === "split" ? "edit" : layout);
-  let segment = $state<Layout>("edit");
-  $effect(() => {
-    segment = effective;
-  });
   function setLayout(next: Layout) {
-    layout = next;
     if (viewport.desktop || next !== "split") void session.update({ preferences: { editor: { layout: next } } }).catch(() => {});
   }
-
-  // Live preview, debounced on the shared text.
-  $effect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const update = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => (preview = collab.text.toString()), 160);
-    };
-    collab.text.observe(update);
-    return () => {
-      collab.text.unobserve(update);
-      clearTimeout(timer);
-    };
-  });
 
   // Server messages: new/decided suggestions, metadata changes by others.
   $effect(() => {
@@ -254,6 +233,30 @@
     void runAi("draft", draftInstruction.trim() ? { instruction: draftInstruction.trim() } : {}, t("notes.ai.draft"));
   }
 
+  /** 「匯入文件」: inserted at the cursor; while others are editing it becomes a suggestion instead. */
+  async function insertImported(markdown: string, doc: ImportedDocument) {
+    if (!view || !editable || !markdown.trim()) return;
+    const at = view.state.selection.main.head;
+    const before = view.state.sliceDoc(Math.max(0, at - 2), at);
+    const lead = at === 0 || before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
+    const text = `${lead}${markdown.trim()}\n`;
+    if (collab.peers.length > 0) {
+      try {
+        await flushed();
+        await api.post("/suggestions", { target_type: "note", target_id: note.id, title: t("docimport.done", { name: doc.filename }).slice(0, 200), hunks: [{ from: at, to: at, after: text, before: "" }] });
+        await review.refresh();
+        panelOpen = true;
+        toasts.show(t("docimport.doneCollab"), "success");
+      } catch (e) {
+        toasts.show((e as Error).message, "error");
+      }
+      return;
+    }
+    view.dispatch({ changes: { from: at, insert: text }, selection: { anchor: at + text.length }, scrollIntoView: true, userEvent: "input.import" });
+    view.focus();
+    toasts.show(doc.truncated ? t("docimport.truncated") : t("docimport.done", { name: doc.filename }), doc.truncated ? "default" : "success");
+  }
+
   async function insertVoice(text: string, bullets: boolean) {
     if (!view || !editable) return;
     const { from, to } = view.state.selection.main;
@@ -272,18 +275,6 @@
     { key: "shorten", icon: Scissors, label: t("notes.ai.shorten"), needsSelection: true, run: () => rewrite("shorten") },
     { key: "fix", icon: SpellCheck, label: t("notes.ai.fix"), needsSelection: true, run: () => rewrite("fix") },
   ]);
-  const layoutOptions = $derived(
-    viewport.desktop
-      ? [
-          { value: "edit" as const, label: t("md.edit"), icon: PenLine },
-          { value: "split" as const, label: t("md.split"), icon: Columns2 },
-          { value: "preview" as const, label: t("md.preview"), icon: Eye },
-        ]
-      : [
-          { value: "edit" as const, label: t("md.edit"), icon: PenLine },
-          { value: "preview" as const, label: t("md.preview"), icon: Eye },
-        ],
-  );
   const showAside = $derived(viewport.desktop && panelOpen && (pendingHunks > 0 || review.list.length > 0));
 </script>
 
@@ -339,39 +330,46 @@
   </div>
 </header>
 
-<div class="flex flex-col overflow-clip rounded-[22px] border border-line-2 bg-surface shadow-card focus-within:border-ink/60 lg:h-[calc(100dvh-246px)] lg:min-h-[520px]">
-  <div class="flex flex-wrap items-center gap-1 border-b border-line bg-surface-2/70 px-1.5 py-1.5 lg:flex-nowrap">
-    <Segmented bind:value={segment} options={layoutOptions} label={t("md.layout")} onValueChange={setLayout} class="order-first w-full shrink-0 lg:order-none lg:w-auto [&_button]:h-10 [&_button]:text-[12px] lg:[&_button]:h-8 lg:[&_button]:px-2.5" />
-    <div class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] {effective === 'preview' || !editable ? 'pointer-events-none opacity-40' : ''}" role="toolbar" aria-label={t("md.toolbar")}>
-      <MarkdownTools {view} disabled={!editable || effective === "preview"} />
-    </div>
+<MarkdownEditor
+  bind:view
+  bind:layout
+  collab={{ text: collab.text, awareness: collab.awareness }}
+  readOnly={!editable}
+  {fontSize}
+  label={t("notes.editorLabel", { title: note.title })}
+  {extensions}
+  fill={viewport.desktop}
+  imageUpload={canEdit ? file => uploadMdImage(`note:${initial.note.id}`, file) : undefined}
+  onImport={canEdit ? () => (importOpen = true) : undefined}
+  onLayoutChange={setLayout}
+  class="rounded-[22px] shadow-card lg:h-[calc(100dvh-246px)] lg:min-h-[520px]"
+>
+  {#snippet toolbarEnd()}
     {#if canEdit}
-      <div class="flex shrink-0 items-center gap-1 pl-1">
-        <AiGate role="asr" inline>
-          <ToolbarButton icon={Mic} label={t("voice.title")} disabled={!editable} onclick={() => (voiceOpen = true)} />
-          {#snippet fallback()}<ToolbarButton icon={Mic} label={`${t("voice.title")} · ${t("ai.maintenance")}`} disabled />{/snippet}
-        </AiGate>
-        <AiGate role="writing" inline>
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger
-              class="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-ink px-3.5 text-[12.5px] font-semibold text-surface transition-opacity hover:opacity-90 disabled:opacity-40 lg:h-8"
-              disabled={!editable || !!aiBusy}
-              aria-label={t("notes.ai.menu")}><Sparkles class="size-3.5" />{t("notes.ai.button")}</DropdownMenu.Trigger
-            >
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content align="end" sideOffset={6} class="{menuContent} w-60">
-                <DropdownMenu.Item class={menuItem} onSelect={() => (draftOpen = true)}><PenTool />{t("notes.ai.draft")}</DropdownMenu.Item>
-                <DropdownMenu.Item class={menuItem} onSelect={continueWriting}><PenLine />{t("notes.ai.continue")}</DropdownMenu.Item>
-                <DropdownMenu.Separator class={menuSeparator} />
-                {#each aiItems as item (item.key)}
-                  <DropdownMenu.Item class="{menuItem} data-disabled:opacity-45" disabled={item.needsSelection && selectionEmpty} onSelect={item.run}><item.icon />{item.label}</DropdownMenu.Item>
-                {/each}
-                {#if selectionEmpty}<p class="px-2.5 pt-1 pb-1.5 text-[11.5px] text-ink-3">{t("notes.ai.selectFirst")}</p>{/if}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-        </AiGate>
-      </div>
+      <AiGate role="asr" inline>
+        <ToolbarButton icon={Mic} label={t("voice.title")} disabled={!editable} onclick={() => (voiceOpen = true)} />
+        {#snippet fallback()}<ToolbarButton icon={Mic} label={`${t("voice.title")} · ${t("ai.maintenance")}`} disabled />{/snippet}
+      </AiGate>
+      <AiGate role="writing" inline>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger
+            class="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-ink px-3.5 text-[12.5px] font-semibold text-surface transition-opacity hover:opacity-90 disabled:opacity-40 lg:h-8"
+            disabled={!editable || !!aiBusy}
+            aria-label={t("notes.ai.menu")}><Sparkles class="size-3.5" />{t("notes.ai.button")}</DropdownMenu.Trigger
+          >
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content align="end" sideOffset={6} class="{menuContent} w-60">
+              <DropdownMenu.Item class={menuItem} onSelect={() => (draftOpen = true)}><PenTool />{t("notes.ai.draft")}</DropdownMenu.Item>
+              <DropdownMenu.Item class={menuItem} onSelect={continueWriting}><PenLine />{t("notes.ai.continue")}</DropdownMenu.Item>
+              <DropdownMenu.Separator class={menuSeparator} />
+              {#each aiItems as item (item.key)}
+                <DropdownMenu.Item class="{menuItem} data-disabled:opacity-45" disabled={item.needsSelection && selectionEmpty} onSelect={item.run}><item.icon />{item.label}</DropdownMenu.Item>
+              {/each}
+              {#if selectionEmpty}<p class="px-2.5 pt-1 pb-1.5 text-[11.5px] text-ink-3">{t("notes.ai.selectFirst")}</p>{/if}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      </AiGate>
     {/if}
     {#if pendingHunks || review.list.length}
       <button
@@ -382,29 +380,10 @@
         onclick={() => (panelOpen = !panelOpen)}><Sparkles class="size-3.5" />{t("suggest.count", { n: pendingHunks })}</button
       >
     {/if}
-  </div>
-
-  <div class="grid min-h-0 flex-1 {showAside ? 'lg:grid-cols-[minmax(0,1fr)_340px]' : 'grid-cols-1'}">
-    <div class="grid min-h-0 {effective === 'split' ? 'grid-cols-2 divide-x divide-line' : 'grid-cols-1'}">
-      <div class="min-h-[60dvh] min-w-0 lg:min-h-0 {effective === 'preview' ? 'hidden' : ''}">
-        <CodeEditor
-          bind:view
-          collab={{ text: collab.text, awareness: collab.awareness }}
-          readOnly={!editable}
-          {fontSize}
-          label={t("notes.editorLabel", { title: note.title })}
-          {extensions}
-          class="h-full lg:overflow-hidden"
-        />
-      </div>
-      {#if effective !== "edit"}
-        <div class="min-h-[60dvh] min-w-0 overflow-y-auto px-5 py-4 sm:px-7 lg:min-h-0">
-          {#if preview.trim()}<MarkdownView source={preview} {fontSize} />{:else}<p class="text-[13px] text-ink-3">{t("md.previewEmpty")}</p>{/if}
-        </div>
-      {/if}
-    </div>
+  {/snippet}
+  {#snippet aside()}
     {#if showAside}
-      <aside class="min-h-0 overflow-y-auto border-l border-line bg-surface-2/50 p-3" aria-label={t("suggest.title")}>
+      <aside class="hidden w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface-2/50 p-3 lg:block" aria-label={t("suggest.title")}>
         <div class="mb-2 flex items-center justify-between px-1">
           <h2 class="text-[13px] font-semibold text-ink-2">{t("suggest.title")}</h2>
           <button type="button" class="grid size-8 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("common.close")} onclick={() => (panelOpen = false)}><X class="size-4" /></button>
@@ -412,8 +391,8 @@
         <SuggestionPanel {review} onReveal={reveal} />
       </aside>
     {/if}
-  </div>
-</div>
+  {/snippet}
+</MarkdownEditor>
 <p class="mt-2 hidden text-[11.5px] text-ink-3 lg:block">{t("suggest.keys")}</p>
 
 {#if !viewport.desktop}
@@ -444,6 +423,9 @@
   {/snippet}
 </Sheet>
 
+{#if canEdit}
+  <DocImportSheet bind:open={importOpen} target={{ kind: "draft", purpose: "note", studyId: detail.study.id }} onMarkdown={insertImported} />
+{/if}
 <VersionSheet bind:open={versionsOpen} noteId={note.id} current={() => collab.text.toString()} {canEdit} onRestored={reload} />
 {#if canEdit}
   <VoiceInput bind:open={voiceOpen} noteId={note.id} onText={insertVoice} />

@@ -14,7 +14,7 @@
   let { open = $bindable(false), mode }: { open?: boolean; mode: "export" | "import" } = $props();
   let withSecrets = $state(false);
   let file = $state<File | null>(null);
-  let parsed = $state<{ secret?: boolean; exported_at?: string; providers?: unknown[]; routes?: unknown[] } | null>(null);
+  let parsed = $state<{ secret?: boolean; exported_at?: string; providers?: unknown[]; routes?: unknown[]; groups?: unknown[] } | null>(null);
   let importSecrets = $state(false);
   let busy = $state(false);
   let error = $state<AiErrorBody | null>(null);
@@ -49,13 +49,13 @@
     busy = true;
     error = null;
     try {
-      const r = await aiApi.post<{ providers_created: number; providers_updated: number; routes_created: number; routes_updated: number; warnings: string[] }>("/admin/ai/import", {
+      const r = await aiApi.post<{ providers_created: number; providers_updated: number; groups_created: number; groups_updated: number; roles_bound: number; warnings: string[] }>("/admin/ai/import", {
         file: parsed,
         include_secrets: importSecrets && parsed.secret === true,
       });
-      toasts.show(t("aiAdmin.transfer.imported", { pc: r.providers_created, pu: r.providers_updated, rc: r.routes_created, ru: r.routes_updated }), "success", 5000);
+      toasts.show(t("aiAdmin.transfer.imported", { pc: r.providers_created, pu: r.providers_updated, rc: r.groups_created, ru: r.groups_updated, rb: r.roles_bound }), "success", 5000);
       for (const w of r.warnings) toasts.show(w, "default", 7000);
-      await adminStore.reloadAll();
+      await adminStore.reloadRouting();
       open = false;
     } catch (e) {
       error = toErrorBody(e);
@@ -80,7 +80,7 @@
         <FileDrop bind:file accept="application/json,.json" label={t("aiAdmin.transfer.pick")} maxBytes={1024 * 1024} onError={m => (error = { error: m, code: "import_invalid" })} />
         {#if parsed}
           <p class="text-[13px] text-ink-2">
-            {t("aiAdmin.transfer.fileInfo", { date: parsed.exported_at ? formatDate(parsed.exported_at) : "?", providers: parsed.providers?.length ?? 0, routes: parsed.routes?.length ?? 0 })}
+            {t("aiAdmin.transfer.fileInfo", { date: parsed.exported_at ? formatDate(parsed.exported_at) : "?", providers: parsed.providers?.length ?? 0, routes: parsed.groups?.length ?? parsed.routes?.length ?? 0 })}
           </p>
           {#if parsed.secret}
             <div class="flex items-center justify-between gap-4 rounded-xl border border-danger/30 px-3.5 py-3">

@@ -12,7 +12,10 @@ export type Role = "student" | "professor" | "admin";
 export type Locale = "zh-TW" | "en";
 export type CurrentUser = {
   id: string;
+  /** Real name (真實姓名), shown everywhere the person appears. */
   name: string;
+  /** Login id (使用者名稱), lower-case. */
+  username: string;
   role: Role;
   is_admin: boolean;
   is_owner: boolean;
@@ -24,10 +27,11 @@ export type CurrentUser = {
 };
 
 /** Columns of `users` (alias `u`) that make up a CurrentUser; pass the row to `toCurrentUser`. */
-export const CURRENT_USER_COLUMNS = "u.id,u.name,u.role,u.is_admin,u.is_owner,u.auth_mode,u.theme,u.locale,u.preferences";
+export const CURRENT_USER_COLUMNS = "u.id,u.name,u.username,u.role,u.is_admin,u.is_owner,u.auth_mode,u.theme,u.locale,u.preferences";
 export const toCurrentUser = (row: Omit<CurrentUser, "preferences"> & { preferences: unknown }): CurrentUser => ({
   id: row.id,
   name: row.name,
+  username: row.username,
   role: row.role,
   is_admin: row.is_admin,
   is_owner: row.is_owner,

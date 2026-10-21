@@ -85,7 +85,7 @@ async function uploadSource(app: FastifyInstance, projectId: string, versionId: 
 const uploadSummary = (deck: DetectedDeck) => ({
   sourceType: deck.sourceType,
   entry: deck.sourceType === "quarto" ? deck.entry : null,
-  scan: deck.scan ? { files: deck.scan.files, bytes: deck.scan.bytes, qmd: deck.scan.qmd } : null,
+  scan: deck.scan ? { files: deck.scan.files, bytes: deck.scan.bytes, qmd: deck.scan.qmd, skipped: deck.scan.skipped, skippedCount: deck.scan.skippedCount } : null,
 });
 
 async function isPdf(path: string) {

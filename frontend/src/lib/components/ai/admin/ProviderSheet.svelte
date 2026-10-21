@@ -99,7 +99,6 @@
         ...(provider ? { base_id: provider.id } : {}),
         ...(checkModel.trim() ? { model: checkModel.trim(), capability: embedOnly ? "embedding" : "chat" } : {}),
       });
-      if (provider && test.models.length) adminStore.setModels(provider.id, test.models.map(m => m.id));
     } catch (e) {
       testError = toErrorBody(e);
     } finally {
@@ -121,7 +120,11 @@
         const secrets = Object.fromEntries(Object.entries(p.secrets).filter(([, v]) => v !== null));
         saved = (await aiApi.post<{ provider: Provider }>("/admin/ai/providers", { family, kind: entry.id, name, config: p.config, secrets, enabled })).provider;
       }
-      if (test?.models.length) adminStore.setModels(saved.id, test.models.map(m => m.id));
+      // Fill the model profiles right away (limits and capabilities come from the listing + catalog).
+      void aiApi.post(`/admin/ai/providers/${saved.id}/sync`).then(
+        () => adminStore.reloadModels(),
+        () => undefined,
+      );
       open = false;
       onSaved(saved, { login: !provider && entry.subscription && entry.id !== "claude-cli" });
     } catch (e) {

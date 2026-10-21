@@ -1,22 +1,93 @@
 <script lang="ts">
-  import { Brain, ChevronRight, Copy, Info, Sparkles } from "@lucide/svelte";
+  import { tick } from "svelte";
+  import { DropdownMenu } from "bits-ui";
+  import { Brain, ChevronLeft, ChevronRight, Copy, Ellipsis, Info, ListChecks, Pencil, RotateCcw, Sparkles } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
+  import Button from "#lib/components/ui/Button.svelte";
+  import Textarea from "#lib/components/ui/Textarea.svelte";
+  import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
   import AgentMarkdown from "./AgentMarkdown.svelte";
-  import type { Message } from "#lib/agent/types.ts";
+  import AskCard from "./AskCard.svelte";
+  import { answerLabel } from "#lib/agent/ask.ts";
+  import type { Answer, AskArgs, Message } from "#lib/agent/types.ts";
 
-  /** One transcript message. Assistant text is Markdown (remote images off); reasoning is collapsible. */
-  let { message, streaming = false, canRemember = false, conversationId = null, onContinue }: {
-    message: Pick<Message, "role" | "text" | "reasoning" | "status" | "memories" | "kind" | "page_context"> & { id?: string };
+  /**
+   * One transcript message. Assistant text is Markdown (remote images off); reasoning is collapsible.
+   * User messages: 編輯 (inline; resubmits from here), 複製, ‹ 1/2 › between versions — on hover/focus on desktop, via
+   * ⋯ or a long press on phones. Answers to a question card render as a compact summary with 「修改答案」.
+   */
+  let { message, streaming = false, canRemember = false, conversationId = null, onContinue, ask = null, busy = false, onEdit, onEditAnswers, onRegenerate, onSwitch }: {
+    message: Pick<Message, "role" | "text" | "reasoning" | "status" | "memories" | "kind" | "page_context"> & { id?: string; answers?: Message["answers"]; versions?: string[] | null };
     streaming?: boolean;
     canRemember?: boolean;
     conversationId?: string | null;
     onContinue?: () => void;
+    /** The questions an answer message answers. */
+    ask?: AskArgs | null;
+    /** A reply is being generated (editing waits). */
+    busy?: boolean;
+    onEdit?: (text: string) => Promise<boolean>;
+    onEditAnswers?: (answers: Answer[]) => Promise<boolean>;
+    /** Latest assistant reply only. */
+    onRegenerate?: () => void;
+    onSwitch?: (messageId: string) => void;
   } = $props();
   let showReasoning = $state(false);
   let showMemories = $state(false);
+  let editing = $state(false);
+  let draft = $state("");
+  let saving = $state(false);
+  let menuOpen = $state(false);
+  let editor = $state<HTMLTextAreaElement | null>(null);
+
+  const versionIndex = $derived(message.versions && message.id ? message.versions.indexOf(message.id) : -1);
+  async function startEdit() {
+    draft = message.text;
+    editing = true;
+    await tick();
+    editor?.focus();
+    editor?.setSelectionRange(draft.length, draft.length);
+  }
+  async function saveEdit() {
+    const value = draft.trim();
+    if (!value || !onEdit || saving) return;
+    if (value === message.text.trim()) {
+      editing = false;
+      return;
+    }
+    saving = true;
+    try {
+      if (await onEdit(value)) editing = false;
+    } finally {
+      saving = false;
+    }
+  }
+  function editKeys(e: KeyboardEvent) {
+    if (e.isComposing) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      editing = false;
+    } else if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void saveEdit();
+    }
+  }
+  // Long press on a phone opens the ⋯ menu.
+  let pressTimer: ReturnType<typeof setTimeout> | null = null;
+  function pressStart(e: PointerEvent) {
+    if (e.pointerType !== "touch") return;
+    pressTimer = setTimeout(() => {
+      menuOpen = true;
+      navigator.vibrate?.(10);
+    }, 500);
+  }
+  function pressEnd() {
+    if (pressTimer) clearTimeout(pressTimer);
+    pressTimer = null;
+  }
 
   async function copy() {
     try {
@@ -37,14 +108,76 @@
   const noticeKey = $derived(message.kind ? (`agent.notice.${message.kind}` as MessageKey) : null);
 </script>
 
-{#if message.role === "user"}
+{#snippet versionSwitch()}
+  {#if message.versions && versionIndex >= 0 && onSwitch}
+    <div class="inline-flex items-center text-[12px] text-ink-3 tabular-nums" role="group" aria-label={t("agent.versions")}>
+      <button type="button" class="grid size-8 place-items-center rounded-full hover:bg-surface-3 hover:text-ink disabled:opacity-40" disabled={versionIndex === 0 || busy} aria-label={t("agent.versionPrev")} onclick={() => onSwitch?.(message.versions![versionIndex - 1]!)}><ChevronLeft class="size-3.5" /></button>
+      <span aria-live="polite">{versionIndex + 1} / {message.versions.length}</span>
+      <button type="button" class="grid size-8 place-items-center rounded-full hover:bg-surface-3 hover:text-ink disabled:opacity-40" disabled={versionIndex === message.versions.length - 1 || busy} aria-label={t("agent.versionNext")} onclick={() => onSwitch?.(message.versions![versionIndex + 1]!)}><ChevronRight class="size-3.5" /></button>
+    </div>
+  {/if}
+{/snippet}
+
+{#if message.role === "user" && message.answers && ask}
+  {@const answers = message.answers.answers}
   <div class="group flex justify-end">
-    <div class="flex max-w-[min(85%,640px)] flex-col items-end gap-1">
-      <div class="rounded-[20px] rounded-br-md bg-ink px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words text-primary-ink">{message.text}</div>
-      {#if canRemember && message.text.length <= 300}
-        <button type="button" class="inline-flex min-h-8 items-center gap-1 rounded-full px-2 text-[12px] text-ink-3 opacity-100 hover:text-ink sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100" onclick={rememberThis}>
-          <Brain class="size-3.5" />{t("agent.rememberThis")}
-        </button>
+    <div class="flex w-full max-w-[min(92%,560px)] flex-col items-end gap-1">
+      {#if editing}
+        <div class="w-full"><AskCard args={ask} initial={answers} editing disabled={busy} onCancel={() => (editing = false)} onSubmit={async (a) => { if (onEditAnswers && (await onEditAnswers(a))) editing = false; }} /></div>
+      {:else}
+        <div class="w-full rounded-[20px] rounded-br-md border border-line bg-surface-2 px-4 py-3">
+          <p class="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium text-ink-3"><ListChecks class="size-3.5" />{t("agent.ask.yourAnswers")}</p>
+          <dl class="flex flex-col gap-1.5 text-[13.5px]">
+            {#each ask.questions as q (q.id)}
+              {@const a = answers.find((x) => x.id === q.id)}
+              <div class="flex flex-col"><dt class="text-[12px] text-ink-3">{q.prompt}</dt><dd class="break-words {a?.skipped || !a ? 'text-ink-3 italic' : 'text-ink'}">{answerLabel(q, a)}</dd></div>
+            {/each}
+          </dl>
+        </div>
+        <div class="flex items-center gap-0.5">
+          {@render versionSwitch()}
+          {#if onEditAnswers}<button type="button" class="inline-flex min-h-8 items-center gap-1 rounded-full px-2.5 text-[12px] text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-40" disabled={busy} onclick={() => (editing = true)}><Pencil class="size-3.5" />{t("agent.ask.changeAnswers")}</button>{/if}
+        </div>
+      {/if}
+    </div>
+  </div>
+{:else if message.role === "user"}
+  <div class="group flex justify-end">
+    <div class="flex max-w-[min(85%,640px)] flex-col items-end gap-1 {editing ? 'w-full' : ''}">
+      {#if editing}
+        <div class="w-full rounded-[20px] border border-line-2 bg-surface p-2.5 shadow-pop">
+          <Textarea bind:value={draft} bind:ref={editor} rows={3} maxlength={20000} aria-label={t("agent.editMessage")} onkeydown={editKeys} class="[&_textarea]:border-0 [&_textarea]:bg-transparent" />
+          <p class="px-1 pt-1 text-[11.5px] text-ink-3">{t("agent.editHint")}</p>
+          <div class="flex justify-end gap-2 pt-1.5">
+            <Button size="sm" variant="ghost" onclick={() => (editing = false)}>{t("action.cancel")}</Button>
+            <Button size="sm" variant="primary" loading={saving} disabled={!draft.trim() || busy} onclick={() => void saveEdit()}>{t("agent.resend")}</Button>
+          </div>
+        </div>
+      {:else}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="rounded-[20px] rounded-br-md bg-ink px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words text-primary-ink select-text [-webkit-touch-callout:none]" onpointerdown={pressStart} onpointerup={pressEnd} onpointercancel={pressEnd} onpointerleave={pressEnd}>{message.text}</div>
+        <div class="flex items-center gap-0.5">
+          {@render versionSwitch()}
+          <!-- Desktop: hover / focus actions. -->
+          <div class="hidden items-center gap-0.5 opacity-0 transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100 motion-reduce:transition-none [@media(pointer:fine)]:flex">
+            {#if onEdit}<button type="button" class="grid size-8 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-40" disabled={busy} aria-label={t("agent.edit")} title={t("agent.edit")} onclick={startEdit}><Pencil class="size-3.5" /></button>{/if}
+            <button type="button" class="grid size-8 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("agent.copy")} title={t("agent.copy")} onclick={copy}><Copy class="size-3.5" /></button>
+            {#if canRemember && message.text.length <= 300}
+              <button type="button" class="inline-flex min-h-8 items-center gap-1 rounded-full px-2 text-[12px] text-ink-3 hover:text-ink" onclick={rememberThis}><Brain class="size-3.5" />{t("agent.rememberThis")}</button>
+            {/if}
+          </div>
+          <!-- Touch: ⋯ menu (also opened by a long press on the bubble). -->
+          <DropdownMenu.Root bind:open={menuOpen}>
+            <DropdownMenu.Trigger class="grid size-10 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink [@media(pointer:fine)]:hidden" aria-label={t("agent.messageActions")}><Ellipsis class="size-4" /></DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={4} class="{menuContent} w-48">
+                {#if onEdit}<DropdownMenu.Item class={menuItem} disabled={busy} onSelect={startEdit}><Pencil />{t("agent.edit")}</DropdownMenu.Item>{/if}
+                <DropdownMenu.Item class={menuItem} onSelect={copy}><Copy />{t("agent.copy")}</DropdownMenu.Item>
+                {#if canRemember && message.text.length <= 300}<DropdownMenu.Item class={menuItem} onSelect={rememberThis}><Brain />{t("agent.rememberThis")}</DropdownMenu.Item>{/if}
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        </div>
       {/if}
     </div>
   </div>
@@ -78,7 +211,10 @@
             </button>
           {/if}
           {#if !streaming && message.text}
-            <button type="button" class="grid size-8 place-items-center rounded-full text-ink-3 opacity-100 hover:bg-surface-3 hover:text-ink sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100" aria-label={t("agent.copy")} onclick={copy}><Copy class="size-3.5" /></button>
+            <button type="button" class="grid size-8 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-focus-within:opacity-100 [@media(pointer:fine)]:group-hover:opacity-100" aria-label={t("agent.copy")} title={t("agent.copy")} onclick={copy}><Copy class="size-3.5" /></button>
+          {/if}
+          {#if !streaming && onRegenerate}
+            <button type="button" class="inline-flex min-h-8 items-center gap-1 rounded-full px-2 text-[12px] text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-40" disabled={busy} onclick={onRegenerate}><RotateCcw class="size-3.5" />{t("agent.regenerate")}</button>
           {/if}
         </div>
         {#if showMemories}

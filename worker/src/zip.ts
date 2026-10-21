@@ -9,6 +9,8 @@ import { JobInputError } from "./errors.js";
 export const ALLOWED_EXTENSIONS = new Set([
   ".qmd", ".md", ".css", ".scss", ".yml", ".yaml", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".pdf", ".bib",
   ".csl", ".json", ".js", ".woff", ".woff2", ".ttf", ".otf", ".txt", ".csv", ".mp4", ".webm", ".mp3", ".wav", ".m4a",
+  // Pre-rendered output, notebooks and other harmless assets decks commonly ship with.
+  ".html", ".htm", ".ipynb", ".xml", ".tsv", ".ico", ".bmp", ".avif", ".tif", ".tiff", ".ogg", ".mov", ".m4v",
 ]);
 /** Directories never extracted. Their content is skipped rather than validated. */
 const SKIPPED_DIRS = new Set([".git", "node_modules", "__MACOSX", "_site", ".quarto"]);
@@ -36,7 +38,8 @@ export function classifyEntry(name: string, isDirectory: boolean, mode: number, 
   if (isDirectory) return { skip: true };
   if (SKIPPED_FILES.has(parts[parts.length - 1]!)) return { skip: true };
   const extension = path.posix.extname(normalized).toLowerCase();
-  if (!ALLOWED_EXTENSIONS.has(extension)) throw new JobInputError(`不支援檔案類型：${extension || normalized}`);
+  // Same as the backend: unknown types are left out, not fatal.
+  if (!ALLOWED_EXTENSIONS.has(extension)) return { skip: true };
   if (size > LIMITS.fileBytes) throw new JobInputError("ZIP 超過檔案數量或容量限制。");
   return { skip: false, path: normalized };
 }
