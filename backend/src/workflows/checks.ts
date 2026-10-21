@@ -4,6 +4,7 @@
  */
 import type { CheckResult, CheckSpec } from "./types.js";
 import { chartBlocks, lintMermaid, mermaidBlocks } from "../lib/slides/deck-visuals.js";
+import { lintDiagrams } from "../lib/slides/diagram/index.js";
 
 export type Slide = { title: string; body: string; notes: string; index: number };
 
@@ -136,6 +137,7 @@ export const CHECKS: Record<string, CheckFn> = {
       for (const issue of lintMermaid(code)) problems.push(`第 ${i + 1} 張圖：${issue}`);
     });
     for (const c of chartBlocks(text)) if (!c.spec) problems.push(`有一個 \`\`\`chart 區塊不是有效的圖表 JSON：${c.source.slice(0, 80)}`);
+    problems.push(...lintDiagrams(text));
     return problems.length ? { ok: false, detail: `圖表語法有問題：${problems.slice(0, 8).join("；")}。` } : { ok: true, detail: "圖與圖表語法正確" };
   },
   /** At least `min_ratio` of content slides carry a visual (diagram, chart, figure, image, table). */
@@ -233,7 +235,7 @@ export function visibleWords(body: string): number {
   return Math.round(latin + cjk / 2);
 }
 
-export const hasVisual = (body: string) => /^```\{?\.?(mermaid|chart|dot)\b|!\[[^\]]*\]\([^)]+\)|^\s*\|.*\|\s*$|<img\b|<svg\b|\.big-number/m.test(body);
+export const hasVisual = (body: string) => /^```\{?\.?(mermaid|chart|diagram|dot)\b|!\[[^\]]*\]\([^)]+\)|^\s*\|.*\|\s*$|<img\b|<svg\b|\.big-number/m.test(body);
 
 export function runChecks(specs: CheckSpec[], text: string, data: unknown): CheckResult[] {
   return specs.map((s) => {

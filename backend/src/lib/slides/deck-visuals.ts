@@ -17,6 +17,9 @@ export const DECK_INK = "#1f2937";
 export const DECK_MUTED = "#6b7280";
 export const DECK_GRID = "#e5e7eb";
 const FONT = "'Source Sans Pro','Source Sans 3','Noto Sans CJK TC','Noto Sans TC',Helvetica,Arial,sans-serif";
+/** Mermaid (fallback only) measures and draws its labels with a system font that never swaps after layout. */
+const MERMAID_FONT = "Arial, Helvetica, 'Liberation Sans', 'Noto Sans CJK TC', 'Microsoft JhengHei', sans-serif";
+export const MERMAID_INIT = `%%{init: {"theme": "neutral", "themeVariables": {"fontFamily": "${MERMAID_FONT.replace(/"/g, "'")}", "fontSize": "18px"}, "flowchart": {"htmlLabels": true, "padding": 16, "wrappingWidth": 210, "nodeSpacing": 44, "rankSpacing": 52}}}%%`;
 
 /**
  * Stylesheet of generated decks (`hub-deck.css`, referenced from the YAML). Type scale at 1280×800: title 40px,
@@ -39,7 +42,7 @@ export const DECK_CSS = `/* Speech-AI Hub generated deck theme (Lab-Hub layout, 
 .reveal strong { color: #0f172a; }
 .reveal em { color: ${DECK_PALETTE[0]}; font-style: normal; font-weight: 600; }
 .reveal .smaller, .reveal .slides section.smaller { font-size: 20px; }
-.reveal table { font-size: 20px; border-collapse: collapse; margin: 8px auto; }
+.reveal table { font-size: 22px; border-collapse: collapse; margin: 8px auto; }
 .reveal table th { background: #eff6ff; color: #0f172a; font-weight: 700; border-bottom: 2px solid ${DECK_PALETTE[0]}; padding: 6px 14px; }
 .reveal table td { border-bottom: 1px solid ${DECK_GRID}; padding: 6px 14px; }
 .reveal table tr.best td, .reveal table td.best, .reveal table td strong { color: ${DECK_PALETTE[0]}; font-weight: 700; }
@@ -51,6 +54,9 @@ export const DECK_CSS = `/* Speech-AI Hub generated deck theme (Lab-Hub layout, 
 .reveal figcaption, .reveal .caption, .reveal .source { font-size: 16px; color: ${DECK_MUTED}; margin-top: 6px; }
 .reveal .source { position: absolute; bottom: -8px; left: 0; }
 .reveal .cell-output-display svg[id^=mermaid], .reveal svg.mermaid-js { width: 100% !important; max-width: 1150px !important; height: auto; max-height: 470px; }
+.reveal svg[id^=mermaid] foreignObject div, .reveal svg[id^=mermaid] foreignObject span, .reveal svg[id^=mermaid] foreignObject p { font-family: ${MERMAID_FONT} !important; font-size: 18px !important; line-height: 1.4 !important; margin: 0 !important; }
+.reveal .slides section img.hub-diagram, .reveal .slides section img.hub-chart { max-height: 600px; border: 0; box-shadow: none; background: none; }
+.reveal .cell-output-display figure, .reveal div.quarto-figure { margin: 0 auto; }
 .reveal .cell-output-display figure { margin: 0 auto; }
 .reveal pre.mermaid { background: none; border: 0; box-shadow: none; text-align: center; }
 .reveal .takeaway { margin-top: 18px; padding: 14px 20px; background: #eff6ff; border-left: 6px solid ${DECK_PALETTE[0]}; border-radius: 6px; font-size: 24px; font-weight: 600; }
@@ -145,13 +151,19 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 /** Rough text width (px) at `size`: CJK ≈ 1em, Latin ≈ 0.55em. */
 const textWidth = (s: string, size: number) => [...s].reduce((w, ch) => w + (/[　-鿿＀-￯]/.test(ch) ? size : size * 0.56), 0);
 
-/** Standalone SVG (960×540 viewBox, fonts sized for a 1280×800 slide). */
-export function renderDeckChartSvg(spec: DeckChart): string {
+/** Smallest font size used by chart SVGs (px at their natural size). */
+export const CHART_MIN_FONT = 16;
+
+/**
+ * Standalone SVG, laid out for `size` (deck px; default 960×540) so it is shown at ≈ 1:1 on its slide (fonts are
+ * absolute: 16–26 px). The image is embedded at its natural size with `data-font` for the layout metrics.
+ */
+export function renderDeckChartSvg(spec: DeckChart, size: { w: number; h: number } = { w: 960, h: 540 }): string {
   // Value labels use the data's own precision (4 → "4.00" next to 4.11), at most 3 decimals.
   const decimals = Math.min(3, Math.max(0, ...[...spec.series.flatMap((s) => s.data.flatMap((d) => (Array.isArray(d) ? [d[1]] : isNum(d) ? [d] : []))), ...(spec.values ?? []).flat().filter(isNum)].map((v) => (String(v).split(".")[1] ?? "").length)));
   const fmt = (v: number, unit = "") => `${Math.abs(v) >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 }) : v.toFixed(decimals)}${unit}`;
-  const W = 960;
-  const H = 540;
+  const W = Math.round(Math.max(520, Math.min(1180, size.w)));
+  const H = Math.round(Math.max(330, Math.min(580, size.h, W * 0.66)));
   const parts: string[] = [];
   const unit = spec.unit ?? "";
   const legendItems = spec.type !== "heatmap" && (spec.series.length > 1 || spec.series[0]?.name) ? spec.series.map((s, i) => ({ name: s.name ?? `#${i + 1}`, color: DECK_PALETTE[i % DECK_PALETTE.length]! })) : [];
@@ -349,7 +361,7 @@ export function chartBlocks(body: string): ChartBlock[] {
   });
 }
 
-export const chartFileName = (source: string) => `charts/chart-${createHash("sha256").update(source).digest("hex").slice(0, 12)}.svg`;
+export const chartFileName = (source: string, size?: { w: number; h: number }) => `charts/chart-${createHash("sha256").update(size ? `${source}\n${Math.round(size.w)}x${Math.round(size.h)}` : source).digest("hex").slice(0, 12)}.svg`;
 
 export type FigureRef = { start: number; end: number; caption: string; page: number; top: number; bottom: number; attrs: string };
 const FIG_RE = /!\[([^\]\n]*)\]\(paper-fig:(\d{1,3})(?:@([01](?:\.\d+)?)-([01](?:\.\d+)?))?\)(\{[^}\n]*\})?/g;
@@ -388,6 +400,11 @@ export function normalizeDiagrams(body: string): string {
   let out = body.replace(MERMAID_FENCE, (_all, code: string) => `\`\`\`{mermaid}\n${fixMermaid(code.replace(/^%%\|.*\n/gm, "")).code.trimEnd()}\n\`\`\``);
   out = out.replace(/^```[ \t]*(?:text|txt|plain)?[ \t]*\n((?:flowchart|graph)\s+(?:TD|TB|LR|RL|BT)[\s\S]*?)^```\s*$/gm, (_a, code: string) => `\`\`\`{mermaid}\n${fixMermaid(code).code.trimEnd()}\n\`\`\``);
   return out;
+}
+
+/** Mermaid cells get the label font / wrapping config (render-time only; the source keeps the writer's code). */
+export function withMermaidInit(body: string): string {
+  return body.replace(/^(```\{mermaid\}[^\n]*\n)(?!%%\{init)/gm, `$1${MERMAID_INIT}\n`);
 }
 
 /** Mermaid cells of a body. */

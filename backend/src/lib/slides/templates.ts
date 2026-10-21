@@ -334,6 +334,6 @@ export const LABHUB_RULES = {
 - 固定 13 頁，英文標題逐字：One-sentence claim, Background, Pain point, Architecture, Training, Inference, Trace one example, Why it works, Setup and fairness, Main results, Ablation and key figure, My assessment, Takeaways for my work.
 - 投影片本體一律英文；講稿（::: {.notes}）用繁體中文，格式：**【講述】**（約 N 分鐘）段落，空一行，**【提示】**，空一行，條列（含「出處：表/§」）。
 - 第 7（Trace one example）、12（My assessment）、13（Takeaways for my work）頁 AI 不寫：內容與講稿只留〔　〕。
-- Architecture/Training/Inference 用同一張 Mermaid flowchart LR，節點命名一致；新模組 style X stroke-width:4px；凍結模組 fill:#ddd；節點標籤不可含括號、引號、斜線。
+- Architecture 頁優先放論文自己的架構圖；Architecture/Training/Inference 的流程圖節點命名一致；新模組要強調、凍結模組要標示（Mermaid：新模組 style X stroke-width:4px、凍結模組 fill:#ddd、節點標籤不可含括號、引號、斜線）。
 - Main results 主表 3–5 列，關鍵數字加粗，標出處表號。只用提供的論文資訊；查不到的數字留〔　〕，不可編造。`,
 } as const;

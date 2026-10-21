@@ -90,6 +90,8 @@
       { collapsed: false, pen: { c: 0, s: 1 }, marker: { c: 0, s: 1 } },
       readJSON(window.localStorage, "annotate:prefs", {}) || {}
     );
+    // The toolbar always starts collapsed (player and presenter views); T or the button opens it.
+    prefs.collapsed = true;
     const loaded = readJSON(window.sessionStorage, storeKey, {});
     const store = loaded && typeof loaded === "object" ? loaded : {};
     const past = {};

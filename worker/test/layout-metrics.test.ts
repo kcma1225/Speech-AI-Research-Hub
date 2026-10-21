@@ -36,4 +36,29 @@ describe.skipIf(!chrome)("layout metrics (browser)", () => {
       await rm(dir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("flags SVG labels outside their node box, small diagram text and a large empty body band", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lm-"));
+    const browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: dir, args: ["--no-sandbox"] });
+    try {
+      const view = await browser.newPage();
+      await view.setViewport({ width: 1280, height: 800 });
+      const svgImg = encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="200" viewBox="0 0 1000 200"><rect width="1000" height="200" fill="#eee"/></svg>');
+      await view.setContent(page(`<h2 style="font-size:40px;margin:0">Title</h2>
+        <svg id="mermaid-1" width="600" height="120" viewBox="0 0 600 120"><g class="node"><rect x="10" y="10" width="80" height="40"/><text x="14" y="36" font-size="18">A label that is far too long</text></g>
+        <g class="node"><rect x="200" y="10" width="200" height="40"/><text x="210" y="36" font-size="18">fits</text></g></svg>
+        <img data-font="18" style="width:500px" src="data:image/svg+xml,${svgImg}">`));
+      await view.waitForFunction(() => (document.querySelector("img") as HTMLImageElement).complete);
+      const m = (await view.evaluate(SLIDE_METRICS)) as SlideMetrics;
+      expect(m.textOverflow).toBe(1);
+      expect(m.overflowLabels?.[0]).toContain("far too long");
+      // 18 px drawn at half its natural width → 9 px on the slide.
+      expect(m.minVisualFont).toBe(9);
+      expect(m.emptyBand).toBeGreaterThan(0.4);
+      expect(m.contentBottom).toBeLessThan(0.6);
+    } finally {
+      await browser.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

@@ -20,10 +20,16 @@ export type PageRenderRequest = {
   width: number;
   /** Vertical crop as fractions of the page height (0 = top). */
   crop?: { top: number; bottom: number; /** Horizontal crop (fractions of the width; default 0–1). */ left?: number; right?: number };
+  /** PNG instead of JPEG (crisp line art for figure crops). */
+  png?: boolean;
+  /** Raise the width limit (figure crops render the page large so the crop itself is sharp). */
+  maxWidth?: number;
 };
 export type PageRenderer = (pdf: Buffer, req: PageRenderRequest[]) => Promise<Buffer[]>;
 
 export const MAX_PAGE_WIDTH = 1400;
+/** Upper bound for `maxWidth` (figure crops). */
+export const MAX_CROP_PAGE_WIDTH = 3600;
 
 /** Page sizes in PDF points (index 0 = page 1). */
 export async function pdfPageSizes(pdf: Buffer, pages: number[]): Promise<{ numPages: number; sizes: Map<number, { w: number; h: number }> }> {
@@ -58,9 +64,9 @@ export const popplerRenderer: PageRenderer = async (pdf, reqs) => {
     for (const [i, r] of reqs.entries()) {
       const size = sizes.get(r.page);
       if (!size) throw new HttpError(400, `沒有第 ${r.page} 頁。`);
-      const width = Math.max(200, Math.min(MAX_PAGE_WIDTH, Math.round(r.width)));
+      const width = Math.max(200, Math.min(Math.min(MAX_CROP_PAGE_WIDTH, r.maxWidth ?? MAX_PAGE_WIDTH), Math.round(r.width)));
       const height = Math.round((width * size.h) / size.w);
-      const args = ["-f", String(r.page), "-l", String(r.page), "-singlefile", "-jpeg", "-jpegopt", "quality=82", "-scale-to-x", String(width), "-scale-to-y", String(height)];
+      const args = ["-f", String(r.page), "-l", String(r.page), "-singlefile", ...(r.png ? ["-png"] : ["-jpeg", "-jpegopt", "quality=82"]), "-scale-to-x", String(width), "-scale-to-y", String(height)];
       if (r.crop) {
         const y = Math.max(0, Math.floor(r.crop.top * height));
         const h = Math.max(20, Math.min(height - y, Math.ceil((r.crop.bottom - r.crop.top) * height)));
@@ -75,7 +81,7 @@ export const popplerRenderer: PageRenderer = async (pdf, reqs) => {
         if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new HttpError(503, "伺服器沒有安裝頁面轉圖工具（poppler），暫時無法檢視頁面。");
         throw new HttpError(422, `第 ${r.page} 頁轉成圖片失敗。`);
       }
-      out.push(await readFile(`${base}.jpg`));
+      out.push(await readFile(`${base}.${r.png ? "png" : "jpg"}`));
     }
     return out;
   } finally {

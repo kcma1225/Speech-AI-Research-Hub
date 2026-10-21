@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { chartBlocks, figureRefs, fixMermaid, lintMermaid, normalizeDiagrams, parseDeckChart, renderDeckChartSvg } from "../src/lib/slides/deck-visuals.js";
+import { chartBlocks, chartFileName, figureRefs, fixMermaid, lintMermaid, normalizeDiagrams, parseDeckChart, renderDeckChartSvg } from "../src/lib/slides/deck-visuals.js";
 import { qmdHeader } from "../src/lib/slides/templates.js";
 import { runChecks, visibleWords } from "../src/workflows/checks.js";
-import { combineScores, metricIssues, replaceSlides, scoreTable, visionScores, type ShotPage } from "../src/workflows/playbooks/slides-visual.js";
+import { combineScores, fixFor, metricIssues, replaceSlides, scoreTable, sourceIssues, visionScores, type ShotPage } from "../src/workflows/playbooks/slides-visual.js";
 import type { WorkflowEnv } from "../src/workflows/env.js";
 
 const metrics = (over: Partial<NonNullable<ShotPage["metrics"]>> = {}) => ({ words: 20, bullets: 3, minFont: 20, maxFont: 40, overflowY: 0, overflowX: 0, visuals: 1, tables: 0, diagrams: 1, diagramErrors: 0, rawDiagramCode: 0, codeBlocks: 0, ...over });
@@ -142,5 +142,48 @@ describe("visual QA defects", () => {
     const v = [{ page: 2, title: "Fig", scores: { readability: 4 }, score: 4, pass: true, issues: ["論文截圖底部被硬切，正文斷在半行"], fix: "重新裁切", source: "vision" as const }];
     expect(combineScores(pages, v, () => false)[0]!.pass).toBe(false);
     expect(renderDeckChartSvg(parseDeckChart(JSON.stringify({ labels: ["a", "b"], series: [{ data: [4, 4.11] }] }))!)).toContain(">4.00<");
+  });
+});
+
+describe("stricter visual QA", () => {
+  it("fails pages on labels outside boxes, small diagram text and big empty areas, with concrete fixes", () => {
+    const issues = metricIssues({ index: 2, metrics: metrics({ textOverflow: 2, overflowLabels: ["Self-supervised encoder"], minVisualFont: 11, emptyBand: 0.55 }) });
+    expect(issues.join()).toContain("超出方框");
+    expect(issues.join()).toContain("字太小");
+    expect(issues.join()).toContain("大片空白");
+    const fix = fixFor(issues);
+    expect(fix).toContain("```diagram");
+    expect(fix).toContain("整頁寬");
+    // Student pages may be empty.
+    expect(metricIssues({ index: 2, metrics: metrics({ emptyBand: 0.9 }) }, { allowed: true })).toEqual([]);
+  });
+
+  it("flags a chart and a table showing the same numbers on one slide", () => {
+    const body = "## Results\n\n```chart\n{\"type\":\"bar\",\"labels\":[\"A\",\"B\"],\"series\":[{\"data\":[24.1,7.6]}]}\n```\n\n| Model | WER |\n|---|---|\n| A | 24.1 |\n| B | 7.6 |\n\n## Other\n\n| x | 24.1 |\n";
+    const m = sourceIssues(body);
+    expect(m.get("Results")?.[0]).toContain("重複呈現");
+    expect(m.has("Other")).toBe(false);
+    const s = combineScores([{ index: 2, title: "Results", metrics: metrics() }], [], () => false, m);
+    expect(s[0]!.pass).toBe(false);
+    expect(s[0]!.fix).toContain("不要同時用圖表和表格");
+  });
+
+  it("vision pass needs a mean ≥ 4 and no high-severity issue", async () => {
+    const answer = (scores: Record<string, number>, issues: unknown[]) => ({ callJson: async () => ({ value: { pages: [{ page: 2, scores, issues }] }, text: "" }) }) as unknown as WorkflowEnv;
+    const img = [{ page: 2, mediaType: "image/webp" as const, data: "AAAA" }];
+    const pages: ShotPage[] = [{ index: 2, title: "P", metrics: metrics() }];
+    const mediocre = { readability: 4, crowding: 4, layout: 3, visual: 4, diagrams: 4, overflow: 4, consistency: 4, professional: 3 };
+    expect((await visionScores(answer(mediocre, []), img, pages, { allowed: () => false }))[0]!.pass).toBe(false);
+    const good = { readability: 5, crowding: 4, layout: 4, visual: 4, diagrams: 4, overflow: 5, consistency: 4, professional: 4 };
+    expect((await visionScores(answer(good, []), img, pages, { allowed: () => false }))[0]!.pass).toBe(true);
+    const high = await visionScores(answer(good, [{ text: "流程圖文字超出方框", severity: "high" }]), img, pages, { allowed: () => false });
+    expect(high[0]!.pass).toBe(false);
+    expect(combineScores(pages, high, () => false)[0]!.pass).toBe(false);
+  });
+
+  it("charts are laid out for their slide box and carry their minimum font", () => {
+    const spec = parseDeckChart(JSON.stringify({ type: "bar", labels: ["A", "B"], series: [{ data: [1, 2] }] }))!;
+    expect(renderDeckChartSvg(spec, { w: 600, h: 420 })).toContain('viewBox="0 0 600 396"');
+    expect(chartFileName("x", { w: 600, h: 420 })).not.toBe(chartFileName("x", { w: 1100, h: 420 }));
   });
 });

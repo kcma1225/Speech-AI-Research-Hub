@@ -16,7 +16,7 @@ import { createTree, loadTree, saveText } from "../../lib/slides/sources.js";
 import { LABHUB_RULES, progressTitle, taipeiToday } from "../../lib/slides/templates.js";
 import { previewImages } from "../../lib/vision/slides.js";
 import { normalizeDiagrams } from "../../lib/slides/deck-visuals.js";
-import { bodyIssues, combineScores, materializeVisuals, replaceSlides, scoreTable, visionScores, visualShare, VISUAL_RULES, type PageScore, type ShotPage } from "./slides-visual.js";
+import { bodyIssues, combineScores, fixFor, materializeVisuals, replaceSlides, scoreTable, sourceIssues, visionScores, visualShare, VISUAL_RULES, type PageScore, type ShotPage } from "./slides-visual.js";
 import { parseSlides, titleMatches } from "../checks.js";
 import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
@@ -110,8 +110,8 @@ function laterSteps(outline: SlideOutline[], vision: boolean): StepSpec[] {
       role: "designer",
       title: vision ? "逐頁截圖視覺檢查（看圖評分並修正）" : "逐頁版面檢查（量測，模型不能看圖）",
       instructions: vision
-        ? "編譯並擷取每一頁截圖，交給能看圖的審查者逐頁評分（易讀、擁擠、版面、視覺、圖是否正確畫出、超出、一致、專業感）；未通過的頁面交回撰寫者依指示修正後重新編譯，最多 3 輪。"
-        : "目前的模型不能看圖：改用版面量測（超出、字級、字數、條列、圖是否編譯成功）逐頁檢查，未通過的頁面交回撰寫者修正後重新編譯，最多 3 輪。",
+        ? "編譯並擷取每一頁截圖，交給能看圖的審查者逐頁評分（易讀、擁擠、版面、視覺、圖是否正確畫出、超出、一致、專業感；平均 ≥ 4 分且沒有嚴重問題才通過），並用版面量測檢查文字超出方框或投影片、字小於 16px、大片空白、圖表與表格重複；未通過的頁面交回撰寫者依指示修正後重新編譯，最多 3 輪，仍未通過的頁面會在報告中列出。"
+        : "目前的模型不能看圖：改用版面量測（超出方框或投影片、字級 ≥ 16px、大片空白、字數、條列、圖是否編譯成功、圖表與表格重複）逐頁檢查，未通過的頁面交回撰寫者修正後重新編譯，最多 3 輪，仍未通過的頁面會在報告中列出。",
       depends_on: ["notes"],
       expected: "每一頁都通過視覺檢查",
       verify: { checks: [{ id: "render_ok" }, { id: "visual_qa" }], judge: false },
@@ -130,8 +130,8 @@ function criteriaFor(n: number, mode: DeckMode, owned: string[]): Omit<Criterion
     { id: "clean", kind: "check", text: `沒有佔位文字（〔　〕、待補、TODO）${owned.length ? "，學生自填頁除外" : ""}`, check: { id: "no_placeholder", params: { allow_titles: owned } } },
     { id: "complete", kind: "check", text: "內容完整，沒有被截斷的頁面或未關閉的區塊", check: { id: "not_truncated" } },
     { id: "visuals", kind: "check", text: "以視覺為主：至少六成內容頁有流程圖、圖表、論文圖或表格，圖都正確編譯（沒有原始碼外露）", check: { id: "visual_ratio", params: { min_ratio: 0.6, allow_titles: owned } } },
-    { id: "diagrams", kind: "check", text: "Mermaid 與圖表語法正確", check: { id: "diagram_syntax" } },
-    { id: "visual_qa", kind: "check", text: "每一頁都通過截圖視覺檢查（字級、擁擠、版面、超出、圖表正確）", check: { id: "visual_qa" } },
+    { id: "diagrams", kind: "check", text: "流程圖（diagram）與圖表語法正確，圖放得進投影片", check: { id: "diagram_syntax" } },
+    { id: "visual_qa", kind: "check", text: "每一頁都通過截圖視覺檢查（字 ≥ 16px、不擁擠、沒有大片空白、文字不超出方框或投影片、圖表正確不重複）", check: { id: "visual_qa" } },
     { id: "grounded", kind: "judge", text: mode === "paper_report" ? "內容與數字都來自論文本身，重要結果標註出處（表／§），沒有捏造" : "內容只來自研究資料（待辦、筆記、會議回饋），沒有捏造的數字或結論" },
     { id: "coverage", kind: "judge", text: `每頁都涵蓋大綱列出的重點，前後連貫，適合在組會報告${owned.length ? `（${owned.map((o) => `「${o}」`).join("、")}是學生自填頁：內容來自報告者自己的回答，報告者選擇跳過時保留提示，不算缺漏）` : ""}` },
   ];
@@ -164,7 +164,7 @@ async function paperBrief(env: WorkflowEnv, paper: { id: string; title: string; 
     `要報告的論文：〈${paper.title}〉（paper_id ${paper.id}）。`,
     "請先呼叫 read_paper（不帶 section）取得目錄與摘要，再讀方法、實驗設定、主要結果、消融、結論等章節（長章節用 offset 分段）；目前的模型能看圖時，用 view_paper_pages 看關鍵公式、架構圖或結果表所在的頁面。",
     "讀完後輸出研究摘要（Markdown，1500–3000 字）：## 問題與動機、## 方法（核心想法、關鍵公式逐一說明符號）、## 實驗設定（資料集、指標、baseline）、## 主要結果（數字照原文，標表號）、## 消融與分析、## 限制、## 圖表清單、## 數字表。每個重點後面標註出處，例如（§3.2，p. 4）或（表 2）。",
-    "「## 圖表清單」逐一列出論文中重要的圖與表（架構圖、方法圖、主要結果圖表）：`Fig. N — p. 頁碼 — 位置 top-bottom（頁面高度比例，例如 0.08-0.50）— 內容一句`；請用 view_paper_pages 看過那一頁再填位置。「## 數字表」把主要結果與消融的數字整理成 Markdown 表格（照原文數字，標表號），之後會用來畫圖表。",
+    "「## 圖表清單」逐一列出論文中重要的圖與表（架構圖、方法圖、主要結果圖表）：`Fig. N — p. 頁碼 — type（architecture／method／result／table／example）— 位置 top-bottom（頁面高度比例，例如 0.08-0.50）— 內容一句`；論文有整體架構圖或方法示意圖時一定要列出（type architecture／method）。請用 view_paper_pages 看過那一頁再填位置。「## 數字表」把主要結果與消融的數字整理成 Markdown 表格（照原文數字，標表號），之後會用來畫圖表。",
     env.guidanceText(),
     env.run.request ? `使用者的要求：${env.run.request}` : "",
     fix ? `上一版的問題：\n${fix.issues.map((i) => `- ${i}`).join("\n")}\n請補讀需要的章節後輸出完整的新版本。\n${dataBlock("previous_version", (fix.previous.text ?? "").slice(0, 12_000))}` : "",
@@ -450,21 +450,22 @@ async function visualQa(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
     if (!shots?.pages.length) {
       // No screenshots (capture failed): fall back to the source heuristics only.
       const issues = bodyIssues(body, allowed);
-      scores = parseSlides(body).map((s, i) => { const hit = issues.find((x) => x.title === s.title); return { page: i + 2, title: s.title, scores: {}, score: hit ? 2 : 4, pass: !hit, issues: hit?.issues ?? [], fix: hit ? "精簡文字、改用視覺元素。" : "", source: "metrics" as const }; });
+      scores = parseSlides(body).map((s, i) => { const hit = issues.find((x) => x.title === s.title); return { page: i + 2, title: s.title, scores: {}, score: hit ? 2 : 4, pass: !hit, issues: hit?.issues ?? [], fix: hit ? fixFor(hit.issues) || "精簡文字、改用視覺元素。" : "", source: "metrics" as const }; });
     } else {
       await env.activity(step.key, "verifier", vision ? `審查者看 ${shots.images.length} 張截圖逐頁評分` : `依版面量測檢查 ${shots.pages.length} 頁（模型不能看圖）`);
       const v = vision && shots.images.length ? await visionScores(env, shots.images, shots.pages, { allowed, stepId: step.id }).catch(() => []) : [];
-      scores = combineScores(shots.pages, v, allowed);
+      scores = combineScores(shots.pages, v, allowed, sourceIssues(body));
     }
     // Visual share: text-only content pages beyond the allowed share fail too.
     const share = visualShare(body, allowed);
     if (share.total && share.with / share.total < 0.6) {
-      const textOnly = parseSlides(body).filter((s) => !allowed(s.title) && !/^```\{?\.?(mermaid|chart)|!\[|^\s*\|/m.test(s.body));
+      const textOnly = parseSlides(body).filter((s) => !allowed(s.title) && !/^```\{?\.?(mermaid|chart|diagram)|!\[|^\s*\|/m.test(s.body));
       for (const s of textOnly.slice(0, Math.ceil(share.total * 0.6) - share.with)) {
         const sc = scores.find((x) => titleMatches(s.title, x.title));
         if (sc) {
           sc.pass = false;
           sc.issues = [...sc.issues, "這頁只有文字：請改用流程圖、圖表、論文圖或表格呈現（版型 A/D/E）"];
+          sc.fix = [fixFor(["只有文字"]), sc.fix].filter(Boolean).join(" ");
         }
       }
     }
@@ -483,7 +484,7 @@ async function visualQa(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
     const user = [
       LABHUB_RULES[modeOf(env)],
       VISUAL_RULES,
-      "下面這些投影片沒有通過逐頁截圖檢查。依每頁的問題與修改指示重寫這幾頁（標題逐字不變、講稿保留或改善、數字只能用研究資料裡的）。論文圖被裁切或包含正文時，調整 paper-fig 的 @上緣-下緣（例如下緣改小一點），或改用 ```chart／表格呈現同樣的數字。只輸出這幾頁（每頁以「## 標題」開頭，含 ::: {.notes}），不要其他文字。",
+      "下面這些投影片沒有通過逐頁截圖檢查。依每頁的問題與修改指示重寫這幾頁（標題逐字不變、講稿保留或改善、數字只能用研究資料裡的）。流程圖／架構圖一律用 ```diagram（不要 Mermaid）；論文圖被裁切或包含正文時，調整 paper-fig 的 @上緣-下緣，或改用 ```chart／表格呈現同樣的數字；同一組數字只留圖表或表格其中一種；頁面太空就把視覺元素放大到整頁寬。只輸出這幾頁（每頁以「## 標題」開頭，含 ::: {.notes}），不要其他文字。",
       ...targets.map(({ f, s }) => `### 第 ${f.page} 頁「${s!.title}」\n問題：${f.issues.join("；") || "（未通過）"}\n修改指示：${f.fix || "精簡文字、改用視覺元素"}\n${dataBlock("slide", `## ${s!.title}\n${s!.body}\n\n::: {.notes}\n${s!.notes}\n:::`)}`),
       dataBlock("research", (env.state<string>("brief") ?? "").slice(0, 14_000)),
     ].join("\n\n");

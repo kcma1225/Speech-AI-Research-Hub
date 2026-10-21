@@ -159,7 +159,7 @@ Defined in `backend/src/lib/storage.ts` `keys`; the worker receives full keys in
 | `slides/<deckId>/<versionId>/output-<suffix>/…` | output of a re-index render (`POST …/reindex`); on success it becomes the version's `output_prefix` and the previous prefix is deleted |
 | `slides/_shared/<hash>/…` | `offline-assets/` (MathJax, KaTeX, fonts) shared by every version rendered with the same assets; `.complete` marker written last. Never deleted per version (`slide_versions.shared_prefix`) |
 | `slides/<deckId>/source/<fileId>` | binary file (image, font, PDF…) of the deck's in-app Quarto tree (`deck_sources.s3_key`; text files live in the DB). Keys in `lib/slides/sources.ts` `sourceKeys` |
-| `slides/<deckId>/preview/<previewId>/source.zip`, `…/output/` | quick preview (`slide_preview`): the packed tree (deleted once rendered) and the HTML-only render (`deck_previews.output_prefix`); only the newest ready preview per deck is kept. A preview queued with `shots: true` also has `…/output/_hub/shots/<n>.webp` (1280 px wide, ≤ 20 slides) + `_hub/shots.json` (`{version:1,width,height,total,truncated,pages:[{index,h,v?,title?,metrics?}]}`; `metrics` = worker `layout-metrics.ts`: `{words, bullets, minFont, maxFont, overflowY, overflowX, visuals, tables, diagrams, diagramErrors, rawDiagramCode, codeBlocks}` in deck px) for the AI layout review |
+| `slides/<deckId>/preview/<previewId>/source.zip`, `…/output/` | quick preview (`slide_preview`): the packed tree (deleted once rendered) and the HTML-only render (`deck_previews.output_prefix`); only the newest ready preview per deck is kept. A preview queued with `shots: true` also has `…/output/_hub/shots/<n>.webp` (1280 px wide, ≤ 20 slides) + `_hub/shots.json` (`{version:1,width,height,total,truncated,pages:[{index,h,v?,title?,metrics?}]}`; `metrics` = worker `layout-metrics.ts`: `{words, bullets, minFont, maxFont, overflowY, overflowX, visuals, tables, diagrams, diagramErrors, rawDiagramCode, codeBlocks, textOverflow?, overflowLabels?, minVisualFont?, emptyBand?, contentBottom?}` in deck px; `overflow*` counts both edges, `textOverflow` = inline-SVG (Mermaid) labels outside their node shape or clipped, `minVisualFont` = smallest rendered font of inline SVG text and of `<img data-font>` diagrams/charts (font × display scale), `emptyBand` = largest empty horizontal band of the body below the title as a fraction of its height) for the AI layout review |
 | `references/<deckId>/<referenceId>` | reference PDF |
 | `latex/<projectId>/blobs/<sha256>` | content-addressed file bytes of a LaTeX project: binary uploads (`latex_files.s3_key`) and every text snapshot taken for a compile or a version (`latex_files.blob_sha256` = last uploaded text hash). Never rewritten; removed with the project |
 | `latex/<projectId>/manifests/<compileId>.json` | runner snapshot manifest (`LatexSnapshotManifest`) of one compile; deleted by the finalizer |
@@ -1563,29 +1563,64 @@ detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step
 | `meeting_prep` | 會議準備 | researcher (open tasks, last feedback, deck changes, recent activity) → writer agenda | new note | `sections_present`, judge |
 | `generic` | 一般任務 | the orchestrator plans freely (≤ 8 steps; roles from the list) | new note | `no_placeholder`, `not_truncated`, judge |
 
-**Slides: visual-first decks** (`playbooks/slides-visual.ts`, `lib/slides/deck-visuals.ts`). The run keeps the slide
-body in *source form*; every render materialises it into the deck tree:
-- Mermaid: ```` ```mermaid ```` / ```` ```{.mermaid} ```` / bare `flowchart` fences become Quarto cells ```` ```{mermaid} ```` (a plain
-  fence renders as raw code — the cause of 「flowchart 變成文字」), risky labels are quoted (`fixMermaid`), `lintMermaid`
-  checks type line / brackets / subgraphs / ≤ 14 nodes. Quarto bundles mermaid.js into the output, so it renders offline.
+**Slides: visual-first decks** (`playbooks/slides-visual.ts`, `lib/slides/deck-visuals.ts`, `lib/slides/diagram/`,
+`lib/slides/deck-layout.ts`, `lib/library/figure-locate.ts`). The run keeps the slide body in *source form*; every render
+materialises it into the deck tree:
+- Diagrams (preferred for every flowchart / architecture / comparison figure): ```` ```diagram ```` JSON spec
+  (`diagram/spec.ts`, help text `DIAGRAM_SPEC_HELP` in the writer rules) with `type: pipeline | architecture |
+  encoder_decoder | comparison | cycle | timeline | tree | graph`; nodes `{id, label, sub?, kind: input|process|model|data|
+  output|highlight|note, icon?, frozen?, trainable?, repeat?, badge?, shape?}`, edges `{from, to, label?, kind: flow|skip|
+  residual|feedback|cross|gradient, style?, both?}`, groups `{label, nodes, style: frozen|highlight}`; pipeline `stages`
+  (a stage may be an array = parallel), architecture `layers` (node | `{row}` | `{repeat, label, layers}`; nodes outside the
+  stack are side nodes wired by edges), encoder_decoder `encoder/decoder.layers`, comparison `panels[{title, sub?,
+  highlight?, stages}]` (`direction: LR` = stacked rows), cycle `nodes + center`, timeline `events[{date, label}]`, tree
+  `root.children`. Lenient parsing (aliases, string nodes, label refs); zh-TW problems (`lintDiagrams`, used by the
+  `diagram_syntax` check). Our own layouts per type (`diagram/layouts.ts`; free graphs via `@dagrejs/dagre`, MIT): text is
+  measured with the real glyph metrics of vendored fonts (`backend/assets/fonts/`: Source Sans 3, Noto Sans TC subset to
+  Big5-1 + GB2312-1 + CJK punctuation, KaTeX Main/Math/AMS for `$…$`; read with `opentype.js`, MIT) and drawn as glyph
+  outlines (`<defs>` + `<use>`), so every label is wrapped into the box it was measured for and renders identically in any
+  viewer; `$…$` is laid out by a small TeX subset (`diagram/math.ts`: scripts, `\frac`, `\sqrt`, accents, `\mathbf`, Greek,
+  operators). Box sizes come from the space the block gets on its slide (`visualFit`: column width, minus takeaways /
+  bullets / other blocks); the renderer tries the normal, compact and large type scales (and a two-row snake for long
+  pipelines, the other direction for graphs) and keeps the candidate that fills the box with every font ≥ 16 px; a
+  diagram that cannot fit at 16 px is reported (`這張圖太大…`). Palette from hub-deck.css (blue models, amber
+  `highlight` for the paper's contribution with a glow, snowflake/flame marks, × N stacks, orthogonal rounded connectors,
+  edge-label pills, auto legend). Stored as `diagrams/diagram-<sha12 of source + box>.svg`, embedded as
+  `![caption](…){.hub-diagram data-font=<min px>}` at natural size (≈ 1:1).
+- Mermaid is a fallback: flowcharts a writer still produces are converted to ```` ```diagram ```` (`diagram/mermaid.ts`:
+  shapes, chained / labelled / dotted edges, `&`, subgraphs, `style` stroke-width → highlight, gray fill → frozen); other
+  Mermaid types stay Quarto cells ```` ```{mermaid} ```` (plain fences are normalised, `fixMermaid` quotes risky labels,
+  `lintMermaid`) and get an `%%{init}%%` with a system font / 18 px / wrapping width, plus CSS that pins the label font,
+  so the measured and drawn label sizes match.
 - Charts: ```` ```chart ```` JSON `{type: bar|hbar|line|scatter|heatmap, title?, labels, series[{name?, data}], rows?/values?
-  (heatmap), x_label?, y_label?, unit?, best?: max|min, source?, caption?}` → SVG (960×540, deck palette, best value per
-  series outlined, `Source:` line) stored as binary `charts/chart-<sha12>.svg`, referenced as an image. Numbers stay in the
-  source body, so `numbers_from_source` can trace them.
-- Paper figures: `![caption](paper-fig:<page>@<top>-<bottom>)` (fractions of the page height) → `pdftoppm` crop of the
-  library PDF (`lib/library/page-images.ts`, now also `left/right`), refined by one vision call (`locate_figure`) when the
-  `slides` role has vision → `figures/p<page>-<t>-<b>-<l>-<r>.jpg` in a `.figure-frame`.
-- Theme: generated decks add `css: hub-deck.css` (written once into the tree, editable): title 40 px, body 26 px,
-  tables 20 px, captions 16 px at 1280×800; `.columns`, `.takeaway`, `.big-number(-label)`, `.figure-frame`, blockquote claim.
+  (heatmap), x_label?, y_label?, unit?, best?: max|min, source?, caption?}` → SVG laid out for its slide box (fonts 16–26 px
+  absolute, best value per series outlined, `Source:` line) stored as binary `charts/chart-<sha12 of source + box>.svg`,
+  embedded as `{.hub-chart data-font=16}`. Numbers stay in the source body, so `numbers_from_source` can trace them.
+- Paper figures: `![Fig. N: caption](paper-fig:<page>@<top>-<bottom>)` → located on the page from its own layout first
+  (`locateFigureByLayout`: caption "Fig./Figure/Table N" incl. roman numerals → its column or full width → the band up to
+  the nearest body paragraph / heading / other caption block (above a figure, below a table caption) → tightened to the
+  drawings, images and labels in it; caption and body text never included); otherwise one vision call (`locate_figure`)
+  when the `slides` role has vision; otherwise the writer's fractions. Cropped with `pdftoppm` as PNG from a page rendered
+  so the crop is ≈ 1800 px wide (`page-images.ts` `png`, `maxWidth` ≤ 3600) → `figures/p<page>-<t>-<b>-<l>-<r>.png` in a
+  `.figure-frame`. The researcher's figure list carries a type (architecture / method / result / table / example); the
+  Architecture page prefers the paper's own architecture figure, our diagrams draw the simplified explanation.
+- Theme: generated decks add `css: hub-deck.css` (written into the tree, rewritten while it is still the generated
+  theme): title 40 px, body 26 px, tables 22 px, captions 16 px at 1280×800; `.columns`, `.takeaway`, `.big-number(-label)`,
+  `.figure-frame`, blockquote claim, `img.hub-diagram/.hub-chart` (max-height 600 px).
 - `visual_qa` (after the notes pass, before final, ≤ 3 rounds, `max_rounds: 0` so the engine does not re-run it on its
   own): render with `shots: true` → per page the worker's layout metrics + (when vision) the verifier scoring batches of
   6 screenshots on readability / crowding / layout / visual / diagrams / overflow / consistency / professional (1–5;
-  pass = all ≥ 3 and mean ≥ 3.6). A metric issue (raw diagram code, Mermaid error, overflow > 6 px, font < 16 px,
-  > 75 words, > 6 bullets) always fails the page; text-only pages beyond the 60 % visual share fail too. Failing pages
-  go back to a writer with the issues + fix instruction (`replaceSlides`, titles unchanged) and the deck is re-rendered;
-  a broken render keeps the last good body. Student-owned / title pages fail only on rendering problems. Without vision
-  the step title says so and only metrics are used; with no screenshots at all, source heuristics. State `deck.qa`
-  (`{round, scores[], vision, failed[]}`) feeds criterion `visual_qa`; the per-page score table is appended to the report.
+  pass = all ≥ 3, mean ≥ 4 and no `high`-severity issue). A metric issue always fails the page: raw diagram code, Mermaid
+  error, overflow > 6 px on any edge, labels outside their box, HTML font < 16 px, diagram/chart text rendered < 16 px,
+  an empty band > 40 % of the body (content pages), > 75 words, > 6 bullets; so do source issues (`sourceIssues`: a chart
+  and a table sharing ≥ 2 numbers on one slide) and verifier issues naming a defect (`DEFECT_RE`: cut-off figure/text, raw
+  code, unrendered markup, overflow, body text in a crop, duplicated presentation). Text-only pages beyond the 60 % visual
+  share fail too. Every failing page gets issue-specific fix instructions (`fixFor`) plus the verifier's own; it goes back
+  to a writer (`replaceSlides`, titles unchanged) and the deck is re-rendered; a broken render keeps the last good body.
+  Student-owned / title pages fail only on rendering problems. Without vision the step title says so and only metrics are
+  used; with no screenshots at all, source heuristics. State `deck.qa` (`{round, scores[], vision, failed[]}`) feeds
+  criterion `visual_qa`; the per-page score table is appended to the report, so pages still failing after 3 rounds are
+  listed honestly.
 
 **Chat integration.** The assistant prompt (`WORKFLOW_RULES`) says: for multi-step creation, propose and call
 `start_workflow` instead of producing the result in one reply; for a quick one-shot draft only when the user explicitly
@@ -1716,7 +1751,7 @@ HMAC-SHA256(`AUTH_SECRET`, `slide-preview|<deckId>|<previewId>|<expiry>`) (12 h,
 
 Asset rules (ported from v1 `app/app/slides/view/[slug]/[key]/[versionId]/[[...asset]]/route.ts`): empty path →
 entry HTML; reject `slides.pdf`, `pdf.log`, `offline-assets/licenses/*`, `_hub/*`, any `..`/`.`/backslash/NUL; HTML gets the
-in-memory Web Storage shim, the hub bridge (below), the `scrollActivationWidth:0,postMessage:true,postMessageEvents:true`
+in-memory Web Storage shim (it also seeds `annotate:prefs` collapsed, so the annotate toolbar starts collapsed in the player and presenter views — the plugin itself starts collapsed too; `T` or its fold button opens it), the hub bridge (below), the `scrollActivationWidth:0,postMessage:true,postMessageEvents:true`
 Reveal patch and the 44 px touch-target CSS; every
 response carries the sandbox CSP, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer`, `Vary: Origin`; requests with `Origin: null` (CORS-mode loads such as web fonts from the

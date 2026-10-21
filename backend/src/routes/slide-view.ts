@@ -19,9 +19,10 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 // Opaque-origin sandbox throws on Web Storage access, which aborts Reveal init.
-// Replace both stores with in-memory shims before any deck script runs. The annotate toolbar starts collapsed in
-// narrow frames (phone, embedded player), since its prefs can never persist here (T or its fold button opens it).
-const STORAGE_SHIM = "(function(){function m(){var d=Object.create(null);return{get length(){return Object.keys(d).length},key:function(i){return Object.keys(d)[i]??null},getItem:function(k){k=String(k);return k in d?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d=Object.create(null)}}}['localStorage','sessionStorage'].forEach(function(n){try{window[n].length}catch(e){Object.defineProperty(window,n,{value:m(),configurable:true});if(n==='localStorage'&&window.innerWidth<900)window.localStorage.setItem('annotate:prefs',JSON.stringify({collapsed:true}))}})})();";
+// Replace both stores with in-memory shims before any deck script runs. The annotate toolbar starts collapsed
+// (player and presenter views; also for decks rendered before the plugin itself started collapsed). T or its fold
+// button opens it.
+const STORAGE_SHIM = "(function(){function m(){var d=Object.create(null);return{get length(){return Object.keys(d).length},key:function(i){return Object.keys(d)[i]??null},getItem:function(k){k=String(k);return k in d?d[k]:null},setItem:function(k,v){d[String(k)]=String(v)},removeItem:function(k){delete d[String(k)]},clear:function(){d=Object.create(null)}}}['localStorage','sessionStorage'].forEach(function(n){try{window[n].length}catch(e){Object.defineProperty(window,n,{value:m(),configurable:true});if(n==='localStorage')window.localStorage.setItem('annotate:prefs',JSON.stringify({collapsed:true}))}})})();";
 const TOUCH_CSS = "<style>html:not(.print-pdf) .reveal .slide-number{bottom:auto;height:auto;padding:7px 9px;min-width:44px;min-height:44px;box-sizing:border-box;display:grid!important;place-items:center}html:not(.print-pdf) .reveal .slide-menu-button{min-width:44px;min-height:44px;display:grid;place-items:center}html:not(.print-pdf) .reveal .slide-menu-button a{display:grid;place-items:center;min-width:44px;min-height:44px}html:not(.print-pdf) .slide-menu-wrapper .slide-tool-item a{display:flex;align-items:center;min-height:44px}html.print-pdf .annotate-dock,html.print-pdf .slide-menu-button{display:none!important}</style>";
 
 /**
