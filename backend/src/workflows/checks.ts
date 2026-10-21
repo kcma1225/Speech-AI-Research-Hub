@@ -45,7 +45,9 @@ function unbalanced(text: string): string[] {
   if (fences % 2) out.push("程式碼區塊（```）沒有關閉");
   let depth = 0;
   for (const l of lines) {
-    if (/^:{3,}\s*\S/.test(l)) depth++;
+    // A closing fence is colons only (`:::`, `::::` for nested columns); an opening one has attributes or a class after
+    // the colons. `[^:\s]` keeps `::::` from matching as "`:::` + text" by backtracking.
+    if (/^:{3,}\s*[^:\s]/.test(l)) depth++;
     else if (/^:{3,}\s*$/.test(l)) depth = Math.max(0, depth - 1);
   }
   if (depth > 0) out.push("::: 區塊沒有關閉");

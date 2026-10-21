@@ -42,6 +42,9 @@ describe("workflow checks", () => {
     expect(CHECKS.not_truncated!("## A\n\n::: {.notes}\n講稿", { params: {}, data: null }).ok).toBe(false);
     expect(CHECKS.not_truncated!("\\begin{itemize}\n\\item x", { params: {}, data: null }).ok).toBe(false);
     expect(CHECKS.not_truncated!(slide("A"), { params: {}, data: null }).ok).toBe(true);
+    // Nested columns close with `::::` — must not count as an opening fence (regression: every two-column slide failed).
+    const columns = "## A\n\n:::: {.columns}\n::: {.column width=\"50%\"}\nx\n:::\n::: {.column}\ny\n:::\n::::\n\n::: {.notes}\n講稿\n:::";
+    expect(CHECKS.not_truncated!(columns, { params: {}, data: null }).ok).toBe(true);
   });
 
   it("checks citations against library keys (pandoc and LaTeX)", () => {
