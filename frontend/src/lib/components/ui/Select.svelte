@@ -17,7 +17,7 @@
 <Select.Root type="single" bind:value={value as string} onValueChange={v => (markDirty(), onValueChange?.(v as T))} items={options}>
   <Select.Trigger
     aria-label={label}
-    class="inline-flex h-10 min-w-40 cursor-pointer items-center justify-between gap-3 rounded-xl border border-line-2 bg-surface px-3.5 text-sm text-ink transition-colors hover:border-ink-3 data-[state=open]:border-ink {cls}"
+    class="inline-flex h-10 min-w-40 cursor-pointer items-center justify-between gap-3 rounded-xl border border-field-line bg-raised px-3.5 text-sm text-ink transition-colors hover:border-ink-3 data-[state=open]:border-ink {cls}"
   >
     <span class="truncate">{selected?.label ?? ""}</span>
     <ChevronDown class="size-4 text-ink-3" />
@@ -25,7 +25,7 @@
   <Select.Portal>
     <Select.Content
       sideOffset={6}
-      class="z-50 flex max-h-[min(18rem,var(--bits-select-content-available-height))] min-w-[var(--bits-select-anchor-width)] flex-col overflow-hidden rounded-2xl border border-line bg-surface p-1.5 shadow-pop outline-none data-[state=open]:animate-[pop-in_120ms_ease-out]"
+      class="z-50 flex max-h-[min(18rem,var(--bits-select-content-available-height))] min-w-[var(--bits-select-anchor-width)] flex-col overflow-hidden rounded-2xl border border-line bg-popover p-1.5 shadow-pop outline-none data-[state=open]:animate-[pop-in_120ms_ease-out]"
     >
       <!-- Shown only while there is more to scroll, so a list opened at the selected item hints at what's above. -->
       <Select.ScrollUpButton class="flex h-6 shrink-0 items-center justify-center text-ink-3"><ChevronUp class="size-4" /></Select.ScrollUpButton>

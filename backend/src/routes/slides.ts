@@ -138,7 +138,7 @@ const slides: FastifyPluginAsync = async app => {
   const secret = app.config.AUTH_SECRET;
 
   app.get("/slides", async (request, reply) => {
-    await requireUser(request);
+    const user = await requireUser(request);
     const query = parse(listQuery, request.query);
     let studyId: string | null = null;
     if (query.studyId) {
@@ -155,7 +155,8 @@ const slides: FastifyPluginAsync = async app => {
               (SELECT count(*)::int FROM slide_references r WHERE r.deck_id=p.id) AS reference_count,
               (SELECT count(*)::int FROM slide_reviews r WHERE r.deck_id=p.id) AS review_count,
               COALESCE(au.name,cu.name) AS author_name,
-              CASE WHEN av.status='published' THEN COALESCE(av.published_at,aj.finished_at,av.created_at) END AS published_at
+              CASE WHEN av.status='published' THEN COALESCE(av.published_at,aj.finished_at,av.created_at) END AS published_at,
+              EXISTS (SELECT 1 FROM study_members sm WHERE sm.study_id=p.study_id AND sm.user_id=$4 AND sm.role IN ('owner','member')) AS can_edit
          FROM decks p
          JOIN studies s ON s.id=p.study_id
          LEFT JOIN slide_versions av ON av.id=p.active_version_id
@@ -169,7 +170,7 @@ const slides: FastifyPluginAsync = async app => {
           AND ($2::uuid IS NULL OR p.study_id=$2)
           AND ($3::text IS NULL OR p.kind=$3)
         ORDER BY p.updated_at DESC, p.id`,
-      [q, studyId, query.kind ?? null],
+      [q, studyId, query.kind ?? null, user.id],
     );
     const rows = result.rows.map(({ latest_job_status, latest_status, has_thumbnail, ...row }) => ({
       ...row,

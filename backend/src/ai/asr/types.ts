@@ -78,7 +78,11 @@ export type TranscriptWarning =
   | "diarization_unsupported"
   | "word_timestamps_unsupported"
   | "keyterms_truncated"
-  | "prompt_unsupported";
+  | "prompt_unsupported"
+  /** Multimodal chat model: timestamps are the model's estimates (segment level, may drift). */
+  | "timestamps_approximate"
+  /** Multimodal chat model: a decoding loop (repeated line/phrase) was trimmed. */
+  | "repetition_trimmed";
 
 export type Transcript = {
   schema: 1;

@@ -11,16 +11,25 @@
 :root,
 [data-theme="light"] {
   color-scheme: light;
+  /* Elevation: canvas → surface (cards, panels) → raised (fields, composer, chips) → popover (menus,
+     sheets, dialogs). All warm off-whites; nothing is pure white so cards don't glare against the canvas.
+     surface-2/-3 are inset wells and hover fills, darker than surface; soft/soft-hover are translucent ink
+     tints for secondary buttons so they read the same on canvas, cards and popovers. */
   --canvas: #ecebe7;
   --canvas-2: #e4e2dd;
-  --surface: #ffffff;
-  --surface-2: #f6f5f2;
-  --surface-3: #efede9;
+  --surface: #f5f3ee;
+  --raised: #f9f8f4;
+  --popover: #fcfbf8;
+  --surface-2: #efede7;
+  --surface-3: #e7e4dd;
+  --soft: rgb(22 21 20 / 0.05);
+  --soft-hover: rgb(22 21 20 / 0.085);
   --ink: #161514;
-  --ink-2: #4c4a46;
-  --ink-3: #8a8780;
-  --line: #e3e1dc;
-  --line-2: #d6d3cc;
+  --ink-2: #4a4843;
+  --ink-3: #67635c; /* ≥ 4.5:1 on canvas, surface and surface-2/-3 */
+  --line: #e0ddd6;
+  --line-2: #d2cec5;
+  --field-line: #8f8a81; /* form-field boundary, ≥ 3:1 on raised/popover */
   --primary: #161514;
   --primary-ink: #fbfaf8;
   --primary-hover: #34322f;
@@ -29,7 +38,7 @@
   --danger-soft: #fbe6e3;
   --success: #2f7d4f;
   --overlay: rgb(22 21 20 / 0.32);
-  --shadow-card: 0 1px 2px rgb(22 21 20 / 0.04), 0 1px 1px rgb(22 21 20 / 0.02);
+  --shadow-card: 0 1px 2px rgb(22 21 20 / 0.05), 0 1px 1px rgb(22 21 20 / 0.03);
   --shadow-pop: 0 12px 32px -8px rgb(22 21 20 / 0.18), 0 2px 6px rgb(22 21 20 / 0.06);
 
   /* Pastel pills (bg / ink). */
@@ -61,13 +70,18 @@
   --canvas: #121211;
   --canvas-2: #1a1918;
   --surface: #1c1b1a;
+  --raised: #21201e;
+  --popover: #262523;
   --surface-2: #232220;
   --surface-3: #2b2a27;
+  --soft: rgb(243 240 234 / 0.06);
+  --soft-hover: rgb(243 240 234 / 0.1);
   --ink: #f3f0ea;
   --ink-2: #bdb8af;
-  --ink-3: #85817a;
-  --line: #2c2b28;
+  --ink-3: #9a958d;
+  --line: #2e2d2a;
   --line-2: #3a3834;
+  --field-line: #75716a;
   --primary: #f3f0ea;
   --primary-ink: #161514;
   --primary-hover: #d9d5cd;
@@ -107,6 +121,11 @@
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
+  --color-raised: var(--raised);
+  --color-popover: var(--popover);
+  --color-soft: var(--soft);
+  --color-soft-hover: var(--soft-hover);
+  --color-field-line: var(--field-line);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
   --color-ink-3: var(--ink-3);

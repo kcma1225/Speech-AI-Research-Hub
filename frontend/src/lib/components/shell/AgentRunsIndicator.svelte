@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Popover, Portal } from "bits-ui";
-  import { Bot, ExternalLink, MessageSquare, Pause, Play, Square } from "@lucide/svelte";
+  import { ArrowRight, Bot, ExternalLink, MessageSquare, Pause, Play, Square } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t, relativeTime } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
@@ -8,6 +8,7 @@
   import { session } from "#lib/stores/session.svelte.ts";
   import { agentActivity, type ActiveAgentRun } from "#lib/agent/activity.svelte.ts";
   import { workflowsApi } from "#lib/workflows/api.ts";
+  import { ACTION_LABEL } from "#lib/agent/focus.ts";
   import { STATUS_TONE } from "#lib/components/workflows/meta.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
@@ -100,7 +101,7 @@
           <div class="flex items-start gap-2">
             <div class="min-w-0 flex-1">
               <p class="text-[11px] tracking-wide text-ink-3 uppercase">{t(`agentRuns.kind.${r.kind}`)}{#if r.study} · {r.study.title}{/if}</p>
-              <p class="truncate text-[14px] font-semibold text-ink">{r.title || r.objective || t("agent.untitled")}</p>
+              <a href={r.href} class="block truncate text-[14px] font-semibold text-ink hover:underline" onclick={() => (open = false)}>{r.title || r.objective || t("agent.untitled")}</a>
             </div>
             <Pill tone={tone(r)} size="sm" dot={working}>{statusLabel(r)}</Pill>
           </div>
@@ -121,8 +122,14 @@
             <span>{t("agentRuns.updated", { time: relativeTime(r.updated_at) })}</span>
           </p>
           <div class="mt-2 flex flex-wrap items-center gap-1">
-            {#if r.conversation_id}
-              <Button size="sm" variant="ghost" class="min-h-10" href={`/assistant/${r.conversation_id}`} onclick={() => (open = false)}><MessageSquare />{t("agentRuns.openConversation")}</Button>
+            <!-- Deep link to the card that waits (plan / question / consent card), scrolled to and pulsed there. -->
+            {#if r.action}
+              <Button size="sm" variant="primary" class="min-h-10" href={r.href} data-agent-go={r.action} onclick={() => (open = false)}><ArrowRight />{t(ACTION_LABEL[r.action])}</Button>
+              {#if r.kind === "workflow" && r.action === "approve_plan"}
+                <Button size="sm" variant="ghost" class="min-h-10" title={t("agentRuns.quickApproveHint")} loading={busy === `${r.id}:approve`} onclick={() => act(r, "approve", async () => { await workflowsApi.approve(r.id, {}); toasts.show(t("agentRuns.quickApproved"), "success"); })}><Play />{t("agentRuns.quickApprove")}</Button>
+              {/if}
+            {:else}
+              <Button size="sm" variant="ghost" class="min-h-10" href={r.href} onclick={() => (open = false)}><MessageSquare />{t(r.conversation_id ? "agentRuns.openConversation" : "agentRuns.go.open")}</Button>
             {/if}
             {#each r.artifacts.slice(0, 2) as a (a.kind + a.id)}
               <Button size="sm" variant="ghost" class="min-h-10 max-w-[180px]" href={a.url} onclick={() => (open = false)}><ExternalLink /><span class="truncate">{a.title}</span></Button>

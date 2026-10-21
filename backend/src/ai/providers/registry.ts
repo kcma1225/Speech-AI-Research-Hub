@@ -399,7 +399,7 @@ const entries: ProviderEntry[] = [
       P.num("presence_penalty", "存在懲罰", "Presence penalty"),
       P.num("frequency_penalty", "頻率懲罰", "Frequency penalty"),
     ],
-    quirks: { reasoningStyle: "openai_effort", embedBatchSize: 128 },
+    quirks: { reasoningStyle: "openai_effort", embedBatchSize: 128, audioInputStyle: "string" },
     docsUrl: "https://docs.mistral.ai/api/",
   },
   {
@@ -844,7 +844,7 @@ function dashscope(id: string, label: { zh: string; en: string }, defRegion: str
     ],
     capabilities: caps({ vision: true, reasoning: true, embeddings: true, jsonSchema: true }),
     params: [P.int("top_k", "Top-K", "top_k"), P.int("seed", "亂數種子", "seed"), P.bool("enable_search", "聯網搜尋", "enable_search"), P.num("presence_penalty", "存在懲罰", "Presence penalty")],
-    quirks: { reasoningStyle: "dashscope", reasoningFields: ["reasoning_content"], mapError: dashscopeError },
+    quirks: { reasoningStyle: "dashscope", reasoningFields: ["reasoning_content"], mapError: dashscopeError, audioInputStyle: "data_url" },
     docsUrl: "https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope",
     help_zh: "思考開關為 enable_thinking / thinking_budget。部分模型在串流模式下不支援工具，若工具呼叫失敗請改用其他模型。",
     resolveBaseUrl: (c) => {

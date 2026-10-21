@@ -115,7 +115,8 @@ export type Registry = {
   llm: RegistryEntry[];
   asr: RegistryEntry[];
   roles: Array<{ role: AiRole; capability: Capability; label_zh: string }>;
-  platform_params: { chat: ParamField[]; embedding: ParamField[]; asr: ParamField[] };
+  /** `asr_llm`: options for a multimodal chat model transcribing audio (subset of `asr`). */
+  platform_params: { chat: ParamField[]; embedding: ParamField[]; asr: ParamField[]; asr_llm?: ParamField[] };
   live_kinds: string[];
   secrets_key_configured: boolean;
 };
@@ -154,6 +155,8 @@ export type ProfileFields = {
   context_window?: number;
   max_output_tokens?: number;
   vision?: boolean;
+  /** Accepts audio content (speech-to-text by a multimodal chat model). */
+  audio_input?: boolean;
   tools?: boolean;
   reasoning?: boolean;
   json_schema?: boolean;
@@ -162,11 +165,13 @@ export type ProfileFields = {
   output_price?: number;
 };
 export type ProfileField = keyof ProfileFields;
-export const PROFILE_FIELDS: ProfileField[] = ["display_name", "capability", "context_window", "max_output_tokens", "vision", "tools", "reasoning", "json_schema", "embedding_dims", "input_price", "output_price"];
+export const PROFILE_FIELDS: ProfileField[] = ["display_name", "capability", "context_window", "max_output_tokens", "vision", "audio_input", "tools", "reasoning", "json_schema", "embedding_dims", "input_price", "output_price"];
 
 export type UsageRef = { kind: "group" | "role"; id: string; name: string };
 export type VisionSource = "override" | "model_list" | "catalog" | "name" | "vendor" | "unknown";
 export type MemberVision = { vision: boolean; detected: boolean; source: VisionSource; overridden: boolean };
+/** Audio input of a chat model; `codec_ok` = the account's protocol can send audio at all (OpenAI-compatible chat, Gemini). */
+export type MemberAudio = { audio: boolean; detected: boolean; source: VisionSource; overridden: boolean; codec_ok: boolean };
 
 /** A model profile (per account + model id). */
 export type ModelProfile = {
@@ -188,6 +193,7 @@ export type ModelProfile = {
   catalog: ProfileFields;
   catalog_id: string | null;
   vision: MemberVision | null;
+  audio?: MemberAudio | null;
   used_by: UsageRef[];
 };
 

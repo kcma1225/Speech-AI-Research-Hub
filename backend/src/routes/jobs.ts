@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import type { JobKind, JobStatus } from "../jobs/queue.js";
 import { requireUser } from "../lib/auth.js";
+import { focusHref } from "../workflows/active.js";
 
 /** Stage values written by the database/backend rather than the worker, shown in 繁中 like the worker's. */
 const STAGE_LABELS: Record<string, string> = {
@@ -18,11 +19,11 @@ const HIDDEN_KINDS = ["slide_preview", "latex_compile", "ai_search_index"];
 type ActiveJobRow = {
   id: string; kind: JobKind; status: JobStatus; stage: string; progress: number; updated_at: string;
   payload: Record<string, unknown>; deck_id: string | null; deck_title: string | null; version: number | null;
-  meeting_id: string | null; study_slug: string | null; wf_status: string | null; wf_conversation: string | null;
+  meeting_id: string | null; study_slug: string | null; wf_status: string | null; wf_conversation: string | null; wf_id: string | null;
 };
 
 /** Workflow runs outlive their job (the job ends while the run waits for the user): show the run's own state. */
-const WORKFLOW_WAITING: Record<string, string> = { awaiting_plan_approval: "等待確認計畫", awaiting_input: "等待你回答", paused: "已暫停" };
+const WORKFLOW_WAITING: Record<string, string> = { awaiting_plan_approval: "等待確認計畫", awaiting_input: "等待你回答", needs_pdf: "需要 PDF", paused: "已暫停", queued: "排隊中" };
 
 const str = (value: unknown) => (typeof value === "string" && value ? value : null);
 
@@ -45,7 +46,8 @@ function present(row: ActiveJobRow): { label: string; url: string | null } {
     case "ai_library_import":
       return { label: "下載開放全文", url: row.study_slug ? `/studies/${row.study_slug}?tab=papers` : "/library" };
     case "ai_workflow":
-      return { label: fileName ?? "Agent 工作流程", url: row.wf_conversation ? `/assistant/${row.wf_conversation}` : "/assistant/workflows" };
+      // Deep link to the run's card (plan / question card when it waits for the user): see workflows/active.ts.
+      return { label: fileName ?? "Agent 工作流程", url: row.wf_id ? focusHref(row.wf_conversation, `workflow:${row.wf_id}`, row.wf_id) : "/assistant/workflows" };
     case "ai_embedding_reindex":
       return { label: "重建語意索引", url: "/admin/models" };
     default:
@@ -61,7 +63,7 @@ const jobs: FastifyPluginAsync = async app => {
       `SELECT j.id,j.kind,j.status,j.stage,j.progress,j.payload,
               GREATEST(j.created_at,j.started_at,j.heartbeat_at,j.finished_at) AS updated_at,
               COALESCE(p.id::text,j.payload->>'projectId') AS deck_id,p.title AS deck_title,v.version,
-              mm.meeting_id::text AS meeting_id,s.slug AS study_slug,wr.status AS wf_status,wr.conversation_id::text AS wf_conversation
+              mm.meeting_id::text AS meeting_id,s.slug AS study_slug,wr.status AS wf_status,wr.conversation_id::text AS wf_conversation,wr.id::text AS wf_id
          FROM jobs j
          LEFT JOIN slide_versions v ON j.kind='slide_render' AND v.id::text=j.payload->>'versionId'
          LEFT JOIN decks p ON p.id=v.deck_id
@@ -71,14 +73,14 @@ const jobs: FastifyPluginAsync = async app => {
          LEFT JOIN workflow_runs wr ON j.kind='ai_workflow' AND wr.id::text=j.payload->>'workflowId'
         WHERE j.created_by=$1 AND j.kind <> ALL($2::text[])
           AND (j.status IN ('queued','running') OR j.finished_at > now() - interval '10 minutes'
-               OR wr.status IN ('awaiting_plan_approval','awaiting_input','paused'))
+               OR wr.status IN ('awaiting_plan_approval','awaiting_input','needs_pdf','paused'))
         ORDER BY j.created_at DESC, j.id
         LIMIT 10`,
       [user.id, HIDDEN_KINDS],
     )).rows;
     const result = rows.map(row => {
       const waiting = row.wf_status ? WORKFLOW_WAITING[row.wf_status] : undefined;
-      const status: JobStatus = waiting ? "running" : row.wf_status === "failed" ? "failed" : row.status;
+      const status: JobStatus = row.wf_status === "queued" ? "queued" : waiting ? "running" : row.wf_status === "failed" ? "failed" : row.status;
       const stage = waiting ?? (row.wf_status === "partial" ? "部分完成" : displayStage(row.stage));
       return {
       id: row.id,

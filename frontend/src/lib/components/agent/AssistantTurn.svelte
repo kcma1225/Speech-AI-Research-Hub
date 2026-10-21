@@ -8,6 +8,7 @@
   import ToolTimeline from "./ToolTimeline.svelte";
   import TurnActivity from "./TurnActivity.svelte";
   import WorkflowCard from "#lib/components/workflows/WorkflowCard.svelte";
+  import WorkflowBatchCard from "#lib/components/workflows/WorkflowBatchCard.svelte";
   import { askArgs } from "#lib/agent/ask.ts";
   import { hasActivity, workflowIdOf, type AssistantTurn } from "#lib/agent/transcript.ts";
   import type { Streaming } from "#lib/agent/chat.svelte.ts";
@@ -17,7 +18,7 @@
    * One assistant turn of the compact transcript: the live plan (one checklist), one 「處理過程」 row, the answer, result
    * chips, and only the cards that need the user (workflow cards, consent cards, question cards, notices).
    */
-  let { turn, compact = false, streaming = null, run = null, sinceFallback, canRemember = false, conversationId = null, busy = false, deferredAsks = false, onDecide, onAnswer, onContinue, onRegenerate }: {
+  let { turn, compact = false, streaming = null, run = null, sinceFallback, canRemember = false, conversationId = null, busy = false, deferredAsks = false, focusKey = null, onDecide, onAnswer, onContinue, onRegenerate }: {
     turn: AssistantTurn;
     compact?: boolean;
     streaming?: Streaming | null;
@@ -28,6 +29,8 @@
     busy?: boolean;
     /** A later user message exists: open question cards collapse to 「繼續回答」. */
     deferredAsks?: boolean;
+    /** Deep-linked card (`toolcall:<id>`, lib/agent/focus.ts): a deferred question card opens in full. */
+    focusKey?: string | null;
     onDecide: (call: ToolCall, decision: "approve" | "approve_conversation" | "deny", opts?: { reason?: string; editedArgs?: Record<string, unknown> }) => Promise<void>;
     onAnswer: (call: ToolCall, answers: Answer[]) => Promise<void>;
     onContinue?: () => void;
@@ -68,7 +71,8 @@
 
 {#each turn.workflows as c (c.id)}
   {@const id = workflowIdOf(c)}
-  {#if id}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowCard {id} {compact} collapsible />{/key}</div>{/if}
+  {#if id?.startsWith("batch:")}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowBatchCard batchId={id.slice(6)} {compact} />{/key}</div>
+  {:else if id}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowCard {id} {compact} collapsible />{/key}</div>{/if}
 {/each}
 
 {#if turn.pending.length}
@@ -76,8 +80,8 @@
 {/if}
 
 {#each turn.asks as c (c.id)}
-  <div class={compact ? "" : "sm:ml-11"}>
-    <AskCard args={askArgs(c)!} deferred={deferredAsks} disabled={busy} onSubmit={(a) => onAnswer(c, a)} />
+  <div class={compact ? "" : "sm:ml-11"} data-focus-key="toolcall:{c.id}">
+    <AskCard args={askArgs(c)!} deferred={deferredAsks && focusKey !== `toolcall:${c.id}`} disabled={busy} onSubmit={(a) => onAnswer(c, a)} />
   </div>
 {/each}
 

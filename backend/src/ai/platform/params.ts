@@ -86,9 +86,13 @@ function asrFields(): ParamField[] {
   ];
 }
 
+/** ASR options that apply to a multimodal chat model transcribing audio (ai/asr/adapters/llm.ts). */
+const LLM_ASR_KEYS = new Set(["language", "diarization", "prompt_template", "use_glossary_keyterms", "convert_script", "max_chunk_sec", "timeout_ms", "max_retries"]);
+
 /** Param whitelist for a member of a route with `capability` using provider `kind`. */
 export function memberParamFields(capability: RouteCapability, kind: string): ParamField[] {
-  if (capability === "asr") return getAsrEntry(kind) ? asrFields() : [];
+  // Kind ids can exist in both registries (e.g. "openai"): the ASR set is a superset of the chat-model subset.
+  if (capability === "asr") return getAsrEntry(kind) ? asrFields() : getProvider(kind) ? asrFields().filter((f) => LLM_ASR_KEYS.has(f.key)) : [];
   const entry = getProvider(kind);
   const vendor = (entry?.params ?? []).map(fromParamSpec);
   const platform = capability === "chat" ? CHAT_PLATFORM_PARAMS : EMBED_PLATFORM_PARAMS;

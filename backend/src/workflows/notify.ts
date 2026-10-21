@@ -8,6 +8,7 @@ import { messageView, type MessageRow } from "../agent/views.js";
 import { loadConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { Notifier } from "../lib/notify.js";
+import { focusHref } from "./active.js";
 import type { WorkflowEnv } from "./env.js";
 
 const silent = { warn() {}, info() {}, error() {}, debug() {}, trace() {}, fatal() {}, child() { return silent; }, level: "silent" } as unknown as FastifyBaseLogger;
@@ -23,11 +24,13 @@ function pusher(db: Db) {
   return notifier;
 }
 
-export type NoticeKind = "awaiting_plan_approval" | "awaiting_input" | "done" | "partial" | "failed" | "cancelled";
+export type NoticeKind = "awaiting_plan_approval" | "awaiting_input" | "needs_pdf" | "ai_filled" | "done" | "partial" | "failed" | "cancelled";
 
 const TEXT: Record<NoticeKind, (t: string) => { notice: string; title: string } | null> = {
   awaiting_plan_approval: (t) => ({ notice: `工作計畫「${t}」已擬好，請確認後按「開始」。`, title: "工作計畫待確認" }),
   awaiting_input: (t) => ({ notice: `工作流程「${t}」需要你補充資訊才能繼續。`, title: "工作流程需要你的回覆" }),
+  needs_pdf: (t) => ({ notice: `工作流程「${t}」找不到這篇論文的 PDF，先跳過；貼上 PDF 網址（「從網址下載 PDF」）或上傳後就能繼續。`, title: "需要 PDF" }),
+  ai_filled: (t) => ({ notice: `自動駕駛替你代填了「${t}」的學生自填頁（標示「AI 代填，待你確認」），請確認，或按「修改答案」換成你自己的看法。`, title: "AI 代填了你的頁面，待你確認" }),
   done: (t) => ({ notice: `工作流程「${t}」已完成，所有驗收標準都通過。`, title: "工作流程已完成" }),
   partial: (t) => ({ notice: `工作流程「${t}」已結束，但還有未通過的驗收標準；可以按「繼續改」。`, title: "工作流程部分完成" }),
   failed: (t) => ({ notice: `工作流程「${t}」無法完成。`, title: "工作流程失敗" }),
@@ -38,7 +41,8 @@ export async function finishNotice(env: WorkflowEnv, kind: NoticeKind) {
   const run = env.run;
   const t = TEXT[kind](run.title || "工作流程");
   if (!t) return;
-  const url = run.conversation_id ? `/assistant/${run.conversation_id}?workflow=${run.id}` : `/assistant/workflows?id=${run.id}`;
+  // Deep link to the run's card in its conversation (scrolled to + highlighted), or the expanded run on /assistant/workflows.
+  const url = focusHref(run.conversation_id, `workflow:${run.id}`, run.id);
   try {
     if (run.conversation_id) {
       const m = (await env.db.query<MessageRow>(

@@ -11,15 +11,22 @@
   import PageHeader from "#lib/components/ui/PageHeader.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
+  import ScopeSwitch from "#lib/components/study/ScopeSwitch.svelte";
   import StudyCard from "#lib/components/study/StudyCard.svelte";
+  import { inScope, resolveScope, scopeCounts, type StudyScope } from "#lib/studies/scope.ts";
   import type { DirectoryUser, StudyCard as Card_ } from "#lib/studies/types.ts";
 
   const params = page.url.searchParams;
   let q = $state(params.get("q") ?? "");
-  let member = $state(params.get("member") ?? "");
+  // `?member=me` (old links) is the 我的研究 scope now; the member filter only picks other people.
+  let member = $state(params.get("member") === "me" ? "" : (params.get("member") ?? ""));
+  let scope = $state<StudyScope | null>(resolveScope(params, null));
   let status = $state(params.get("status") ?? "");
   let stage = $state(params.get("stage") ?? "");
-  let studies = $state<Card_[] | null>(null);
+  /** Everything matching the other filters; the scope switch filters it client-side so both counts stay in sync. */
+  let all = $state<Card_[] | null>(null);
+  const counts = $derived(all ? scopeCounts(all) : null);
+  const studies = $derived(all && scope ? inScope(all, scope) : null);
   let error = $state<string | null>(null);
   let directory = $state<DirectoryUser[]>([]);
   // Stage names seen in unfiltered results, so the stage filter offers what exists.
@@ -30,6 +37,7 @@
   });
 
   let seq = 0;
+  let lastKey: string | null = null;
   async function load() {
     const id = ++seq;
     const query = new URLSearchParams();
@@ -40,7 +48,9 @@
     try {
       const result = await api.get<{ studies: Card_[] }>(`/studies${query.size ? `?${query}` : ""}`);
       if (id !== seq) return;
-      studies = result.studies;
+      all = result.studies;
+      // No scope in the URL: 我的研究 when I belong to any study, else 全實驗室 (decided once, then kept in the URL).
+      if (!scope) scope = resolveScope(new URLSearchParams(), scopeCounts(result.studies));
       const names = result.studies.flatMap(s => (s.current_stage ? [s.current_stage.name] : []));
       untrack(() => (stageNames = [...new Set([...stageNames, ...names])]));
       error = null;
@@ -52,22 +62,42 @@
   // Reload (debounced while typing) when filters change, mirrored in the URL.
   $effect(() => {
     const key = `${q.trim()}|${member}|${status}|${stage}`;
+    void scope;
     const timer = setTimeout(() => {
-      void load();
+      if (untrack(() => lastKey) !== key) void load();
+      lastKey = key;
       const url = new URL(page.url.href);
-      for (const [name, value] of [["q", q.trim()], ["member", member], ["status", status], ["stage", stage]] as const) {
+      for (const [name, value] of [["scope", scope ?? ""], ["q", q.trim()], ["member", member], ["status", status], ["stage", stage]] as const) {
         if (value) url.searchParams.set(name, value);
         else url.searchParams.delete(name);
       }
       if (url.search !== page.url.search) untrack(() => void goto(url, { shallow: true, replace: true }));
-    }, key && untrack(() => studies) ? 220 : 0);
+    }, key && untrack(() => all) ? 220 : 0);
     return () => clearTimeout(timer);
+  });
+
+  // Links to /studies while already here (nav, ⌘K, dashboard) change the URL without remounting: follow them.
+  // Our own URL writes above already match the state, so they are no-ops here.
+  let seenSearch = page.url.search;
+  $effect(() => {
+    const search = page.url.search;
+    if (search === seenSearch) return;
+    seenSearch = search;
+    untrack(() => {
+      const p = page.url.searchParams;
+      const next = resolveScope(p, counts);
+      if (next && next !== scope) scope = next;
+      const urlMember = p.get("member") === "me" ? "" : (p.get("member") ?? "");
+      if ((p.get("q") ?? "") !== q.trim()) q = p.get("q") ?? "";
+      if (urlMember !== member) member = urlMember;
+      if ((p.get("status") ?? "") !== status) status = p.get("status") ?? "";
+      if ((p.get("stage") ?? "") !== stage) stage = p.get("stage") ?? "";
+    });
   });
 
   const filtering = $derived(Boolean(q.trim() || member || status || stage));
   const memberOptions = $derived([
     { value: "", label: t("studies.filter.anyone") },
-    { value: "me", label: t("studies.filter.mine") },
     ...directory.map(u => ({ value: u.id, label: u.name })),
   ]);
   const statusOptions = $derived([
@@ -86,9 +116,17 @@
 
 <svelte:head><title>{t("studies.title")} · Speech-AI Hub</title></svelte:head>
 
-<PageHeader title={t("studies.title")} subtitle={studies ? t("studies.count", { n: studies.length }) : t("studies.subtitle")}>
+<PageHeader title={t("studies.title")} subtitle={t("studies.subtitle")}>
   {#snippet actions()}<Button variant="primary" href="/studies/new"><Plus />{t("studies.new")}</Button>{/snippet}
 </PageHeader>
+
+<div class="mb-3 sm:mb-4">
+  {#if scope}
+    <ScopeSwitch bind:value={scope} {counts} />
+  {:else}
+    <Skeleton class="h-[54px] w-full rounded-full sm:w-80" />
+  {/if}
+</div>
 
 <div class="mb-5 flex flex-col gap-2.5 sm:mb-6 lg:flex-row lg:items-center">
   <label class="relative min-w-0 flex-1 lg:max-w-md">
@@ -118,6 +156,18 @@
   <div class="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
     {#each [0, 1, 2] as i (i)}<Skeleton class="h-[230px] rounded-[22px]" />{/each}
   </div>
+{:else if !studies.length && scope === "mine" && !filtering}
+  <Card>
+    <EmptyState title={t("studies.scope.emptyMine")} hint={counts?.lab ? t("studies.scope.emptyMineHint", { n: counts.lab }) : t("studies.emptyHint")} class="py-14">
+      {#snippet icon()}<FlaskConical />{/snippet}
+      {#snippet action()}
+        <div class="flex flex-wrap justify-center gap-2">
+          <Button variant="primary" href="/studies/new"><Plus />{t("studies.new")}</Button>
+          {#if counts?.lab}<Button variant="secondary" onclick={() => (scope = "lab")}>{t("studies.scope.showLab")}</Button>{/if}
+        </div>
+      {/snippet}
+    </EmptyState>
+  </Card>
 {:else if !studies.length}
   <Card>
     <EmptyState title={filtering ? t("studies.emptyFiltered") : t("studies.empty")} hint={filtering ? t("studies.emptyFilteredHint") : t("studies.emptyHint")} class="py-14">

@@ -27,7 +27,7 @@ export function normalizeModelId(raw: string): string {
 }
 
 /** Models a listing returns that are not chat, embedding or speech-to-text (hidden from pickers by default). */
-const NON_TEXT = /^(dall-e|gpt-image|chatgpt-image|imagen|veo|sora|tts|.*-tts(-|$)|text-moderation|omni-moderation|.*moderation|davinci|babbage|computer-use|.*-realtime|.*-audio-preview|.*image-generation|flux|stable-diffusion|sd3|.*-ocr|.*rerank)/;
+const NON_TEXT = /^(dall-e|gpt-image|chatgpt-image|imagen|veo|sora|tts|.*-tts(-|$)|text-moderation|omni-moderation|.*moderation|davinci|babbage|computer-use|.*-realtime|.*image-generation|flux|stable-diffusion|sd3|.*-ocr|.*rerank)/;
 
 export function looksNonText(modelId: string): boolean {
   return NON_TEXT.test(normalizeModelId(modelId));

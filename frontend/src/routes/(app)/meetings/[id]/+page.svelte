@@ -14,6 +14,7 @@
   import Card from "#lib/components/ui/Card.svelte";
   import CardHeader from "#lib/components/ui/CardHeader.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Segmented from "#lib/components/ui/Segmented.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
@@ -152,12 +153,11 @@
           {#if d.meeting.creator_name}<span>{t("meet.createdBy", { name: d.meeting.creator_name })}</span>{/if}
         </p>
       </div>
-      {#if d.permissions.edit || d.permissions.delete}
-        <div class="flex shrink-0 gap-2">
-          {#if d.permissions.edit}<Button onclick={openEdit}><Pencil />{t("meet.edit")}</Button>{/if}
-          {#if d.permissions.delete}<Button variant="ghost" size="icon" aria-label={t("meet.delete")} title={t("meet.delete")} onclick={() => (deleteOpen = true)}><Trash2 /></Button>{/if}
-        </div>
-      {/if}
+      <div class="flex shrink-0 gap-2">
+        {#if d.permissions.edit}<Button onclick={openEdit}><Pencil />{t("meet.edit")}</Button>{/if}
+        <!-- Always visible: without permission it explains who may delete (tooltip / tap). -->
+        <DeleteButton labelled class="border border-line" label={t("meet.delete")} reason={d.permissions.delete ? null : t("crud.deny.meeting")} onclick={() => (deleteOpen = true)} />
+      </div>
     </div>
     <div class="flex flex-wrap items-center gap-2">
       {#each d.studies as s (s.id)}
@@ -268,6 +268,6 @@
       <MeetingForm bind:value={editValue} mode="stacked" submitLabel={t("meet.save")} busy={saving} onSubmit={saveEdit} onCancel={() => (editOpen = false)} />
     </Sheet>
   {/if}
-  <ConfirmDialog bind:open={deleteOpen} title={t("meet.deleteTitle")} description={t("meet.deleteHint")} confirmLabel={t("meet.delete")} danger onConfirm={remove} />
+  <ConfirmDialog bind:open={deleteOpen} title={t("crud.meeting.deleteTitle", { title: d.meeting.title })} description={t("meet.deleteHint")} confirmLabel={t("meet.delete")} danger onConfirm={remove} />
   <ConfirmDialog bind:open={removeMediaOpen} title={t("meet.media.deleteTitle")} description={t("meet.media.deleteHint")} confirmLabel={t("meet.media.delete")} danger onConfirm={deleteMedia} />
 {/if}

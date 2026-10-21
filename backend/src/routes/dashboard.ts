@@ -35,8 +35,8 @@ const dashboard: FastifyPluginAsync = async app => {
       ),
       app.db.query<{ my_studies: number; lab_studies: number; open_tasks: number; overdue_tasks: number; due_this_week: number }>(
         `WITH today AS (SELECT (now() AT TIME ZONE 'Asia/Taipei')::date AS d)
-         SELECT (SELECT count(*)::int FROM studies s JOIN study_members m ON m.study_id=s.id AND m.user_id=$1 WHERE s.status='active') AS my_studies,
-                (SELECT count(*)::int FROM studies WHERE status='active') AS lab_studies,
+         SELECT (SELECT count(*)::int FROM studies s JOIN study_members m ON m.study_id=s.id AND m.user_id=$1 WHERE s.status<>'archived') AS my_studies,
+                (SELECT count(*)::int FROM studies WHERE status<>'archived') AS lab_studies,
                 (SELECT count(*)::int FROM tasks WHERE assignee_id=$1 AND status='open') AS open_tasks,
                 (SELECT count(*)::int FROM tasks, today WHERE assignee_id=$1 AND status='open' AND due_on < today.d) AS overdue_tasks,
                 (SELECT count(*)::int FROM tasks, today WHERE assignee_id=$1 AND status='open' AND due_on >= today.d AND due_on < today.d + 7) AS due_this_week`,

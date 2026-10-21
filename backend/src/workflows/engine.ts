@@ -13,7 +13,9 @@ import { addUsage, emitRun, emitStep, getRun, getSteps, insertSteps, insertWorkf
 import { getWorkflowPlaybook, type WorkflowPlaybook } from "./playbooks/registry.js";
 import { actionable, verifyCriteria, verifyStep } from "./verify.js";
 import { finishNotice } from "./notify.js";
-import { blockedQuestion, pendingAsk } from "./questions.js";
+import { asksOf, blockedQuestion, pendingAsk } from "./questions.js";
+import { autoApproval, autoApprovalNote } from "./autopilot.js";
+import { promoteQueued } from "./queue.js";
 import { WorkflowStop, type Criterion, type RunRow, type StepOutput, type StepRow, type WorkflowStatus } from "./types.js";
 
 export class WorkflowInputError extends Error {}
@@ -68,13 +70,25 @@ export async function runWorkflow(deps: EnvDeps, workflowId: string, opts: { las
   try {
     for (let guard = 0; guard < 50; guard++) {
       const run = await env.refresh();
-      if (run.status === "planning") {
-        await planPhase(env, pb);
-        continue;
-      }
-      if (run.status === "running" || run.status === "verifying") {
-        await executePhase(env, pb);
-        continue;
+      try {
+        if (run.status === "planning") {
+          await planPhase(env, pb);
+          continue;
+        }
+        if (run.status === "running" || run.status === "verifying") {
+          await executePhase(env, pb);
+          continue;
+        }
+      } catch (e) {
+        // 「修改計畫」 on an auto-approved run that was working: it stopped between steps → plan again now.
+        if (e instanceof WorkflowStop && e.reason === "paused" && env.state<boolean>("revise_requested")) {
+          await deps.db.query("UPDATE workflow_steps SET status='pending' WHERE run_id=$1 AND status IN ('running','verifying')", [workflowId]);
+          await env.setState({ revise_requested: false });
+          await setStatus(env, "planning", { pause_requested: false });
+          await env.note("依你的意見重新規劃（已寫入的草稿會保留）。");
+          continue;
+        }
+        throw e;
       }
       break;
     }
@@ -95,6 +109,8 @@ export async function runWorkflow(deps: EnvDeps, workflowId: string, opts: { las
     } else throw e;
   } finally {
     await env.saveActive().catch(() => undefined);
+    // A slot may have freed (the run waits for the user or ended): start the owner's next queued run.
+    await promoteQueued(deps.db, initial.user_id).catch((e) => deps.log.warn({ err: e, workflowId }, "workflow queue promotion failed"));
   }
   return { status: (await env.refresh()).status };
 }
@@ -112,6 +128,17 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook) {
     await finishNotice(env, "awaiting_input");
     return;
   }
+  if (res.kind === "needs_pdf") {
+    await setStatus(env, "needs_pdf", { question: res.message });
+    await env.note(res.message, "warn");
+    await finishNotice(env, "needs_pdf");
+    return;
+  }
+  if (res.kind === "skip") {
+    await setStatus(env, "cancelled", { stop_reason: "skipped", question: null, report: { summary_md: res.message, done: [], issues: [res.message] }, finished_at: new Date().toISOString() });
+    await env.note(res.message, "warn");
+    return;
+  }
   await env.db.query("DELETE FROM workflow_steps WHERE run_id=$1", [env.run.id]);
   await insertSteps(env.db, env.run.id, res.steps);
   const criteria: Criterion[] = res.criteria.map((c) => ({ ...c, status: "pending" }));
@@ -121,12 +148,17 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook) {
   );
   for (const s of await getSteps(env.db, env.run.id)) await insertWorkflowEvent(env.db, env.run.id, "step", { step: stepView(s) });
   await env.refresh();
-  const auto = env.run.autopilot && pb.autoApprovable && !env.run.tainted;
-  if (auto) {
-    await env.note("自動駕駛：這個計畫只會寫入新的草稿，已自動核准。");
+  // Autopilot: draft-only plans are approved automatically, also when the run read others' content (autopilot.ts).
+  const decision = autoApproval({ autopilot: env.run.autopilot, autoApprovable: pb.autoApprovable, writes: res.plan.writes ?? [], tainted: env.run.tainted, manual: !!env.state<boolean>("manual_approval") });
+  if (decision.auto) {
+    await env.setState({ auto_approved: { at: new Date().toISOString(), tainted: env.run.tainted } });
+    await env.note(autoApprovalNote(decision, env.run.taint_sources));
     await setStatus(env, "running");
     return;
   }
+  const why = autoApprovalNote(decision);
+  if (why) await env.note(why);
+  await env.setState({ auto_approved: null });
   await setStatus(env, "awaiting_plan_approval");
   await finishNotice(env, "awaiting_plan_approval");
 }
@@ -175,6 +207,13 @@ async function executePhase(env: WorkflowEnv, pb: WorkflowPlaybook) {
   }
 }
 
+/** Attempts a step may take: its fix rounds + 2 (one first try, one resume after an interruption / a question). */
+export const attemptCap = (step: Pick<StepRow, "max_rounds">, maxFixRounds: number) => (step.max_rounds ?? maxFixRounds) + 3;
+
+/** Fix request after a BLOCKED that will not be asked (again). */
+export const BEST_EFFORT_ISSUE = (blocker: string) =>
+  `你上次回覆 BLOCKED（${blocker.slice(0, 200)}）。不要再回覆 BLOCKED：只用提供的資料完成完整的產出，資料沒有的部分寫「資料未提供」或省略，不要編造。`;
+
 const fixIssues = (step: StepRow) => (Array.isArray(step.inputs?.fix_issues) ? (step.inputs.fix_issues as string[]) : []);
 
 async function executeStep(env: WorkflowEnv, pb: WorkflowPlaybook, initial: StepRow) {
@@ -183,6 +222,13 @@ async function executeStep(env: WorkflowEnv, pb: WorkflowPlaybook, initial: Step
     await env.checkpoint();
     const run = env.run;
     if (run.usage.steps >= run.budget.max_steps) throw new WorkflowStop("budget_steps", `已達步驟上限（${run.budget.max_steps} 步）。`);
+    // Per-step attempt cap: a step never loops (BLOCKED / resumes / fix rounds) past its fix rounds + 2.
+    const cap = attemptCap(step, run.budget.max_fix_rounds);
+    if (step.attempts >= cap) {
+      await updateStep(env, step.id, { status: "failed", error: `嘗試 ${step.attempts} 次仍未完成，停止重試。`, finished_at: new Date().toISOString() });
+      await env.note(`「${step.title}」嘗試 ${step.attempts} 次仍未完成，停止重試，會在報告中列出。`, "warn");
+      return;
+    }
     await addUsage(env.db, run.id, { steps: 1 });
     const t0 = Date.now();
     step = (await updateStep(env, step.id, { status: "running", attempts: step.attempts + 1, started_at: new Date().toISOString(), error: null }))!;
@@ -203,10 +249,27 @@ async function executeStep(env: WorkflowEnv, pb: WorkflowPlaybook, initial: Step
     // A sub-agent that lacks required data says so instead of inventing content: the run asks the user.
     const blocked = /^\s*BLOCKED[:：]\s*(.+)/.exec(out.text ?? "");
     if (blocked) {
-      await updateStep(env, step.id, { status: "pending", output: out, ms: step.ms + (Date.now() - t0) });
-      // The orchestrator turns the blocker into a question with grounded options instead of failing.
-      await env.activity(step.key, "orchestrator", "缺少資料，準備向你提問");
-      await blockedQuestion(env, step, blocked[1]!.trim());
+      const blocker = blocked[1]!.trim();
+      const prior = Object.values(asksOf(env.run.state)).filter((a) => a.id.startsWith(`blocked_${step.key}_`));
+      // At most one question per step, never under autopilot: afterwards (or instead) the writer must produce
+      // best-effort content with 「資料未提供」; a repeated BLOCKED is a failed attempt (fix round), not a loop.
+      if (!prior.length && !env.run.autopilot) {
+        await updateStep(env, step.id, { status: "pending", output: out, ms: step.ms + (Date.now() - t0) });
+        await env.activity(step.key, "orchestrator", "缺少資料，準備向你提問");
+        await blockedQuestion(env, step, blocker);
+      }
+      const ms = step.ms + (Date.now() - t0);
+      const maxRounds = step.max_rounds ?? run.budget.max_fix_rounds;
+      const repeated = (step.output?.text ?? "").trim() === (out.text ?? "").trim();
+      if (step.round >= maxRounds || (repeated && step.round > 0)) {
+        await updateStep(env, step.id, { status: "failed", output: out, ms, finished_at: new Date().toISOString(), error: `子任務一直回報缺少資料：${blocker.slice(0, 200)}` });
+        await env.note(`「${step.title}」一直回報缺少資料（${blocker.slice(0, 80)}），停止重試，會在報告中列出。`, "warn");
+        return;
+      }
+      await addUsage(env.db, run.id, { fix_rounds: 1 });
+      await env.note(env.run.autopilot && !prior.length ? `自動駕駛：「${step.title}」缺少資料（${blocker.slice(0, 80)}），改用現有資料盡力完成，缺的標「資料未提供」。` : `「${step.title}」仍回報缺少資料，改用現有資料盡力完成。`);
+      step = (await updateStep(env, step.id, { status: "pending", output: out, ms, round: step.round + 1, inputs: { ...step.inputs, fix_issues: [BEST_EFFORT_ISSUE(blocker)] } }))!;
+      continue;
     }
     // No progress: a fix round that returns the same output as before stops fixing this step.
     if (fix && (out.text ?? "") === (fix.previous.text ?? "") && out.text) {
@@ -374,15 +437,19 @@ export function buildReport(run: RunRow, steps: StepRow[], outcome: "done" | "pa
   for (const s of steps) if (s.status === "failed") issues.push(`「${s.title}」未通過驗收：${(s.verdict?.issues ?? []).filter((i) => i.severity !== "low").map((i) => i.text).slice(0, 3).join("；") || s.error || ""}`);
   if (stop) issues.push(stop.message);
   const ok = run.criteria.filter((c) => c.status === "pass").length;
+  // Student-owned pages autopilot filled (student-input.ts): acceptable for the run, but the student must confirm them.
+  const aiFilled = Array.isArray(run.state?.ai_filled) ? (run.state.ai_filled as string[]) : [];
+  const confirm = aiFilled.map((t) => `「${t}」是 AI 代填（標示「AI 代填，待你確認」），請確認或按「修改答案」換成你自己的看法。`);
   const lines = [
     outcome === "done" ? `**已完成**，${run.criteria.length} 項驗收標準全部通過。` : `**部分完成**：${ok}/${run.criteria.length} 項驗收標準通過，尚有問題需要處理。`,
     "",
     `- 完成的步驟：${done.length} 個${fixed.length ? `（其中 ${fixed.length} 個經過修正）` : ""}`,
     ...(commitLine ? [`- ${commitLine}`] : []),
     ...(run.artifacts.length ? ["", "成果：", ...run.artifacts.map((a) => `- [${a.title}](${a.url})`)] : []),
+    ...(confirm.length ? ["", "待你確認：", ...confirm.map((i) => `- ${i}`)] : []),
     ...(issues.length ? ["", "待處理：", ...issues.map((i) => `- ${i}`)] : []),
   ];
-  return { summary_md: lines.join("\n"), done, issues };
+  return { summary_md: lines.join("\n"), done, issues, ...(confirm.length ? { confirm } : {}) };
 }
 
 /** Re-checks that the owner may still edit the study (before each write). */

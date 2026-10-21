@@ -20,6 +20,8 @@
   import type { SuggestionReview } from "#lib/components/suggest/review.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
+  import { goto } from "$app/navigation";
   import { menuContent, menuItem, menuLabel, menuSeparator } from "#lib/components/ui/menu.ts";
   import Segmented from "#lib/components/ui/Segmented.svelte";
   import Select from "#lib/components/ui/Select.svelte";
@@ -50,6 +52,13 @@
   let detail = $state<ProjectDetail>(untrack(() => initial));
   const projectId = untrack(() => initial.project.id);
   const canEdit = $derived(detail.permissions.edit);
+  // Header 刪除 (study editors; same as 設定 → 刪除專案).
+  let deleteProjectOpen = $state(false);
+  async function removeProject() {
+    await api.del(`/latex/${projectId}`);
+    toasts.show(t("crud.latex.deleted", { title: detail.project.title }), "success");
+    await goto(`/studies/${encodeURIComponent(detail.study.slug)}?tab=latex`);
+  }
   const files = $derived(detail.files);
   const root = $derived(files.find(f => f.id === detail.root_file_id) ?? null);
   const fileById = (id: string | null) => files.find(f => f.id === id) ?? null;
@@ -481,6 +490,7 @@
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
+      <DeleteButton class="lg:size-8 lg:min-h-8" label={t("crud.latex.delete")} reason={canEdit ? null : t("crud.deny.study")} onclick={() => (deleteProjectOpen = true)} />
       {#if canEdit}
         <Button variant="ghost" size={viewport.desktop ? "icon-sm" : "icon"} aria-label={t("latex.settings")} title={t("latex.settings")} onclick={() => (settingsOpen = true)}><Settings2 /></Button>
         <AiGate role="writing" inline>
@@ -596,7 +606,7 @@
 <p class="mt-2 hidden text-[11.5px] text-ink-3 lg:block">{t("latex.keys", keys)}</p>
 
 {#if aiBusy}
-  <div class="fixed inset-x-4 bottom-[calc(88px+env(safe-area-inset-bottom))] z-40 mx-auto flex max-w-lg items-center gap-2 rounded-2xl border border-line bg-surface p-3.5 shadow-pop lg:bottom-6" role="status" aria-live="polite">
+  <div class="fixed inset-x-4 bottom-[calc(88px+env(safe-area-inset-bottom))] z-40 mx-auto flex max-w-lg items-center gap-2 rounded-2xl border border-line bg-popover p-3.5 shadow-pop lg:bottom-6" role="status" aria-live="polite">
     <LoaderCircle class="size-4 animate-spin text-ink-2 motion-reduce:animate-none" />
     <p class="flex-1 text-[13px] font-semibold text-ink">{t("latex.ai.working", { action: aiBusy })}</p>
   </div>
@@ -604,6 +614,7 @@
 
 <FilesSheet bind:open={filesOpen} {files} {projectId} {activeId} {canEdit} {uploading} onOpen={f => open(f.id)} onNew={newFile} onUpload={upload} onRename={renameFile} onDelete={f => askDelete(f.id, f.path, f.path)} />
 <VersionsSheet bind:open={versionsOpen} {projectId} {canEdit} onRestored={applyDetail} />
+<ConfirmDialog bind:open={deleteProjectOpen} title={t("crud.latex.deleteTitle", { title: detail.project.title })} description={t("crud.latex.deleteDescription")} confirmLabel={t("crud.latex.delete")} onConfirm={removeProject} />
 {#if canEdit}
   <SettingsSheet bind:open={settingsOpen} {detail} onSaved={reload} />
   <Sheet bind:open={sectionOpen} side="center" title={sectionEdit ? t("latex.section.rename") : t("latex.section.add")} description={sectionEdit ? undefined : t("latex.section.addHint")}>

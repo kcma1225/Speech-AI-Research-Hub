@@ -27,8 +27,8 @@ export interface LibraryConfig {
   baseUrls?: Partial<Record<"openalex" | "s2" | "arxiv" | "crossref" | "acl" | "isca" | "unpaywall", string>>;
   /** Tests: limiter overrides (default: process-wide shared limiters). */
   limiters?: Partial<Record<LimiterName, RateLimiter>>;
-  /** Tests: allow PDF downloads from private addresses. */
-  allowPrivateDownloads?: boolean;
+  /** Tests: allow PDF downloads from private addresses (`true`, or a predicate such as "only the mock server"). */
+  allowPrivateDownloads?: boolean | ((url: URL) => boolean);
 }
 
 export type SearchSource = "openalex" | "s2" | "arxiv" | "crossref" | "acl" | "isca";

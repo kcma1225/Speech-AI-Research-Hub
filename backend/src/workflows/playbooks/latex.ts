@@ -177,7 +177,9 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
     plan: {
       summary: `讀筆記與文獻後規劃 ${titles.length} 個小節，由撰寫者平行撰寫，每節檢查引用；整合後做一次驗證編譯（不改動專案），通過後${target ? `以建議的方式修改 ${target.path}` : `新增章節檔 ${newPath}，並以建議的方式在主檔加入 \\input`}。`,
       outline: subsections.map((s, i) => ({ n: i + 1, title: s.title, points: s.points })),
-      writes: [target ? { kind: "latex_file", label: `對 ${target.path} 的修改建議（你在編輯器逐段接受）` } : { kind: "latex_file", label: `新章節檔 ${newPath} + 主檔加入 \\input 的建議` }],
+      writes: target
+        ? [{ kind: "latex_file", label: `對 ${target.path} 的修改建議（你在編輯器逐段接受）`, effect: "suggestion" as const }]
+        : [{ kind: "latex_file", label: `新章節檔 ${newPath}`, effect: "new" as const }, { kind: "latex_file", label: "主檔加入 \\input 的建議", effect: "suggestion" as const }],
     },
     steps,
   };
@@ -281,7 +283,8 @@ const latexSection: WorkflowPlaybook = {
   titleEn: "Thesis section",
   description: "從筆記與文獻撰寫 LaTeX 章節：平行撰寫小節、檢查引用、驗證編譯，成果以新檔案與建議呈現",
   descriptionEn: "Write a LaTeX section from notes and papers: subsections in parallel, citation checks, verification compile; delivered as a new file and suggestions",
-  autoApprovable: false,
+  // Only a new section file + suggestions (autopilot.ts): auto-approvable under autopilot.
+  autoApprovable: true,
   detect: (req, inputs) => (inputs.project_id ? 0.85 : /latex|章節|論文.*(撰寫|寫)|thesis|related work 章|introduction|方法章|\\section/i.test(req) && !/簡報|投影片/.test(req) ? 0.7 : 0),
   plan,
   execute,

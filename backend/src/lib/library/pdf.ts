@@ -8,8 +8,13 @@ export interface DownloadPdfOptions {
   maxBytes?: number;
   /** Whole download, default 60 s. */
   timeoutMs?: number;
-  /** Allow private/loopback hosts (tests only). */
-  allowPrivate?: boolean;
+  /** Allow private/loopback hosts (tests only): `true`, or a predicate per hop (e.g. only the mock server). */
+  allowPrivate?: boolean | ((url: URL) => boolean);
+  /**
+   * The URL may be a landing page (user-pasted): an HTML response is read (≤ 2 MB) and its
+   * `<meta name="citation_pdf_url">` is followed once (re-validated like any redirect).
+   */
+  followLandingPage?: boolean;
   limiter?: RateLimiter;
   contactEmail?: string;
   signal?: AbortSignal;
@@ -22,10 +27,29 @@ export interface DownloadedPdf {
 }
 
 const PDF_TYPES = /^(application\/(pdf|x-pdf|octet-stream|force-download|download)|binary\/octet-stream)\b/i;
+const HTML_TYPES = /^(text\/html|application\/xhtml\+xml)\b/i;
+const LANDING_MAX = 2 * 1024 * 1024;
+
+/** `<meta name="citation_pdf_url" content="…">` (Highwire tags used by most publishers, ISCA, OpenReview, ACL…). */
+export function citationPdfUrl(html: string, base: URL): string | null {
+  for (const m of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const tag = m[0];
+    if (!/\b(?:name|property)\s*=\s*["']?citation_pdf_url["'\s>/]/i.test(tag)) continue;
+    const c = /\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+    const raw = (c?.[1] ?? c?.[2] ?? c?.[3] ?? "").replace(/&amp;/g, "&").trim();
+    if (!raw) continue;
+    try {
+      return new URL(raw, base).toString();
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}
 
 /**
  * Download a PDF with SSRF checks on every redirect hop, a size cap, a content-type check and the `%PDF-` magic.
- * Throws SourceError (source "download") with a 繁中 message.
+ * Throws SourceError (source "download", with `code`) with a 繁中 message.
  */
 export async function downloadPdf(url: string, opts: DownloadPdfOptions = {}): Promise<DownloadedPdf> {
   const maxBytes = opts.maxBytes ?? 50 * 1024 * 1024;
@@ -34,11 +58,23 @@ export async function downloadPdf(url: string, opts: DownloadPdfOptions = {}): P
   const onAbort = () => ctrl.abort();
   opts.signal?.addEventListener("abort", onAbort);
   const limiter = opts.limiter ?? sharedLimiter("download");
+  const tooLarge = () => new SourceError("download", 413, `PDF 太大（上限 ${Math.round(maxBytes / 1024 / 1024)} MB）`, "too_large");
+  const allowed = (u: string) => {
+    const parsed = new URL(u);
+    return typeof opts.allowPrivate === "function" ? opts.allowPrivate(parsed) : opts.allowPrivate === true;
+  };
+  let followedLanding = !opts.followLandingPage;
   try {
     let current = url;
     for (let hop = 0; hop <= 5; hop++) {
-      const u = opts.allowPrivate ? new URL(current) : await assertPublicUrl(current);
-      if (u.protocol !== "http:" && u.protocol !== "https:") throw new SourceError("download", 0, "只支援 http/https 網址");
+      let u: URL;
+      try {
+        u = allowed(current) ? new URL(current) : await assertPublicUrl(current);
+      } catch (e) {
+        if (e instanceof SourceError) throw e;
+        throw new SourceError("download", 0, "網址格式錯誤", "invalid_url");
+      }
+      if (u.protocol !== "http:" && u.protocol !== "https:") throw new SourceError("download", 0, "只支援 http/https 網址", "invalid_url");
       const res = await limiter
         .schedule(() =>
           fetch(u, {
@@ -48,7 +84,9 @@ export async function downloadPdf(url: string, opts: DownloadPdfOptions = {}): P
           }),
         )
         .catch((e: Error) => {
-          throw new SourceError("download", 0, e.name === "AbortError" ? "下載 PDF 逾時" : "無法下載 PDF");
+          throw e.name === "AbortError"
+            ? new SourceError("download", 0, "下載 PDF 逾時", "timeout")
+            : new SourceError("download", 0, "無法連線到這個網址", "unreachable");
         });
       if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
         await res.body?.cancel().catch(() => {});
@@ -57,43 +95,65 @@ export async function downloadPdf(url: string, opts: DownloadPdfOptions = {}): P
       }
       if (!res.ok) {
         await res.body?.cancel().catch(() => {});
-        throw new SourceError("download", res.status, `下載 PDF 失敗（HTTP ${res.status}）`);
+        if (res.status === 401 || res.status === 403)
+          throw new SourceError("download", res.status, `這個網站需要登入或沒有下載權限（HTTP ${res.status}）`, "login_required");
+        throw new SourceError("download", res.status, `下載 PDF 失敗（HTTP ${res.status}）`, "http_error");
       }
       const ct = (res.headers.get("content-type") ?? "").trim();
+      const len = Number(res.headers.get("content-length"));
+      if (ct && HTML_TYPES.test(ct) && !followedLanding) {
+        followedLanding = true;
+        const html = await readCapped(res, LANDING_MAX).catch(() => null);
+        const next = html ? citationPdfUrl(html.toString("utf8"), u) : null;
+        if (next) {
+          current = next;
+          continue;
+        }
+        throw new SourceError("download", 415, "這個網址是網頁，不是 PDF（可能需要登入或付費）", "not_pdf");
+      }
       if (ct && !PDF_TYPES.test(ct)) {
         await res.body?.cancel().catch(() => {});
-        throw new SourceError("download", 415, "連結不是 PDF（可能需要登入或付費）");
+        throw new SourceError("download", 415, "連結不是 PDF（可能需要登入或付費）", "not_pdf");
       }
-      const len = Number(res.headers.get("content-length"));
       if (Number.isFinite(len) && len > maxBytes) {
         await res.body?.cancel().catch(() => {});
-        throw new SourceError("download", 413, `PDF 太大（上限 ${Math.round(maxBytes / 1024 / 1024)} MB）`);
+        throw tooLarge();
       }
-      const chunks: Buffer[] = [];
-      let size = 0;
-      const reader = res.body?.getReader();
-      if (!reader) throw new SourceError("download", 0, "PDF 內容是空的");
-      for (;;) {
-        const { done, value } = await reader.read().catch((e: Error) => {
-          throw new SourceError("download", 0, e.name === "AbortError" ? "下載 PDF 逾時" : "下載 PDF 中斷");
-        });
-        if (done) break;
-        size += value.byteLength;
-        if (size > maxBytes) {
-          await reader.cancel().catch(() => {});
-          throw new SourceError("download", 413, `PDF 太大（上限 ${Math.round(maxBytes / 1024 / 1024)} MB）`);
-        }
-        chunks.push(Buffer.from(value));
-      }
-      const data = Buffer.concat(chunks);
-      if (!isPdf(data)) throw new SourceError("download", 415, "下載的檔案不是 PDF");
+      const data = await readCapped(res, maxBytes).catch((e: unknown) => {
+        if (e === TOO_LARGE) throw tooLarge();
+        throw e instanceof Error && e.name === "AbortError"
+          ? new SourceError("download", 0, "下載 PDF 逾時", "timeout")
+          : new SourceError("download", 0, "下載 PDF 中斷", "unreachable");
+      });
+      if (!isPdf(data)) throw new SourceError("download", 415, "下載的檔案不是 PDF", "not_pdf");
       return { data, finalUrl: u.toString(), contentType: ct || "application/pdf" };
     }
-    throw new SourceError("download", 0, "轉址次數過多");
+    throw new SourceError("download", 0, "轉址次數過多", "unreachable");
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onAbort);
   }
+}
+
+const TOO_LARGE = Symbol("too large");
+
+/** Reads a response body, aborting (and rejecting with TOO_LARGE) past `max` bytes. */
+async function readCapped(res: Response, max: number): Promise<Buffer> {
+  const reader = res.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      throw TOO_LARGE;
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
 }
 
 /** `%PDF-` within the first 1 KB (some servers prepend junk; PDF readers accept that). */

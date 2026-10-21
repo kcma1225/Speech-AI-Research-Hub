@@ -24,6 +24,7 @@
     { key: "context_window", kind: "int" },
     { key: "max_output_tokens", kind: "int", chatOnly: true },
     { key: "vision", kind: "bool", chatOnly: true },
+    { key: "audio_input", kind: "bool", chatOnly: true },
     { key: "tools", kind: "bool", chatOnly: true },
     { key: "reasoning", kind: "bool", chatOnly: true },
     { key: "json_schema", kind: "bool", chatOnly: true },
@@ -62,7 +63,8 @@
     return String(v);
   }
   /** Value without the manual layer: provider listing, else catalog (what "reset" goes back to). */
-  const underlying = (k: ProfileField) => (model?.api as Record<string, unknown>)?.[k] ?? (model?.catalog as Record<string, unknown>)?.[k];
+  const underlying = (k: ProfileField) =>
+    (model?.api as Record<string, unknown>)?.[k] ?? (model?.catalog as Record<string, unknown>)?.[k] ?? (k === "audio_input" && model?.audio && !model.audio.overridden ? model.audio.detected : undefined);
   const underSrc = (k: ProfileField) => ((model?.api as Record<string, unknown>)?.[k] !== undefined ? "provider_api" : (model?.catalog as Record<string, unknown>)?.[k] !== undefined ? "catalog" : undefined);
 
   function patch(): Record<string, unknown> {
@@ -179,6 +181,9 @@
                 onclick={() => (draft = { ...draft, [f.key]: "" })}><RotateCcw class="size-4" /></button
               >
             </div>
+            {#if f.key === "audio_input"}
+              <p class="text-[12px] leading-relaxed text-ink-3">{model.audio && !model.audio.codec_ok ? t("aiAdmin.asr.codecNo") : t("aiAdmin.asr.fieldHint")}</p>
+            {/if}
           </li>
         {/each}
       </ul>

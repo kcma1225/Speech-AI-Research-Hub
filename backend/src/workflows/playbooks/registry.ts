@@ -8,7 +8,11 @@ import type { WorkflowEnv } from "../env.js";
 export type PlanResult =
   | { kind: "plan"; title?: string; objective: string; criteria: Omit<Criterion, "status">[]; plan: Plan; steps: StepSpec[]; studyId?: string | null }
   /** Blocked: the run waits in `awaiting_input` with this question (e.g. 「這篇論文沒有 PDF…」). */
-  | { kind: "question"; question: string };
+  | { kind: "question"; question: string }
+  /** The paper has no PDF (open access + the record's URL tried): status `needs_pdf` with 「從網址下載 PDF」 / upload. */
+  | { kind: "needs_pdf"; message: string; paperId: string }
+  /** The user chose to skip this item (e.g. 「跳過」 on the missing-PDF card): the run ends `cancelled` / `skipped`. */
+  | { kind: "skip"; message: string };
 
 export type ApprovalEdits = { outline?: { title: string; points: string[] }[]; steps?: { key: string; title?: string; instructions?: string; skip?: boolean }[] };
 

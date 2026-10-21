@@ -15,7 +15,7 @@
     {rows}
     aria-invalid={error ? true : undefined}
     aria-describedby={error || hint ? `${inputId}-desc` : undefined}
-    class="w-full resize-y rounded-xl border bg-surface px-3.5 py-2.5 text-[15px] leading-relaxed text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] sm:text-sm {error ? 'border-danger' : 'border-line-2'}"
+    class="w-full resize-y rounded-xl border bg-raised px-3.5 py-2.5 text-[15px] leading-relaxed text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] sm:text-sm {error ? 'border-danger' : 'border-field-line'}"
     {...rest}
   ></textarea>
   {#if error}<p id="{inputId}-desc" class="text-[12.5px] text-danger" role="alert">{error}</p>{:else if hint}<p id="{inputId}-desc" class="text-[12.5px] text-ink-3">{hint}</p>{/if}

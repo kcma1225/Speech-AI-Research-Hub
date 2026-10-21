@@ -25,7 +25,7 @@
   {#each options as option (option.value)}
     <RadioGroup.Item
       value={option.value}
-      class="inline-flex h-8 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full px-3.5 text-[13px] font-medium whitespace-nowrap text-ink-3 transition-[background-color,color,box-shadow] hover:text-ink data-[state=checked]:bg-surface data-[state=checked]:text-ink data-[state=checked]:shadow-card dark:data-[state=checked]:bg-surface-3 [&_svg]:size-3.5"
+      class="inline-flex h-8 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-full px-3.5 text-[13px] font-medium whitespace-nowrap text-ink-3 transition-[background-color,color,box-shadow] hover:text-ink data-[state=checked]:bg-popover data-[state=checked]:text-ink data-[state=checked]:shadow-card dark:data-[state=checked]:bg-surface-3 [&_svg]:size-3.5"
     >
       {#if option.icon}<option.icon />{/if}
       {option.label}

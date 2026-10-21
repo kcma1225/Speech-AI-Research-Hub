@@ -91,6 +91,10 @@ export async function runView(db: Queryable, r: RunRow) {
     // Question cards (questions.ts): the pending one (`ask_pending`) and the answered ones (「修改答案」).
     asks: Object.values(asksOf(r.state)).map((a) => ({ ...a, pending: r.state?.ask_pending === a.id && r.status === "awaiting_input" })),
     job: job ? { status: job.status, stage: job.stage } : null,
+    batch: r.batch_id ? { id: r.batch_id, index: r.batch_index ?? 0 } : null,
+    // Autopilot approved the plan (autopilot.ts): the card shows 「自動駕駛已自動核准計畫」 with the plan.
+    auto_approved: (r.state?.auto_approved as { at: string; tainted?: boolean } | null | undefined) ?? null,
+    paper_id: typeof r.inputs?.paper_id === "string" ? r.inputs.paper_id : null,
     created_at: r.created_at,
     updated_at: r.updated_at,
     started_at: r.started_at,

@@ -6,7 +6,7 @@ import { libraryKeys, type PaperRow } from "./store.js";
 import type { LibraryService } from "./service.js";
 import type { PaperRecord } from "./types.js";
 
-export type PaperFileSource = "upload" | "open_access" | "import";
+export type PaperFileSource = "upload" | "open_access" | "import" | "url";
 
 /**
  * Stores a PDF for a paper: S3 `library/papers/<paperId>/<fileId>.pdf`, a `paper_files` row, and `papers.pdf_key`

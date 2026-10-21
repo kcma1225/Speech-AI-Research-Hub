@@ -4,11 +4,13 @@
  */
 import { AiError, type AiErrorCode } from "../errors.js";
 import { guardStream, joinUrl, modelsDetail, parseJsonLoose, send, sendJson, serverRoot, sseEvents, timedProbe, type Call } from "../providers/http.js";
-import type { ChatEvent, ChatMessage, ChatRequest, ContentBlock, EmbedRequest, ModelInfo, StopReason, Usage } from "../types.js";
+import type { AudioBlock, ChatEvent, ChatMessage, ChatRequest, ContentBlock, EmbedRequest, ModelInfo, StopReason, Usage } from "../types.js";
 import type { Codec, CodecContext } from "./codec.js";
+import type { Quirks } from "../providers/entry.js";
 import {
   applyEmbedTemplate,
   assistantParts,
+  audioFormatOf,
   batchSize,
   blocksOf,
   chunk,
@@ -45,7 +47,14 @@ function pushToolImages(out: Record<string, unknown>[], results: ContentBlock[])
   out.push({ role: "user", content: [{ type: "text", text: "(Images returned by the tool call above.)" }, ...images.map((img) => ({ type: "image_url", image_url: { url: imageDataUrl(img) } }))] });
 }
 
-export function toOpenAiMessages(messages: ChatMessage[]): Record<string, unknown>[] {
+/** `input_audio` content part in the vendor's shape (see Quirks.audioInputStyle). */
+export function inputAudioPart(b: AudioBlock, style: Quirks["audioInputStyle"] = "object"): Record<string, unknown> {
+  if (style === "string") return { type: "input_audio", input_audio: b.source.data };
+  const data = style === "data_url" ? `data:${b.source.mediaType};base64,${b.source.data}` : b.source.data;
+  return { type: "input_audio", input_audio: { data, format: audioFormatOf(b.source.mediaType) } };
+}
+
+export function toOpenAiMessages(messages: ChatMessage[], audioStyle?: Quirks["audioInputStyle"]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const m of messages) {
     if (m.role === "system") {
@@ -65,7 +74,17 @@ export function toOpenAiMessages(messages: ChatMessage[]): Record<string, unknow
       } else {
         out.push({
           role: "user",
-          content: rest.map((b) => (b.type === "text" ? { type: "text", text: b.text } : b.type === "image" ? { type: "image_url", image_url: { url: imageDataUrl(b) } } : null)).filter(Boolean),
+          content: rest
+            .map((b) =>
+              b.type === "text"
+                ? { type: "text", text: b.text }
+                : b.type === "image"
+                  ? { type: "image_url", image_url: { url: imageDataUrl(b) } }
+                  : b.type === "audio"
+                    ? inputAudioPart(b, audioStyle)
+                    : null,
+            )
+            .filter(Boolean),
         });
       }
     } else {
@@ -85,7 +104,7 @@ export function toOpenAiMessages(messages: ChatMessage[]): Record<string, unknow
 export function buildChatBody(ctx: CodecContext, req: ChatRequest, stream: boolean): Record<string, unknown> {
   ensureToolsSupported(ctx, req);
   const q = ctx.quirks;
-  const body: Record<string, unknown> = { model: req.model, messages: toOpenAiMessages(req.messages), stream };
+  const body: Record<string, unknown> = { model: req.model, messages: toOpenAiMessages(req.messages, ctx.quirks.audioInputStyle), stream };
   if (stream && q.streamUsage !== false) body.stream_options = { include_usage: true };
   if (req.maxTokens) body[q.maxTokensField ?? "max_tokens"] = req.maxTokens;
   if (req.temperature !== undefined) body.temperature = req.temperature;
@@ -299,6 +318,7 @@ export function parseModelList(json: unknown): ModelInfo[] {
       const hints: NonNullable<ModelInfo["hints"]> = {};
       const b = (v: unknown) => (typeof v === "boolean" ? v : undefined);
       hints.tools = b(caps.function_calling) ?? b(caps.tools) ?? b(caps.tool_calling) ?? b(caps.trained_for_tool_use) ?? b(m.supports_tools) ?? b(m.supports_function_calling);
+      hints.audioInput = b(caps.audioInput) ?? b(caps.audio_input) ?? b(caps.audio) ?? b(m.supports_audio_input) ?? b(m.supports_audio);
       hints.vision = b(caps.vision) ?? b(caps.image_input) ?? b(m.supports_image_input) ?? b(m.supports_image_in) ?? b(m.supports_vision) ?? (type === "vlm" ? true : undefined);
       hints.reasoning = b(caps.reasoning) ?? b(caps.thinking) ?? b(m.supports_reasoning);
       hints.jsonSchema = b(caps.structured_outputs) ?? b(caps.json_schema) ?? b(m.supports_response_schema);
@@ -309,7 +329,11 @@ export function parseModelList(json: unknown): ModelInfo[] {
         hints.jsonSchema ??= hints.params.includes("structured_outputs") ? true : undefined;
       }
       const arch = m.architecture as Record<string, unknown> | undefined;
-      if (Array.isArray(arch?.input_modalities)) hints.vision ??= (arch.input_modalities as unknown[]).includes("image");
+      if (Array.isArray(arch?.input_modalities)) {
+        hints.vision ??= (arch.input_modalities as unknown[]).includes("image");
+        hints.audioInput ??= (arch.input_modalities as unknown[]).includes("audio");
+      }
+      if (Array.isArray(m.input_modalities)) hints.audioInput ??= (m.input_modalities as unknown[]).includes("audio");
       for (const k of Object.keys(hints) as (keyof typeof hints)[]) if (hints[k] === undefined) delete hints[k];
       if (Object.keys(hints).length) info.hints = hints;
       return info;

@@ -19,7 +19,6 @@ import { WorkflowEnv } from "./env.js";
 import { asksOf, cardAnswersText, validateCardAnswers } from "./questions.js";
 import { DEFAULT_BUDGET, FINISHED_STATUSES, type Criterion, type RunRow, type StepRow } from "./types.js";
 import { randomUUID } from "node:crypto";
-import type { Db } from "../db.js";
 import { batchPapers, batchRequest, conversationContext, studyFromText } from "./context.js";
 import { lockUserSlots, MAX_ACTIVE_PER_USER, promoteAllQueued, promoteQueued, slotUsage } from "./queue.js";
 
@@ -86,10 +85,10 @@ export async function insertWorkflow(client: Queryable, user: CurrentUser, input
   return (await insertWorkflows(client, user, input)).runs[0]!;
 }
 
-async function announce(app: { db: Db }, runs: RunRow[]) {
+export async function announceRuns(db: Queryable, runs: RunRow[]) {
   for (const run of runs) {
-    await emitRun(app.db, run.id);
-    await insertWorkflowEvent(app.db, run.id, "log", { level: "info", text: run.status === "queued" ? `排隊中：同時最多 ${MAX_ACTIVE_PER_USER} 個工作流程在執行，前面的完成或停下來等你時會自動開始。` : "已收到任務，主要 Agent 開始規劃。" });
+    await emitRun(db, run.id);
+    await insertWorkflowEvent(db, run.id, "log", { level: "info", text: run.status === "queued" ? `排隊中：同時最多 ${MAX_ACTIVE_PER_USER} 個工作流程在執行，前面的完成或停下來等你時會自動開始。` : "已收到任務，主要 Agent 開始規劃。" });
   }
 }
 
@@ -99,7 +98,7 @@ export async function createWorkflow(app: FastifyInstance, user: CurrentUser, in
 
 export async function createWorkflows(app: FastifyInstance, user: CurrentUser, input: CreateInput) {
   const out = await transaction(app.db, (client) => insertWorkflows(client, user, input));
-  await announce(app, out.runs);
+  await announceRuns(app.db, out.runs);
   return out;
 }
 
@@ -157,7 +156,7 @@ export async function startFromChat(app: FastifyInstance, user: CurrentUser, inp
     ["run", { run: agentRunView(out.agentRun) }],
     ["conversation", { conversation: conversationView(out.conversation) }],
   ] as const) await insertEvent(app.db, input.conversationId, out.agentRun.id, type, data as Record<string, unknown>);
-  await announce(app, out.runs);
+  await announceRuns(app.db, out.runs);
   return out.run;
 }
 
@@ -258,7 +257,7 @@ async function reopenForMore(client: Queryable, id: string) {
   const keys = new Set(failed.map((s) => s.key));
   for (const s of failed) {
     const issues = (s.verdict?.issues ?? []).filter((i) => i.severity !== "low").map((i) => i.text);
-    await client.query("UPDATE workflow_steps SET status='pending', error=NULL, round=CASE WHEN $3 THEN round+1 ELSE round END, max_rounds=round+2, inputs = inputs || jsonb_build_object('fix_issues', $2::jsonb) WHERE id=$1", [s.id, JSON.stringify(issues), issues.length > 0 && !!s.output]);
+    await client.query("UPDATE workflow_steps SET status='pending', error=NULL, round=CASE WHEN $3 THEN round+1 ELSE round END, max_rounds=round+2, attempts=round, inputs = inputs || jsonb_build_object('fix_issues', $2::jsonb) WHERE id=$1", [s.id, JSON.stringify(issues), issues.length > 0 && !!s.output]);
   }
   // Dependents (integrate/final) run again after the fixes.
   let grew = true;
@@ -434,7 +433,7 @@ export async function answerWorkflow(app: FastifyInstance, user: CurrentUser, id
       grew = false;
       for (const s of steps) if (!keys.has(s.key) && s.depends_on.some((d) => keys.has(d))) (keys.add(s.key), (grew = true));
     }
-    for (const s of steps) if (keys.has(s.key) || s.kind === "final") await client.query("UPDATE workflow_steps SET status='pending', error=NULL, inputs = inputs || '{\"fix_issues\":[]}'::jsonb WHERE id=$1", [s.id]);
+    for (const s of steps) if (keys.has(s.key) || s.kind === "final") await client.query("UPDATE workflow_steps SET status='pending', error=NULL, attempts=round, inputs = inputs || '{\"fix_issues\":[]}'::jsonb WHERE id=$1", [s.id]);
     const finished = FINISHED_STATUSES.includes(r.status);
     const planningAsk = !card.step_key && !steps.length;
     const status = r.status === "awaiting_plan_approval" || r.status === "paused" ? r.status : planningAsk ? "planning" : "running";

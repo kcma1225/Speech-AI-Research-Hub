@@ -256,7 +256,13 @@ export default async function libraryImports(app: FastifyInstance) {
       if (!batch || batch.status !== "preview") throw conflict("這次匯入已經完成或已取消。");
       const result = await confirmImport(client, batch, input.decisions, user.id, batch.study_id);
       if (pdfData && result.resolved[0]) {
-        await storePaperPdf(client, app.storage, { paperId: result.resolved[0].paperId, data: pdfData, source: "upload", fileName: batch.file_name, userId: user.id });
+        // `/library/pdf-from-url` previews remember the URL (format `pdf-url`).
+        const sourceUrl = batch.format === "pdf-url"
+          ? ((await client.query<{ source_url: string | null }>("SELECT source_url FROM import_batches WHERE id=$1", [batch.id])).rows[0]?.source_url ?? null)
+          : null;
+        await storePaperPdf(client, app.storage, {
+          paperId: result.resolved[0].paperId, data: pdfData, source: batch.format === "pdf-url" ? "url" : "upload", sourceUrl, fileName: batch.file_name, userId: user.id,
+        });
       }
       let jobId: string | null = null;
       const targets = result.papers.map((p) => p.paperId);

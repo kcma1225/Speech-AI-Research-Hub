@@ -135,7 +135,7 @@
       oninput={closeGuard.onFieldEvent}
       onchange={closeGuard.onFieldEvent}
       style={dragStyle}
-      class="fixed z-50 flex flex-col overflow-hidden border border-line bg-surface shadow-pop outline-none {position[side]}">
+      class="fixed z-50 flex flex-col overflow-hidden border border-line bg-popover shadow-pop outline-none {position[side]}">
       <!-- Drag region (phones): grab handle + header. touch-action:none so the browser doesn't scroll instead.
            Pointer-only enhancement: keyboard / screen-reader users close with Esc or the X button. -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->

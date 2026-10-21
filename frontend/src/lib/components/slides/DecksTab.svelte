@@ -132,7 +132,7 @@
         {/if}
         {#if section.decks.length}
           <div class="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
-            {#each section.decks as deck (deck.id)}<DeckCard {deck} showStudy={false} onDelete={canEdit ? () => ((deleting = deck), (deleteOpen = true)) : undefined} />{/each}
+            {#each section.decks as deck (deck.id)}<DeckCard {deck} showStudy={false} canDelete={canEdit} onDelete={() => ((deleting = deck), (deleteOpen = true))} />{/each}
           </div>
         {:else}
           <p class="rounded-2xl border border-dashed border-line-2 px-4 py-6 text-center text-[13px] text-ink-3">{t("slides.study.emptyKind", { kind: t(`slides.kind.${section.kind}`) })}</p>

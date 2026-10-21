@@ -6,7 +6,7 @@ import { AiError, classifyHttpError, parseRetryAfter } from "../errors.js";
 import { guardStream, modelsDetail, send, sendJson, sseEvents, timedProbe, type Call } from "../providers/http.js";
 import type { ChatEvent, ChatMessage, ChatRequest, ModelInfo, StopReason, Usage } from "../types.js";
 import type { Codec, CodecContext } from "./codec.js";
-import { assistantParts, blocksOf, ensureToolsSupported, finishBody, makeState, num, stateFor, textOf, toolResultImages, toolResultText, ToolCalls } from "./shared.js";
+import { assistantParts, blocksOf, ensureAudioSupported, ensureToolsSupported, finishBody, makeState, num, stateFor, textOf, toolResultImages, toolResultText, ToolCalls } from "./shared.js";
 
 export interface AnthropicState {
   /** thinking / redacted_thinking blocks, in order, with signatures. */
@@ -62,6 +62,7 @@ export function toAnthropicMessages(messages: ChatMessage[]): Array<{ role: "use
 
 export function buildAnthropicBody(ctx: CodecContext, req: ChatRequest, vertex: boolean): Record<string, unknown> {
   ensureToolsSupported(ctx, req);
+  ensureAudioSupported(ctx, req, "anthropic-messages");
   const system = req.messages.filter((m) => m.role === "system").map((m) => textOf(m.content)).filter(Boolean).join("\n\n");
   const body: Record<string, unknown> = {
     max_tokens: req.maxTokens ?? Number(ctx.config.defaultMaxTokens ?? 8192),

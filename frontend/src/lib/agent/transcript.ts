@@ -105,9 +105,12 @@ export function latestPlan(calls: ToolCall[]): PlanState | null {
   return { items, explanation, done, total: items.length, current, callId: last.id, updates: plans.length };
 }
 
+/** start_workflow → its run id, or `batch:<id>` for a batch (one run per paper). */
 const workflowIdOf = (c: ToolCall) => {
-  const d = c.result?.data as { workflow_id?: unknown } | null | undefined;
-  return c.tool === "start_workflow" && typeof d?.workflow_id === "string" ? d.workflow_id : null;
+  const d = c.result?.data as { workflow_id?: unknown; batch_id?: unknown } | null | undefined;
+  if (c.tool !== "start_workflow") return null;
+  if (typeof d?.batch_id === "string") return `batch:${d.batch_id}`;
+  return typeof d?.workflow_id === "string" ? d.workflow_id : null;
 };
 export { workflowIdOf };
 

@@ -7,7 +7,7 @@
  */
 import type { CatalogEntry, ModelCapability } from "./types.js";
 
-type Flags = { vision?: boolean; tools?: boolean; reasoning?: boolean; json?: boolean };
+type Flags = { vision?: boolean; audio?: boolean; tools?: boolean; reasoning?: boolean; json?: boolean };
 
 const chat = (id: string, match: RegExp, context_window: number | undefined, max_output_tokens: number | undefined, f: Flags = {}): CatalogEntry => ({
   id,
@@ -17,6 +17,7 @@ const chat = (id: string, match: RegExp, context_window: number | undefined, max
     ...(context_window ? { context_window } : {}),
     ...(max_output_tokens ? { max_output_tokens } : {}),
     vision: f.vision ?? false,
+    audio_input: f.audio ?? false,
     tools: f.tools ?? true,
     reasoning: f.reasoning ?? false,
     ...(f.json !== undefined ? { json_schema: f.json } : {}),
@@ -34,6 +35,9 @@ const VR = { vision: true, reasoning: true } as const;
 const VRJ = { vision: true, reasoning: true, json: true } as const;
 const VJ = { vision: true, json: true } as const;
 const R = { reasoning: true } as const;
+/** Gemini-style: images + audio (+ reasoning, structured output). */
+const VARJ = { vision: true, audio: true, reasoning: true, json: true } as const;
+const VAJ = { vision: true, audio: true, json: true } as const;
 
 // ---------------------------------------------------------------- embeddings (before chat: ids like "qwen3-embedding")
 
@@ -98,7 +102,9 @@ export const OPENAI: CatalogEntry[] = [
   chat("openai.gpt-5-pro", /^gpt-5(\.\d+)?-pro/, 400000, 272000, VRJ),
   chat("openai.gpt-5", /^gpt-5/, 400000, 128000, VRJ),
   chat("openai.gpt-4.1", /^gpt-4\.1/, 1047576, 32768, VJ),
-  chat("openai.gpt-4o-audio", /^gpt-4o(-mini)?-(audio|realtime|search)/, 128000, 16384, { tools: false }),
+  chat("openai.gpt-4o-audio", /^gpt-4o(-mini)?-audio/, 128000, 16384, { audio: true }),
+  chat("openai.gpt-audio", /^gpt-audio/, 128000, 16384, { audio: true }),
+  chat("openai.gpt-4o-realtime", /^gpt-4o(-mini)?-(realtime|search)/, 128000, 16384, { tools: false }),
   chat("openai.gpt-4o", /^(gpt-4o|chatgpt-4o)/, 128000, 16384, VJ),
   chat("openai.gpt-4-turbo", /^gpt-4-turbo/, 128000, 4096, V),
   chat("openai.gpt-4", /^gpt-4(-\d|$)/, 8192, 8192),
@@ -125,12 +131,13 @@ export const ANTHROPIC: CatalogEntry[] = [
 ];
 
 export const GOOGLE: CatalogEntry[] = [
-  chat("google.gemini-3", /^gemini-3/, 1048576, 65536, VRJ),
-  chat("google.gemini-2.5", /^gemini-2\.5/, 1048576, 65536, VRJ),
-  chat("google.gemini-2.0", /^gemini-2\.0/, 1048576, 8192, VJ),
-  chat("google.gemini-1.5-pro", /^gemini-1\.5-pro/, 2097152, 8192, VJ),
-  chat("google.gemini-1.5", /^gemini-1\.5/, 1048576, 8192, VJ),
-  chat("google.gemini", /^gemini/, 1048576, 8192, V),
+  chat("google.gemini-tts", /^gemini-.*-tts/, 32768, 16384, { tools: false }),
+  chat("google.gemini-3", /^gemini-3/, 1048576, 65536, VARJ),
+  chat("google.gemini-2.5", /^gemini-2\.5/, 1048576, 65536, VARJ),
+  chat("google.gemini-2.0", /^gemini-2\.0/, 1048576, 8192, VAJ),
+  chat("google.gemini-1.5-pro", /^gemini-1\.5-pro/, 2097152, 8192, VAJ),
+  chat("google.gemini-1.5", /^gemini-1\.5/, 1048576, 8192, VAJ),
+  chat("google.gemini", /^gemini/, 1048576, 8192, { vision: true, audio: true }),
   chat("google.gemma-3n", /^gemma-?3n/, 32768, 8192, { vision: true, tools: false }),
   chat("google.gemma-3-1b", /^gemma-?3[:-]1b/, 32768, 8192, { tools: false }),
   chat("google.gemma-3", /^gemma-?3/, 131072, 8192, { vision: true, tools: false }),
@@ -151,7 +158,9 @@ export const CHINA: CatalogEntry[] = [
   chat("qwen.qvq", /^qvq/, 131072, 16384, { vision: true, reasoning: true, tools: false }),
   chat("qwen.qwen3-max", /^qwen3?-max/, 262144, 65536, R),
   chat("qwen.qwen3-coder", /^qwen3-coder/, 262144, 65536),
-  chat("qwen.qwen3-omni", /^qwen3-omni/, 65536, 16384, V),
+  chat("qwen.qwen3-omni", /^qwen3-omni/, 65536, 16384, { vision: true, audio: true }),
+  chat("qwen.qwen2.5-omni", /^qwen2\.5-omni|^qwen-omni/, 32768, 8192, { vision: true, audio: true, tools: false }),
+  chat("qwen.qwen-audio", /^qwen2?-audio/, 32768, 8192, { audio: true, tools: false }),
   chat("qwen.qwen3-next", /^qwen3-next/, 262144, 32768, R),
   chat("qwen.qwen-plus", /^qwen-plus/, 1000000, 32768, R),
   chat("qwen.qwen-flash", /^qwen-(flash|turbo)/, 1000000, 32768, R),
@@ -199,6 +208,7 @@ export const OPEN: CatalogEntry[] = [
   chat("meta.llama-guard", /^llama-guard/, 131072, 1024, { tools: false }),
   chat("meta.llama", /^(meta-)?llama/, 4096, 4096, { tools: false }),
   // Mistral
+  chat("mistral.voxtral", /^voxtral-(?!.*transcribe)/, 32768, 8192, { audio: true }),
   chat("mistral.magistral", /^magistral/, 131072, 40000, VR),
   chat("mistral.pixtral", /^pixtral/, 131072, 8192, V),
   chat("mistral.codestral", /^codestral/, 256000, 8192),
@@ -225,7 +235,7 @@ export const OPEN: CatalogEntry[] = [
   chat("cohere.command-r", /^command-r/, 128000, 4000),
   chat("cohere.command", /^command/, 4096, 4000, { tools: false }),
   // Others
-  chat("microsoft.phi-4-multimodal", /^phi-?4-multimodal/, 131072, 4096, { vision: true, tools: false }),
+  chat("microsoft.phi-4-multimodal", /^phi-?4-multimodal/, 131072, 4096, { vision: true, audio: true, tools: false }),
   chat("microsoft.phi-4", /^phi-?4/, 16384, 4096, { tools: false }),
   chat("microsoft.phi-3", /^phi-?3/, 131072, 4096, { tools: false }),
   chat("nvidia.nemotron", /nemotron/, 131072, 8192, R),

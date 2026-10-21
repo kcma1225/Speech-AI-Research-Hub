@@ -17,6 +17,8 @@ export type MeetingCard = {
   studies: { id: string; slug: string; title: string; owner: { id: string; name: string } | null; draft_status: DraftStatus | null }[];
   participants: { id: string; name: string; role: Role }[];
   drafts: { pending: number; confirmed: number; dismissed: number };
+  /** List rows: the caller may delete it (creator, or owner/member of a linked study). */
+  can_delete?: boolean;
 };
 
 export type Segment = { id: number; start: number; end: number; text: string; speaker?: string | null };

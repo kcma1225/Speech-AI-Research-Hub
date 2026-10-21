@@ -6,7 +6,7 @@ import { AiError, classifyHttpError } from "../errors.js";
 import { guardStream, modelsDetail, ndjson, send, sendJson, timedProbe, type Call } from "../providers/http.js";
 import type { ChatEvent, ChatMessage, ChatRequest, EmbedRequest, ModelInfo, StopReason, Usage } from "../types.js";
 import type { Codec, CodecContext } from "./codec.js";
-import { applyEmbedTemplate, assistantParts, batchSize, blocksOf, chunk, ensureToolsSupported, finishBody, finishVectors, genToolId, makeState, num, stateFor, textOf, toolNamesById, toolResultText, wholeToolCall } from "./shared.js";
+import { applyEmbedTemplate, assistantParts, batchSize, blocksOf, chunk, ensureAudioSupported, ensureToolsSupported, finishBody, finishVectors, genToolId, makeState, num, stateFor, textOf, toolNamesById, toolResultText, wholeToolCall } from "./shared.js";
 
 export interface OllamaState {
   thinking?: string;
@@ -52,6 +52,7 @@ function options(ctx: CodecContext, extra: Record<string, unknown> = {}, context
 
 export function buildOllamaBody(ctx: CodecContext, req: ChatRequest): Record<string, unknown> {
   ensureToolsSupported(ctx, req);
+  ensureAudioSupported(ctx, req, "ollama-native");
   const opt: Record<string, unknown> = {};
   if (req.maxTokens) opt.num_predict = req.maxTokens;
   if (req.temperature !== undefined) opt.temperature = req.temperature;

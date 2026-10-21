@@ -17,6 +17,10 @@ export type ActiveAgentRun = {
   budget_pct: number | null;
   tokens: number;
   artifacts: { kind: string; id: string; url: string; title: string }[];
+  /** What waits for the user, the card (`workflow:<id>` | `toolcall:<id>`) and the deep link to it (lib/agent/focus.ts). */
+  action: "approve_plan" | "answer" | "review" | null;
+  focus: string | null;
+  href: string;
   started_at: string;
   updated_at: string;
 };

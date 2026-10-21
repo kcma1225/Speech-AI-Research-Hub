@@ -48,13 +48,13 @@
     {#if pending.length}
       <section aria-label={t("meet.tab.pending")} class="flex flex-col gap-3">
         <h3 class="text-[13px] font-semibold text-ink-3">{t("meet.tab.pending")} <span class="font-normal tabular-nums">{pending.length}</span></h3>
-        <div class="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">{#each pending as meeting (meeting.id)}<MeetingCardView {meeting} {studyId} />{/each}</div>
+        <div class="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">{#each pending as meeting (meeting.id)}<MeetingCardView {meeting} {studyId} onDeleted={id => (meetings = meetings?.filter(m => m.id !== id) ?? null)} />{/each}</div>
       </section>
     {/if}
     {#if others.length}
       <section aria-label={t("meet.tab.all")} class="flex flex-col gap-3">
         {#if pending.length}<h3 class="text-[13px] font-semibold text-ink-3">{t("meet.tab.all")}</h3>{/if}
-        <div class="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">{#each others as meeting (meeting.id)}<MeetingCardView {meeting} {studyId} />{/each}</div>
+        <div class="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">{#each others as meeting (meeting.id)}<MeetingCardView {meeting} {studyId} onDeleted={id => (meetings = meetings?.filter(m => m.id !== id) ?? null)} />{/each}</div>
       </section>
     {/if}
   {/if}

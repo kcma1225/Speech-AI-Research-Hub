@@ -42,6 +42,16 @@ export function modelsFor(models: ModelProfile[] | null, cap: ModelCapability, i
   return (models ?? []).filter(m => m.fields.capability === cap && (includeHidden || m.enabled) && m.provider_family === (cap === "asr" ? "asr" : "llm"));
 }
 
+/** Multimodal chat models that can transcribe audio (offered to the speech roles next to dedicated ASR models). */
+export function audioModelsFor(models: ModelProfile[] | null, includeHidden = false): ModelProfile[] {
+  return (models ?? []).filter(m => m.provider_family === "llm" && m.fields.capability === "chat" && m.audio?.audio === true && (includeHidden || m.enabled));
+}
+
+/** Models a group member / binding of `cap` may use: speech also takes audio-capable chat models. */
+export function memberModelsFor(models: ModelProfile[] | null, cap: ModelCapability, includeHidden = false): ModelProfile[] {
+  return cap === "asr" ? [...modelsFor(models, cap, includeHidden), ...audioModelsFor(models, includeHidden)] : modelsFor(models, cap, includeHidden);
+}
+
 /** Group ids reachable from `id` (itself included) — a group cannot be dropped into any of them. */
 export function descendants(groups: Group[] | null, id: string): Set<string> {
   const out = new Set<string>();

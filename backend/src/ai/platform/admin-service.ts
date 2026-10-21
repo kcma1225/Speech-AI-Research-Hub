@@ -12,6 +12,7 @@ import { findCycle, groupDepth, groupIdsIn, leaves, MAX_GROUP_DEPTH, resolveGrou
 import { catalogLookup, cleanFields, type ModelCapability, type ProfileField } from "../catalog/index.js";
 import { applyOverridePatch, ensureModel, MODEL_COLUMNS, resolveProfile, withProfile, type ModelRecord, type ModelRow } from "./models.js";
 import { modelVision } from "./vision.js";
+import { modelAudio } from "./audio.js";
 import { decryptJson, encryptJson, hasProviderKey, oauthAad, secretsAad } from "./crypto.js";
 import { PlatformError } from "./errors.js";
 import { CHAT_PLATFORM_PARAMS, EMBED_PLATFORM_PARAMS, memberParamFields, validateMemberParams } from "./params.js";
@@ -57,7 +58,7 @@ export function registryPayload() {
     llm,
     asr,
     roles: AI_ROLES.map((role) => ({ role, capability: ROLE_CAPABILITY[role], label_zh: ROLE_LABEL_ZH[role] })),
-    platform_params: { chat: CHAT_PLATFORM_PARAMS, embedding: EMBED_PLATFORM_PARAMS, asr: memberParamFields("asr", "openai") },
+    platform_params: { chat: CHAT_PLATFORM_PARAMS, embedding: EMBED_PLATFORM_PARAMS, asr: memberParamFields("asr", "openai"), asr_llm: memberParamFields("asr", "openai-compatible") },
     live_kinds: liveKinds(),
     secrets_key_configured: hasProviderKey(),
   };
@@ -240,6 +241,8 @@ export async function draftProvider(db: Db, input: ProviderInput & { base_id?: s
 // ---------------------------------------------------------------- model profiles
 
 const familyFor = (c: ModelCapability): ProviderFamily => (c === "asr" ? "asr" : "llm");
+/** Accounts usable for a capability: speech roles also take multimodal chat models with audio input (LLM accounts). */
+const familyOk = (family: ProviderFamily, c: ModelCapability) => family === familyFor(c) || (c === "asr" && family === "llm");
 
 const FIELD_LABEL_ZH: Record<ProfileField, string> = {
   display_name: "顯示名稱",
@@ -247,6 +250,7 @@ const FIELD_LABEL_ZH: Record<ProfileField, string> = {
   context_window: "上下文長度",
   max_output_tokens: "最大輸出",
   vision: "視覺",
+  audio_input: "音訊輸入",
   tools: "工具呼叫",
   reasoning: "推理",
   json_schema: "結構化輸出",
@@ -279,6 +283,8 @@ export function publicModel(m: ModelRecord, snap: ConfigSnapshot) {
     catalog: p ? catalogLookup(m.model_id, p.family).fields : {},
     catalog_id: m.profile.catalog_id,
     vision: p ? modelVision(p, m.model_id, m.profile) : null,
+    /** Audio input (speech-to-text by a multimodal chat model; see audio.ts). */
+    audio: p ? modelAudio(p, m.model_id, m.profile) : null,
     used_by: modelUsage(snap, m.id),
   };
 }
@@ -379,8 +385,14 @@ function modelIssues(snap: ConfigSnapshot, m: ModelRecord, capability: ModelCapa
   const p = snap.providers.get(m.provider_id);
   if (!p) return ["找不到這個模型的供應商帳號。"];
   const out: string[] = [];
-  if (p.family !== familyFor(capability)) out.push(`「${p.name}」不能用在${capability === "asr" ? "語音" : "文字"}功能。`);
-  else if (p.family === "llm") {
+  if (!familyOk(p.family, capability)) out.push(`「${p.name}」不能用在${capability === "asr" ? "語音" : "文字"}功能。`);
+  else if (p.family === "llm" && capability === "asr") {
+    // Speech-to-text by a multimodal chat model: needs a chat model whose protocol and profile accept audio.
+    const a = modelAudio(p, m.model_id, m.profile);
+    if (!a.codec_ok) out.push(`「${p.name}」的連線方式無法傳送音訊（目前支援 OpenAI 相容 Chat Completions 與 Gemini），不能用在語音轉文字。`);
+    else if (m.profile.fields.capability !== "chat") out.push(`「${m.model_id}」是${capLabel(m.profile.fields.capability)}模型，不能用在語音轉文字。`);
+    else if (!a.audio) out.push(`「${m.model_id}」不支援音訊輸入，不能用在語音轉文字。若確定支援，可在「模型」分頁開啟「音訊輸入」。`);
+  } else if (p.family === "llm") {
     const caps = getProvider(p.kind)?.capabilities;
     if (capability === "chat" && !caps?.chat) out.push(`「${p.name}」不支援聊天。`);
     if (capability === "embedding" && !caps?.embeddings) out.push(`「${p.name}」不支援 embedding。`);
@@ -420,7 +432,7 @@ async function prepareMembers(client: Queryable, snap: ConfigSnapshot, groupId: 
       const id = m.model?.trim();
       if (!p) issues.push({ index, key: "provider_id", message_zh: "請選擇供應商帳號。" });
       else if (!id) issues.push({ index, key: "model", message_zh: "請填寫模型。" });
-      else if (p.family !== familyFor(input.capability)) issues.push({ index, key: "provider_id", message_zh: `「${p.name}」不能用在${input.capability === "asr" ? "語音" : "文字"}功能。` });
+      else if (!familyOk(p.family, input.capability)) issues.push({ index, key: "provider_id", message_zh: `「${p.name}」不能用在${input.capability === "asr" ? "語音" : "文字"}功能。` });
       else {
         const row = await ensureModel(client, p, id, input.capability);
         model = withProfile(p, row);
@@ -590,7 +602,7 @@ export async function bindRoles(platform: AiPlatform, roles: AiRole[], target: T
     if (!modelRef) {
       const p = target.provider_id ? snap.providers.get(target.provider_id) : undefined;
       if (!p || !target.model?.trim()) throw new PlatformError("route_invalid", { message_zh: "請選擇模型。" });
-      if (p.family !== familyFor(capability)) throw new PlatformError("capability_mismatch");
+      if (!familyOk(p.family, capability)) throw new PlatformError("capability_mismatch");
       modelRef = (await ensureModel(platform.db, p, target.model, capability)).id;
       snap = await loadSnapshot(platform.db);
     }

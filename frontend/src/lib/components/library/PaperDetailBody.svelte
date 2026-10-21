@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { BookOpen, Download, ExternalLink, FileSearch, FileUp, Link2, Pencil, Plus, Sparkles, Trash2, Waypoints, X } from "@lucide/svelte";
+  import { BookOpen, Download, ExternalLink, FileSearch, FileUp, Link, Link2, Pencil, Plus, Sparkles, Trash2, Waypoints } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
@@ -11,6 +11,7 @@
   import { session } from "#lib/stores/session.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
   import Pill from "#lib/components/ui/Pill.svelte";
   import Segmented from "#lib/components/ui/Segmented.svelte";
   import Select from "#lib/components/ui/Select.svelte";
@@ -23,6 +24,7 @@
   import MarkdownView from "#lib/components/markdown/MarkdownView.svelte";
   import AiDraftDialog from "./AiDraftDialog.svelte";
   import CitationBox from "./CitationBox.svelte";
+  import PdfUrlForm from "./PdfUrlForm.svelte";
   import PaperEditSheet from "./PaperEditSheet.svelte";
   import TagInput from "./TagInput.svelte";
   import { uploadMdImage } from "#lib/components/doc-import/api.ts";
@@ -150,6 +152,18 @@
     }
     toasts.show(t("crud.paper.pdfRemoved"), "success");
     onChanged?.();
+  }
+  // 「從網址下載」 (POST /library/papers/:id/pdf-from-url): same permission as upload.
+  let urlOpen = $state(false);
+  async function downloadFromUrl(url: string): Promise<string | null> {
+    if (!paper) return null;
+    const r = await requestRaw<{ paper: PaperDetail }>("POST", `/library/papers/${paper.id}/pdf-from-url`, { url });
+    if (!r.ok) return r.data.error ?? t("common.error");
+    paper = r.data.paper;
+    urlOpen = false;
+    toasts.show(t("library.pdfUrl.done"), "success");
+    onChanged?.();
+    return null;
   }
   async function fetchPdf() {
     if (!paper) return;
@@ -305,8 +319,10 @@
           <Button href={pdfUrl(paper.id)} target="_blank"><ExternalLink />{t("library.pdf.openTab")}</Button>
           <Button variant="ghost" href={pdfUrl(paper.id, true)}><Download />{t("library.pdf.download")}</Button>
           {#if paper.permissions.edit}<Button variant="ghost" loading={uploading} onclick={() => fileInput?.click()}><FileUp />{t("library.pdf.replace")}</Button>{/if}
+          {#if paper.permissions.edit}<Button variant="ghost" aria-expanded={urlOpen} onclick={() => (urlOpen = !urlOpen)}><Link />{t("library.pdfUrl.toggle")}</Button>{/if}
           {#if paper.permissions.edit && paper.files.length}<Button variant="ghost" class="text-danger hover:text-danger" onclick={() => (removePdfOpen = true)}><Trash2 />{t("crud.paper.removePdf")}</Button>{/if}
         </div>
+        {#if urlOpen && paper.permissions.edit}<PdfUrlForm onDownload={downloadFromUrl} autofocus />{/if}
         <p class="text-[12px] text-ink-3">{t("library.pdf.privateNote")}</p>
       {:else}
         <div class="rounded-2xl border border-dashed border-line-2 p-4">
@@ -316,7 +332,9 @@
             <div class="mt-3 flex flex-wrap gap-2">
               <Button loading={fetching} onclick={fetchPdf}><FileSearch />{fetching ? t("library.pdf.fetching") : t("library.pdf.fetch")}</Button>
               <Button variant="ghost" loading={uploading} onclick={() => fileInput?.click()}><FileUp />{t("library.pdf.upload")}</Button>
+              <Button variant="ghost" aria-expanded={urlOpen} onclick={() => (urlOpen = !urlOpen)}><Link />{t("library.pdfUrl.toggle")}</Button>
             </div>
+            {#if urlOpen}<div class="mt-3"><PdfUrlForm onDownload={downloadFromUrl} autofocus /></div>{/if}
           {/if}
         </div>
       {/if}
@@ -388,8 +406,9 @@
       {#if paper.added_by}<span class="mr-auto text-[12px] text-ink-3">{t("library.detail.addedBy", { name: paper.added_by.name })} · {relativeTime(paper.created_at)}</span>{/if}
       {#if layout === "sheet"}<Button size="sm" variant="ghost" href={readerHref}><BookOpen />{t("library.detail.openFull")}</Button>{/if}
       {#if paper.permissions.edit}<Button size="sm" variant="ghost" onclick={() => (editOpen = true)}><Pencil />{t("library.detail.edit")}</Button>{/if}
-      {#if canEditStudy}<Button size="sm" variant="ghost" onclick={() => (removeOpen = true)}><X />{t("library.removeFromStudy")}</Button>{/if}
-      {#if paper.permissions.delete && !sp}<Button size="sm" variant="danger" onclick={() => (deleteOpen = true)}><Trash2 />{t("library.detail.delete")}</Button>{/if}
+      <!-- Always visible: without permission they explain who may remove / delete (tooltip / tap). -->
+      {#if sp}<DeleteButton labelled label={t("library.removeFromStudy")} reason={canEditStudy ? null : t("crud.deny.study")} onclick={() => (removeOpen = true)} />{/if}
+      {#if !sp}<DeleteButton labelled class={paper.permissions.delete ? "bg-danger-soft text-danger!" : ""} label={t("library.detail.delete")} reason={paper.permissions.delete ? null : paper.studies.length ? t("crud.deny.paperInUse", { n: paper.studies.length }) : t("crud.deny.paper")} onclick={() => (deleteOpen = true)} />{/if}
     </footer>
   </div>
 

@@ -12,7 +12,7 @@ import { meetingKeys } from "../lib/meetings/keys.js";
 import { enqueueAnalyze, enqueueTranscribe, jobActive, registerMeetingMediaFinalizer } from "../lib/meetings/media.js";
 import {
   checkDecks, checkStudies, checkUsers, currentTranscript, jobInfo, listDrafts, listMeetings, mediaView, meetingCard, meetingDecks,
-  meetingPermissions, meetingStudies, pickCurrentTranscript, refreshStatus, requireMeeting, requireMeetingEditor, setDecks,
+  meetingPermissions, meetingStudies, withDeletePermission, pickCurrentTranscript, refreshStatus, requireMeeting, requireMeetingEditor, setDecks,
   setParticipants, setStudies, speakerMap, speakerNames, type MediaRow, type MeetingRow, type MeetingStatus, type TranscriptRow,
 } from "../lib/meetings/store.js";
 import meetingMedia from "./meetings-media.js";
@@ -174,7 +174,7 @@ export default async function meetingRoutes(app: FastifyInstance) {
       else if (z.uuid().safeParse(q.person).success) person = q.person;
       else throw badRequest("篩選條件不正確。");
     }
-    const meetings = await listMeetings(app.db, { when: q.when, study, person, q: q.q, status: q.status as MeetingStatus | undefined, limit: q.limit });
+    const meetings = await withDeletePermission(app.db, await listMeetings(app.db, { when: q.when, study, person, q: q.q, status: q.status as MeetingStatus | undefined, limit: q.limit }), user.id);
     return reply.header("Cache-Control", "no-store").send({ meetings });
   });
 
@@ -182,7 +182,7 @@ export default async function meetingRoutes(app: FastifyInstance) {
     const user = await requireUser(request);
     const { ref } = parse(z.object({ ref: z.string().min(1).max(80) }), request.params);
     const access = await loadStudyAccess(app.db, ref, user);
-    const meetings = await listMeetings(app.db, { study: access.study.id, when: "all" });
+    const meetings = await withDeletePermission(app.db, await listMeetings(app.db, { study: access.study.id, when: "all" }), user.id);
     return reply.header("Cache-Control", "no-store").send({ meetings, permissions: permissionsOf(access) });
   });
 
@@ -257,7 +257,7 @@ export default async function meetingRoutes(app: FastifyInstance) {
     const mediaIds = await transaction(app.db, async client => {
       const meeting = await requireMeeting(client, id, true);
       const permissions = await meetingPermissions(client, meeting, user);
-      if (!permissions.delete) throw forbidden("只有會議建立者或管理員可以刪除會議。");
+      if (!permissions.delete) throw forbidden("只有會議建立者或相關研究的成員可以刪除會議。");
       const media = await client.query<{ id: string; job_id: string | null }>("SELECT id,job_id FROM meeting_media WHERE meeting_id=$1", [id]);
       for (const jobId of [meeting.transcribe_job_id, meeting.analyze_job_id, ...media.rows.map(m => m.job_id)]) if (jobId) await cancelJob(client, jobId);
       await client.query("DELETE FROM meetings WHERE id=$1", [id]);

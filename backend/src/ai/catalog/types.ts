@@ -13,6 +13,8 @@ export type ProfileFields = {
   /** Max output tokens per request. */
   max_output_tokens?: number;
   vision?: boolean;
+  /** Accepts audio content parts (speech transcription by a multimodal chat model). */
+  audio_input?: boolean;
   tools?: boolean;
   reasoning?: boolean;
   json_schema?: boolean;
@@ -33,6 +35,7 @@ export const PROFILE_FIELDS: ProfileField[] = [
   "context_window",
   "max_output_tokens",
   "vision",
+  "audio_input",
   "tools",
   "reasoning",
   "json_schema",
@@ -47,6 +50,7 @@ export const FIELD_TYPES: Record<ProfileField, "string" | "capability" | "intege
   context_window: "integer",
   max_output_tokens: "integer",
   vision: "boolean",
+  audio_input: "boolean",
   tools: "boolean",
   reasoning: "boolean",
   json_schema: "boolean",

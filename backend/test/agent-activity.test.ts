@@ -38,10 +38,10 @@ run("agent activity + AI usage", () => {
     return (await t.db.query<{ id: string }>("INSERT INTO agent_messages(conversation_id,run_id,role,text) VALUES($1,$2,$3,$4) RETURNING id", [conv, runId, role, text])).rows[0]!.id;
   }
   async function toolCall(conv: string, runId: string, messageId: string, position: number, tool: string, status: string, args: object = {}, summary = "") {
-    await t.db.query(
-      `INSERT INTO tool_calls(run_id,conversation_id,message_id,step,position,provider_call_id,tool,args,risk,status,summary) VALUES($1,$2,$3,1,$4,$5,$6,$7,'read',$8,$9)`,
+    return (await t.db.query<{ id: string }>(
+      `INSERT INTO tool_calls(run_id,conversation_id,message_id,step,position,provider_call_id,tool,args,risk,status,summary) VALUES($1,$2,$3,1,$4,$5,$6,$7,'read',$8,$9) RETURNING id`,
       [runId, conv, messageId, position, randomUUID(), tool, JSON.stringify(args), status, summary],
-    );
+    )).rows[0]!.id;
   }
 
   it("lists my active workflow and assistant runs with needs-you states, never other users' runs", async () => {
@@ -58,7 +58,8 @@ run("agent activity + AI usage", () => {
     )).rows[0]!.id;
     await t.db.query("INSERT INTO workflow_steps(run_id,key,position,role,title,status) VALUES($1,'a',0,'researcher','讀論文','passed'),($1,'b',1,'writer','撰寫','running'),($1,'c',2,'verifier','驗收','pending')", [wf]);
     await t.db.query(`INSERT INTO workflow_events(run_id,type,data) VALUES($1,'activity','{"step_key":"b","role":"writer","text":"撰寫 §2 方法比較"}')`, [wf]);
-    await t.db.query("INSERT INTO workflow_runs(user_id,playbook,title,request,status) VALUES($1,'generic','等確認','x','awaiting_plan_approval')", [alice.id]);
+    const planConv = await conversation(alice.id, "交給 Agent");
+    const wfPlan = (await t.db.query<{ id: string }>("INSERT INTO workflow_runs(user_id,playbook,title,request,status,conversation_id) VALUES($1,'generic','等確認','x','awaiting_plan_approval',$2) RETURNING id", [alice.id, planConv])).rows[0]!.id;
     await t.db.query("INSERT INTO workflow_runs(user_id,playbook,title,request,status) VALUES($1,'generic','已完成','x','done')", [alice.id]);
     await t.db.query("INSERT INTO workflow_runs(user_id,playbook,title,request,status) VALUES($1,'generic','別人的','x','running')", [bob.id]);
 
@@ -75,12 +76,13 @@ run("agent activity + AI usage", () => {
     const r2 = await agentRun(c2, alice.id, "awaiting_approval");
     await message(c2, null, "user", "建立待辦");
     const m2 = await message(c2, r2, "assistant");
-    await toolCall(c2, r2, m2, 0, "create_task", "pending_approval", {}, "建立待辦〈讀論文〉");
+    const consent = await toolCall(c2, r2, m2, 0, "create_task", "pending_approval", {}, "建立待辦〈讀論文〉");
 
     const c3 = await conversation(alice.id, "問我問題");
     const r3 = await agentRun(c3, alice.id, "done", { stop_reason: "awaiting_input", finished: true });
     await message(c3, null, "user", "訪談我");
-    await message(c3, r3, "assistant", "請回答");
+    const m3 = await message(c3, r3, "assistant", "請回答");
+    const ask = await toolCall(c3, r3, m3, 0, "ask_user", "done", { questions: [{ id: "q1", question: "哪一篇？", options: [] }] });
 
     const c4 = await conversation(alice.id, "已回答");
     const r4 = await agentRun(c4, alice.id, "done", { stop_reason: "awaiting_input", finished: true });
@@ -109,6 +111,13 @@ run("agent activity + AI usage", () => {
     expect(a1).toMatchObject({ kind: "assistant", status: "running", conversation_id: c1, plan: { done: 1, total: 3, current: "讀方法" }, current: { role: "read_paper", text: "閱讀論文 §3" }, step: { step: 3, max: 25 }, tokens: 1200 });
     expect(body.runs.find((r) => r.id === r2)).toMatchObject({ status: "awaiting_approval", needs_you: true, current: { text: "建立待辦〈讀論文〉" } });
     expect(body.runs.find((r) => r.id === r3)).toMatchObject({ status: "awaiting_input", needs_you: true });
+
+    // Deep links to the exact card that waits for the user.
+    expect(w).toMatchObject({ action: null, focus: `workflow:${wf}`, href: `/assistant/workflows?run=${wf}` });
+    expect(body.runs.find((r) => r.id === wfPlan)).toMatchObject({ action: "approve_plan", focus: `workflow:${wfPlan}`, href: `/assistant/${planConv}?focus=workflow:${wfPlan}` });
+    expect(body.runs.find((r) => r.id === r2)).toMatchObject({ action: "review", focus: `toolcall:${consent}`, href: `/assistant/${c2}?focus=toolcall:${consent}` });
+    expect(body.runs.find((r) => r.id === r3)).toMatchObject({ action: "answer", focus: `toolcall:${ask}`, href: `/assistant/${c3}?focus=toolcall:${ask}` });
+    expect(a1).toMatchObject({ action: null, focus: null, href: `/assistant/${c1}` });
 
     // Bob sees only his own run; an admin account has no workspace.
     const bobRuns = (await get("/api/workflows/active", bob.cookie)).json() as { runs: { title: string }[] };

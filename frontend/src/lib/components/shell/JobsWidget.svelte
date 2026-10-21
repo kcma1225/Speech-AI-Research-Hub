@@ -22,6 +22,8 @@
   };
   // Stages are machine ids ("generating", "waiting_llm"…): show a translated label, never the raw id.
   const stageLabel = (stage: string | null | undefined) => {
+    // Already a 繁中 label from the backend (workflow states: 需要 PDF, 等待確認計畫…).
+    if (stage && /[^\x00-\x7f]/.test(stage)) return stage;
     const key = `jobs.stage.${stage ?? ""}` as MessageKey;
     const text = t(key);
     return text === key ? t("jobs.working") : text;

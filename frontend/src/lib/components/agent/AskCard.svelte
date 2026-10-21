@@ -40,6 +40,10 @@
   let visited = $state(1);
   // svelte-ignore state_referenced_locally
   let open = $state(!deferred);
+  // A deep link to this card (lib/agent/focus.ts) lifts `deferred` while it is mounted: open it.
+  $effect(() => {
+    if (!deferred) open = true;
+  });
   let busy = $state(false);
   let body = $state<HTMLElement | null>(null);
 
@@ -160,7 +164,7 @@
 </script>
 
 {#if !open}
-  <div class="flex flex-wrap items-center gap-3 rounded-[20px] border border-line bg-surface px-4 py-3 text-[13.5px] text-ink-2">
+  <div class="flex flex-wrap items-center gap-3 rounded-[20px] border border-line bg-raised px-4 py-3 text-[13.5px] text-ink-2">
     <MessageCircleQuestion class="size-4 shrink-0 text-ink-3" />
     <span class="min-w-0 flex-1">{t("agent.ask.unanswered", { n: questions.length })}</span>
     <Button size="sm" variant="secondary" onclick={() => (open = true)}>{t("agent.ask.resume")}</Button>
@@ -168,7 +172,7 @@
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions (keyboard shortcuts for the controls inside) -->
   <section
-    class="ask-card relative flex flex-col rounded-[22px] border border-line bg-surface text-ink shadow-[0_1px_0_var(--line),0_8px_24px_-16px_rgb(0_0_0/0.25)]"
+    class="ask-card relative flex flex-col rounded-[22px] border border-line bg-raised text-ink shadow-[0_1px_0_var(--line),0_8px_24px_-16px_rgb(0_0_0/0.25)]"
     aria-labelledby="{uid}-title"
     {onkeydown}
   >
@@ -300,7 +304,7 @@
       {/key}
     </div>
 
-    <footer class="sticky bottom-0 z-[1] flex items-center gap-2 rounded-b-[22px] border-t border-line bg-surface/95 px-3 py-2.5 backdrop-blur sm:px-4">
+    <footer class="sticky bottom-0 z-[1] flex items-center gap-2 rounded-b-[22px] border-t border-line bg-raised/95 px-3 py-2.5 backdrop-blur sm:px-4">
       {#if step > 0}
         <Button size="sm" variant="ghost" onclick={() => go(step - 1)} aria-label={t("agent.ask.back")}><ArrowLeft />{t("agent.ask.back")}</Button>
       {:else if editing && onCancel}

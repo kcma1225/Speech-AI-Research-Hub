@@ -257,6 +257,17 @@ describe.skipIf(!hasTestDb)("studies API", () => {
     expect(json(await get(carol, `/api/studies?member=${prof.id}`)).studies.map((s: any) => s.id)).toEqual([study.id]);
     expect(json(await get(bob, "/api/studies?member=me")).studies).toHaveLength(2);
     expect(json(await get(carol, "/api/studies?member=me")).studies).toEqual([]);
+    // Scope switch: counts for both scopes share the other filters.
+    const labView = json(await get(alice, "/api/studies"));
+    expect(labView.counts).toEqual({ mine: 1, lab: 2 });
+    expect(labView.studies).toHaveLength(2);
+    const mineView = json(await get(alice, "/api/studies?scope=mine"));
+    expect(mineView.counts).toEqual({ mine: 1, lab: 2 });
+    expect(mineView.studies.map((s: any) => s.id)).toEqual([study.id]);
+    expect(mineView.studies[0].my_role).toBe("owner");
+    expect(json(await get(carol, "/api/studies?scope=mine")).counts).toEqual({ mine: 0, lab: 2 });
+    expect(json(await get(alice, "/api/studies?scope=lab&q=side")).counts).toEqual({ mine: 0, lab: 1 });
+    expect((await get(alice, "/api/studies?scope=bogus")).statusCode).toBe(400);
     expect(json(await get(carol, `/api/studies?stage=${encodeURIComponent("實驗")}`)).studies.map((s: any) => s.id)).toEqual([study.id]);
     expect(json(await get(carol, "/api/studies?q=side")).studies.map((s: any) => s.title)).toEqual(["Bob's side project"]);
     expect(json(await get(carol, "/api/studies?q=%25")).studies).toEqual([]);

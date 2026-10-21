@@ -32,8 +32,9 @@
     <MessageCircleQuestion class="size-4 shrink-0 text-ink-3" aria-hidden="true" />
     <p class="min-w-0 flex-1 text-[13px] font-semibold break-words text-ink">{ask.title}</p>
     {#if ask.pending}<Pill tone="butter">{t("wf.ask.waiting")}</Pill>{/if}
-    {#if ask.ai_suggested}<Pill tone="lilac"><Sparkles class="size-3" aria-hidden="true" />{t("wf.ask.aiOptions")}</Pill>{/if}
+    {#if ask.ai_filled && !ask.pending}<Pill tone="butter"><Sparkles class="size-3" aria-hidden="true" />{t("wf.ask.aiFilled")}</Pill>{:else if ask.ai_suggested}<Pill tone="lilac"><Sparkles class="size-3" aria-hidden="true" />{t("wf.ask.aiOptions")}</Pill>{/if}
   </div>
+  {#if ask.ai_filled && !ask.pending && !editing}<p class="text-[12.5px] leading-relaxed text-ink-3">{t("wf.ask.aiFilledHint")}</p>{/if}
   {#if ask.pending || editing}
     {#key `${ask.id}:${editing}:${ask.answered_at ?? ""}`}
       <AskCard {args} initial={ask.answers ?? []} {editing} onSubmit={submit} onCancel={editing ? () => (editing = false) : undefined} />

@@ -82,7 +82,7 @@ export function toGeminiContents(messages: ChatMessage[]): Array<{ role: "user" 
             ? { inlineData: { mimeType: b.source.mediaType, data: b.source.data } }
             : { fileData: { fileUri: b.source.url, mimeType: b.source.mediaType ?? guessMime(b.source.url) } },
         );
-      }
+      } else if (b.type === "audio") parts.push({ inlineData: { mimeType: b.source.mediaType, data: b.source.data } });
     }
     push("user", parts);
   }

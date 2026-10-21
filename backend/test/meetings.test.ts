@@ -152,8 +152,19 @@ describe.skipIf(!hasTestDb)("meetings", () => {
     expect((await send(outsider, "PATCH", `/api/meetings/${meetingId}`, { title: "x" })).statusCode).toBe(403);
     // Member of an included study (not a participant) may edit.
     expect((await send(dee, "PATCH", `/api/meetings/${meetingId}`, { notes: "Dee 補充" })).statusCode).toBe(200);
-    // Delete: creator or admin only.
-    expect((await send(bo, "DELETE", `/api/meetings/${meetingId}`)).statusCode).toBe(403);
+    // Delete: the creator or an owner/member of a linked study; participants (the professor), advisors and
+    // outsiders may not — the detail and the list cards say so (`permissions.delete`, `can_delete`).
+    expect((await send(outsider, "DELETE", `/api/meetings/${meetingId}`)).statusCode).toBe(403);
+    expect((await send(prof, "DELETE", `/api/meetings/${meetingId}`)).statusCode).toBe(403);
+    expect(json(await get(bo, `/api/meetings/${meetingId}`)).permissions.delete).toBe(true);
+    expect(json(await get(dee, `/api/meetings/${meetingId}`)).permissions.delete).toBe(true);
+    expect(json(await get(prof, `/api/meetings/${meetingId}`)).permissions.delete).toBe(false);
+    const card = (who: Session) => get(who, "/api/meetings").then(r => json(r).meetings.find((m: any) => m.id === meetingId));
+    expect((await card(ya)).can_delete).toBe(true);
+    expect((await card(dee)).can_delete).toBe(true);
+    expect((await card(prof)).can_delete).toBe(false);
+    expect((await card(outsider)).can_delete).toBe(false);
+    expect(json(await get(dee, `/api/studies/${studyC.slug}/meetings`)).meetings[0].can_delete).toBe(true);
     // Anyone may give feedback (professor here).
     const fb = await send(prof, "POST", `/api/meetings/${meetingId}/feedback`, { body_md: "柏宇的標註規範要先定好；雅婷的 DER 表格要有 baseline。" });
     expect(fb.statusCode).toBe(201);
@@ -496,8 +507,8 @@ describe.skipIf(!hasTestDb)("meetings", () => {
       }
     });
 
-    it("deleting a meeting removes its objects (creator only)", async () => {
-      expect((await send(bo, "DELETE", `/api/meetings/${recMeeting}`)).statusCode).toBe(403);
+    it("deleting a meeting removes its objects (creator or linked-study members)", async () => {
+      expect((await send(outsider, "DELETE", `/api/meetings/${recMeeting}`)).statusCode).toBe(403);
       expect((await send(ya, "DELETE", `/api/meetings/${recMeeting}`)).statusCode).toBe(200);
       expect((await get(ya, `/api/meetings/${recMeeting}`)).statusCode).toBe(404);
     });

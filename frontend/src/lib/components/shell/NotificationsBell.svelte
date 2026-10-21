@@ -52,7 +52,7 @@
       <Popover.Content
         align="end"
         sideOffset={10}
-        class="z-50 flex max-h-[min(560px,80dvh)] w-[400px] flex-col rounded-[24px] border border-line bg-surface shadow-pop outline-none data-[state=open]:animate-[pop-in_140ms_ease-out]"
+        class="z-50 flex max-h-[min(560px,80dvh)] w-[400px] flex-col rounded-[24px] border border-line bg-popover shadow-pop outline-none data-[state=open]:animate-[pop-in_140ms_ease-out]"
       >
         <div class="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
           <p class="text-[15px] font-semibold">{t("notif.title")}</p>

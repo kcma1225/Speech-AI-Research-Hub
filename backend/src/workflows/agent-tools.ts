@@ -7,8 +7,8 @@ import { z } from "zod";
 import { transaction } from "../db.js";
 import { registerAgentTool } from "../agent/tools/registry.js";
 import { notFound } from "../lib/http.js";
-import { emitRun, getRun, getSteps, insertWorkflowEvent } from "./store.js";
-import { insertWorkflow } from "./service.js";
+import { getRun, getSteps } from "./store.js";
+import { announceRuns, insertWorkflows, startResult } from "./service.js";
 import { listWorkflowPlaybooks } from "./playbooks/index.js";
 
 const playbookIds = () => listWorkflowPlaybooks().map((p) => p.id);
@@ -26,6 +26,9 @@ registerAgentTool({
     "then sub-agents do the parts, every part is verified and fixed, and the result is checked against the objective. Use it when the user asks you to create such a thing " +
     "(only use create_deck with generate:true when the user explicitly wants a quick one-shot draft). Put the user's request with all agreed details (page count, structure, emphasis, language) in `request`. " +
     "After calling it, end your turn with one short sentence; do not describe results — the card shows progress and the workflow reports back. " +
+    "One deck / reading note per paper (「把每一篇文獻都做成簡報」): call it ONCE — pass the study (or all paper_ids) and the request; it creates one run per paper as a batch " +
+    "(runs over the limit of 3 working runs queue and start automatically). Papers without a PDF are handled by the workflow (open-access lookup, the record's URL, then it asks or skips) — do not drop them yourself. " +
+    "The study and paper default to the conversation's page context. " +
     "playbook ids: slides, latex_section, lit_review, reading_note, experiment_report, meeting_prep, generic (auto-detected when omitted).",
   input: z.object({
     request: z.string().trim().min(4).max(4000).describe("The task in the user's words plus the details agreed in the chat"),
@@ -35,7 +38,7 @@ registerAgentTool({
     deck_id: z.string().max(64).optional(),
     project_id: z.string().max(64).optional().describe("LaTeX project id"),
     note_ids: z.array(z.string().max(64)).max(6).optional(),
-    paper_ids: z.array(z.string().max(64)).max(6).optional(),
+    paper_ids: z.array(z.string().max(64)).max(10).optional().describe("Several papers: lit_review reads them together; slides / reading_note make one run per paper (a batch)"),
     pages: z.number().int().min(3).max(40).optional().describe("Deck page count when the user gave one"),
   }),
   summarize: (a) => `交給 Agent：${a.request.replace(/\s+/g, " ").slice(0, 50)}`,
@@ -43,8 +46,8 @@ registerAgentTool({
     const conv = ctx.conversationId ? (await ctx.db.query<{ context: Record<string, unknown>; autopilot: boolean }>("SELECT context, autopilot FROM conversations WHERE id=$1", [ctx.conversationId])).rows[0] : undefined;
     const callId = ctx.runId ? (await ctx.db.query<{ id: string }>("SELECT id FROM tool_calls WHERE run_id=$1 AND tool='start_workflow' AND status='running' ORDER BY created_at DESC LIMIT 1", [ctx.runId])).rows[0]?.id : undefined;
     const uuid = (v?: string) => (v && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);
-    const run = await transaction(ctx.db, (client) =>
-      insertWorkflow(client, ctx.user, {
+    const out = await transaction(ctx.db, (client) =>
+      insertWorkflows(client, ctx.user, {
         request: a.request,
         playbook: a.playbook && playbookIds().includes(a.playbook) ? a.playbook : undefined,
         conversationId: ctx.conversationId,
@@ -54,12 +57,15 @@ registerAgentTool({
         inputs: { study: a.study, paper_id: uuid(a.paper_id), deck_id: uuid(a.deck_id), project_id: uuid(a.project_id), note_ids: a.note_ids?.map(uuid).filter((x): x is string => !!x), paper_ids: a.paper_ids?.map(uuid).filter((x): x is string => !!x), pages: a.pages },
       }),
     );
-    await emitRun(ctx.db, run.id);
-    await insertWorkflowEvent(ctx.db, run.id, "log", { level: "info", text: "已收到任務，主要 Agent 開始規劃。" });
-    return {
-      data: { workflow_id: run.id, status: "planning", playbook: run.playbook },
-      text: JSON.stringify({ workflow_id: run.id, status: "planning", message: "工作流程已開始規劃；計畫卡片會顯示給使用者，確認後才會執行與寫入。現在用一句話告訴使用者計畫準備好時請他確認，不要描述或預告結果。" }),
-    };
+    await announceRuns(ctx.db, out.runs);
+    const data = startResult(out);
+    const autopilot = conv?.autopilot ?? false;
+    const message = out.batchId
+      ? `已拆成 ${out.runs.length} 個工作流程（每篇一個，${out.runs.filter((r) => r.status === "queued").length} 個排隊中，會自動接著開始）。${autopilot ? "自動駕駛開啟：只寫草稿的計畫會自動核准並執行，不用等使用者確認。" : "每份的計畫準備好後請使用者確認。"}用一句話告訴使用者批次卡片會顯示每一篇的進度，不要描述或預告結果。`
+      : autopilot
+        ? "工作流程已開始規劃；自動駕駛下只寫草稿的計畫會自動核准並執行（卡片可暫停或修改計畫）。用一句話說明，不要描述或預告結果。"
+        : "工作流程已開始規劃；計畫卡片會顯示給使用者，確認後才會執行與寫入。現在用一句話告訴使用者計畫準備好時請他確認，不要描述或預告結果。";
+    return { data, text: JSON.stringify({ ...data, message }) };
   },
 });
 

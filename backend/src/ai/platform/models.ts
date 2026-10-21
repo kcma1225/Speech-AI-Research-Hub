@@ -105,6 +105,7 @@ export function apiFieldsFromInfo(m: ModelInfo): ProfileFields {
   if (m.outputPrice !== undefined) f.output_price = m.outputPrice;
   const h = m.hints ?? {};
   if (h.vision !== undefined) f.vision = h.vision;
+  if (h.audioInput !== undefined) f.audio_input = h.audioInput;
   if (h.tools !== undefined) f.tools = h.tools;
   if (h.reasoning !== undefined) f.reasoning = h.reasoning;
   if (h.jsonSchema !== undefined) f.json_schema = h.jsonSchema;
@@ -213,7 +214,8 @@ export async function ensureModel(db: Queryable, p: ProviderRecord, modelId: str
       )
     ).rows[0]!;
   }
-  if (capability && p.family === "llm" && resolveProfile(p, row).fields.capability !== capability) {
+  // A chat model used for speech (`asr` with audio input) stays a chat model.
+  if (capability && capability !== "asr" && p.family === "llm" && resolveProfile(p, row).fields.capability !== capability) {
     row = (await db.query<ModelRow>(`UPDATE ai_models SET overrides = overrides || jsonb_build_object('capability', $2::text), updated_at=now() WHERE id=$1 RETURNING ${MODEL_COLUMNS}`, [row.id, capability])).rows[0]!;
   }
   return row;

@@ -22,6 +22,8 @@
   import OnlineSearchSheet from "./OnlineSearchSheet.svelte";
   import PaperSheet from "./PaperSheet.svelte";
   import StatusPill from "./StatusPill.svelte";
+  import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
 
   /** Study tab 文獻: the study's reading list (status, tags, notes), import / search / add, export for LaTeX. */
   let { detail }: StudyTabProps = $props();
@@ -60,6 +62,18 @@
   });
 
   // Paper sheet, deep-linked with &paper=<id>.
+  // Row 從研究移除 (study editors; DELETE /studies/:id/papers/:paperId): trash on hover / focus, always on touch.
+  let removing = $state<StudyPaper | null>(null);
+  let removeOpen = $state(false);
+  async function removeFromStudy() {
+    const target = removing;
+    if (!target) return;
+    await api.del(`/studies/${studyId}/papers/${target.paper.id}`);
+    if (data) data = { ...data, papers: data.papers.filter(x => x.paper.id !== target.paper.id) };
+    void load();
+    toasts.show(t("library.removed"), "success");
+  }
+
   let sheetOpen = $state(false);
   let current = $state<string | null>(page.url.searchParams.get("paper"));
   $effect(() => {
@@ -162,6 +176,7 @@
           <th class="py-3 pr-3 font-medium">{t("library.col.title")}</th>
           <th class="hidden w-[150px] py-3 pr-3 font-medium lg:table-cell">{t("library.col.venue")}</th>
           <th class="hidden w-[170px] py-3 pr-5 font-medium xl:table-cell">{t("library.col.key")}</th>
+          {#if canEdit}<th class="w-14 py-3 pr-3"><span class="sr-only">{t("crud.more")}</span></th>{/if}
         </tr>
       </thead>
       <tbody class="divide-y divide-line">
@@ -185,6 +200,7 @@
             </td>
             <td class="hidden py-3 pr-3 align-top text-[12.5px] text-ink-2 lg:table-cell"><span class="line-clamp-2">{sp.paper.venue ?? sp.paper.container_title ?? "—"}</span><span class="text-ink-3 tabular-nums">{sp.paper.year ?? ""}</span></td>
             <td class="hidden py-3 pr-5 align-top xl:table-cell"><code class="block truncate font-mono text-[12px] text-ink-2">{sp.cite_key}</code></td>
+            {#if canEdit}<td class="py-1.5 pr-3 align-top" onclick={e => e.stopPropagation()}><DeleteButton reveal label={t("crud.paper.removeFromStudy")} onclick={() => ((removing = sp), (removeOpen = true))} /></td>{/if}
           </tr>
         {/each}
       </tbody>
@@ -204,6 +220,7 @@
               {#each sp.tags.slice(0, 3) as tg (tg)}<Pill tone={toneFor(tg.toLowerCase())} size="sm">{tg}</Pill>{/each}
             </span>
           </div>
+          {#if canEdit}<DeleteButton label={t("crud.paper.removeFromStudy")} onclick={() => ((removing = sp), (removeOpen = true))} />{/if}
         </li>
       {/each}
     </ul>
@@ -217,3 +234,5 @@
   <ImportWizard bind:open={importOpen} study={detail.study} onImported={load} />
   <OnlineSearchSheet bind:open={searchOpen} study={detail.study} onAdded={load} />
 {/if}
+
+<ConfirmDialog bind:open={removeOpen} title={t("library.removeConfirm", { title: removing?.paper.title ?? "" })} description={t("library.removeHint")} confirmLabel={t("library.removeFromStudy")} onConfirm={removeFromStudy} />

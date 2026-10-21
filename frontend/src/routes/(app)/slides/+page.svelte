@@ -12,6 +12,7 @@
   import Select from "#lib/components/ui/Select.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import DeckCard from "#lib/components/slides/DeckCard.svelte";
+  import DeleteDeckDialog from "#lib/components/slides/DeleteDeckDialog.svelte";
   import UploadSheet from "#lib/components/slides/UploadSheet.svelte";
   import type { SlideSummary, UploadLimits } from "#lib/slides/types.ts";
   import { DEFAULT_LIMITS, isBusy } from "#lib/slides/util.ts";
@@ -28,6 +29,8 @@
   let limits = $state<UploadLimits>(DEFAULT_LIMITS);
   let error = $state<string | null>(null);
   let uploadOpen = $state(false);
+  let deleting = $state<SlideSummary | null>(null);
+  let deleteOpen = $state(false);
 
   let seq = 0;
   async function load() {
@@ -140,8 +143,9 @@
   </Card>
 {:else}
   <div class="grid gap-4 sm:grid-cols-2 sm:gap-5 lg:grid-cols-3">
-    {#each slides as deck (deck.id)}<DeckCard {deck} />{/each}
+    {#each slides as deck (deck.id)}<DeckCard {deck} canDelete={!!deck.can_edit} onDelete={() => ((deleting = deck), (deleteOpen = true))} />{/each}
   </div>
 {/if}
 
 <UploadSheet bind:open={uploadOpen} {limits} studyId={study || undefined} onUploaded={() => void load()} onRendered={() => void load()} />
+<DeleteDeckDialog bind:open={deleteOpen} deck={deleting} onDeleted={id => void ((slides = slides?.filter(d => d.id !== id) ?? null), load())} />

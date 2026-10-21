@@ -7,8 +7,8 @@ import type { Queryable } from "../db.js";
 import { runView } from "./store.js";
 import type { RunRow } from "./types.js";
 
-const ACTIVE_WF = ["planning", "awaiting_plan_approval", "running", "verifying", "awaiting_input", "paused"];
-const NEEDS_YOU_WF = new Set(["awaiting_plan_approval", "awaiting_input"]);
+const ACTIVE_WF = ["queued", "planning", "awaiting_plan_approval", "running", "verifying", "awaiting_input", "needs_pdf", "paused"];
+const NEEDS_YOU_WF = new Set(["awaiting_plan_approval", "awaiting_input", "needs_pdf"]);
 /** An unanswered ask_user card older than this no longer counts as "waiting for you". */
 const ASK_WINDOW_HOURS = 24;
 
@@ -30,6 +30,14 @@ export type ActiveAgentRun = {
   budget_pct: number | null;
   tokens: number;
   artifacts: { kind: string; id: string; url: string; title: string }[];
+  /**
+   * What the user should do (`approve_plan` workflow plan card, `answer` a question card, `review` a consent card)
+   * and where: `focus` names the card (`workflow:<runId>` | `toolcall:<toolCallId>`), `href` deep-links to it
+   * (`/assistant/<conv>?focus=…`, or `/assistant/workflows?run=<id>` for a run without a conversation).
+   */
+  action: "approve_plan" | "answer" | "review" | null;
+  focus: string | null;
+  href: string;
   started_at: string;
   updated_at: string;
 };
@@ -44,6 +52,12 @@ function planOf(args: PlanArgs | null | undefined) {
     current: (items.find((p) => p.status === "in_progress")?.step as string | undefined) ?? null,
   };
 }
+/** Deep link to a card: the conversation scrolled to it, or the workflows page with the run expanded. */
+export const focusHref = (conversationId: string | null, focus: string | null, runId?: string) =>
+  conversationId
+    ? `/assistant/${conversationId}${focus ? `?focus=${focus}` : ""}`
+    : runId ? `/assistant/workflows?run=${runId}` : "/assistant/workflows";
+const WF_ACTION: Record<string, ActiveAgentRun["action"]> = { awaiting_plan_approval: "approve_plan", awaiting_input: "answer", needs_pdf: "answer" };
 const pct = (a: number, b: number) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
 const iso = (d: Date | string | null | undefined) => (d instanceof Date ? d.toISOString() : d ? String(d) : new Date(0).toISOString());
 
@@ -91,6 +105,9 @@ export async function activeAgentRuns(db: Queryable, userId: string): Promise<Ac
         budget_pct: u.calls ? budget : null,
         tokens: (u.tokens_in ?? 0) + (u.tokens_out ?? 0),
         artifacts: (r.artifacts ?? []).slice(0, 4).map((a) => ({ kind: a.kind, id: a.id, url: a.url, title: a.title })),
+        action: WF_ACTION[r.status] ?? null,
+        focus: `workflow:${r.id}`,
+        href: focusHref(r.conversation_id, `workflow:${r.id}`, r.id),
         started_at: iso(r.started_at ?? r.created_at),
         updated_at: iso(r.updated_at),
       });
@@ -133,8 +150,8 @@ export async function activeAgentRuns(db: Queryable, userId: string): Promise<Ac
       )).rowCount;
       if (!after || later) continue;
     }
-    const calls = (await db.query<{ tool: string; title: string; summary: string; status: string; args: PlanArgs }>(
-      `SELECT tc.tool, tc.tool AS title, tc.summary, tc.status, tc.args
+    const calls = (await db.query<{ id: string; tool: string; title: string; summary: string; status: string; args: PlanArgs }>(
+      `SELECT tc.id, tc.tool, tc.tool AS title, tc.summary, tc.status, tc.args
          FROM tool_calls tc JOIN agent_messages m ON m.id = tc.message_id
         WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL AND m.seq > $2::bigint
         ORDER BY m.seq, tc.position`,
@@ -144,6 +161,13 @@ export async function activeAgentRuns(db: Queryable, userId: string): Promise<Ac
     const plan = planOf(planCall?.args);
     const runningCall = calls.findLast((c) => c.status === "running" || c.status === "approved");
     const status = r.status === "done" ? "awaiting_input" : r.status;
+    // The card waiting for the user: the first open consent card, or the run's (last) question card.
+    const card = status === "awaiting_approval"
+      ? calls.find((c) => c.status === "pending_approval")
+      : status === "awaiting_input"
+        ? calls.findLast((c) => c.tool === "ask_user")
+        : undefined;
+    const focus = card ? `toolcall:${card.id}` : null;
     const current = runningCall
       ? { role: runningCall.tool, text: (runningCall.summary || runningCall.tool).slice(0, 200) }
       : r.status === "awaiting_approval"
@@ -167,6 +191,9 @@ export async function activeAgentRuns(db: Queryable, userId: string): Promise<Ac
       budget_pct: null,
       tokens: r.tokens_in + r.tokens_out,
       artifacts: [],
+      action: status === "awaiting_approval" ? "review" : status === "awaiting_input" ? "answer" : null,
+      focus,
+      href: focusHref(r.conversation_id, focus),
       started_at: iso(r.started_at),
       updated_at: iso(r.updated_at),
     });

@@ -117,6 +117,11 @@ export interface Quirks {
   finishReasonErrors?: Record<string, import("../errors.js").AiErrorCode>;
   /** Admin-facing warnings (繁中), e.g. Ollama num_ctx. */
   warnings_zh?: string[];
+  /**
+   * openai-chat `input_audio` shape: `object` (OpenAI/Gemini-compat/vLLM: `{data: <base64>, format}`, default),
+   * `string` (Mistral Voxtral: bare base64 string), `data_url` (DashScope Qwen-Omni: `{data: "data:<mime>;base64,…", format}`).
+   */
+  audioInputStyle?: "object" | "string" | "data_url";
   /** Chat path model probe: model id used for a 1-token probe when there is no listing endpoint. */
   probeModel?: string;
 }

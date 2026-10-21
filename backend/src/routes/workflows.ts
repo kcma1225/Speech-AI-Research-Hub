@@ -11,7 +11,7 @@ import { aiFor } from "../ai/platform/index.js";
 import { pageContextSchema } from "./agent.js";
 import { closeWorkflowEventHub, getRun, lastWorkflowSeq, runView, workflowEventHub, workflowEventsAfter } from "../workflows/store.js";
 import {
-  addGuidance, answerWorkflow, approveWorkflow, cancelWorkflow, createWorkflow, deleteWorkflow, patchWorkflow, pauseWorkflow, publishWorkflowDeck, resumeWorkflow, revisePlan, startFromChat, sweepWorkflows, workflowDetail,
+  addGuidance, answerWorkflow, approveWorkflow, cancelWorkflow, createWorkflows, deleteWorkflow, patchWorkflow, pauseWorkflow, publishWorkflowDeck, resumeWorkflow, revisePlan, startFromChat, sweepWorkflows, workflowDetail,
 } from "../workflows/service.js";
 import { answerInput } from "../agent/ask.js";
 import { listWorkflowPlaybooks } from "../workflows/playbooks/index.js";
@@ -28,7 +28,7 @@ const inputsSchema = z.object({
   deck_id: uuid.optional(),
   project_id: uuid.optional(),
   note_ids: z.array(uuid).max(6).optional(),
-  paper_ids: z.array(uuid).max(6).optional(),
+  paper_ids: z.array(uuid).max(10).optional(),
   pages: z.number().int().min(3).max(40).optional(),
   mode: z.enum(["progress", "paper_report"]).optional(),
 }).optional();
@@ -40,7 +40,7 @@ const createInput = z.object({
   inputs: inputsSchema,
   autopilot: z.boolean().optional(),
 });
-const listQuery = z.object({ active: z.enum(["0", "1"]).optional(), study: z.string().max(80).optional(), status: z.string().max(40).optional(), conversation: uuid.optional(), limit: z.coerce.number().int().min(1).max(100).optional() });
+const listQuery = z.object({ active: z.enum(["0", "1"]).optional(), study: z.string().max(80).optional(), status: z.string().max(40).optional(), conversation: uuid.optional(), batch: uuid.optional(), limit: z.coerce.number().int().min(1).max(100).optional() });
 const approveInput = z.object({
   objective: z.string().trim().max(1000).optional(),
   criteria: z.array(z.object({ id: z.string().max(40).optional(), text: z.string().trim().min(1).max(300) })).max(12).optional(),
@@ -79,9 +79,10 @@ export default async function workflows(app: FastifyInstance) {
     const input = parse(createInput, request.body);
     if (!(await assistantUp())) throw new HttpError(503, "AI 助理維護中，暫時無法啟動工作流程。", { code: "llm_unavailable", hint: "請稍後再試，或請管理員檢查模型設定。" });
     const base = { request: input.request, playbook: input.playbook, context: (input.context ?? null) as Record<string, unknown> | null, inputs: input.inputs, autopilot: input.autopilot };
-    const run = input.conversation_id ? await startFromChat(app, user, { ...base, conversationId: input.conversation_id }) : await createWorkflow(app, user, base);
+    const run = input.conversation_id ? await startFromChat(app, user, { ...base, conversationId: input.conversation_id }) : (await createWorkflows(app, user, base)).runs[0]!;
+    const batch = run.batch_id ? (await app.db.query<RunRow>("SELECT * FROM workflow_runs WHERE batch_id=$1 ORDER BY batch_index", [run.batch_id])).rows : [run];
     reply.code(201);
-    return { workflow: await runView(app.db, run), conversation_id: run.conversation_id };
+    return { workflow: await runView(app.db, run), workflows: await Promise.all(batch.map((r) => runView(app.db, r))), batch_id: run.batch_id, conversation_id: run.conversation_id };
   });
 
   app.get("/workflows", async (request, reply) => {
@@ -91,10 +92,10 @@ export default async function workflows(app: FastifyInstance) {
     if (q.study) studyId = (await app.db.query<{ id: string }>("SELECT id FROM studies WHERE id::text=$1 OR slug=$1", [q.study])).rows[0]?.id ?? "00000000-0000-0000-0000-000000000000";
     const rows = (await app.db.query<RunRow>(
       `SELECT * FROM workflow_runs WHERE user_id=$1
-          AND ($2::boolean IS NOT TRUE OR status IN ('planning','awaiting_plan_approval','running','verifying','awaiting_input','paused'))
-          AND ($3::uuid IS NULL OR study_id=$3) AND ($4::text IS NULL OR status=$4) AND ($5::uuid IS NULL OR conversation_id=$5)
-        ORDER BY (status IN ('planning','awaiting_plan_approval','running','verifying','awaiting_input','paused')) DESC, created_at DESC LIMIT $6`,
-      [user.id, q.active === "1", studyId, q.status ?? null, q.conversation ?? null, q.limit ?? 30],
+          AND ($2::boolean IS NOT TRUE OR status IN ('queued','planning','awaiting_plan_approval','running','verifying','awaiting_input','needs_pdf','paused'))
+          AND ($3::uuid IS NULL OR study_id=$3) AND ($4::text IS NULL OR status=$4) AND ($5::uuid IS NULL OR conversation_id=$5) AND ($7::uuid IS NULL OR batch_id=$7)
+        ORDER BY CASE WHEN $7::uuid IS NOT NULL THEN batch_index END, (status IN ('queued','planning','awaiting_plan_approval','running','verifying','awaiting_input','needs_pdf','paused')) DESC, created_at DESC LIMIT $6`,
+      [user.id, q.active === "1", studyId, q.status ?? null, q.conversation ?? null, q.limit ?? 30, q.batch ?? null],
     )).rows;
     reply.header("Cache-Control", "no-store");
     return { workflows: await Promise.all(rows.map((r) => runView(app.db, r))) };

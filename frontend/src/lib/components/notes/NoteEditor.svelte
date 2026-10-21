@@ -4,7 +4,7 @@
   import { EditorView } from "@codemirror/view";
   import { DropdownMenu } from "bits-ui";
   import {
-    ArrowLeft, BookmarkPlus, CopyPlus, Download, Ellipsis, History, ListTree, Mic, PenLine, PenTool, Scissors, SpellCheck, Sparkles, Trash2, Wand2, X,
+    ArrowLeft, BookmarkPlus, CopyPlus, Download, Ellipsis, History, ListTree, Mic, PenLine, PenTool, Scissors, SpellCheck, Sparkles, Wand2, X,
   } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
@@ -28,6 +28,8 @@
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import DatePicker from "#lib/components/ui/DatePicker.svelte";
   import { menuContent, menuItem, menuSeparator } from "#lib/components/ui/menu.ts";
+  import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
+  import DeleteMenuItem from "#lib/components/ui/DeleteMenuItem.svelte";
   import Pill from "#lib/components/ui/Pill.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import Textarea from "#lib/components/ui/Textarea.svelte";
@@ -312,6 +314,7 @@
     <ConnectionStatus session={collab} compact />
     <div class="ml-auto flex items-center gap-1">
       <Button variant="ghost" size={viewport.desktop ? "sm" : "md"} onclick={() => (versionsOpen = true)}><History />{t("versions.title")}</Button>
+      {#if canEdit}<DeleteButton class="hidden sm:inline-flex lg:size-8 lg:min-h-8" label={t("notes.delete")} onclick={() => (deleting = true)} />{/if}
       <DropdownMenu.Root>
         <DropdownMenu.Trigger class="grid size-10 place-items-center rounded-full text-ink-2 hover:bg-surface-3 hover:text-ink lg:size-8" aria-label={t("notes.actions")}><Ellipsis class="size-4" /></DropdownMenu.Trigger>
         <DropdownMenu.Portal>
@@ -319,10 +322,7 @@
             {#if canEdit}<DropdownMenu.Item class={menuItem} onSelect={saveVersion}><BookmarkPlus />{t("versions.save")}</DropdownMenu.Item>{/if}
             <DropdownMenu.Item class={menuItem} onSelect={() => (window.location.href = `/api/notes/${note.id}/export`)}><Download />{t("notes.export")}</DropdownMenu.Item>
             <DropdownMenu.Item class={menuItem} onSelect={openTemplate}><CopyPlus />{t("notes.template.saveAs")}</DropdownMenu.Item>
-            {#if canEdit}
-              <DropdownMenu.Separator class={menuSeparator} />
-              <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => (deleting = true)}><Trash2 />{t("notes.delete")}</DropdownMenu.Item>
-            {/if}
+            <DeleteMenuItem label={t("notes.delete")} reason={canEdit ? null : t("crud.deny.study")} onSelect={() => (deleting = true)} />
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>

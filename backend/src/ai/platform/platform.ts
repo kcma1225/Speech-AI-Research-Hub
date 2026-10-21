@@ -6,15 +6,15 @@ import { EventEmitter } from "node:events";
 import type pg from "pg";
 import type { FastifyBaseLogger } from "fastify";
 import type { Db } from "../../db.js";
-import { startLiveSession, transcribe as asrTranscribe, type AsrCheckpoint, type LiveOptions, type LiveSession, type Transcript, type TranscribeRequest } from "../asr/index.js";
+import { startLiveSession, transcribe as asrTranscribe, type TranscribeDeps, type AsrCheckpoint, type LiveOptions, type LiveSession, type Transcript, type TranscribeRequest } from "../asr/index.js";
 import { AiError } from "../errors.js";
 import { runClaudeCli } from "../oauth/index.js";
-import { aggregateChat, type ChatEvent, type ChatRequest, type ChatResult, type EmbedResult, type Usage } from "../providers/index.js";
+import { aggregateChat, type AiClient, type ChatEvent, type ChatRequest, type ChatResult, type EmbedResult, type Usage } from "../providers/index.js";
 import { leaves, resolveRole, resolveTarget, runRoute, RouteExhausted, type AttemptFailure, type GroupNode, type ModelLeaf, type RunHooks } from "../router/index.js";
 import { getProvider } from "../providers/index.js";
 import { activeSpace, getSpace, liveSpaces, type EmbeddingSpace } from "../embedding/spaces.js";
 import { CallLogger, CallRecorder, pruneCallLog, type CallContext } from "./call-log.js";
-import { asrConfig, forgetClients, llmClient, type ClientFactoryOptions } from "./clients.js";
+import { asrConfig, buildLlmClient, forgetClients, llmClient, type ClientFactoryOptions } from "./clients.js";
 import { llmUnavailable, PlatformError, visionUnavailable } from "./errors.js";
 import { boundProviders, deriveAll, loadRecent, probeProvider, type RoleStatus } from "./health.js";
 import { forgetCachedTokens } from "./oauth-store.js";
@@ -22,6 +22,8 @@ import { splitChatParams } from "./params.js";
 import { AI_ROLES, type AiRole, type ChatRole, type RoleState } from "./roles.js";
 import { loadSnapshot, providerSecrets, type ConfigSnapshot, type ProviderRecord } from "./store.js";
 import { hasImages, modelVision } from "./vision.js";
+import { audioCodecOf, modelAudio } from "./audio.js";
+import { llmAsrAdapter } from "../asr/adapters/llm.js";
 import { resolveProfile, syncStaleModels } from "./models.js";
 
 export type RoleChatRequest = Omit<ChatRequest, "model">;
@@ -71,6 +73,8 @@ export type PlatformOptions = ClientFactoryOptions & {
   sleep?: RunHooks["sleep"];
   claudeCli?: typeof runClaudeCli;
   transcribeImpl?: typeof asrTranscribe;
+  /** ASR orchestrator knobs (tests inject fake media tools and short retry backoff; default spawns ffmpeg/ffprobe). */
+  asrDeps?: Pick<TranscribeDeps, "tools" | "chunkRetries" | "retryBaseMs">;
 };
 
 const PROBE_LOCK = 473_931;
@@ -87,6 +91,7 @@ export class AiPlatform {
   private recomputeTimer?: NodeJS.Timeout;
   private stopped = false;
   private lastPrune = 0;
+  private patchedClients = new Map<string, AiClient>();
 
   constructor(readonly db: Db, readonly log: FastifyBaseLogger | Pick<FastifyBaseLogger, "warn" | "info" | "error">, readonly opts: PlatformOptions = {}) {
     this.logger = new CallLogger(db, log);
@@ -113,6 +118,7 @@ export class AiPlatform {
   invalidate() {
     this.snap = undefined;
     forgetClients();
+    this.patchedClients.clear();
     forgetCachedTokens();
     this.scheduleRecompute(200);
   }
@@ -222,7 +228,18 @@ export class AiPlatform {
     return out;
   }
 
-  private async startChat(leaf: Pick<ModelLeaf, "provider" | "model" | "params" | "profile">, req: RoleChatRequest, signal?: AbortSignal) {
+  /** A client for the account with a config tweak (audio over Chat Completions on a Responses-default account). */
+  private patchedClient(p: ProviderRecord, patch: Record<string, unknown>): AiClient {
+    const key = `${p.id}:${new Date(p.updated_at).getTime()}:${JSON.stringify(patch)}`;
+    let c = this.patchedClients.get(key);
+    if (!c) {
+      c = buildLlmClient(this.db, { ...p, config: { ...p.config, ...patch } }, this.opts);
+      if (!this.opts.fetch) this.patchedClients.set(key, c);
+    }
+    return c;
+  }
+
+  private async startChat(leaf: Pick<ModelLeaf, "provider" | "model" | "params" | "profile">, req: RoleChatRequest, signal?: AbortSignal, client?: AiClient) {
     const r = { ...this.chatRequest(leaf, req), signal };
     let gen: AsyncGenerator<ChatEvent>;
     if (leaf.provider.kind === "claude-cli") {
@@ -235,7 +252,7 @@ export class AiPlatform {
         maxBudgetUsd: typeof c.maxBudgetUsd === "number" ? c.maxBudgetUsd : undefined,
         timeoutMs: r.timeoutMs ?? (typeof c.timeoutMs === "number" ? c.timeoutMs : undefined),
       });
-    } else gen = llmClient(this.db, leaf.provider, this.opts).chatStream(r);
+    } else gen = (client ?? llmClient(this.db, leaf.provider, this.opts)).chatStream(r);
     const t0 = Date.now();
     const first = await gen.next();
     // An error before any content is still safe to fall back from.
@@ -392,19 +409,21 @@ export class AiPlatform {
     const role = ctx.role ?? "asr";
     const rec = new CallRecorder(this.logger, { role, capability: "asr", stream: false, ctx });
     const tree = await this.tree(role, rec);
+    // Token usage of multimodal chat members (dedicated ASR vendors bill per minute and report none).
+    const usage: Usage = {};
     let run;
     try {
       run = await runRoute(
         tree,
         async (leaf) => {
           const prm = leaf.params;
-          const cfg = asrConfig(leaf.provider, leaf.model, prm, this.opts.fetch);
           const glossary = (ctx.glossary ?? []).join("、");
           const template = typeof prm.prompt_template === "string" ? prm.prompt_template : undefined;
           const resume = ctx.resume && ctx.resume.memberId === leaf.memberId && ctx.resume.model === leaf.model ? ctx.resume.asr : undefined;
-          return (this.opts.transcribeImpl ?? asrTranscribe)(cfg, {
+          const language = req.language ?? (typeof prm.language === "string" ? prm.language : undefined);
+          const areq: TranscribeRequest = {
             ...req,
-            language: req.language ?? (typeof prm.language === "string" ? prm.language : undefined),
+            language,
             extraLanguages: req.extraLanguages ?? (Array.isArray(prm.extra_languages) ? (prm.extra_languages as string[]) : undefined),
             diarize: req.diarize ?? (typeof prm.diarization === "boolean" ? prm.diarization : undefined),
             wordTimestamps: req.wordTimestamps ?? (typeof prm.word_timestamps === "boolean" ? prm.word_timestamps : undefined),
@@ -414,7 +433,27 @@ export class AiPlatform {
             signal: ctx.signal,
             resume,
             onCheckpoint: ctx.onCheckpoint ? (cp) => ctx.onCheckpoint!({ memberId: leaf.memberId, model: leaf.model, asr: cp }) : undefined,
-          });
+          };
+          const impl = this.opts.transcribeImpl ?? asrTranscribe;
+          if (leaf.provider.family === "llm") {
+            // A multimodal chat model with audio input (see ai/asr/adapters/llm.ts).
+            const a = modelAudio(leaf.provider, leaf.model, leaf.profile);
+            if (!a.audio) throw new AiError("unsupported", { vendorMessage: `${leaf.model}: no audio input (${a.codec_ok ? "profile" : "protocol"})`, providerId: leaf.provider.id });
+            const { codec, configPatch } = audioCodecOf(leaf.provider);
+            const client = configPatch ? this.patchedClient(leaf.provider, configPatch) : undefined;
+            const adapter = llmAsrAdapter({
+              codec: codec!,
+              chat: (r) => this.chatOnLeaf(leaf, { timeoutMs: 300_000, ...r }, client),
+              maxOutputTokens: leaf.profile.fields.max_output_tokens,
+              jsonMode: codec === "gemini",
+              reasoning: leaf.profile.fields.reasoning === true,
+              usage,
+            });
+            const cfg = { kind: "llm_audio", fields: { ...prm }, model: leaf.model, fetch: this.opts.fetch };
+            const zh = !language || language === "auto" || /^(zh|cmn)/i.test(language);
+            return impl(cfg, { ...areq, convertScript: areq.convertScript ?? (zh ? "s2twp" : "none") }, { ...this.opts.asrDeps, adapter });
+          }
+          return impl(asrConfig(leaf.provider, leaf.model, prm, this.opts.fetch), areq, this.opts.asrDeps);
         },
         this.hooks(ctx, { defaultRetries: 0 }),
       );
@@ -422,8 +461,23 @@ export class AiPlatform {
       this.fail(role, rec, e, tree.id);
     }
     rec.failures(run.failures);
-    rec.finish(run.leaf, { ok: true, startedAt: run.startedAt, retries: run.retries, fallbackIndex: run.fallbackIndex });
+    rec.finish(run.leaf, { ok: true, startedAt: run.startedAt, retries: run.retries, fallbackIndex: run.fallbackIndex, ...(usage.inputTokens || usage.outputTokens ? { usage } : {}) });
     return { ...run.value, route: routeInfo(role, run.leaf, run.fallbackIndex) };
+  }
+
+  /** One non-streaming chat turn on a specific member (no routing, no call log: the caller logs). */
+  private async chatOnLeaf(leaf: ModelLeaf, req: RoleChatRequest, client?: AiClient): Promise<ChatResult> {
+    const { first, gen } = await this.startChat(leaf, req, req.signal, client);
+    async function* all() {
+      if (!first.done) yield first.value;
+      yield* gen;
+    }
+    try {
+      return await aggregateChat(all());
+    } catch (e) {
+      // Nothing reached a user yet (the transcript is built from whole answers): safe to fall back.
+      throw e instanceof AiError ? Object.assign(e, { midStream: false }) : e;
+    }
   }
 
   /** Opens a live caption session on the `asr_live` route (vendor keys stay server-side). */

@@ -60,7 +60,7 @@
               <span class="label line-clamp-2 min-w-0 flex-1 text-[12.5px] leading-snug text-ink-2">{firstLine(q.text)}</span>
             {:else}
               <span class="tick block h-[3px] w-4 rounded-full bg-line-2"></span>
-              <span class="tip pointer-events-none absolute top-1/2 right-[calc(100%+6px)] z-20 w-max max-w-[260px] -translate-y-1/2 rounded-xl border border-line bg-surface px-3 py-2 text-left text-[12.5px] leading-snug text-ink shadow-pop" aria-hidden="true">
+              <span class="tip pointer-events-none absolute top-1/2 right-[calc(100%+6px)] z-20 w-max max-w-[260px] -translate-y-1/2 rounded-xl border border-line bg-popover px-3 py-2 text-left text-[12.5px] leading-snug text-ink shadow-pop" aria-hidden="true">
                 <span class="text-ink-3 tabular-nums">{i + 1}.</span> {firstLine(q.text)}
               </span>
             {/if}

@@ -137,6 +137,23 @@ Helpers (`backend/src/lib/studies/access.ts`):
 - `createTask` / `updateTask` (`lib/studies/tasks.ts`) for modules that create tasks (meeting drafts, AI tools:
   `source: "meeting"|"ai"`, `source_ref`).
 
+**Deleting content** (who may delete; the UI never hides the action, it explains it):
+
+| Content | May delete | UI |
+|---|---|---|
+| Deck, note, LaTeX project | owner/member of its study (`requireDeckEditor`, `editableNote`, `editableProject`) | card/row trash (hover · focus, always on touch) + ⋯ → 刪除…, detail header trash + ⋯ |
+| Paper in a study's reading list (「從研究移除」) | owner/member of that study | row trash, detail footer |
+| Lab-library paper | the person who added it, once no study lists it (`paperPermissions().delete`) | detail footer |
+| Meeting | its creator or an owner/member of a linked study (`meetingPermissions().delete`; participants, advisors and outsiders may not) | list-card trash, labelled header button |
+| Conversation, workflow run | its owner (workflow: not while planning/running/verifying/paused → stop first) | list row trash + ⋯, conversation header ⋯ |
+
+Professors (advisors) never delete students' content; admin accounts have no workspace. Lists carry the flag the UI
+needs: GET `/slides` rows `can_edit`, meeting list cards `can_delete`; study tabs use `permissions.edit`. Without
+permission the ⋯ entry (`ui/DeleteMenuItem.svelte`) stays visible but disabled with the reason under the label and as
+its tooltip (e.g. 「只有這個研究的成員可以刪除」, keys `crud.deny.*`), and detail-header buttons (`ui/DeleteButton.svelte`,
+`aria-disabled`) toast the reason when tapped. Confirmations read 「刪除<物>「<名稱>」？」 + what is lost + 「無法復原」.
+The notes tab also has 選取 → 刪除所選 (one DELETE per note; partial failures are reported).
+
 AI tools always act with the caller's permissions. Anonymous visitors may view a slide deck, its references and
 reviews when the deck is `public_view` or they hold the share key (capability URL); they can never write and never
 learn the deck's study.
@@ -361,7 +378,7 @@ secrets must be encrypted by the owning module; helpers `getSetting` / `setSetti
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET `/studies?member=<uuid>\|me&status=&stage=&q=` | user | `{studies: StudyCard[]}` newest `activity_at` first. `status` omitted = all but archived, `all` = everything; `stage` = current stage name (exact); `q` = title/slug/summary substring (LIKE-escaped) |
+| GET `/studies?scope=mine\|lab&member=<uuid>\|me&status=&stage=&q=` | user | `{studies: StudyCard[], counts: {mine, lab}}` newest `activity_at` first. `scope=mine` = studies I belong to (any role; same as legacy `member=me`), default `lab` = all; `counts` apply the other filters to both scopes (the /studies 「我的研究 / 全實驗室」 switch, URL `?scope=`; default 我的研究 when I'm in any listed study). `status` omitted = all but archived, `all` = everything; `stage` = current stage name (exact); `q` = title/slug/summary substring (LIKE-escaped) |
 | POST `/studies` `{title, slug?, summary_md?, maturity?, templateId?, members?: [{userId, role: member\|advisor}]}` | user | creator becomes owner; stages copied from the template (default), the first one current and started; slug from the title when omitted (ASCII words; titles with CJK get `-YYYY-MM-DD`, CJK-only → `study-YYYY-MM-DD`; `-2`, `-3`… when taken; a given slug that is taken → 409); advisors must be professors (400); activity `study_created` → 201 `StudyDetail` |
 | GET `/studies/:ref` | user | `StudyDetail` |
 | PATCH `/studies/:ref` `{title?, slug?, summary_md?, maturity? (exploring|problem_defined|method_first|continuation|assigned|well_defined|null), status?}` | editor; `status` to/from `archived`: manager | rename keeps the slug (links stay stable) unless `slug` is given; a changed title records activity `study_renamed`. A legacy `summary_format` (POST/PATCH) is accepted and ignored → `StudyDetail` |
@@ -493,7 +510,7 @@ Frontend: `components/doc-import/` (`DocImportSheet` — file drop, mode/placeme
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET `/slides?studyId=<id\|slug>&q=&kind=progress\|paper_report` | user | `{slides, limits}`: decks (`kind`, `paper_id`, `metadata`, `has_source`, `study_id`, `study {id,slug,title}`) with active version, status of latest version, `reference_count`, `review_count`, `author_name` (uploader of the active version, fallback deck creator), `published_at` (active version's publish time or null), `thumbnailUrl` (`/api/slides/<id>/thumbnail?v=<activeVersionId>` or null). `limits = {zipBytes, deckBytes, deckTypes: [".zip",".pdf",".pptx"], referenceBytes}` (`zipBytes` = `deckBytes` = `MAX_SLIDE_ZIP_BYTES`, the limit for every deck upload; `MAX_REFERENCE_BYTES`). `latest_status` may be `review` |
+| GET `/slides?studyId=<id\|slug>&q=&kind=progress\|paper_report` | user | `{slides, limits}`: decks (`kind`, `paper_id`, `metadata`, `has_source`, `study_id`, `study {id,slug,title}`) with active version, status of latest version, `reference_count`, `review_count`, `author_name` (uploader of the active version, fallback deck creator), `published_at` (active version's publish time or null), `can_edit` (caller is owner/member of the deck's study: may delete), `thumbnailUrl` (`/api/slides/<id>/thumbnail?v=<activeVersionId>` or null). `limits = {zipBytes, deckBytes, deckTypes: [".zip",".pdf",".pptx"], referenceBytes}` (`zipBytes` = `deckBytes` = `MAX_SLIDE_ZIP_BYTES`, the limit for every deck upload; `MAX_REFERENCE_BYTES`). `latest_status` may be `review` |
 | POST `/slides` (multipart: `studyId`, `title`, `slug`, `kind?` `progress`\|`paper_report`, `paperId?`, `paperTitle?`, `paperUrl?`, `entry?`, `public?`, file `.zip`/`.pdf`/`.pptx`) | study editor (of `studyId`; missing → 400, unknown → 404) | detect + validate the deck (see "Deck uploads"), create project + version 1, upload the file, enqueue render (202) → `{id, slug, studyId, versionId, version, jobId, sourceType, entry: string\|null, scan: {files,bytes,qmd,skipped,skippedCount}\|null}`. Unknown `paperId` → 400 |
 | POST `/slides` (JSON) `{studyId, title, slug?, kind="progress", paperId?, paper?: {title, url?, abstract?}, public?, source: "editor"\|"ai", template?: progress\|paper_report\|blank}` | study editor | a deck with an in-app source tree from the Lab-Hub template (default by `kind`), no version yet; slug from the title's ASCII words + `-YYMMDD` (`deck-…` when there are none, `-2`… when taken) → 201 `{id, slug, studyId, source, template}`. `source:"ai"` only records intent: the SPA then calls POST `…/ai/generate` |
 | GET `/slides/:id` | user | detail: project (incl. `creator_name`), versions (see "Version object"), `activeVersion` (the active **published** version object, also for pdf/pptx decks without a `viewUrl`), references, reviews (see "Review object", + replies, author names), `study {id,slug,title}` (null for anonymous), `viewUrl` for active version (null for pdf/pptx), `pdfUrl`, `thumbnailUrl` (same format; null for anonymous by-slug viewers), `permissions {manage /* study editor */, review /* professors only */, reply /* any member of the deck's study */}`, `limits` (as in the list; not in by-slug) |
@@ -653,13 +670,14 @@ in that browser's cache after it is made private.
 Pure helpers (parsers, export, dedupe, cite keys, search clients, PDF metadata) are documented in `docs/library.md`;
 the DB layer is `lib/library/store.ts`, imports `imports.ts`, files `files.ts`, settings `settings.ts`, AI `ai.ts`.
 
-Tables (migration `0050_library`):
+Tables (migrations `0050_library`, `0051_paper_files_url`):
 - `papers`: lab-wide, one row per work. `record jsonb` = the canonical `PaperRecord` (CSL-JSON semantics; no cite key);
   copies for filtering/indexes: `type, title, title_norm` (`normalizeTitle`, GIN `pg_trgm`), `authors_text` (GIN trgm),
   `year, venue, doi, doi_key` (lower-case, **unique**), `arxiv_id` (**unique**), `s2_id`/`openalex_id` (unique when set),
   `abstract`, `bibtex` (original imported entry, cleared when the record is edited), `oa_url`/`oa_source`, `pdf_key`
   (newest stored PDF), `added_by`, `updated_by`.
-- `paper_files`: stored PDFs (`source upload|open_access|import`, `sha256` dedupes re-uploads, `source_url`, `file_name`).
+- `paper_files`: stored PDFs (`source upload|open_access|import|url` (`url` since 0051), `sha256` dedupes re-uploads, `source_url`, `file_name`).
+  `import_batches.source_url` (0051): the URL of a `/library/pdf-from-url` preview (format `pdf-url`), stored on the paper file at confirm.
 - `study_papers` (PK study+paper): `cite_key` (pinned, unique per study **case-insensitively**, `^[A-Za-z0-9_:.-]{1,100}$`),
   `reading_status unread|reading|read`, `tags text[]` (≤ 30), `notes_md` (≤ 200 000), `notes_updated_by/at`, `added_by`.
 - `import_batches`: `source file|zotero|pdf`, `status preview|done|cancelled`, `items` (preview rows, see `ImportItem`),
@@ -693,9 +711,11 @@ the only address sent to external APIs; never a user's email), `library.unpaywal
 | DELETE `/library/papers/:id` | admin, or adder when unused | 409 while a study uses it; deletes `library/papers/<id>/` |
 | GET `/library/papers/:id/pdf[?download=1]` | user | streams the newest PDF with Range (`206`), `inline` (or attachment), `private, no-store`, `nosniff` |
 | POST `/library/papers/:id/pdf` (multipart `file`) | paper editor | ≤ 50 MB, `%PDF-` checked (415) → 201 `{paper}` |
+| POST `/library/papers/:id/pdf-from-url` `{url}` | paper editor | 「從網址下載」: `downloadPdfFromUrl` (below) → `storePaperPdf` source `url` → 201 `{paper, download:{url, bytes, kind}}`. Errors `{error, code}`: 400 `invalid_url`/`blocked_url`, 415 `not_pdf`, 413 `too_large`, 422 `login_required` (401/403), 404 `no_open_access` (DOI), 502 `unreachable`/`http_error`, 504 `timeout`. Shares the 20/min search throttle |
 | DELETE `/library/papers/:id/pdf/:fileId` | paper editor | the previous file becomes primary → `{paper}` |
 | POST `/library/papers/:id/fetch-pdf` | paper editor | `findOpenAccessPdf` + download now (≤ 90 s) → `{outcome:{status:"stored",source,url,bytes}, paper}`; 404 `code:no_open_access`; 502 `code:download_failed` (+`url`) |
 | POST `/library/pdf` (multipart `file`, `study?`) | user; `study` needs editor | PDF → metadata (`extractPdfRecord`: DOI → arXiv → Crossref title → GROBID → title guess) → 201 `{batch (source pdf, 1 item), extraction:{method, identifiers, titleGuess}}`; confirm stores the PDF on the resulting paper |
+| POST `/library/pdf-from-url` `{url, study?}` | user; `study` needs editor | like POST `/library/pdf` but downloads the PDF first (same errors as `pdf-from-url`) → 201 `{batch (format pdf-url), extraction, download}`; confirm stores the file with source `url` |
 | POST `/library/papers/:id/ai/summary` | user | role **`analysis`** (abstract + first 3 PDF pages, ≤ 12 000 chars) → `{markdown, usedPdf}`; 422 `code:no_text` when there is neither; AI errors `{error, code, hint}` (503 `llm_unavailable`) |
 | GET `/library/search?q=&sources=openalex,s2,arxiv,crossref,isca&yearFrom=&yearTo=&limit≤50&study=<ref>` | user | `searchPapers` → `{hits:[{record, sources, existing: {paperId, level, inStudy} \| null}], errors, skipped}` (`existing` = same/likely lab match). 20 searches/min/user (429; shared with resolve and fetch-pdf) |
 | GET/PUT `/library/settings` | admin | see Settings; PUT fields `contact_email, unpaywall_email, grobid_url, openalex_api_key, s2_api_key, zotero_api_key, zotero_library` (omit = keep, `null`/`""` = remove) → `{settings}` |
@@ -732,6 +752,14 @@ type ImportItem = { index, record: PaperRecord, citeKey /* "" when inStudy */, m
 - `studyBibEntries(db, studyId)` → `[{paperId, citeKey, record}]`; `exportStudyLibrary(db, studyId, format)` → `{body, contentType, ext, count}`.
 - `getPaper`, `findPaperMatches`, `addPaperToStudy` (`store.ts`) for agent tools (`list_papers`, `get_paper`, `import_paper`, `attach_paper_pdf`, `remove_paper`).
 - Study delete: `study_papers` and import batches cascade (cleanup hook `library` removes preview PDFs); lab papers stay.
+
+**PDF by URL** (`lib/library/pdf-url.ts`): `planPdfUrl(input)` rewrites landing pages — arXiv `abs|html|pdf/<id>[vN]` and `arXiv:<id>` →
+`https://arxiv.org/pdf/<id>`, ACL Anthology `/<id>/` (and ACL DOIs `10.18653/…`) → `/<id>.pdf`, OpenReview `forum?id=` → `pdf?id=`, arXiv DOIs →
+arXiv, other DOIs (`doi.org/…` or bare `10.x/…`) → `findOpenAccessPdf` (no title match); anything else is fetched as-is. `downloadPdf(url,
+{followLandingPage})` then reads an HTML response (≤ 2 MB) once and follows its `<meta name="citation_pdf_url">`. `downloadPdf` checks every hop
+(redirects and the meta hop) with `assertPublicUrl` (http/https only, no credentials in the URL, every resolved address public: no
+loopback/private/link-local/CGNAT/multicast/ULA), content type, `%PDF-` magic, 50 MB cap, 60 s; `SourceError.code` carries the reason.
+Tests pass `allowPrivateDownloads` as `true` or a predicate (only the mock server).
 
 **Open-access PDF on add** (`lib/library/auto-pdf.ts` `autoFetchPdf(db, storage, paper, userId, {budgetMs})`): used by POST
 `/library/papers` (identifier), agent `import_paper` (20 s) and `fetch_paper_pdf` (30 s): `fetchOpenAccessPdf` within the budget;
@@ -867,7 +895,7 @@ Detail `permissions = {edit, delete, feedback, studies: <study ids the caller ma
 | POST `/meetings` `{title ≤160, held_at ISO, notes?, language?, study_ids: (id\|slug)[] 1..20, participant_ids?: uuid[], decks?: [{deck_id, version_id?}]}` | user | the creator is always a participant; unknown/disabled users, unknown studies, decks of other studies or non-published versions → 400 → 201 `MeetingDetail` |
 | GET `/meetings/:id` | user | `MeetingDetail` (below), `no-store` |
 | PATCH `/meetings/:id` (same fields, all optional) | editor | replacing `study_ids` deletes unconfirmed drafts and decks of removed studies → `MeetingDetail` |
-| DELETE `/meetings/:id` | creator, admin | cancels its jobs; deletes `meetings/<id>/`, `media/items/<id>/`, `media/uploads/<mediaId>/` after commit; confirmed notes/tasks stay |
+| DELETE `/meetings/:id` | creator or owner/member of a linked study (403 `只有會議建立者或相關研究的成員可以刪除會議。`) | cancels its jobs; deletes `meetings/<id>/`, `media/items/<id>/`, `media/uploads/<mediaId>/` after commit; confirmed notes/tasks stay |
 | POST `/meetings/:id/media` (multipart, one file ≤ `MAX_MEDIA_BYTES`; mp4 mkv webm mov m4v m4a mp3 wav ogg oga opus flac aac) | editor | streamed to `media/uploads/<mediaId>/source`, `media_transcode` queued with `keepSource` = playable container (mp4/webm/mov/m4v) and ≤ 500 MB → 202 `{media}` |
 | POST `/meetings/:id/recordings` `{mime?, file_name?}` | editor | starts a browser recording (`status recording`) → 201 `{media}` |
 | PUT `/meetings/:id/recordings/:mediaId/chunks/:part/:seq` (raw body ≤ 8 MB; `audio/webm\|audio/ogg\|audio/mp4\|video/webm\|application/octet-stream`) | editor | idempotent per part/seq (retries overwrite); part 0–19, seq ≤ 99999; 409 once finished → `{ok, part, seq}` |
@@ -1088,6 +1116,8 @@ Tables (`0070_agent.sql`):
 5. Policy (`src/agent/policy.ts`, deny-first): `alwaysAsk` (memory) and `destructive` always ask in every mode; open-world
    tools ask once the run is tainted (`outbound`); reads run; a grant for (tool, target study) runs (`conversation_grant`);
    autopilot runs writes unless tainted (`tainted`) or over the cap (`autopilot_limit`); otherwise ask (`write`).
+   (Workflow plans follow their own autopilot rule: draft-only plans are auto-approved even when tainted — see
+   Workflows → Engine 1.)
 6. Taint: a result with `untrusted: true` (content the caller did not author: other members' notes/tasks/summaries, papers,
    search hits, web) or any open-world call sets `agent_runs.tainted` and appends its `source` label (shown on later cards as
    「依據：〈…〉」). Study reads (`get_study`, `list_studies`) are untrusted only when a listed study was created by someone
@@ -1385,8 +1415,15 @@ collapsible` (in chat): objective (3 lines), step progress + criteria + budget %
 artifacts, controls; 「顯示詳細內容」 shows criteria, steps/verdicts, budget bar and the full report. The shell's
 `AgentRunsIndicator` (topbar, workspace accounts, only while something is active; butter style when a run needs the user)
 opens a popover (sheet on phones) over `GET /workflows/active` (`lib/agent/activity.svelte.ts`: 5 s while open, 15 s while
-active, 60 s idle, paused while hidden) with status, current role + activity, progress, step/budget/tokens, 開啟對話 /
-artifact links and 暫停/繼續/停止 (assistant: `POST …/cancel`).
+active, 60 s idle, paused while hidden) with status, current role + activity, progress, step/budget/tokens, a primary
+deep-link button per state (確認計畫 / 前往作答 / 審核, else 開啟對話 / 查看; the title links too), 直接開始 (approve the
+plan unchanged, `POST /workflows/:id/approve {}`), artifact links and 暫停/繼續/停止 (assistant: `POST …/cancel`).
+**Focus deep links** (`lib/agent/focus.ts`): `/assistant/<id>?focus=workflow:<runId>|toolcall:<callId>` (`?workflow=<runId>`
+is an alias) — `AssistantWorkspace` passes the target to `ChatView`, which waits for the transcript and the card
+(`data-focus-key` on `WorkflowCard` once loaded, ask cards, consent cards; a `[data-focus-target]` inside narrows it to the
+plan editor / open question), opens a deferred question card, scrolls to it, pulses a ring once (static under reduced
+motion), focuses it, then drops the parameter (`replaceState`); a missing card toasts 「找不到這張卡片…」.
+`/assistant/workflows?run=<id>` (alias `?id=`) expands that run (fetched when not in the list) and scrolls + pulses it.
 **Document viewer** (「文件檢視器」, `components/agent/viewer/`, contract `lib/agent/viewer.ts`, state `viewer-state.svelte.ts`,
 i18n `i18n/viewer.ts`): `ViewerSplit` wraps the chat on `/assistant` and in the Ask-AI panel. Layout: side by side with a
 draggable, keyboard-resizable divider (page ≥ 1280 px — the conversation list collapses while it is open when the workspace is
@@ -1439,8 +1476,9 @@ Approve / resume / guidance / 繼續改 enqueue a new job when none is queued or
 `llm_unavailable` from any call → the runner's usual backoff (`waiting_llm`, no attempt consumed; the card shows
 「等待模型恢復」 from the job stage). Sub-agent roles that are unconfigured/unavailable fall back to `assistant`.
 
-Tables (`0109_workflows.sql`):
+Tables (`0109_workflows.sql`, `0116_workflow_batches.sql`):
 - `workflow_runs` — `user_id` (owner; the run acts with exactly their permissions, re-checked before every write),
+  `batch_id` + `batch_index` (one run of a batch, below),
   `study_id`, `conversation_id` + `tool_call_id` (the chat that started it; SET NULL), `playbook`, `title`, `request` (the
   user's words), `objective`, `criteria` jsonb `[{id, text, kind: check|judge, check?, status: pending|pass|fail|skipped,
   reason?}]`, `plan` jsonb `{summary, outline?: [{n, title, points[]}], writes: [{kind, label}], notes?}`, `inputs` jsonb
@@ -1450,7 +1488,9 @@ Tables (`0109_workflows.sql`):
   tokens_in, tokens_out, active_ms, fix_rounds}`, `artifacts` jsonb `[{kind: deck|note|latex_project|latex_file|paper,
   id, url, title, role: draft|suggestion|primary, preview_url?, revision?}]`, `guidance` jsonb `[{at, text, applied}]`,
   `report` jsonb `{summary_md, done[], issues[], next?}`, `stop_reason`, `error {error, code?, hint?}`, `job_id`,
-  `pause_requested`, `final_rounds`, timestamps.
+  `pause_requested`, `final_rounds`, timestamps. `plan.writes[]` items also carry `effect: new|draft_own|suggestion|
+  overwrite|publish|delete|outbound` (autopilot approval, below); `state` keeps `auto_approved {at, tainted}`,
+  `manual_approval`, `revise_requested`, `ai_filled` (titles of AI-filled student pages), `abstract_only`.
 - `workflow_steps` — tree (`parent_id` = the step a fix round belongs to), `key` (plan id, unique per run), `position`,
   `role planner|researcher|writer|designer|coder|verifier|integrator`, `kind task|integrate|final`, `title`,
   `instructions`, `depends_on text[]` (keys), `inputs` jsonb (context refs), `expected`, `verify` jsonb `{checks: [{id,
@@ -1461,8 +1501,9 @@ Tables (`0109_workflows.sql`):
 - `workflow_events` (`seq` = SSE id, `run_id`, `type`, `data`) + `NOTIFY workflow_events '<runId>'`; pruned 7 days after
   the run finished.
 
-Status: `planning → awaiting_plan_approval → running ⇄ verifying → done | partial | failed | cancelled`, plus `paused`
-(user) and `awaiting_input` (the orchestrator is blocked on a question, e.g. no paper PDF). `partial` = finished with
+Status: `[queued →] planning → awaiting_plan_approval → running ⇄ verifying → done | partial | failed | cancelled`, plus
+`paused` (user), `awaiting_input` (the orchestrator is blocked on a question) and `needs_pdf` (a paper run without a
+PDF, below). `queued` = created over the per-user limit (below); a skipped paper ends `cancelled` with `stop_reason skipped`. `partial` = finished with
 unmet criteria or exhausted budget (never reported as success). `failed` = could not run (no access, bad input, model
 error after retries).
 
@@ -1474,8 +1515,16 @@ the budget):
    objective + criteria + plan (steps with dependencies, role, inputs, expected output, how it is verified). Playbooks
    produce a deterministic skeleton that the orchestrator adapts to the request; slides also produce the **page-by-page
    outline** (title + key points), which the plan card always shows in full. → `awaiting_plan_approval` (notification
-   「工作計畫待確認」). Autopilot conversations auto-approve only when the playbook is non-destructive, the run is not
-   tainted and the plan writes only new drafts.
+   「工作計畫待確認」). **Autopilot** (`src/workflows/autopilot.ts`, pure, unit-tested): the plan is approved
+   automatically when the playbook is `autoApprovable` and **every** `plan.writes[].effect` is draft-only (`new` object,
+   `draft_own` = a new revision of the run's own draft deck or an untouched template, `suggestion`) — **also when the
+   run is tainted** (it read papers, others' notes, study content): taint guards exfiltration and overwrites, and a
+   draft-only plan does neither. `overwrite` (e.g. writing into an existing edited deck), `publish`, `delete`,
+   `outbound` or a write without an effect → the plan card waits (log 「自動駕駛：這個計畫會…，需要你確認」). The
+   timeline logs 「自動駕駛已自動核准計畫…」, the card keeps the plan visible (「查看計畫」) with 暫停 / 「修改計畫」:
+   `POST …/revise` on an auto-approved run that is running sets `pause_requested` + `revise_requested` (the engine stops
+   between sub-agent calls and re-plans), on a paused one re-plans at once; the new plan then always waits for the user
+   (`manual_approval`). Drafts already written are reused (`draft_own`).
 2. *Dispatch*: ready steps (dependencies passed/skipped) run in parallel up to `budget.concurrency`. A sub-agent gets a
    focused context (its instructions, the outputs of its dependencies, the user's guidance, the relevant source excerpt)
    and only its role's tools — researchers: read tools (open-world `search_papers_online` only while the run is
@@ -1494,7 +1543,13 @@ the budget):
    Sub-agents see only their brief (never the chat) and cannot delegate (depth 1). A sub-agent that lacks required data
    answers `BLOCKED: <what is missing>` instead of inventing content → the step goes back to `pending` and the
    orchestrator turns the blocker into a **question card** with grounded options (below; `purpose: blocked`, the answer
-   is also appended to the guidance), then the step runs again. Researchers: the same read call a
+   is also appended to the guidance), then the step runs again — **at most one question per step and none under
+   autopilot**: any later (or, under autopilot, any) BLOCKED becomes a fix round with 「不要再回覆 BLOCKED：只用提供的資料
+   完成，缺的寫『資料未提供』」 (`BEST_EFFORT_ISSUE`), and the same BLOCKED again (or past the step's fix rounds) fails the
+   step instead of looping. Every step has an attempt cap (`attemptCap` = fix rounds + 3; user-driven re-runs —
+   「修改答案」, 繼續改 — reset `attempts` to the round). Sub-agent rule: BLOCKED only when nothing can be started; missing
+   details / examples / numbers → 「資料未提供」. The step verifier gets the run's sources (`state.brief` or the researcher
+   outputs) and may only ask for what they contain (「資料未提供」 is correct, not an issue). Researchers: the same read call a
    third time is not executed (stuck guard). From 50 % of the pooled budget every brief says so (「請直接、精簡」).
    A reply cut off with no text (reasoning models) is retried once with a doubled budget and a nudge.
 4. *Integration* (playbook): writes the artifact — always a **draft or suggestion**, never a direct overwrite of user
@@ -1539,14 +1594,41 @@ final go back to `pending` (a finished run is reopened with a little more budget
 pages): step `student_input` after the writer steps (assemble depends on it) asks one batched card (assessment →
 multi-choice strengths/weaknesses; takeaways → multi-select; 啟發/卡住/下週… by title) and `applyStudentPages` fills
 those pages with the answers; skipped → `〔　這頁留給你自己寫…　〕` (allowed: owned titles are in `allow_titles`).
-`askStudentView(env, step, {cardId, title, questions})` is the same pattern for a 「我的想法」-style section in other
-playbooks.
+**Under autopilot** the run never stops here: `autopilotAnswers` picks the AI's own grounded options (takeaways ≤ 3,
+others ≤ 2, single choice 1; no options → skipped), the card is stored answered with `ai_filled: true`, the pages get a
+visible `[AI 代填，待你確認]{.hub-ai-filled}` line + the speaker note 「（AI 代填，待你確認：…）」, a notice + notification
+「AI 代填了你的頁面，待你確認」 is sent, `state.ai_filled` lists the titles and the report adds 「待你確認：」 lines
+(`report.confirm`). The final verifier accepts AI-filled pages (the coverage criterion says so). The card stays
+answerable: the user's 「修改答案」 clears `ai_filled` and re-runs the step + assemble → final. Outside autopilot it asks
+as before. `askStudentView(env, step, {cardId, title, questions})` is the same pattern (incl. the autopilot fill,
+`isAiFilled`) for a 「我的想法」-style section in other playbooks.
+
+**Context and batches** (`src/workflows/context.ts`). A new run inherits its study / paper from the inputs, the page
+context, then the conversation (`conversations.context` / `study_id`, the page context of its recent user messages),
+then a study named in the request (title/slug tokens of a study the user edits: English word = 2 points, CJK bigram =
+1, ≥ 4 and a unique best), then the user's only active study — so a chat about one study never gets 「要把簡報放在哪個研究？」.
+A per-paper playbook (`slides`, `reading_note`) asked for 「每一篇文獻」 (`EACH_PAPER_RE`) without a single paper, or
+given ≥ 2 `paper_ids`, becomes a **batch**: one run per study paper (≤ 10, study order) with a shared `batch_id`,
+`batch_index`, the request + 「（批次 i/n：只處理〈title〉）」 and `inputs.paper_id`. **Queue** (`src/workflows/queue.ts`):
+at most 3 runs per user are working (`planning|running|verifying`); creation takes a per-user advisory lock, and a run
+over the limit (or behind runs already queued — FIFO) gets status `queued` with a **parked** job (`run_after =
+infinity`, stage `queued` → jobs tray 「排隊中」). `promoteQueued(db, user)` starts the oldest queued runs as slots
+free: called when an `ai_workflow` job stops (the run ended or waits for the user), on cancel, and by the 60 s sweep.
+
+**Missing PDFs** (`src/workflows/paper-pdf.ts`; slides + reading note). A paper without a PDF first gets the library's
+open-access resolution (`autoFetchPdf`: arXiv / ACL / ISCA / Unpaywall / OpenAlex / S2 — identifiers only, as a library
+import) and the record's URLs (`oa_url`, CSL `URL` / `link`, via `attachPdfFromUrl`), with the owner's paper
+permissions. Still missing → under autopilot the run is skipped as `needs_pdf` (「需要 PDF」, notification; the card
+offers 「從網址下載 PDF」 = `POST /library/papers/:id/pdf-from-url` then `…/resume`, 「到文獻庫上傳」, 「已上傳，繼續」);
+outside autopilot a card `pdf_<paper>_<n>` asks 提供網址 (+ URL field) / 上傳 PDF / 只用摘要 (slides only: an
+abstract-only run, title 「論文報告（僅依摘要）」, subtitle and plan note say so, grounded criterion adapted) / 跳過這篇
+(run ends `cancelled`, `stop_reason skipped`); a URL that fails asks again with the error.
 
 **Safety.** Runs act with the owner's permissions (study edit access re-checked before each write; a lost membership →
 `failed`). Tool results and sub-agent outputs are untrusted data for the orchestrator (wrapped in `<data>` blocks with
 the injection notice; never instructions). Content the owner did not author (papers, others' notes, meetings, web) sets
-`tainted` (+ `taint_sources`, shown on the card): a tainted run is never auto-approved and its plan card says which
-sources it read. Write targets are chosen by the playbook code, never by model output, and are listed on the plan card
+`tainted` (+ `taint_sources`, shown on the card): its plan card says which sources it read, open-world search stops,
+and autopilot approves it only when every planned write is draft-only (above). Write targets are chosen by the playbook code, never by model output, and are listed on the plan card
 (`plan.writes`). Publishing a deck version (`POST …/publish`) always needs the user's click. Nothing is sent outside
 the hub except the open-world search query rules of the assistant.
 
@@ -1625,8 +1707,11 @@ materialises it into the deck tree:
 **Chat integration.** The assistant prompt (`WORKFLOW_RULES`) says: for multi-step creation, propose and call
 `start_workflow` instead of producing the result in one reply; for a quick one-shot draft only when the user explicitly
 asks for it (`create_deck {generate: true}` stays as that fast path). Tools: `start_workflow {request, playbook?, study?,
-paper_id?, deck_id?, project_id?, note_ids?, pages?}` (risk read: it only plans; nothing is written before the plan card
-is approved; not on MCP) → `{workflow_id, status: "planning"}` and the model must end its turn without describing
+paper_id?, deck_id?, project_id?, note_ids?, paper_ids? ≤ 10, pages?}` (risk read: it only plans; nothing is written
+before the plan is approved — by the user, or by autopilot for draft-only plans; not on MCP; study/paper default to the
+conversation's context) → `{workflow_id, status, playbook}` or, for a batch, `{batch_id, workflow_ids, workflows:
+[{id, title, status, paper_id}], status: "batch"}` (the tool row renders the **batch card**); the prompt tells the
+model to call it once for 「每一篇文獻」 and not to drop papers without a PDF; the model must end its turn without describing
 results; `get_workflow {workflow_id?}` (read) → status, criteria, report (the model reports state honestly: queued /
 running / partial — never outcomes that were not verified). `ask_user` refuses a card whose question refers to
 「以下／下列／上述／這個架構…」 unless `intro` contains the referenced content (≥ 3 list lines or ≥ 120 chars).
@@ -1637,29 +1722,31 @@ planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
 | Method & path | Access | Notes |
 |---|---|---|
 | GET `/workflows/playbooks` | user | `{playbooks: [{id, title, title_en, description, description_en, auto_approvable}]}` |
-| POST `/workflows` `{request ≤ 4000, playbook?, conversation_id?, context?, inputs?: {study?, paper_id?, deck_id?, project_id?, note_ids?, pages?}, autopilot?}` | user (study read; writes are re-checked at run time) | admins 403; 503 `llm_unavailable` when `assistant` is down; playbook auto-detected when missing; ≤ 3 active runs per user (409) → 201 `{workflow, conversation_id}` |
-| GET `/workflows/active` | user (own; admins → empty) | shell indicator 「N 個 Agent 執行中」: `{runs: ActiveAgentRun[], count, needs_you}` (`src/workflows/active.ts`) — my active workflow runs + the newest assistant run of each conversation when `running`/`awaiting_approval`/`awaiting_llm`, or ended on an unanswered `ask_user` card in the last 24 h (chat mode; status `awaiting_input`). `ActiveAgentRun = {kind: workflow\|assistant, id, title, objective, status, needs_you (awaiting_plan_approval/awaiting_input/awaiting_approval), conversation_id, study, current: {role (step role \| tool), text} \| null (latest `activity` event / running step / running tool call), progress: {done,total} (steps passed+skipped), plan: {done,total,current} (assistant: newest update_plan of the current turn), step: {step,max}, budget_pct, tokens, artifacts[≤4], started_at, updated_at}`, needs-you first; `no-store`; polled (no SSE) |
-| GET `/workflows?active=1&study=&status=&limit=` | user (own) | `{workflows: WorkflowView[]}` newest first (no steps) |
+| POST `/workflows` `{request ≤ 4000, playbook?, conversation_id?, context?, inputs?: {study?, paper_id?, deck_id?, project_id?, note_ids?, paper_ids? ≤ 10, pages?}, autopilot?}` | user (study read; writes are re-checked at run time) | admins 403; 503 `llm_unavailable` when `assistant` is down; playbook auto-detected when missing; context inherited / batch split / over 3 working runs → `queued` (never 409) → 201 `{workflow (first), workflows (the batch, or [workflow]), batch_id, conversation_id}` |
+| GET `/workflows/active` | user (own; admins → empty) | shell indicator 「N 個 Agent 執行中」: `{runs: ActiveAgentRun[], count, needs_you}` (`src/workflows/active.ts`) — my active workflow runs + the newest assistant run of each conversation when `running`/`awaiting_approval`/`awaiting_llm`, or ended on an unanswered `ask_user` card in the last 24 h (chat mode; status `awaiting_input`). `ActiveAgentRun = {kind: workflow\|assistant, id, title, objective, status, needs_you (awaiting_plan_approval/awaiting_input/needs_pdf/awaiting_approval; `queued` runs are listed too), conversation_id, study, current: {role (step role \| tool), text} \| null (latest `activity` event / running step / running tool call), progress: {done,total} (steps passed+skipped), plan: {done,total,current} (assistant: newest update_plan of the current turn), step: {step,max}, budget_pct, tokens, artifacts[≤4], action, focus, href, started_at, updated_at}`, needs-you first; `no-store`; polled (no SSE). Deep link to what waits: `action` = `approve_plan` (workflow plan card) \| `answer` (workflow question card / `needs_pdf` / `ask_user` card) \| `review` (consent card) \| null; `focus` = `workflow:<runId>` or `toolcall:<toolCallId>` (the first `pending_approval` call / the last `ask_user` call of the current turn); `href` = `/assistant/<conversationId>?focus=<focus>` or, for a run without a conversation, `/assistant/workflows?run=<id>` (`focusHref`, also used by workflow notifications and the jobs tray) |
+| GET `/workflows?active=1&study=&status=&conversation=&batch=&limit=` | user (own) | `{workflows: WorkflowView[]}` newest first (`batch`: in batch order; no steps); `active` includes `queued` / `needs_pdf` |
 | GET `/workflows/:id` | owner | `{workflow, steps: StepView[], resumeFrom}` |
 | GET `/workflows/:id/events` | owner | SSE (as the agent's: `Last-Event-ID` / `?after=`, `?once=1`, 15 s ping, 5 s poll fallback) |
 | POST `/workflows/:id/approve` `{objective?, criteria?: [{id?, text}], steps?: [{key, title?, instructions?, skip?}], outline?: [{title, points[]}]}` | owner | only `awaiting_plan_approval` (409) → `{workflow}`; edits are applied first (outline edits re-derive the writer steps) |
-| POST `/workflows/:id/revise` `{feedback ≤ 2000}` | owner | 「修改」 at plan approval: re-plan with the feedback → `planning` |
-| POST `/workflows/:id/pause` · `/resume {more?}` · `/cancel` | owner | pause while running; resume a paused / partial (`more`: 繼續改) / failed run; cancel any active run → `{workflow}` |
+| POST `/workflows/:id/revise` `{feedback ≤ 2000}` | owner | 「修改」 at plan approval (or 「修改計畫」 on an autopilot-approved run: running → stops between calls then re-plans; paused → re-plans) → `planning`; the new plan waits for the user |
+| POST `/workflows/:id/pause` · `/resume {more?}` · `/cancel` | owner | pause while running; resume a paused / `needs_pdf` (re-plan) / partial (`more`: 繼續改) / failed run; cancel any active run (frees a slot → queued runs start) → `{workflow}` |
 | POST `/workflows/:id/guidance` `{text ≤ 2000}` | owner | 補充指示; on a finished `partial`/`done` run it starts 繼續改 with that guidance |
 | POST `/workflows/:id/answer` `{card_id, answers: [{id, value?, other?, skipped?}]}` | owner | answers a question card (400 invalid answer, 404 unknown card, 409 while working when editing) → `{workflow}`; resumes / re-runs from the asking step |
 | PATCH `/workflows/:id` `{objective?, criteria?}` | owner | 修改目標: allowed while `awaiting_plan_approval`, `paused` or finished; a changed objective on a paused/finished run re-plans |
 | POST `/workflows/:id/publish` | owner (study editor) | slides only, after the run ended: publish the draft deck as a new version (`lib/slides` publish) → 202 `{versionId, jobId}` |
-| DELETE `/workflows/:id` | owner | finished runs only; drafts stay |
+| DELETE `/workflows/:id` | owner | finished, waiting (`awaiting_*`, `needs_pdf`) or `queued` runs; drafts stay |
 
 ```ts
-type WorkflowStatus = "planning"|"awaiting_plan_approval"|"running"|"verifying"|"awaiting_input"|"paused"|"done"|"partial"|"failed"|"cancelled";
+type WorkflowStatus = "queued"|"planning"|"awaiting_plan_approval"|"running"|"verifying"|"awaiting_input"|"needs_pdf"|"paused"|"done"|"partial"|"failed"|"cancelled";
 type WorkflowView = { id, title, playbook, playbook_title, playbook_title_en, status, request, objective,
   criteria: {id, text, kind, status: "pending"|"pass"|"fail"|"skipped", reason?}[],
   plan: { summary, outline?: {n, title, points: string[]}[], writes: {kind, label}[], notes? } | null,
   study: {id, slug, title} | null, conversation_id, autopilot, tainted, taint_sources: string[],
   budget, usage: {steps, calls, tokens_in, tokens_out, active_ms, fix_rounds}, artifacts: Artifact[],
   guidance: {at, text, applied}[], report: {summary_md, done: string[], issues: string[]} | null, stop_reason, error,
-  job: {status, stage} | null, question?: string | null, asks: (Card & {pending: boolean})[], created_at, updated_at, finished_at };
+  job: {status, stage} | null, question?: string | null, asks: (Card & {pending: boolean; ai_filled?: boolean})[],
+  batch: {id, index} | null, auto_approved: {at, tainted} | null, paper_id: string | null, created_at, updated_at, finished_at };
+// report also has confirm?: string[] (AI-filled pages to confirm); plan.writes[].effect?: WriteEffect
 type Artifact = { kind: "deck"|"note"|"latex_project"|"latex_file"|"paper"; id; url; title; role: "draft"|"suggestion"|"primary"; preview_url?; revision? };
 type StepView = { id, key, parent_key, position, role, kind, title, instructions, depends_on: string[], expected,
   verify, status, attempts, round, output: {summary, excerpt?} | null, verdict, history, tokens: {in, out}, ms, error,
@@ -1677,7 +1764,11 @@ page: header with playbook + status pill; objective; criteria checklist turning 
 `awaiting_plan_approval` with the full outline/steps/criteria editable inline and 「開始」/「修改」/「取消」; step
 timeline with role icons, live activity line, verdict chips and fix rounds; budget bar; artifacts with 「在檢視器開啟」;
 controls 暫停/繼續/停止/修改目標/補充指示; report + 「繼續改」/「發布為新版本」), `/assistant/workflows` (list of my runs:
-active first, filters), the study page's 「工作流程」 strip. i18n `i18n/workflows.ts`. Notifications use kind `workflow`.
+active first, filters), the study page's 「工作流程」 strip. `WorkflowCard` also shows 「排隊中」 (queued hint), the
+`needs_pdf` panel (URL field + 「從網址下載 PDF」 / upload / continue) and, on autopilot-approved runs, the
+「自動駕駛已自動核准計畫」 box (plan on demand, 暫停 / 修改計畫); `WorkflowAsk` marks AI-filled cards 「AI 代填，待你確認」.
+`WorkflowBatchCard` (batch `start_workflow` results): one row per run with its status, expandable into the run's card;
+polls `GET /workflows?batch=` while any run is active. i18n `i18n/workflows.ts`. Notifications use kind `workflow`.
 
 ### UI support (`dashboard.ts`, `jobs.ts`)
 
@@ -1688,7 +1779,7 @@ Both need a session and reply with `Cache-Control: no-store`. (v2 `/search` is g
 { myStudies: StudyCard[],            // studies I belong to (not archived), newest activity first, max 50
   myTasks: (Task & { study })[],     // open tasks assigned to me in non-archived studies, soonest due first (undated last), max 10
   activity: { id, kind, title, url, at, metadata, actor: {id,name} | null, study: {id,slug,title} }[], // latest 20, lab-wide
-  counts: { myStudies /* active */, labStudies /* active */, openTasks, overdueTasks, dueThisWeek /* today..+6, Asia/Taipei */ } }
+  counts: { myStudies /* not archived, = /studies?scope=mine */, labStudies /* not archived, = scope=lab */, openTasks, overdueTasks, dueThisWeek /* today..+6, Asia/Taipei */ } }
 ```
 Activity `url` is the SPA path recorded with the event (`/studies/<slug>[?tab=…]`, `/slides/<deckId>`); the dashboard
 shows unknown kinds generically, so modules may record their own.
@@ -1696,8 +1787,9 @@ shows unknown kinds generically, so modules may record their own.
 **GET `/jobs/active`** → `{ jobs: { id, kind /* any job kind */, status:"queued"|"running"|"succeeded"|"failed"|"cancelled",
 stage, progress, label, url, updatedAt }[] }`: the caller's jobs that are queued/running or finished in the last 10 minutes,
 max 10, newest first. `stage` is the worker's 繁中 stage; the raw values `queued`/`starting`/`cancelled` written by the
-database/backend are shown as `排隊中`/`準備中`/`已取消`, and the ai-worker's machine stages (`generating`, `validating`, …) get 繁中 labels too. `progress` is 100 once succeeded. `label` = `<deck title> v<n>`
-(`已刪除的簡報` when gone), else the payload's `fileName` or the kind; `url` = `/slides/<deckId>`, null otherwise (modules
+database/backend are shown as `排隊中`/`準備中`/`已取消` (a `queued` workflow run's parked job: status `queued`, 「排隊中」; a run waiting for the user shows its state: 等待確認計畫 / 等待你回答 / 需要 PDF / 已暫停), and the ai-worker's machine stages (`generating`, `validating`, …) get 繁中 labels too. `progress` is 100 once succeeded. `label` = `<deck title> v<n>`
+(`已刪除的簡報` when gone), else the payload's `fileName` or the kind; `url` = `/slides/<deckId>` (`ai_workflow`: the run's
+focus deep link, see `/workflows/active`), null otherwise (modules
 with their own kinds extend this route). `updatedAt` = latest of created/started/heartbeat/finished.
 The frontend store (`stores/jobs.svelte.ts`) prepends browser-side uploads still sending bytes
 (`jobsStore.trackUpload(label)` → `{progress(f), done()}`, kind `upload`, stage `uploading`); `UploadSheet` uses it, so a deck
@@ -1812,7 +1904,7 @@ Layers: **provider accounts → model profiles → (groups) → role bindings** 
 - `ai_models` — one **model profile** per (account, `model_id`): `origin sync|manual`, `listed` (in the latest listing),
   `enabled` (shown in pickers; bindings keep working when hidden), `api` jsonb (fields the provider's list-models API
   reported), `overrides` jsonb (admin), `refreshed_at`. Fields: `display_name, capability (chat|embedding|asr),
-  context_window, max_output_tokens, vision, tools, reasoning, json_schema, embedding_dims, input_price, output_price`
+  context_window, max_output_tokens, vision, audio_input, tools, reasoning, json_schema, embedding_dims, input_price, output_price`
   (USD / 1M tokens). The **effective profile is computed in code** per field: manual > `provider_api` > catalog (the
   catalog is code, so updated defaults apply without a migration), with `sources[field]`; an ASR account's models are
   always `asr`; without any source the capability is guessed (embedding-looking id → embedding, else chat). Filled by
@@ -1871,6 +1963,27 @@ does not wait. Images are never stripped silently. Role flag: `detail.vision` = 
 images; public status and `ai.capabilities(role)` report it. Codecs map `image` blocks (base64 PNG/JPEG/WebP):
 openai-chat/cohere `image_url` data URLs, responses `input_image`, anthropic `image` base64 source, gemini
 `inlineData`, bedrock `image.source.bytes`, ollama `images[]`.
+
+**Audio input / multimodal ASR** (`ai/platform/audio.ts`, `ai/asr/adapters/llm.ts`, `ai/asr/llm-transcript.ts`; research
+`docs/research/asr.md` §10). The `asr` role (not `asr_live`: `assertLive` rejects non-live kinds) can be bound — directly
+or inside an `asr` group, mixed with dedicated ASR members — to a **chat model on an LLM account** whose `modelAudio()`
+says yes: same precedence as vision (manual `audio_input` → `override`, listing `capabilities.audioInput` /
+`architecture.input_modalities` → `model_list`, catalog true → `catalog` (Gemini 1.5+/2.x/3.x, gpt-4o-audio, gpt-audio,
+Qwen-Omni/Audio, Voxtral chat, Phi-4-multimodal), name heuristic → `name`, Gemini codec → `vendor`), and only when the
+account's protocol can carry audio (`codec_ok`: openai-chat, gemini; OpenAI/Azure accounts on the Responses API send
+audio over Chat Completions via a per-request `apiStyle: "chat"` client). `modelIssues` rejects other chat models
+(`capability_mismatch`, 「不支援音訊輸入…」); binding never turns the model into an `asr` profile. Unified message model:
+`AudioBlock {type:"audio", source:{kind:"base64", mediaType, data}}` in user content; openai-chat → `input_audio`
+(`{data, format}`; quirk `audioInputStyle` `string` for Mistral, `data_url` for DashScope), gemini → `inlineData`; every
+other codec throws `unsupported` (pre-stream → fallback), never drops it. A chat member runs through the normal ASR
+orchestrator with `llmAsrAdapter` (≤ 600 s chunks at silences, `max_chunk_sec` overrides; per-chunk retries;
+checkpoints): one chat call per chunk asking for strict JSON `{language, segments[{start,end,speaker?,text}]}` (seconds
+relative to the chunk, zh-TW Traditional, glossary + previous tail as context), defensive parse/repair, monotonic clamp,
+loop trimming, truncated answer → re-plan at half length; then `mergeChunks`, OpenCC (`s2twp` default for zh),
+`source.kind = "llm_audio"`, warnings `timestamps_approximate` (always) / `repetition_trimmed`. Member params for such
+members: `language, diarization, prompt_template, use_glossary_keyterms, convert_script, max_chunk_sec, timeout_ms,
+max_retries` (registry `platform_params.asr_llm`). The call log row carries the summed token usage. Options:
+`PlatformOptions.asrDeps` (tests: fake media tools, short backoff).
 
 **Public API** (unchanged for callers; `import { ai, aiFor } from "../ai/platform/index.js"`):
 ```ts
@@ -1939,11 +2052,11 @@ All `/api/admin/ai/*` require `requireAdmin`; every error is `{ error, code, hin
 |---|---|
 | `GET /api/ai/status` | any signed-in user; `{roles: {<role>: {state, message_zh, vision}}, search_mode, updated_at}` — no providers/models/errors |
 | `GET /api/ai/status/stream` | SSE `event: status` (same body) on change, `: ping` every 25 s, `retry: 5000` |
-| `GET /admin/ai/registry` | `{llm[], asr[], roles[], platform_params{chat,embedding,asr}, live_kinds[], secrets_key_configured}` |
+| `GET /admin/ai/registry` | `{llm[], asr[], roles[], platform_params{chat,embedding,asr,asr_llm}, live_kinds[], secrets_key_configured}` |
 | `GET/POST /admin/ai/providers`, `PATCH/DELETE /admin/ai/providers/:id` | create `{family, kind, name, config, secrets, enabled?}`; patch `secrets` only lists changed keys (`null` clears); provider rows carry `used_by[{kind: group\|role, id, name}]`, `model_count`, `models_synced_at`; delete 409 `provider_in_use` |
 | `POST /admin/ai/providers/:id/test` · `POST /admin/ai/providers/test` | probe + model list (+ optional `{model, capability}` 1-shot check) → `{probe, models[{id, label, kind, vision?}], models_error, models_synced, check}`; a saved account's test also **syncs its profiles**; the second tests an unsaved form (`base_id` reuses stored secrets) |
 | `POST /admin/ai/providers/:id/sync` | 同步模型 → `{count, models: PublicModel[]}` |
-| `GET /admin/ai/models?provider_id=` · `POST /admin/ai/models {provider_id, model_id, overrides?}` | `PublicModel = {id, provider_id, provider_name, provider_kind, provider_family, model_id, origin, listed, enabled, refreshed_at, fields, sources{field: manual\|provider_api\|catalog}, api, overrides, catalog, catalog_id, vision{vision, detected, source, overridden}, used_by[]}` |
+| `GET /admin/ai/models?provider_id=` · `POST /admin/ai/models {provider_id, model_id, overrides?}` | `PublicModel = {id, provider_id, provider_name, provider_kind, provider_family, model_id, origin, listed, enabled, refreshed_at, fields, sources{field: manual\|provider_api\|catalog}, api, overrides, catalog, catalog_id, vision{vision, detected, source, overridden}, audio{audio, detected, source, overridden, codec_ok}, used_by[]}` |
 | `PATCH /admin/ai/models/:id {enabled?, overrides?}` · `POST /admin/ai/models/visibility {ids[], enabled}` · `DELETE /admin/ai/models/:id` | overrides per field (`null` clears; bad values 400 `route_invalid`); a used model cannot change capability (`capability_mismatch`) or be deleted (409 `route_in_use`) |
 | `GET /admin/ai/vision?provider_id=&model=` | `{detected, source: override\|model_list\|catalog\|name\|vendor\|unknown}` (syncs a stale listing first) |
 | `GET/POST /admin/ai/groups`, `PUT/DELETE /admin/ai/groups/:id` | body `{name, capability, strategy fallback\|load_balance\|round_robin, description?, members[{model_id \| provider_id+model \| child_group_id, weight?, params?, enabled?}]}` (PUT replaces members) → `{group: {…, members[+model_id, provider_name, child_group_name], bound_roles[], used_by[]}, warnings[]}`; `route_cycle`, `route_invalid` (issues per member index, depth > 6), `capability_mismatch`, `embedding_model_change_requires_switch`; delete 409 `route_in_use` |
@@ -2005,7 +2118,11 @@ picker visibility, manual add, per-account sync), **群組** (`GroupsPanel` + `G
 drag/↑↓, weights, request params), **功能綁定** (`BindingsPanel`: tick several roles → 「綁定到…」 `TargetPicker` with
 models grouped by account + profile badges and groups; per-role quick change), 流量, Embedding (switch wizard picks a
 model or group). Vision UI (`lib/components/vision/`, i18n `vision.*`): `VisionBadge` 「視覺」 on role bindings and models
-(the profile's vision; manual override in the 模型 tab); `SlideLayoutReview` (deck editor toolbar: preview shots; deck page:
+(the profile's vision; manual override in the 模型 tab); audio input: `ProfileBadges` chip, `ModelSheet` 「音訊輸入」 field
+(auto/yes/no + hint, 「無法傳送音訊」 when the protocol cannot), 功能綁定 → 語音 explains 專用 ASR vs 多模態模型 (pros/cons +
+fallback-group tip) and marks a chat-model binding 「音訊」; `TargetPicker` for `asr` lists audio-capable chat models
+(`routing.audioModelsFor`) under 「多模態模型（音訊輸入）」 (bindings, group editor, diagram picker); GroupEditor uses
+`platform_params.asr_llm` for such members; `SlideLayoutReview` (deck editor toolbar: preview shots; deck page:
 the shown version) and `LatexLayoutReview` (LaTeX toolbar, pdf.js + `SyncClient.pageSources`) render only when
 `aiStatus.vision(role)`, else the hint 「目前的模型不支援影像，無法檢查排版」; results in `ReviewResults` (fix → suggestion).
 

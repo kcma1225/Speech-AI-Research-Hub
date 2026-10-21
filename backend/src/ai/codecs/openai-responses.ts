@@ -8,7 +8,7 @@ import { guardStream, modelsDetail, send, sseEvents, timedProbe, type Call } fro
 import type { ChatEvent, ChatMessage, ChatRequest, StopReason, Usage } from "../types.js";
 import type { Codec, CodecContext } from "./codec.js";
 import { listOpenAiModels, openAiEmbed } from "./openai-chat.js";
-import { assistantParts, blocksOf, ensureToolsSupported, finishBody, imageDataUrl, makeState, num, stateFor, textOf, toolResultImages, toolResultText, ToolCalls } from "./shared.js";
+import { assistantParts, blocksOf, ensureAudioSupported, ensureToolsSupported, finishBody, imageDataUrl, makeState, num, stateFor, textOf, toolResultImages, toolResultText, ToolCalls } from "./shared.js";
 
 export interface ResponsesState {
   /** Raw reasoning output items (with encrypted_content), replayed verbatim before the turn. */
@@ -51,6 +51,7 @@ export function toResponsesInput(messages: ChatMessage[]): { instructions?: stri
 
 export function buildResponsesBody(ctx: CodecContext, req: ChatRequest): Record<string, unknown> {
   ensureToolsSupported(ctx, req);
+  ensureAudioSupported(ctx, req, "openai-responses");
   const { instructions, input } = toResponsesInput(req.messages);
   const body: Record<string, unknown> = { model: req.model, input, stream: true };
   if (instructions) body.instructions = instructions;

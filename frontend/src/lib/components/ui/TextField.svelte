@@ -20,7 +20,7 @@
       bind:value
       aria-invalid={error ? true : undefined}
       aria-describedby={error || hint ? `${inputId}-desc` : undefined}
-      class="h-11 w-full rounded-xl border bg-surface px-3.5 text-[15px] text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] sm:text-sm {error ? 'border-danger' : 'border-line-2'} {type === 'password' ? 'pr-11' : ''}"
+      class="h-11 w-full rounded-xl border bg-raised px-3.5 text-[15px] text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] sm:text-sm {error ? 'border-danger' : 'border-field-line'} {type === 'password' ? 'pr-11' : ''}"
       {...rest}
     />
     {#if type === "password"}

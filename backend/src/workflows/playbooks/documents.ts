@@ -15,7 +15,8 @@ import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { STEP_ROLES, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRole, type StepRow, type StepSpec } from "../types.js";
 import { clipText, depOutputs, paperOf, resolveStudy, systemFor, taskPrompt } from "./common.js";
-import { askStudentView } from "../student-input.js";
+import { AI_FILLED_MARK, askStudentView, isAiFilled } from "../student-input.js";
+import { ensurePaperPdf } from "../paper-pdf.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
@@ -110,9 +111,15 @@ const readingNote: WorkflowPlaybook = {
   async plan(env): Promise<PlanResult> {
     const access = await studyOrQuestion(env);
     if ("question" in access) return { kind: "question", question: access.question };
-    const paper = await paperOf(env);
+    let paper = await paperOf(env);
     if (!paper) return { kind: "question", question: "要讀哪一篇論文？請先把論文加入文獻庫（或附加它），再在補充指示寫出論文標題。" };
-    if (!paper.pdf_key) return { kind: "question", question: `〈${paper.title}〉還沒有 PDF，無法讀全文。請在文獻庫抓取或上傳 PDF 後，按「繼續」。` };
+    if (!paper.pdf_key) {
+      // Open access + the record's URLs first; autopilot skips (needs_pdf), otherwise the user chooses (paper-pdf.ts).
+      const d = await ensurePaperPdf(env, paper, { allowAbstract: false });
+      if (d.kind === "needs_pdf" || d.kind === "skip") return d;
+      paper = d.paper;
+      if (!paper.pdf_key) return { kind: "needs_pdf", paperId: paper.id, message: `〈${paper.title}〉還沒有 PDF，無法讀全文。` };
+    }
     const ft = await paperFullText(env.storage, paper.pdf_key).catch(() => null);
     const main = ft ? mainSections(ft.sections) : [];
     const hasMath = !!ft?.sections.some((s) => /[=∑∫√]|\\frac|argmax|log\s*p/.test(s.text));
@@ -159,7 +166,7 @@ const readingNote: WorkflowPlaybook = {
       studyId: access.study.id,
       objective: `為〈${clipText(paper.title, 100)}〉寫一份深度閱讀筆記：逐章讀全文${hasMath ? "（含公式）" : ""}，涵蓋每一個主要章節並標註出處。`,
       criteria,
-      plan: { summary: `依論文目錄分成 ${sections.length} 段，由研究者子代理平行讀對應章節並撰寫，每段檢查出處${hasMath ? "與公式" : ""}，最後整合並逐條驗收。`, outline: outlineFrom(sections.map((t) => ({ title: t }))), writes: [{ kind: "note", label: `新筆記「閱讀筆記：${clipText(paper.title, 60)}」` }] },
+      plan: { summary: `依論文目錄分成 ${sections.length} 段，由研究者子代理平行讀對應章節並撰寫，每段檢查出處${hasMath ? "與公式" : ""}，最後整合並逐條驗收。`, outline: outlineFrom(sections.map((t) => ({ title: t }))), writes: [{ kind: "note", label: `新筆記「閱讀筆記：${clipText(paper.title, 60)}」`, effect: "new" }] },
       steps,
     };
   },
@@ -176,7 +183,8 @@ const readingNote: WorkflowPlaybook = {
         context: { reading_note: drafted.slice(0, 12_000) },
       });
       const lines = [...(got.view ?? []), ...(got.use ?? [])];
-      return { summary: lines.length ? `收到你的想法（${lines.length} 點）` : "你選擇先跳過", text: `## 我的想法\n\n${lines.length ? lines.map((l) => `- ${l}`).join("\n") : "（之後自己補上）"}\n` };
+      const ai = isAiFilled(env, "my_view") && lines.length > 0;
+      return { summary: lines.length ? (ai ? `自動駕駛代填（${lines.length} 點，待你確認）` : `收到你的想法（${lines.length} 點）`) : "你選擇先跳過", text: `## 我的想法\n\n${ai ? `> **${AI_FILLED_MARK}**：以下是 AI 依研究資料草擬的建議，不是你確認過的看法。\n\n` : ""}${lines.length ? lines.map((l) => `- ${l}`).join("\n") : "（之後自己補上）"}\n` };
     }
     const title = (env.state<string[]>("sections") ?? [])[Number(step.key.slice(5)) - 1] ?? step.title;
     const paperId = String(step.inputs.paper_id ?? env.run.inputs.paper_id ?? "");
@@ -260,7 +268,7 @@ const litReview: WorkflowPlaybook = {
         { id: "grounded", kind: "judge", text: "每篇論文的描述都來自它的內容，沒有捏造結果" },
         { id: "synthesis", kind: "judge", text: "綜合分析指出具體的共同點、差異與缺口，不只是逐篇摘要" },
       ],
-      plan: { summary: `平行精讀 ${papers.length} 篇論文（${papers.map((p) => p.cite_key).join("、")}），再寫比較表與綜合分析，每段驗收引用與內容，最後整合成一份筆記。`, outline: outlineFrom(LIT_SECTIONS.map((t) => ({ title: t }))), writes: [{ kind: "note", label: `新筆記「文獻回顧：${clipText(access.study.title, 60)}」` }] },
+      plan: { summary: `平行精讀 ${papers.length} 篇論文（${papers.map((p) => p.cite_key).join("、")}），再寫比較表與綜合分析，每段驗收引用與內容，最後整合成一份筆記。`, outline: outlineFrom(LIT_SECTIONS.map((t) => ({ title: t }))), writes: [{ kind: "note", label: `新筆記「文獻回顧：${clipText(access.study.title, 60)}」`, effect: "new" }] },
       steps,
     };
   },
@@ -342,7 +350,7 @@ const experimentReport: WorkflowPlaybook = {
         { id: "sections", kind: "check", text: "包含目的、設定、結果、分析、結論五段", check: { id: "sections_present", params: { sections: EXP_SECTIONS } } },
         { id: "analysis", kind: "judge", text: "分析只陳述資料支持的結論，沒有誇大" },
       ],
-      plan: { summary: "先整理表格與圖表（數字逐一對照原始資料），再寫分析，最後整合成筆記並驗收。", outline: outlineFrom(EXP_SECTIONS.map((t) => ({ title: t }))), writes: [{ kind: "note", label: "新的實驗報告筆記" }] },
+      plan: { summary: "先整理表格與圖表（數字逐一對照原始資料），再寫分析，最後整合成筆記並驗收。", outline: outlineFrom(EXP_SECTIONS.map((t) => ({ title: t }))), writes: [{ kind: "note", label: "新的實驗報告筆記", effect: "new" }] },
       steps,
     };
   },
@@ -396,7 +404,7 @@ const meetingPrep: WorkflowPlaybook = {
         { id: "clean", kind: "check", text: "沒有佔位文字", check: { id: "no_placeholder" } },
         { id: "grounded", kind: "judge", text: "每一項都來自研究資料，沒有自己新增的待辦、時程或截止日" },
       ],
-      plan: { summary: "讀研究進度、上次回饋與最近動態，擬出五段議程，驗收後建立筆記。", outline: outlineFrom(MEET_SECTIONS.map((t) => ({ title: t }))), writes: [{ kind: "note", label: "新的會議準備筆記" }] },
+      plan: { summary: "讀研究進度、上次回饋與最近動態，擬出五段議程，驗收後建立筆記。", outline: outlineFrom(MEET_SECTIONS.map((t) => ({ title: t }))), writes: [{ kind: "note", label: "新的會議準備筆記", effect: "new" }] },
       steps,
     };
   },
@@ -467,7 +475,7 @@ const generic: WorkflowPlaybook = {
         ...value.criteria.slice(0, 5).map((t, i) => ({ id: `c${i + 1}`, kind: "judge" as const, text: clipText(String(t), 200) })),
         { id: "clean", kind: "check" as const, text: "沒有佔位文字或被截斷的內容", check: { id: "not_truncated" } },
       ],
-      plan: { summary: `分成 ${raw.length} 個步驟由子代理執行，每步驗收後整合成一份新筆記。`, writes: [{ kind: "note", label: `新筆記「${title}」` }] },
+      plan: { summary: `分成 ${raw.length} 個步驟由子代理執行，每步驗收後整合成一份新筆記。`, writes: [{ kind: "note", label: `新筆記「${title}」`, effect: "new" }] },
       steps,
     };
   },

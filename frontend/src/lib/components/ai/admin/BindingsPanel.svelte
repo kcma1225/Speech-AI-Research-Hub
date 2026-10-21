@@ -1,6 +1,6 @@
 <script lang="ts">
   import { fly } from "svelte/transition";
-  import { Activity, Boxes, Link2, Unlink, X } from "@lucide/svelte";
+  import { Activity, AudioLines, Boxes, Link2, Unlink, X } from "@lucide/svelte";
   import { i18n, t } from "#lib/i18n.svelte.ts";
   import { aiApi, ROLE_KEYS, STATE_KEYS, toErrorBody, type AiErrorBody, type Binding, type Capability, type TargetInput } from "#lib/ai/admin.ts";
   import { adminStore } from "#lib/ai/admin-store.svelte.ts";
@@ -119,6 +119,21 @@
             </button>
           {/if}
         </div>
+        {#if s.cap === "asr"}
+          <div class="grid gap-2 border-b border-line px-4 py-3 text-[12.5px] leading-relaxed sm:grid-cols-2 sm:px-5">
+            <div class="rounded-xl bg-surface-2 px-3 py-2.5">
+              <p class="font-semibold text-ink-2">{t("aiAdmin.asr.dedicated")}</p>
+              <p class="mt-1 text-ink-3">{t("aiAdmin.asr.dedicatedPros")}</p>
+              <p class="mt-1 text-ink-3">{t("aiAdmin.asr.dedicatedCons")}</p>
+            </div>
+            <div class="rounded-xl bg-surface-2 px-3 py-2.5">
+              <p class="flex items-center gap-1.5 font-semibold text-ink-2"><AudioLines class="size-3.5" aria-hidden="true" />{t("aiAdmin.asr.multimodal")}</p>
+              <p class="mt-1 text-ink-3">{t("aiAdmin.asr.multimodalPros")}</p>
+              <p class="mt-1 text-ink-3">{t("aiAdmin.asr.multimodalCons")}</p>
+            </div>
+            <p class="text-ink-3 sm:col-span-2">{t("aiAdmin.asr.tip")}</p>
+          </div>
+        {/if}
         <ul class="divide-y divide-line">
           {#each s.roles as role (role)}
             {@const b = binding(role)}
@@ -152,6 +167,9 @@
                     <span class="min-w-0 flex-1 truncate text-[13px] text-ink-3">{t("aiAdmin.bindings.none")}</span>
                   {/if}
                   {#if st?.detail.vision && b.target}<VisionBadge vision={true} source="model_list" />{/if}
+                  {#if s.cap === "asr" && b.target?.type === "model" && adminStore.model(b.target.model_id)?.provider_family === "llm"}
+                    <span class="inline-flex h-[18px] shrink-0 items-center gap-1 rounded-md bg-[var(--pill-sky)] px-1.5 text-[10.5px] font-semibold text-[var(--pill-sky-ink)]" title={t("aiAdmin.asr.multimodal")}><AudioLines class="size-3" aria-hidden="true" />{t("aiAdmin.asr.badge")}</span>
+                  {/if}
                   <span class="shrink-0 text-[12px] text-ink-3">{t(STATE_KEYS[st?.state ?? "unconfigured"])}</span>
                 </button>
               </div>

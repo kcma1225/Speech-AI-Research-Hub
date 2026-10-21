@@ -7,7 +7,7 @@ import { EventStreamDecoder } from "../providers/eventstream.js";
 import { byteChunks, guardStream, modelsDetail, send, sendJson, timedProbe, type Call } from "../providers/http.js";
 import type { ChatEvent, ChatMessage, ChatRequest, EmbedRequest, ModelInfo, StopReason, Usage } from "../types.js";
 import type { Codec, CodecContext } from "./codec.js";
-import { applyEmbedTemplate, assistantParts, blocksOf, ensureToolsSupported, finishBody, finishVectors, makeState, num, stateFor, textOf, toolResultImages, toolResultText, ToolCalls } from "./shared.js";
+import { applyEmbedTemplate, assistantParts, blocksOf, ensureAudioSupported, ensureToolsSupported, finishBody, finishVectors, makeState, num, stateFor, textOf, toolResultImages, toolResultText, ToolCalls } from "./shared.js";
 
 export interface BedrockState {
   /** reasoningContent blocks ({reasoningText:{text,signature}} | {redactedContent}). */
@@ -61,6 +61,7 @@ export function toConverseMessages(messages: ChatMessage[], providerId: string) 
 
 export function buildConverseBody(ctx: CodecContext, req: ChatRequest): Record<string, unknown> {
   ensureToolsSupported(ctx, req);
+  ensureAudioSupported(ctx, req, "bedrock-converse");
   if (req.responseFormat?.type === "json_schema") throw new AiError("unsupported", { vendorMessage: "structured output via Converse is not wired", providerId: ctx.entry.id });
   const body: Record<string, unknown> = { messages: toConverseMessages(req.messages, ctx.entry.id) };
   const system = req.messages.filter((m) => m.role === "system").map((m) => textOf(m.content)).filter(Boolean);

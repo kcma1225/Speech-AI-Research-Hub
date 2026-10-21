@@ -18,6 +18,7 @@ import {
 } from "../lib/library/store.js";
 import { paperDetail, paperPermissions } from "../lib/library/detail.js";
 import { fetchOpenAccessPdf, storePaperPdf } from "../lib/library/files.js";
+import { attachPdfFromUrl, downloadPdfFromUrl } from "../lib/library/pdf-url.js";
 import { autoFetchPdf, type AutoPdfOutcome } from "../lib/library/auto-pdf.js";
 import { fulltextKey } from "../lib/library/fulltext.js";
 import { libraryService, librarySettingsView, saveLibrarySettings } from "../lib/library/settings.js";
@@ -100,6 +101,29 @@ function throttleSearch(userId: string) {
 export function sourceHttpError(e: unknown): unknown {
   if (e instanceof SourceError) return new HttpError(502, e.message || "外部文獻服務暫時無法使用。", { code: `source_${e.source}` });
   return e;
+}
+
+const pdfUrlInput = z.object({ url: z.string().trim().min(1, "請貼上 PDF 網址。").max(2000, "網址太長。"), study: z.string().trim().min(1).max(80).optional() });
+
+/** Friendly 繁中 errors for "add a PDF by URL" (`code` lets the UI react). */
+const URL_ERRORS: Record<string, { status: number; error: (m: string) => string }> = {
+  invalid_url: { status: 400, error: (m) => m || "網址格式錯誤。" },
+  blocked_url: { status: 400, error: () => "不允許連到內部網路或本機位址。" },
+  not_pdf: { status: 415, error: (m) => `${m}。請改貼 PDF 的直接連結，或先下載再上傳。` },
+  too_large: { status: 413, error: (m) => `${m}。` },
+  login_required: { status: 422, error: () => "這個網站需要登入才能下載，請先在瀏覽器下載 PDF 再上傳。" },
+  no_open_access: { status: 404, error: (m) => `${m}。` },
+  timeout: { status: 504, error: () => "下載逾時，請稍後再試或改上傳檔案。" },
+  unreachable: { status: 502, error: (m) => `無法連線到這個網址（${m}）。` },
+  http_error: { status: 502, error: (m) => `${m}，請確認網址是否正確。` },
+};
+export function pdfUrlHttpError(e: unknown): unknown {
+  if (e instanceof SourceError && e.source === "download") {
+    const code = e.code ?? "unreachable";
+    const spec = URL_ERRORS[code] ?? URL_ERRORS.unreachable!;
+    return new HttpError(spec.status, spec.error(e.message), { code });
+  }
+  return sourceHttpError(e);
 }
 
 export async function requirePaper(app: FastifyInstance, id: string, forUpdate = false) {
@@ -405,6 +429,24 @@ export default async function papers(app: FastifyInstance) {
     }
   });
 
+  /** Download a PDF from a pasted URL (or landing page / DOI) and store it on the paper; same permission as upload. */
+  app.post("/library/papers/:id/pdf-from-url", async (request, reply) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params);
+    const { url } = parse(pdfUrlInput, request.body);
+    const paper = await requirePaper(app, id);
+    await requirePaperEditor(app, user, paper);
+    throttleSearch(user.id);
+    const { service } = await libraryService(app.db);
+    const stored = await attachPdfFromUrl(app.db, app.storage, service, { paperId: id, url, userId: user.id, maxBytes: PDF_MAX }).catch((e) => {
+      throw pdfUrlHttpError(e);
+    });
+    return reply.code(201).send({
+      paper: await paperDetail(app.db, (await getPaper(app.db, id))!, user),
+      download: { url: stored.finalUrl, bytes: stored.bytes, kind: stored.kind },
+    });
+  });
+
   /** Upload a PDF to create a paper: extracts metadata and returns an import preview (confirm via /library/imports/:id/confirm). */
   app.post("/library/pdf", async (request, reply) => {
     const user = await requireUser(request);
@@ -415,27 +457,48 @@ export default async function papers(app: FastifyInstance) {
       const access = studyRef ? await loadStudyAccess(app.db, studyRef, user) : null;
       if (access && !access.canEdit) throw forbidden("只有研究成員可以修改。");
       const data = await readFile(upload.file.path);
-      const { service } = await libraryService(app.db);
-      let extracted;
-      try {
-        extracted = await service.extractPdfRecord(data);
-      } catch (e) {
-        if (e instanceof SourceError && e.source === "pdf") throw new HttpError(415, e.message || "檔案不是 PDF。");
-        throw sourceHttpError(e);
-      }
-      const record = extracted.record ?? { type: "document" as const, title: upload.file.filename.replace(/\.pdf$/i, "").slice(0, 300) || "未命名文獻", authors: [] };
-      const batchId = randomUUID();
-      const fileKey = libraryKeys.importUpload(batchId);
-      await app.storage.put(fileKey, data, "application/pdf");
-      const batch = await createImportPreview(app.db, {
-        id: batchId, studyId: access?.study.id ?? null, userId: user.id, source: "pdf", format: "pdf", fileName: upload.file.filename,
-        records: [record], warnings: extracted.warnings.map((message) => ({ index: 0, message })), fileKey,
-      });
-      return reply.code(201).send({ batch: batchView(batch), extraction: { method: extracted.method, identifiers: extracted.identifiers, titleGuess: extracted.titleGuess ?? null } });
+      return reply.code(201).send(await pdfImportPreview(user, access?.study.id ?? null, data, upload.file.filename, null));
     } finally {
       await upload.cleanup();
     }
   });
+
+  /** Same as POST /library/pdf, but the PDF is downloaded from a pasted URL (landing pages and DOIs resolved). */
+  app.post("/library/pdf-from-url", async (request, reply) => {
+    const user = await requireUser(request);
+    const input = parse(pdfUrlInput, request.body);
+    const access = input.study ? await loadStudyAccess(app.db, input.study, user) : null;
+    if (access && !access.canEdit) throw forbidden("只有研究成員可以修改。");
+    throttleSearch(user.id);
+    const { service } = await libraryService(app.db);
+    const pdf = await downloadPdfFromUrl(service, input.url, { maxBytes: PDF_MAX }).catch((e) => {
+      throw pdfUrlHttpError(e);
+    });
+    const body = await pdfImportPreview(user, access?.study.id ?? null, pdf.data, pdf.fileName, pdf.finalUrl);
+    return reply.code(201).send({ ...body, download: { url: pdf.finalUrl, bytes: pdf.data.length, kind: pdf.plan.kind } });
+  });
+
+  /** PDF → metadata → one-item import preview; the file waits at `library/imports/<batchId>/upload.pdf` until confirm. */
+  async function pdfImportPreview(user: CurrentUser, studyId: string | null, data: Buffer, fileName: string, sourceUrl: string | null) {
+    const { service } = await libraryService(app.db);
+    let extracted;
+    try {
+      extracted = await service.extractPdfRecord(data);
+    } catch (e) {
+      if (e instanceof SourceError && e.source === "pdf") throw new HttpError(415, e.message || "檔案不是 PDF。");
+      throw sourceHttpError(e);
+    }
+    const record = extracted.record ?? { type: "document" as const, title: fileName.replace(/\.pdf$/i, "").slice(0, 300) || "未命名文獻", authors: [] };
+    const batchId = randomUUID();
+    const fileKey = libraryKeys.importUpload(batchId);
+    await app.storage.put(fileKey, data, "application/pdf");
+    const batch = await createImportPreview(app.db, {
+      id: batchId, studyId, userId: user.id, source: "pdf", format: sourceUrl ? "pdf-url" : "pdf", fileName,
+      records: [record], warnings: extracted.warnings.map((message) => ({ index: 0, message })), fileKey,
+    });
+    if (sourceUrl) await app.db.query("UPDATE import_batches SET source_url=$2 WHERE id=$1", [batchId, sourceUrl.slice(0, 2000)]);
+    return { batch: batchView(batch), extraction: { method: extracted.method, identifiers: extracted.identifiers, titleGuess: extracted.titleGuess ?? null } };
+  }
 
   // ---------------------------------------------------------------- AI
 

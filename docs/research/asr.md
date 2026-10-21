@@ -481,3 +481,69 @@ Show capability badges (diarization / word timestamps / streaming / Traditional 
 - NIM support matrix: https://docs.nvidia.com/nim/speech/latest/reference/support-matrix/asr.html
 - NIM HTTP API: https://docs.nvidia.com/nim/speech/latest/reference/api-references/asr/http-asr.html
 - NIM customization (diarization): https://docs.nvidia.com/nim/speech/latest/asr/customization/customization.html
+
+---
+
+## 10. Multimodal chat models as ASR (evaluated 2026-10-22)
+
+Question: can meeting / voice-note transcription be handed to a multimodal LLM instead of a dedicated ASR? **Answer: yes, as an option.** It is built as an `asr` adapter (`backend/src/ai/asr/adapters/llm.ts`), and Whisper-class ASR stays selectable and can be the fallback. Claims are from official docs unless marked **(unverified)**.
+
+### 10.1 Which APIs accept audio today
+
+| API | Audio part | Models | Limits / formats | Price (audio in) |
+|---|---|---|---|---|
+| OpenAI **Chat Completions** | `{type:"input_audio", input_audio:{data:<base64>, format:"wav"\|"mp3"}}` | `gpt-audio-1.5` (recommended), `gpt-audio`, `gpt-audio-mini`, `gpt-4o-audio-preview` | wav, mp3 are safe (the reference also lists flac/opus/pcm16, inconsistently). 128k context, **16,384 output tokens**. No documented size cap **(unverified)** | $32 / 1M audio tokens (gpt-audio-1.5), $10 (mini); about $0.02/min at ~10 tok/s **(unverified)** |
+| OpenAI **Responses** | — | — | The gpt-audio model pages list `v1/responses` as *not supported*, so OpenAI/Azure accounts send audio over Chat Completions (we switch `apiStyle` for that request) | — |
+| Google **Gemini** | `inline_data {mime_type, data}` (REST camelCase `inlineData`). Files API for > 20 MB. OpenAI-compat endpoint accepts `input_audio` | Gemini 2.5 / 3.x Flash, Flash-Lite, Pro. Dedicated `gemini-3.5-transcribe` | 20 MB per inline request, ≤ 9.5 h per prompt. 32 tokens/s (1,920/min). wav, mp3, aiff, aac, ogg, flac, m4a, opus, webm. Prompts can address `MM:SS` | 2.5 Flash-Lite / 3.5 Flash-Lite $0.30/1M (about $0.035/h). 3.8 Flash $0.75/1M (about $0.09/h, $1.50 from 2027) |
+| Alibaba **DashScope** (Qwen3-Omni / 3.5-Omni) | `input_audio` whose `data` is a **data URL** or http URL | `qwen3-omni-flash`, `qwen3.5-omni` | Qwen3-Omni-Flash: ≤ 20 min, base64 < 10 MB, amr/wav/3gp/aac/mp3. **Streaming required** | 12.5 tok/s (3-Omni), 7 tok/s (3.5) |
+| Mistral **Voxtral** (chat) | `input_audio` is a **bare base64 string** | `voxtral-small-latest`, `voxtral-mini-latest` | 32k context, about 30 min for transcription (launch post) | $0.004/min + tokens. The dedicated `/audio/transcriptions` endpoint (Voxtral Transcribe 3) is $0.0035/min with diarization and `context_bias` |
+| Anthropic Claude | **no audio input** (text, image, document only) | — | — | — |
+| Ollama | **no audio** (`/api/chat` has only `images`) | — | — | — |
+| vLLM (self-hosted) | `input_audio` `{data, format}` or `audio_url` | Qwen2-Audio, Qwen2.5-Omni, Qwen3-Omni, Ultravox | any format soundfile/PyAV reads | GPU |
+
+For comparison, dedicated ASR (§1): `gpt-transcribe` $0.0045/min, whisper-1 $0.006/min, Deepgram Nova-3 $0.0043/min, AssemblyAI $0.21/h. Gemini Flash-Lite audio is about as cheap as Whisper. gpt-audio is about 4× more expensive.
+
+Staging gateway check (2026-10-22): `/models` reports `capabilities.audioInput` (only `oc/muse-spark-*` say `true`). A 26 s synthetic zh-TW clip (espeak-ng, no personal data) sent as `input_audio` came back with `audio_tokens: 0` and the whole budget spent on reasoning. That gateway route does not forward audio, so live verification relies on the mock servers in `test/ai-asr-llm.test.ts`.
+
+### 10.2 Quality and risks
+
+- **Text quality.** LLMs use context: research jargon, Mandarin–English code-switching, and Traditional script when asked. A glossary from the meeting/study context fits naturally in the prompt.
+- **Timestamps are estimates.** They are segment level and can drift. Google's forum has drift reports on Gemini 3 Flash / 3.1 Pro (an 11:49 file ending at 9:14), and Google itself warns that word timestamps lower accuracy. There are no word timestamps, so every LLM transcript carries the warning `timestamps_approximate`.
+- **Diarization is prompt-based.** It is consistent within one request only. Across chunks the labels are namespaced (`c<n>:S1` + `speaker_labels_per_chunk`), as for other chunked vendors.
+- **Long audio fails in LLM-specific ways:**
+  - repetition loops (reported on 2.5 Flash);
+  - skipped passages and invented continuations on silence;
+  - truncation when the transcript exceeds the output cap. One hour of zh speech is about 12–25k tokens before JSON overhead **(estimate)**, which is more than gpt-audio's 16k cap.
+  - Mitigation: short chunks plus local timestamp offsets.
+- **Not for live captions.** `asr_live` stays on dedicated streaming ASR (Realtime / Deepgram).
+- **Privacy.** Audio goes to the chat vendor under its data terms. Free gateway tiers may train on inputs, so use them only with synthetic test audio.
+
+### 10.3 What we built (recommendations applied)
+
+- **Chunking.**
+  - Reuses the ASR planner: cuts at silences, ≤ **600 s** per part by default (member param `max_chunk_sec`), 2 s overlap at hard cuts, keep-ranges for dedupe.
+  - The part is sent in the smallest accepted format (Gemini ogg/opus; OpenAI-style mp3/wav).
+  - The answer budget is about 25 tokens per second of audio, clamped to the profile's `max_output_tokens`.
+  - A truncated answer (`max_tokens` with < 90 % covered) re-plans that part at half the length.
+- **Prompt.**
+  - Asks for verbatim speech in the spoken language, Mandarin in Traditional Chinese (Taiwan) with English terms kept, no translation or summary, `[聽不清楚]` for unintelligible speech, no segments for silence.
+  - The answer must be **strict JSON** `{language, segments[{start, end, speaker?, text}]}`, with seconds relative to the chunk.
+  - The prompt also carries the glossary (`keyterms` from the meeting/study) and the previous chunk's tail as "context, do not transcribe".
+  - `temperature 0`; Gemini JSON mode; low reasoning effort on reasoning models.
+- **Parsing.**
+  - Strips code fences / `<think>`.
+  - Repairs truncated JSON by cutting at the last complete segment.
+  - Accepts `[MM:SS] S1: text` lines; plain text becomes one segment (`no_timestamps`).
+  - Clock strings (`01:23.5`) are accepted. Timestamps are made monotonic and clamped to the chunk. A model that used another clock is rescaled.
+  - Repeated lines and phrase loops are trimmed (`repetition_trimmed`).
+  - OpenCC `s2twp` is the default fallback for zh.
+- **Merge.** Chunk offsets are added; the overlap duplicate and a repeated seam line are dropped (`mergeChunks`). The result is the unified `Transcript` (`source.kind = "llm_audio"`).
+- **Routing.**
+  - A chat model is usable for `asr` only when its protocol can carry audio and its profile says `audio_input` (auto-detected, admin-overridable).
+  - Groups may mix a multimodal model and a dedicated ASR, e.g. Gemini first and Whisper as fallback.
+  - Retries, fallback, `llm_unavailable` and the call log (with token usage) behave as for every other member.
+- **Recommendation for this lab.**
+  - Use a `fallback` group with a cheap Gemini Flash-Lite / Flash model first (context-aware zh-TW + English, ≈ Whisper price) and a dedicated ASR second (speaches / gpt-transcribe / AssemblyAI).
+  - Use a dedicated ASR first instead when precise timestamps matter (subtitle alignment, quoting by time) or when diarization across a long meeting must be stable.
+
+Sources (accessed 2026-10-22): https://developers.openai.com/api/docs/guides/audio-chat-completions · https://developers.openai.com/api/docs/models/gpt-audio-1.5 · https://developers.openai.com/api/docs/pricing · https://ai.google.dev/gemini-api/docs/audio · https://ai.google.dev/gemini-api/docs/pricing · https://ai.google.dev/gemini-api/docs/openai · https://ai.google.dev/gemini-api/docs/transcribe · https://www.alibabacloud.com/help/en/model-studio/qwen-omni · https://docs.mistral.ai/studio/audio/speech_to_text/offline_transcription · https://mistral.ai/news/voxtral/ · https://platform.claude.com/docs/en/build-with-claude/vision · https://docs.ollama.com/api/chat · https://docs.vllm.ai/en/latest/features/multimodal_inputs.html · https://discuss.ai.google.dev/t/bug-gemini-3-flash-and-3-1-pro-progressive-timestamp-drift-in-audio-transcription/129501

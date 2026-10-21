@@ -51,7 +51,7 @@
       }}
       oninput={closeGuard.onFieldEvent}
       onchange={closeGuard.onFieldEvent}
-      class="fixed inset-x-0 bottom-0 z-50 flex max-h-[92dvh] flex-col overflow-hidden rounded-t-[28px] border border-line bg-surface pb-[env(safe-area-inset-bottom)] shadow-pop outline-none data-[state=open]:animate-[sheet-up_220ms_cubic-bezier(.2,.8,.2,1)] md:inset-x-auto md:top-1/2 md:bottom-auto md:left-1/2 md:max-h-[min(860px,calc(100dvh-48px))] md:w-[min(920px,calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-[24px] md:data-[state=open]:animate-[pop-in_160ms_ease-out]"
+      class="fixed inset-x-0 bottom-0 z-50 flex max-h-[92dvh] flex-col overflow-hidden rounded-t-[28px] border border-line bg-popover pb-[env(safe-area-inset-bottom)] shadow-pop outline-none data-[state=open]:animate-[sheet-up_220ms_cubic-bezier(.2,.8,.2,1)] md:inset-x-auto md:top-1/2 md:bottom-auto md:left-1/2 md:max-h-[min(860px,calc(100dvh-48px))] md:w-[min(920px,calc(100vw-48px))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-[24px] md:data-[state=open]:animate-[pop-in_160ms_ease-out]"
     >
       <div class="mx-auto mt-2.5 h-1 w-10 shrink-0 rounded-full bg-line-2 md:hidden" aria-hidden="true"></div>
       <div class="flex items-start justify-between gap-3 px-5 pt-3 pb-2 md:px-7 md:pt-6">

@@ -114,6 +114,8 @@ export class SourceError extends Error {
     readonly source: string,
     readonly status: number,
     message: string,
+    /** Machine-readable reason for downloads (`invalid_url`, `blocked_url`, `unreachable`, `timeout`, `http_error`, `login_required`, `not_pdf`, `too_large`). */
+    readonly code?: string,
   ) {
     super(message);
     this.name = "SourceError";
@@ -253,12 +255,13 @@ export async function assertPublicUrl(raw: string): Promise<URL> {
   try {
     u = new URL(raw);
   } catch {
-    throw new SourceError("download", 0, "網址格式錯誤");
+    throw new SourceError("download", 0, "網址格式錯誤", "invalid_url");
   }
-  if (u.protocol !== "http:" && u.protocol !== "https:") throw new SourceError("download", 0, "只支援 http/https 網址");
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new SourceError("download", 0, "只支援 http/https 網址", "invalid_url");
+  if (u.username || u.password) throw new SourceError("download", 0, "網址不能包含帳號密碼", "invalid_url");
   const host = u.hostname.replace(/^\[|\]$/g, "");
   const addrs = isIP(host) ? [host] : (await lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
-  if (addrs.length === 0) throw new SourceError("download", 0, `找不到主機 ${host}`);
-  if (addrs.some(isPrivateIp)) throw new SourceError("download", 0, "不允許連到內部網路位址");
+  if (addrs.length === 0) throw new SourceError("download", 0, `找不到主機 ${host}`, "unreachable");
+  if (addrs.some(isPrivateIp)) throw new SourceError("download", 0, "不允許連到內部網路位址", "blocked_url");
   return u;
 }

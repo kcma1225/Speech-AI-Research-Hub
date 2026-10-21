@@ -50,6 +50,8 @@ const patchInput = z.object({
   status: status.optional(),
 });
 const listQuery = z.object({
+  /** `mine` = studies I belong to (any role); `lab` (default) = everyone's. Counts for both are always returned. */
+  scope: z.enum(["mine", "lab"]).optional(),
   member: z.string().max(40).optional(),
   status: z.union([status, z.literal("all")]).optional(),
   stage: z.string().trim().max(60).optional(),
@@ -156,7 +158,10 @@ const studies: FastifyPluginAsync = async app => {
       stage: query.stage || null,
       q: query.q ?? null,
     });
-    return reply.header("Cache-Control", "no-store").send({ studies: cards });
+    // Both scopes share the other filters, so the switch counts always match what each tab would list.
+    const mine = cards.filter(card => card.my_role !== null);
+    const counts = { mine: mine.length, lab: cards.length };
+    return reply.header("Cache-Control", "no-store").send({ studies: query.scope === "mine" ? mine : cards, counts });
   });
 
   app.post("/studies", async (request, reply) => {

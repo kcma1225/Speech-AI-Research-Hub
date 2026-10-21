@@ -38,7 +38,7 @@
 <Popover.Root bind:open>
   <Popover.Trigger
     aria-label={label}
-    class="inline-flex h-10 items-center gap-2 rounded-xl border border-line-2 bg-surface px-3.5 text-sm text-ink transition-colors hover:border-ink-3 data-[state=open]:border-ink {cls}"
+    class="inline-flex h-10 items-center gap-2 rounded-xl border border-field-line bg-raised px-3.5 text-sm text-ink transition-colors hover:border-ink-3 data-[state=open]:border-ink {cls}"
   >
     <CalendarDays class="size-4 text-ink-3" />
     {#if value}
@@ -48,7 +48,7 @@
     {/if}
   </Popover.Trigger>
   <Popover.Portal>
-    <Popover.Content align="start" sideOffset={6} class="z-50 rounded-2xl border border-line bg-surface p-3 shadow-pop outline-none data-[state=open]:animate-[pop-in_120ms_ease-out]">
+    <Popover.Content align="start" sideOffset={6} class="z-50 rounded-2xl border border-line bg-popover p-3 shadow-pop outline-none data-[state=open]:animate-[pop-in_120ms_ease-out]">
       <Calendar.Root type="single" value={parsed} onValueChange={pick} locale={i18n.locale} weekdayFormat="short" fixedWeeks>
         {#snippet children({ months, weekdays })}
           <Calendar.Header class="mb-2 flex items-center justify-between gap-2">

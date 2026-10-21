@@ -22,6 +22,7 @@
   import { agentActivity } from "#lib/agent/activity.svelte.ts";
   import type { AgentSettings, Answer, Message, PageContext, StudyPlan, ToolCall } from "#lib/agent/types.ts";
   import { workflowsApi } from "#lib/workflows/api.ts";
+  import { focusKey, revealAndPulse, waitForFocus, type FocusTarget } from "#lib/agent/focus.ts";
   import { parseAgentCommand } from "#lib/workflows/reduce.ts";
 
   /**
@@ -37,6 +38,8 @@
     onCreated,
     empty,
     autoStart,
+    focus = null,
+    onFocused,
   }: {
     session: ChatSession;
     compact?: boolean;
@@ -50,6 +53,10 @@
     empty?: Snippet<[(text: string) => void]>;
     /** Interview: first message sent automatically when the view starts empty. */
     autoStart?: string;
+    /** Deep-linked card (lib/agent/focus.ts): scrolled to and pulsed once the transcript has loaded. */
+    focus?: FocusTarget | null;
+    /** The deep link was handled (`found` = the card was shown); the caller drops the URL parameter. */
+    onFocused?: (found: boolean) => void;
   } = $props();
 
   let text = $state("");
@@ -246,6 +253,35 @@
       }, 60);
     }
     seenCards = n;
+  });
+
+  // Deep link (「前往作答」 in the Agent overview, notifications, the jobs tray): once the transcript is in, wait for
+  // the card (workflow cards load on their own), scroll to it and pulse it. Runs after the 「new question card」 scroll.
+  const focusId = $derived(focus ? focusKey(focus) : null);
+  let focusRun = 0;
+  $effect(() => {
+    const target = focus;
+    const ready = !session.loading && session.messages.length > 0 && !!scroller;
+    if (!target || !ready) return;
+    const mine = ++focusRun;
+    untrack(() => {
+      void waitForFocus<HTMLElement>(scroller!, target, {
+        cancelled: () => mine !== focusRun || !scroller,
+        found: (el) => {
+          atBottom = false;
+          unseen = false;
+          // Let the 「new question card」 scroll and late layout (workflow card body) settle first.
+          setTimeout(() => {
+            if (mine !== focusRun) return;
+            revealAndPulse(el, scroller, prefersReducedMotion.current);
+          }, 120);
+        },
+      }).then((found) => {
+        if (mine !== focusRun) return;
+        if (!found) toasts.show(t("agentRuns.focusMissing"));
+        onFocused?.(found);
+      });
+    });
   });
 
   /** Pasted / dropped files: same path (validation, limits, progress chips) as the picker's upload. */
@@ -457,6 +493,7 @@
             conversationId={session.id}
             busy={replying}
             deferredAsks={(item.messages.at(-1)?.seq ?? Infinity) < lastUserSeq}
+            focusKey={focusId}
             onDecide={decide}
             onAnswer={answerCard}
             onContinue={retry}

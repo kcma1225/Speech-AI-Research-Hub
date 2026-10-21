@@ -45,8 +45,8 @@
   function fieldsFor(d: Draft): ParamField[] {
     const reg = adminStore.registry;
     if (!reg || !d.model_ref) return [];
-    if (capability === "asr") return reg.platform_params.asr;
     const m = adminStore.model(d.model_ref);
+    if (capability === "asr") return m?.provider_family === "llm" ? (reg.platform_params.asr_llm ?? reg.platform_params.asr) : reg.platform_params.asr;
     const vendor = (m?.provider_kind ? adminStore.entry("llm", m.provider_kind)?.params : [])?.map(f => ({ ...f, scope: "vendor" as const })) ?? [];
     const platform = capability === "embedding" ? reg.platform_params.embedding : reg.platform_params.chat;
     const taken = new Set(platform.map(f => f.key));

@@ -122,7 +122,8 @@
         {project}
         href="/studies/{encodeURIComponent(slug)}/latex/{project.id}"
         onRename={canEdit ? () => ((target = project), (renameTitle = project.title), (renameOpen = true)) : undefined}
-        onDelete={canEdit ? () => ((target = project), (deleteOpen = true)) : undefined}
+        canDelete={canEdit}
+        onDelete={() => ((target = project), (deleteOpen = true))}
       />
     {/each}
   </div>
@@ -145,7 +146,7 @@
     bind:open={deleteOpen}
     title={t("crud.latex.deleteTitle", { title: target?.title ?? "" })}
     description={t("crud.latex.deleteDescription")}
-    confirmLabel={t("crud.delete")}
+    confirmLabel={t("crud.latex.delete")}
     onConfirm={remove}
   />
 {/if}

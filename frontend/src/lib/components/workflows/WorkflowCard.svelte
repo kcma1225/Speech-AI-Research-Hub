@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import { ChevronRight, CircleCheck, CircleX, Circle, ExternalLink, Hourglass, MessageSquarePlus, PanelRight, Pause, Pencil, Play, RotateCw, Square, Upload, Workflow as WorkflowIcon } from "@lucide/svelte";
+  import { ChevronRight, CircleCheck, CircleX, Circle, Download, ExternalLink, FileWarning, Hourglass, MessageSquarePlus, PanelRight, Pause, Pencil, Play, RotateCw, Sparkles, Square, Upload, Workflow as WorkflowIcon } from "@lucide/svelte";
   import { i18n, t, relativeTime } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import AgentMarkdown from "#lib/components/agent/AgentMarkdown.svelte";
@@ -9,6 +9,7 @@
   import Pill from "#lib/components/ui/Pill.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
   import Textarea from "#lib/components/ui/Textarea.svelte";
+  import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { openArtifact, refFromArtifact } from "#lib/agent/viewer.ts";
   import { workflowsApi } from "#lib/workflows/api.ts";
@@ -59,7 +60,11 @@
   let busy = $state<string | null>(null);
   const pendingAsk = $derived(w?.asks?.find((a) => a.pending) ?? null);
   const answeredAsks = $derived((w?.asks ?? []).filter((a) => !a.pending && a.answers));
-  let panel = $state<"guidance" | "objective" | null>(null);
+  let panel = $state<"guidance" | "objective" | "revise" | null>(null);
+  let planOpen = $state(false);
+  let revision = $state("");
+  let pdfUrl = $state("");
+  const autoApproved = $derived(!!w?.auto_approved && !!w.plan && w.status !== "awaiting_plan_approval" && w.status !== "planning" && w.status !== "queued");
   let guidance = $state("");
   let objective = $state("");
   let answer = $state("");
@@ -98,6 +103,20 @@
     if (!answer.trim()) return;
     await quiet(act("answer", () => workflowsApi.guidance(id, answer.trim())).then(() => (answer = "")));
   }
+  async function sendRevision() {
+    if (!revision.trim()) return;
+    await quiet(act("revise", () => workflowsApi.revise(id, revision.trim())).then(() => {
+      revision = "";
+      panel = null;
+    }));
+  }
+  async function fetchPdf() {
+    if (!pdfUrl.trim() || !w?.paper_id) return;
+    await quiet(act("pdf", () => workflowsApi.pdfFromUrl(id, w.paper_id!, pdfUrl.trim())).then(() => {
+      pdfUrl = "";
+      toasts.show(t("wf.pdf.done"), "success");
+    }));
+  }
   async function publish() {
     busy = "publish";
     try {
@@ -117,7 +136,7 @@
   }
 </script>
 
-<article data-workflow-card class="card mt-2 rounded-[20px] border border-line bg-surface shadow-card {compact ? 'p-3' : 'p-3 sm:p-4'}" aria-busy={working} aria-label={t("wf.title")}>
+<article data-workflow-card data-focus-key={w ? `workflow:${id}` : undefined} class="card mt-2 rounded-[20px] border border-line bg-surface shadow-card {compact ? 'p-3' : 'p-3 sm:p-4'}" aria-busy={working} aria-label={t("wf.title")}>
   {#if session.loading && !w}
     <div class="flex items-center gap-2 text-[13px] text-ink-3"><WorkflowIcon class="size-4" />{t("wf.title")}…</div>
   {:else if session.error && !w}
@@ -148,10 +167,63 @@
       <div class="mt-3"><Progress value={null} label={t("wf.status.planning")} /></div>
     {/if}
 
+    {#if w.status === "queued"}
+      <p class="mt-3 flex items-start gap-2 rounded-2xl border border-line bg-surface-2 p-3 text-[13px] text-ink-2" data-wf-queued><Hourglass class="mt-0.5 size-4 shrink-0 text-ink-3" aria-hidden="true" />{t("wf.queuedHint")}</p>
+    {/if}
+
+    {#if w.status === "needs_pdf"}
+      <div class="mt-3 flex flex-col gap-2 rounded-2xl border border-line-2 bg-surface-2 p-3" data-wf-needs-pdf>
+        <p class="flex items-center gap-2 text-[13px] font-semibold text-ink"><FileWarning class="size-4 shrink-0" aria-hidden="true" />{t("wf.pdf.title")}</p>
+        {#if w.question}<p class="text-[13.5px] break-words whitespace-pre-wrap text-ink-2">{w.question}</p>{/if}
+        {#if w.paper_id}
+          <TextField bind:value={pdfUrl} type="url" inputmode="url" label={t("wf.pdf.url")} placeholder="https://arxiv.org/abs/…" />
+          <div class="flex flex-wrap gap-2">
+            <Button variant="primary" class="min-h-10" loading={busy === "pdf"} disabled={!pdfUrl.trim()} onclick={fetchPdf}><Download />{t("wf.pdf.fetch")}</Button>
+            <Button variant="ghost" class="min-h-10" href={`/library?paper=${w.paper_id}`}><Upload />{t("wf.pdf.upload")}</Button>
+            <Button variant="ghost" class="min-h-10" loading={busy === "resume"} onclick={() => quiet(act("resume", () => workflowsApi.resume(id)))}><Play />{t("wf.pdf.resume")}</Button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    {#if autoApproved && w.plan}
+      <div class="mt-3 rounded-2xl border border-line bg-surface-2 p-3" data-wf-auto-approved>
+        <div class="flex flex-wrap items-center gap-2">
+          <Sparkles class="size-4 shrink-0 text-ink-2" aria-hidden="true" />
+          <p class="min-w-0 flex-1 text-[13px] font-semibold text-ink">{t("wf.auto.title")}</p>
+          <button type="button" class="inline-flex min-h-10 items-center gap-1 rounded-full px-2 text-[12.5px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink" aria-expanded={planOpen} onclick={() => (planOpen = !planOpen)}>
+            <ChevronRight class="size-3.5 transition-transform duration-150 motion-reduce:transition-none {planOpen ? 'rotate-90' : ''}" />{planOpen ? t("wf.auto.hidePlan") : t("wf.auto.showPlan")}
+          </button>
+        </div>
+        <p class="mt-1 text-[12.5px] leading-relaxed text-ink-3">{t("wf.auto.desc")}{#if w.auto_approved?.tainted} {t("wf.auto.tainted")}{/if}</p>
+        {#if planOpen}
+          <div class="mt-2 flex flex-col gap-2 text-[13px] text-ink-2">
+            <p class="break-words">{w.plan.summary}</p>
+            {#if w.plan.writes.length}
+              <ul class="flex flex-col gap-0.5">{#each w.plan.writes as wr, i (i)}<li class="break-words">· {wr.label}</li>{/each}</ul>
+            {/if}
+            {#if w.plan.outline?.length}
+              <ol class="flex flex-col gap-1">
+                {#each w.plan.outline as o (o.n)}
+                  <li class="min-w-0 break-words"><span class="tabular-nums text-ink-3">{o.n}.</span> <span class="text-ink">{o.title}</span>{#if o.points.length}<span class="text-ink-3"> — {o.points.join("；")}</span>{/if}</li>
+                {/each}
+              </ol>
+            {/if}
+          </div>
+        {/if}
+        {#if working || w.status === "paused"}
+          <div class="mt-2 flex flex-wrap gap-1.5">
+            {#if working}<Button size="sm" variant="secondary" class="min-h-10" loading={busy === "pause"} onclick={() => quiet(act("pause", () => workflowsApi.pause(id)))}><Pause />{t("wf.pause")}</Button>{/if}
+            <Button size="sm" variant="ghost" class="min-h-10" onclick={() => (panel = panel === "revise" ? null : "revise")}><Pencil />{t("wf.auto.revise")}</Button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if pendingAsk}
-      <WorkflowAsk runId={id} ask={pendingAsk} onUpdated={(x) => x && session.setWorkflow(x)} />
+      <div data-focus-target class="rounded-2xl"><WorkflowAsk runId={id} ask={pendingAsk} onUpdated={(x) => x && session.setWorkflow(x)} /></div>
     {:else if w.status === "awaiting_input" && w.question}
-      <div class="mt-3 flex flex-col gap-2 rounded-2xl border border-line-2 bg-surface-2 p-3">
+      <div data-focus-target class="mt-3 flex flex-col gap-2 rounded-2xl border border-line-2 bg-surface-2 p-3">
         <p class="text-[13px] font-semibold text-ink">{t("wf.question")}</p>
         <p class="text-[13.5px] whitespace-pre-wrap text-ink-2">{w.question}</p>
         <Textarea rows={2} bind:value={answer} placeholder={t("wf.answerPlaceholder")} label={t("wf.answer")} />
@@ -183,7 +255,7 @@
     {/if}
 
     {#if w.status === "awaiting_plan_approval"}
-      <div class="mt-3"><PlanEditor {session} workflow={w} {steps} onCancel={() => (stopOpen = true)} /></div>
+      <div class="mt-3 rounded-2xl" data-focus-target><PlanEditor {session} workflow={w} {steps} onCancel={() => (stopOpen = true)} /></div>
     {:else if w.criteria.length && detailed}
       <div class="mt-3">
         <p class="flex items-center gap-2 text-[12px] font-medium text-ink-3">{t("wf.criteria")}<span class="tabular-nums">{t("wf.criteriaCount", { passed, total: w.criteria.length })}</span></p>
@@ -258,6 +330,11 @@
         <Textarea rows={2} bind:value={guidance} label={t("wf.guidance")} placeholder={t("wf.guidanceHint")} />
         <div class="flex gap-2"><Button variant="primary" size="sm" loading={busy === "guidance"} disabled={!guidance.trim()} onclick={sendGuidance}>{t("wf.guidanceSend")}</Button><Button variant="ghost" size="sm" onclick={() => (panel = null)}>{t("wf.cancel")}</Button></div>
       </div>
+    {:else if panel === "revise"}
+      <div class="mt-3 flex flex-col gap-2">
+        <Textarea rows={2} bind:value={revision} label={t("wf.auto.revise")} placeholder={t("wf.auto.reviseHint")} />
+        <div class="flex gap-2"><Button variant="primary" size="sm" loading={busy === "revise"} disabled={!revision.trim()} onclick={sendRevision}>{t("wf.auto.reviseSend")}</Button><Button variant="ghost" size="sm" onclick={() => (panel = null)}>{t("wf.cancel")}</Button></div>
+      </div>
     {:else if panel === "objective"}
       <div class="mt-3 flex flex-col gap-2">
         <Textarea rows={3} bind:value={objective} label={t("wf.editObjective")} />
@@ -285,7 +362,7 @@
         {#if finished && w.playbook === "slides" && w.artifacts.some((a) => a.kind === "deck") && w.status !== "cancelled"}
           <Button size="sm" variant="secondary" class="min-h-10" loading={busy === "publish"} onclick={() => (publishOpen = true)}><Upload />{t("wf.publish")}</Button>
         {/if}
-        {#if w.status !== "cancelled"}
+        {#if w.status !== "cancelled" && w.status !== "queued"}
           <Button size="sm" variant="ghost" class="min-h-10" onclick={() => (panel = panel === "guidance" ? null : "guidance")}><MessageSquarePlus />{t("wf.guidance")}</Button>
         {/if}
         {#if w.status === "paused" || (finished && w.status !== "cancelled")}

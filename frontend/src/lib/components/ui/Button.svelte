@@ -16,8 +16,8 @@
 
   const variants = {
     primary: "bg-primary text-primary-ink hover:bg-primary-hover",
-    secondary: "bg-surface text-ink border border-line hover:bg-surface-2 hover:border-line-2",
-    outline: "bg-transparent text-ink border border-line-2 hover:bg-surface",
+    secondary: "bg-soft text-ink border border-line hover:bg-soft-hover hover:border-line-2",
+    outline: "bg-transparent text-ink border border-line-2 hover:bg-soft",
     ghost: "bg-transparent text-ink-2 hover:bg-surface-3 hover:text-ink",
     danger: "bg-danger-soft text-danger hover:brightness-95",
   };

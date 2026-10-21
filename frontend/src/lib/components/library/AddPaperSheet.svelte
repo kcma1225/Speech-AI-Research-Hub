@@ -15,6 +15,7 @@
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import PaperForm, { type PaperDraft } from "./PaperForm.svelte";
+  import PdfUrlForm from "./PdfUrlForm.svelte";
 
   /** Add one paper: by identifier, from a PDF, or by hand. With `study`, it also goes into that study's library. */
   let { open = $bindable(false), study = null, onAdded }: {
@@ -111,6 +112,19 @@
     if (pdf && !batch && !busy) void uploadPdf(pdf);
   });
 
+  // 「從網址下載」: the server downloads the PDF, then the same preview / dedupe / confirm flow as an upload.
+  async function pdfFromUrl(url: string): Promise<string | null> {
+    busy = true;
+    error = null;
+    const r = await requestRaw<{ batch: ImportBatch; extraction: { method: string } }>("POST", "/library/pdf-from-url", { url, ...(study ? { study: study.id } : {}) });
+    busy = false;
+    if (!r.ok) return r.data.error ?? t("common.error");
+    batch = r.data.batch;
+    method = r.data.extraction.method;
+    draft = draftOf(r.data.batch.items[0]!.record);
+    return null;
+  }
+
   async function confirmPdf(action: "add" | "link") {
     if (!batch) return;
     const item = batch.items[0]!;
@@ -198,7 +212,9 @@
       {:else if mode === "pdf"}
         {#if !batch}
           <FileDrop bind:file={pdf} accept=".pdf,application/pdf" label={t("library.addSheet.pdfLabel")} hint={t("library.addSheet.pdfHint")} maxBytes={50 * 1024 * 1024} onError={m => (error = m)} />
-          {#if busy}<p class="flex items-center gap-2 text-[13px] text-ink-3"><Spinner />{t("library.addSheet.extracting")}</p>{/if}
+          {#if busy && pdf}<p class="flex items-center gap-2 text-[13px] text-ink-3"><Spinner />{t("library.addSheet.extracting")}</p>{/if}
+          <div class="flex items-center gap-3 text-[12px] text-ink-3" aria-hidden="true"><span class="h-px flex-1 bg-line"></span>{t("library.pdfUrl.or")}<span class="h-px flex-1 bg-line"></span></div>
+          <PdfUrlForm onDownload={pdfFromUrl} disabled={busy && Boolean(pdf)} />
         {:else}
           <div class="rounded-2xl bg-surface-2/70 p-3 text-[12.5px] text-ink-2">
             {t(`library.addSheet.method.${method ?? "none"}` as MessageKey)}

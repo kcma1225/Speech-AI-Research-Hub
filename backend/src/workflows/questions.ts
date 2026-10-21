@@ -40,6 +40,8 @@ export type WorkflowAsk = {
   answers?: StoredAnswer[];
   answered_at?: string;
   edited?: number;
+  /** Autopilot answered with the AI's own grounded options (「AI 代填，待你確認」); cleared when the user answers. */
+  ai_filled?: boolean;
 };
 
 type AskState = Record<string, WorkflowAsk>;

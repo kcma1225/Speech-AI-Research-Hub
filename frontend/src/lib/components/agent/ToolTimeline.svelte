@@ -108,7 +108,7 @@
       </div>
     {/if}
     {#each pending as c (c.id)}
-      <ConsentCard call={c} {compact} onDecide={(d, o) => onDecide(c, d, o)} />
+      <div data-focus-key="toolcall:{c.id}" class="rounded-[20px]"><ConsentCard call={c} {compact} onDecide={(d, o) => onDecide(c, d, o)} /></div>
     {/each}
   </div>
 {/if}

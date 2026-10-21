@@ -97,7 +97,7 @@
         if (navigating || returnFocus?.isConnected) e.preventDefault();
         if (!navigating && returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
       }}
-      class="fixed inset-x-3 top-[max(12px,env(safe-area-inset-top))] z-50 mx-auto max-w-[620px] overflow-hidden rounded-[24px] border border-line bg-surface shadow-pop outline-none data-[state=open]:animate-[pop-in_140ms_ease-out] sm:top-[12vh]"
+      class="fixed inset-x-3 top-[max(12px,env(safe-area-inset-top))] z-50 mx-auto max-w-[620px] overflow-hidden rounded-[24px] border border-line bg-popover shadow-pop outline-none data-[state=open]:animate-[pop-in_140ms_ease-out] sm:top-[12vh]"
     >
       <Dialog.Title class="sr-only">{t("search.short")}</Dialog.Title>
       <Command.Root shouldFilter={false} loop>

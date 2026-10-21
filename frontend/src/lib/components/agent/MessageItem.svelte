@@ -146,7 +146,7 @@
   <div class="group flex justify-end">
     <div class="flex max-w-[min(85%,640px)] flex-col items-end gap-1 {editing ? 'w-full' : ''}">
       {#if editing}
-        <div class="w-full rounded-[20px] border border-line-2 bg-surface p-2.5 shadow-pop">
+        <div class="w-full rounded-[20px] border border-line-2 bg-popover p-2.5 shadow-pop">
           <Textarea bind:value={draft} bind:ref={editor} rows={3} maxlength={20000} aria-label={t("agent.editMessage")} onkeydown={editKeys} class="[&_textarea]:border-0 [&_textarea]:bg-transparent" />
           <p class="px-1 pt-1 text-[11.5px] text-ink-3">{t("agent.editHint")}</p>
           <div class="flex justify-end gap-2 pt-1.5">
@@ -157,7 +157,7 @@
       {:else}
         {#if message.attachments?.length}<MessageAttachments items={message.attachments} />{/if}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="rounded-[20px] rounded-br-md bg-ink px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words text-primary-ink select-text [-webkit-touch-callout:none]" onpointerdown={pressStart} onpointerup={pressEnd} onpointercancel={pressEnd} onpointerleave={pressEnd}>{message.text}</div>
+        <div class="rounded-[20px] rounded-br-md bg-surface-3 px-4 py-2.5 text-[14.5px] leading-relaxed whitespace-pre-wrap break-words text-ink select-text [-webkit-touch-callout:none]" onpointerdown={pressStart} onpointerup={pressEnd} onpointercancel={pressEnd} onpointerleave={pressEnd}>{message.text}</div>
         <div class="flex items-center gap-0.5">
           {@render versionSwitch()}
           <!-- Desktop: hover / focus actions. -->

@@ -71,7 +71,7 @@
       <Popover.Content
         align="end"
         sideOffset={10}
-        class="z-50 w-[340px] rounded-[24px] border border-line bg-surface p-3 shadow-pop outline-none data-[state=open]:animate-[pop-in_140ms_ease-out]"
+        class="z-50 w-[340px] rounded-[24px] border border-line bg-popover p-3 shadow-pop outline-none data-[state=open]:animate-[pop-in_140ms_ease-out]"
       >
         <p class="px-1 pb-1 text-[15px] font-semibold">{t("aiStatus.title")}</p>
         {@render body()}

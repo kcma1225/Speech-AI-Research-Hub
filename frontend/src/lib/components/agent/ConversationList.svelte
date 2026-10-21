@@ -1,6 +1,6 @@
 <script lang="ts">
   import { DropdownMenu } from "bits-ui";
-  import { Ellipsis, MessageSquarePlus, MessagesSquare, Pencil, Rocket, Search, Trash2, Workflow, X } from "@lucide/svelte";
+  import { Ellipsis, MessageSquarePlus, MessagesSquare, Pencil, Rocket, Search, Workflow, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
@@ -9,6 +9,8 @@
   import TextField from "#lib/components/ui/TextField.svelte";
   import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
+  import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
+  import DeleteMenuItem from "#lib/components/ui/DeleteMenuItem.svelte";
   import type { ConversationListItem } from "#lib/agent/types.ts";
 
   /**
@@ -67,6 +69,7 @@
   let renameOpen = $state(false);
   let renameValue = $state("");
   let deleteId = $state<string | null>(null);
+  const deleteTitle = $derived(deleteId ? (items?.find((c) => c.id === deleteId)?.title ?? "") : "");
   let deleteOpen = $state(false);
   let saving = $state(false);
 
@@ -139,7 +142,7 @@
                     }
                   }}
                   aria-current={c.id === activeId ? "page" : undefined}
-                  class="flex min-h-14 flex-col justify-center gap-0.5 rounded-2xl py-2 pr-11 pl-3 transition-colors hover:bg-surface-3/70 aria-[current=page]:bg-surface-3"
+                  class="flex min-h-14 flex-col justify-center gap-0.5 rounded-2xl py-2 pr-20 pl-3 transition-colors hover:bg-surface-3/70 aria-[current=page]:bg-surface-3"
                 >
                   <span class="flex items-center gap-1.5">
                     <span class="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{c.title || t("agent.untitled")}</span>
@@ -149,12 +152,13 @@
                   </span>
                   <span class="flex items-center gap-2 text-[12px] text-ink-3"><span class="min-w-0 flex-1 truncate">{c.last_text ?? ""}</span><span class="shrink-0 tabular-nums">{relativeTime(c.updated_at)}</span></span>
                 </a>
+                <div class="absolute top-1/2 right-11 -translate-y-1/2"><DeleteButton reveal label={t("agent.delete")} onclick={() => ((deleteId = c.id), (deleteOpen = true))} /></div>
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger class="more absolute top-1/2 right-1.5 grid size-9 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-surface hover:text-ink data-[state=open]:bg-surface data-[state=open]:opacity-100" aria-label={t("agent.list.actions")}><Ellipsis class="size-4" /></DropdownMenu.Trigger>
                   <DropdownMenu.Portal>
                     <DropdownMenu.Content align="end" sideOffset={4} class="{menuContent} w-44">
                       <DropdownMenu.Item class={menuItem} onSelect={() => ((renameId = c.id), (renameValue = c.title ?? ""), (renameOpen = true))}><Pencil />{t("agent.rename")}</DropdownMenu.Item>
-                      <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => ((deleteId = c.id), (deleteOpen = true))}><Trash2 />{t("agent.delete")}</DropdownMenu.Item>
+                      <DeleteMenuItem label={t("agent.delete")} onSelect={() => ((deleteId = c.id), (deleteOpen = true))} />
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>
                 </DropdownMenu.Root>
@@ -186,7 +190,7 @@
   {/snippet}
 </Sheet>
 
-<ConfirmDialog bind:open={deleteOpen} title={t("agent.deleteConfirm")} description={t("agent.deleteHint")} confirmLabel={t("agent.delete")} onConfirm={remove} />
+<ConfirmDialog bind:open={deleteOpen} title={deleteTitle ? t("crud.conversation.deleteTitle", { title: deleteTitle }) : t("agent.deleteConfirm")} description={t("agent.deleteHint")} confirmLabel={t("agent.delete")} onConfirm={remove} />
 
 <style>
   /* Fine pointers: the ⋯ button appears on hover / focus; touch keeps it visible. */

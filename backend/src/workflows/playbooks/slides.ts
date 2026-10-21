@@ -22,7 +22,8 @@ import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
-import { WorkflowStop, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRow, type StepSpec } from "../types.js";
+import { WorkflowStop, type CheckSpec, type Criterion, type OutlineItem, type PlannedWrite, type StepOutput, type StepRow, type StepSpec } from "../types.js";
+import { abstractBrief, ensurePaperPdf } from "../paper-pdf.js";
 import { clipText, paperOf, planningStep, resolveStudy, systemFor, taskPrompt } from "./common.js";
 import { registerWorkflowPlaybook, type WorkflowPlaybook } from "./registry.js";
 import { applyStudentPages, runStudentInput, STUDENT_INPUT_KEY, studentInputStep, studentPagesOf } from "../student-input.js";
@@ -122,7 +123,7 @@ function laterSteps(outline: SlideOutline[], vision: boolean): StepSpec[] {
   return steps;
 }
 
-function criteriaFor(n: number, mode: DeckMode, owned: string[]): Omit<Criterion, "status">[] {
+function criteriaFor(n: number, mode: DeckMode, owned: string[], abstractOnly = false): Omit<Criterion, "status">[] {
   return [
     { id: "pages", kind: "check", text: `簡報正好 ${n} 頁，頁面順序與確認的大綱一致`, check: { id: "slide_count", params: { expected: n } } },
     { id: "render", kind: "check", text: "Quarto 預覽可以成功編譯", check: { id: "render_ok" } },
@@ -132,8 +133,8 @@ function criteriaFor(n: number, mode: DeckMode, owned: string[]): Omit<Criterion
     { id: "visuals", kind: "check", text: "以視覺為主：至少六成內容頁有流程圖、圖表、論文圖或表格，圖都正確編譯（沒有原始碼外露）", check: { id: "visual_ratio", params: { min_ratio: 0.6, allow_titles: owned } } },
     { id: "diagrams", kind: "check", text: "流程圖（diagram）與圖表語法正確，圖放得進投影片", check: { id: "diagram_syntax" } },
     { id: "visual_qa", kind: "check", text: "每一頁都通過截圖視覺檢查（字 ≥ 16px、不擁擠、沒有大片空白、文字不超出方框或投影片、圖表正確不重複）", check: { id: "visual_qa" } },
-    { id: "grounded", kind: "judge", text: mode === "paper_report" ? "內容與數字都來自論文本身，重要結果標註出處（表／§），沒有捏造" : "內容只來自研究資料（待辦、筆記、會議回饋），沒有捏造的數字或結論" },
-    { id: "coverage", kind: "judge", text: `每頁都涵蓋大綱列出的重點，前後連貫，適合在組會報告${owned.length ? `（${owned.map((o) => `「${o}」`).join("、")}是學生自填頁：內容來自報告者自己的回答，報告者選擇跳過時保留提示，不算缺漏）` : ""}` },
+    { id: "grounded", kind: "judge", text: abstractOnly ? "沒有全文 PDF：內容只來自論文摘要與書目資料，清楚標示「僅依摘要」，沒有捏造方法細節或數字" : mode === "paper_report" ? "內容與數字都來自論文本身，重要結果標註出處（表／§），沒有捏造" : "內容只來自研究資料（待辦、筆記、會議回饋），沒有捏造的數字或結論" },
+    { id: "coverage", kind: "judge", text: `每頁都涵蓋大綱列出的重點，前後連貫，適合在組會報告${owned.length ? `（${owned.map((o) => `「${o}」`).join("、")}是學生自填頁：內容來自報告者自己的回答；報告者選擇跳過時保留提示，自動駕駛代填時標示「AI 代填，待你確認」，都可以接受，不算缺漏）` : ""}` },
   ];
 }
 
@@ -196,17 +197,27 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   if (!access) return { kind: "question", question: "要把簡報放在哪個研究？請在補充指示寫研究名稱，或從研究頁面再按一次「交給 Agent」。" };
   if (!access.canEdit) return { kind: "question", question: `你不是〈${access.study.title}〉的成員，不能在這個研究建立簡報。請指定你參與的研究。` };
   const inputMode = env.run.inputs.mode as DeckMode | undefined;
-  const paper = await paperOf(env);
+  let paper = await paperOf(env);
   const mode: DeckMode = inputMode ?? (paper || /論文|paper|arxiv|文獻報告/i.test(env.run.request) ? "paper_report" : "progress");
   if (mode === "paper_report" && !paper) return { kind: "question", question: "要報告哪一篇論文？請先把論文加入文獻庫（或附加它），再在補充指示寫出論文標題。" };
-  if (mode === "paper_report" && !paper!.pdf_key) return { kind: "question", question: `〈${paper!.title}〉還沒有 PDF，無法讀全文。請在文獻庫抓取或上傳 PDF 後，按「繼續」。` };
-  const pages = Math.min(40, Math.max(3, Number(env.run.inputs.pages) || expectedPages(mode, env.run.request)));
-  await env.setState({ mode, pages });
+  // No PDF: open access + the record's URLs first; then autopilot skips (needs_pdf), otherwise the user chooses (paper-pdf.ts).
+  let abstractOnly = false;
+  if (mode === "paper_report" && !paper!.pdf_key) {
+    const d = await ensurePaperPdf(env, paper!);
+    if (d.kind === "needs_pdf" || d.kind === "skip") return d;
+    paper = d.paper;
+    abstractOnly = d.kind === "abstract";
+  }
+  const pages = Math.min(40, Math.max(3, Number(env.run.inputs.pages) || (abstractOnly ? 5 : expectedPages(mode, env.run.request))));
+  await env.setState({ mode, pages, abstract_only: abstractOnly });
 
   // Research (paper: researcher sub-agent with read_paper; progress: the study's own data).
   let brief = "";
   let research: StepSpec;
-  if (mode === "paper_report") {
+  if (abstractOnly) {
+    brief = abstractBrief(paper!);
+    research = { key: "research", role: "researcher", title: "整理論文摘要（沒有 PDF：僅依摘要）", instructions: "沒有全文 PDF，只用文獻紀錄的摘要與書目資料。", expected: "摘要重點", done: { output: { summary: `僅依摘要（${brief.length} 字）`, text: brief } } };
+  } else if (mode === "paper_report") {
     const ft = await paperFullText(env.storage, paper!.pdf_key!).catch(() => null);
     if (ft) await env.setState({ paper_digest: digest(ft, 14_000) });
     const r = await planningStep(env, {
@@ -240,19 +251,19 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   const owned = studentOwned(outline);
   const date = taipeiToday();
   const title = mode === "paper_report" ? `${paper!.title}` : progressTitle(access.study.title, date);
-  const existing = env.run.inputs.deck_id as string | undefined;
   const steps = [research, outlineStep.spec, ...laterSteps(outline, vision)];
-  const notes = outline.length !== pages ? `大綱有 ${outline.length} 頁（要求 ${pages} 頁）；可在下方調整後再開始。` : undefined;
+  const notes = [abstractOnly ? "這篇沒有全文 PDF：依你的選擇只用摘要，簡報標題與講稿會標示「僅依摘要」。" : "", outline.length !== pages ? `大綱有 ${outline.length} 頁（要求 ${pages} 頁）；可在下方調整後再開始。` : ""].filter(Boolean).join("\n") || undefined;
+  const write = await plannedDeckWrite(env, access.study.id, title);
   return {
     kind: "plan",
-    title: `${mode === "paper_report" ? "論文報告" : "進度報告"}簡報：${clipText(title, 60)}`,
+    title: `${mode === "paper_report" ? (abstractOnly ? "論文報告（僅依摘要）" : "論文報告") : "進度報告"}簡報：${clipText(title, 60)}`,
     studyId: access.study.id,
     objective: `為〈${access.study.title}〉建立一份 ${pages} 頁的${mode === "paper_report" ? `論文報告簡報（〈${clipText(paper!.title, 80)}〉）` : "進度報告簡報"}：依確認的大綱逐頁撰寫投影片與講稿，編譯成可預覽的草稿，並通過驗收。`,
-    criteria: criteriaFor(pages, mode, owned),
+    criteria: criteriaFor(pages, mode, owned, abstractOnly),
     plan: {
       summary: `先讀${mode === "paper_report" ? "論文全文" : "研究資料"}並規劃 ${pages} 頁大綱（下方可修改），再由 ${Math.ceil(outline.length / PAGES_PER_WRITER)} 個撰寫者平行寫投影片與講稿，每段都經過檢查與驗收；整合後編譯預覽${vision ? "、看截圖檢查版面" : ""}、補齊講稿，最後逐條驗收。`,
       outline,
-      writes: [{ kind: "deck", label: existing ? "這份簡報的草稿（原始檔的新修訂，不會發布版本）" : `新簡報「${clipText(title, 60)}」（草稿，不會發布版本）` }],
+      writes: [write],
       ...(notes ? { notes } : {}),
     },
     steps,
@@ -260,6 +271,27 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
 }
 
 // ---------------------------------------------------------------- deck writes
+
+/**
+ * The plan card's write + its effect for autopilot (autopilot.ts), mirroring `ensureDeck`: the run's own draft deck or
+ * an untouched template → `draft_own`; an existing deck with edits that would be written into → `overwrite` (asks);
+ * otherwise a new deck → `new`.
+ */
+async function plannedDeckWrite(env: WorkflowEnv, studyId: string, title: string): Promise<PlannedWrite> {
+  const own = env.state<DeckState>("deck");
+  if (own?.deck_id) return { kind: "deck", label: `這個工作流程的簡報草稿〈${clipText(own.deck_title ?? title, 60)}〉（新的修訂，不會發布版本）`, effect: "draft_own" };
+  const want = env.run.inputs.deck_id as string | undefined;
+  if (want) {
+    const deck = (await env.db.query<{ id: string; title: string; study_id: string }>("SELECT id,title,study_id FROM decks WHERE id=$1", [want])).rows[0];
+    const tree = deck ? await loadTree(env.db, deck.id) : null;
+    if (deck && deck.study_id === studyId && (!tree || tree.origin === "ai" || tree.revision <= 1)) {
+      const untouched = !tree || tree.revision <= 1;
+      return { kind: "deck", label: untouched ? `簡報〈${clipText(deck.title, 60)}〉（還沒有內容的範本，寫入草稿，不會發布版本）` : `覆寫簡報〈${clipText(deck.title, 60)}〉的原始檔（新的修訂，不會發布版本）`, effect: untouched ? "draft_own" : "overwrite" };
+    }
+    return { kind: "deck", label: `新簡報「${clipText(title, 60)}（Agent 草稿）」（不會動到原本的簡報，不會發布版本）`, effect: "new" };
+  }
+  return { kind: "deck", label: `新簡報「${clipText(title, 60)}」（草稿，不會發布版本）`, effect: "new" };
+}
 
 async function ensureDeck(env: WorkflowEnv): Promise<DeckState & { deck_id: string }> {
   const st = (env.state<DeckState>("deck") ?? {}) as DeckState;
@@ -309,7 +341,7 @@ export async function writeAndRender(env: WorkflowEnv, body: string, opts: { sho
   // The run keeps the source form (```chart specs, paper-fig refs); the deck gets rendered SVG / cropped figures.
   const visuals = await materializeVisuals(env, deck, body, { paperPdfKey: mode === "paper_report" ? paper?.pdf_key ?? null : null, vision: await env.vision("slides") });
   if (visuals.problems.length) await env.note(`圖表處理：${visuals.problems.slice(0, 4).join("；")}`, "warn");
-  const qmd = draftQmd({ title, author: env.user.name, date: taipeiToday(), theme: true, ...(mode === "paper_report" && paper ? { subtitle: "Paper report" } : {}) }, visuals.body);
+  const qmd = draftQmd({ title, author: env.user.name, date: taipeiToday(), theme: true, ...(mode === "paper_report" && paper ? { subtitle: env.state<boolean>("abstract_only") ? "Paper report（僅依摘要，沒有全文 PDF）" : "Paper report" } : {}) }, visuals.body);
   let revision: number;
   let version: number | undefined;
   try {

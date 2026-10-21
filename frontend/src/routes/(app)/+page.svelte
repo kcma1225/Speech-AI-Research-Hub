@@ -79,21 +79,26 @@
 {:else}
   <!-- Stats -->
   <div class="mb-4 grid grid-cols-2 gap-3 sm:mb-5 sm:gap-4 lg:grid-cols-3">
-    {#snippet stat(label: string, value: number | undefined, icon: typeof Flag, tone: Tone, foot: string, href: string, cls = "")}
+    {#snippet stat(label: string, value: number | undefined, icon: typeof Flag, tone: Tone, foot: string, href: string, cls = "", footHref = "")}
       {@const Icon = icon}
-      <a {href} class="group flex flex-col justify-between gap-4 rounded-[22px] border border-line/70 bg-surface p-4 shadow-card transition-colors hover:border-line-2 sm:p-5 {cls}">
+      <!-- The whole card links to `href` (stretched link); an optional foot line links elsewhere. -->
+      <div class="group relative flex flex-col justify-between gap-4 rounded-[22px] border border-line/70 bg-surface p-4 shadow-card transition-colors hover:border-line-2 sm:p-5 {cls}">
         <div class="flex items-center justify-between">
           <span class="grid size-9 place-items-center rounded-xl" style="background:var(--pill-{tone});color:var(--pill-{tone}-ink)"><Icon class="size-[18px]" /></span>
           <ArrowUpRight class="size-4 text-ink-3 opacity-0 transition-opacity group-hover:opacity-100" />
         </div>
         <div>
           {#if value === undefined}<Skeleton class="h-9 w-14" />{:else}<p class="font-display text-[38px] leading-none tabular-nums">{value}</p>{/if}
-          <p class="mt-1.5 text-[13px] font-medium text-ink-2">{label}</p>
-          <p class="mt-0.5 truncate text-[12px] text-ink-3">{foot || "\u00a0"}</p>
+          <a {href} class="mt-1.5 block text-[13px] font-medium text-ink-2 after:absolute after:inset-0 after:rounded-[22px] after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ink">{label}</a>
+          {#if foot && footHref}
+            <a href={footHref} class="relative z-10 -mx-1 -my-2 inline-flex min-h-10 max-w-full items-center truncate rounded-full px-1 text-[12px] text-ink-3 underline-offset-2 hover:text-ink hover:underline">{foot}</a>
+          {:else}
+            <p class="mt-0.5 truncate text-[12px] text-ink-3">{foot || "\u00a0"}</p>
+          {/if}
         </div>
-      </a>
+      </div>
     {/snippet}
-    {@render stat(t("dash.stat.myStudies"), c?.myStudies, FlaskConical, "peach", c ? t("dash.stat.labStudies", { n: c.labStudies }) : "", "/studies?member=me")}
+    {@render stat(t("dash.stat.myStudies"), c?.myStudies, FlaskConical, "peach", c ? t("dash.stat.labStudies", { n: c.labStudies }) : "", "/studies?scope=mine", "", "/studies?scope=lab")}
     {@render stat(t("dash.stat.openTasks"), c?.openTasks, ListTodo, "sky", c ? (c.overdueTasks ? t("dash.stat.overdue", { n: c.overdueTasks }) : t("dash.stat.noOverdue")) : "", "#my-tasks")}
     {@render stat(t("dash.stat.dueWeek"), c?.dueThisWeek, CalendarClock, "butter", "", "#my-tasks", "col-span-2 lg:col-span-1")}
   </div>
@@ -102,7 +107,7 @@
     <!-- My studies -->
     <Card>
       <CardHeader title={t("dash.myStudies")}>
-        {#snippet actions()}<Button size="sm" variant="ghost" href="/studies">{t("action.viewAll")}<ArrowUpRight /></Button>{/snippet}
+        {#snippet actions()}<Button size="sm" variant="ghost" href="/studies?scope=mine">{t("action.viewAll")}<ArrowUpRight /></Button>{/snippet}
       </CardHeader>
       {#if !data}
         <div class="flex flex-col gap-3">{#each [0, 1] as i (i)}<Skeleton class="h-20" />{/each}</div>

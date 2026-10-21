@@ -15,8 +15,10 @@
   import Progress from "#lib/components/ui/Progress.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
-  import { menuContent, menuItem, menuSeparator } from "#lib/components/ui/menu.ts";
+  import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
   import DeleteDeckDialog from "#lib/components/slides/DeleteDeckDialog.svelte";
+  import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
+  import DeleteMenuItem from "#lib/components/ui/DeleteMenuItem.svelte";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
   import SlidePlayer from "#lib/components/slides/SlidePlayer.svelte";
   import DraftState from "#lib/components/slides/DraftState.svelte";
@@ -262,19 +264,19 @@
       <Button variant="secondary" href={d.activeVersion ? d.project.playerUrl : undefined} disabled={!d.activeVersion}><Play />{t("slides.player")}</Button>
       {#if d.pdfUrl}<Button variant="primary" href={d.pdfUrl}><Download />PDF</Button>{/if}
       {#if d.permissions.manage}
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-surface text-ink-2 hover:bg-surface-2 hover:text-ink" aria-label={t("crud.more")} title={t("crud.more")}>
-            <Ellipsis class="size-4" />
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content align="end" sideOffset={6} class={menuContent}>
-              <DropdownMenu.Item class={menuItem} onSelect={() => void showInfo()}><Info />{t("crud.deck.info")}</DropdownMenu.Item>
-              <DropdownMenu.Separator class={menuSeparator} />
-              <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => (deleteOpen = true)}><Trash2 />{t("crud.deck.delete")}</DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
+        <DeleteButton class="hidden border border-line bg-surface sm:inline-flex" label={t("crud.deck.delete")} onclick={() => (deleteOpen = true)} />
       {/if}
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-surface text-ink-2 hover:bg-surface-2 hover:text-ink" aria-label={t("crud.more")} title={t("crud.more")}>
+          <Ellipsis class="size-4" />
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content align="end" sideOffset={6} class={menuContent}>
+            <DropdownMenu.Item class={menuItem} onSelect={() => void showInfo()}><Info />{t("crud.deck.info")}</DropdownMenu.Item>
+            <DeleteMenuItem label={t("crud.deck.delete")} reason={d.permissions.manage ? null : t("crud.deny.study")} onSelect={() => (deleteOpen = true)} />
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
     </div>
   </header>
 

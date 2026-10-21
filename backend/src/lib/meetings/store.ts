@@ -70,7 +70,9 @@ export async function meetingPermissions(db: Queryable, meeting: MeetingRow, use
   const creator = meeting.created_by === user.id;
   return {
     edit: user.is_admin || creator || Boolean(participant) || studies.size > 0,
-    delete: user.is_admin || creator,
+    // Delete: the creator or an owner/member of a linked study (participants and advisors may not). Same rule as
+    // `deletableMeetingIds` (list cards).
+    delete: user.is_admin || creator || studies.size > 0,
     feedback: true,
     studies: [...studies],
   };
@@ -237,6 +239,24 @@ export async function listMeetings(db: Queryable, filter: MeetingListFilter): Pr
     params,
   );
   return r.rows.map(row => ({ ...row, drafts: row.drafts ?? { pending: 0, confirmed: 0, dismissed: 0 } }));
+}
+
+/** Of `ids`, the meetings `userId` may delete (see `meetingPermissions().delete`): for the list cards' 刪除 action. */
+export async function deletableMeetingIds(db: Queryable, ids: string[], userId: string): Promise<Set<string>> {
+  if (!ids.length) return new Set();
+  const r = await db.query<{ id: string }>(
+    `SELECT m.id FROM meetings m WHERE m.id = ANY($1) AND (m.created_by=$2 OR EXISTS (
+        SELECT 1 FROM meeting_studies ms JOIN study_members sm ON sm.study_id=ms.study_id
+         WHERE ms.meeting_id=m.id AND sm.user_id=$2 AND sm.role IN ('owner','member')))`,
+    [ids, userId],
+  );
+  return new Set(r.rows.map(row => row.id));
+}
+
+/** List cards plus the caller's `can_delete`. */
+export async function withDeletePermission(db: Queryable, cards: MeetingCard[], userId: string) {
+  const ok = await deletableMeetingIds(db, cards.map(c => c.id), userId);
+  return cards.map(c => ({ ...c, can_delete: ok.has(c.id) }));
 }
 
 export async function meetingCard(db: Queryable, id: string): Promise<MeetingCard | null> {

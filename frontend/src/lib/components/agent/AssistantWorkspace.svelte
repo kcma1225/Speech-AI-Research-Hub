@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { goto } from "$app/navigation";
+  import { goto, replaceState } from "$app/navigation";
+  import { page } from "$app/state";
   import { untrack } from "svelte";
-  import { MessagesSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Sparkles, Trash2, MessageSquarePlus } from "@lucide/svelte";
+  import { MessagesSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Sparkles, MessageSquarePlus } from "@lucide/svelte";
   import { DropdownMenu } from "bits-ui";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import DeleteMenuItem from "#lib/components/ui/DeleteMenuItem.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
@@ -16,6 +18,7 @@
   import ViewerSplit from "./viewer/ViewerSplit.svelte";
   import DocsMenu from "./viewer/DocsMenu.svelte";
   import { viewer } from "#lib/agent/viewer.ts";
+  import { focusFromUrl, withoutFocus } from "#lib/agent/focus.ts";
 
   /**
    * /assistant and /assistant/:id — conversation list (collapsible sidebar from `lg`, remembered, Ctrl/⌘+Shift+B;
@@ -90,6 +93,12 @@
   });
 
   const title = $derived(session.conversation?.title || t("agent.untitled"));
+  // `?focus=workflow:<id>` / `?focus=toolcall:<id>` (lib/agent/focus.ts): the chat scrolls to that card once loaded.
+  const focus = $derived(conversationId && session.id === conversationId ? focusFromUrl(page.url) : null);
+  function focused() {
+    const clean = withoutFocus(page.url);
+    if (clean.href !== page.url.href) replaceState(clean, page.state);
+  }
   const menuItem = "flex h-10 cursor-pointer items-center gap-2.5 rounded-xl px-3 text-[13.5px] text-ink outline-none data-[highlighted]:bg-surface-2";
 
   function select(id: string) {
@@ -143,9 +152,9 @@
         <DropdownMenu.Root>
           <DropdownMenu.Trigger class="grid size-10 place-items-center rounded-full text-ink-2 hover:bg-surface-3" aria-label={t("agent.conversations")}><MoreHorizontal class="size-4.5" /></DropdownMenu.Trigger>
           <DropdownMenu.Portal>
-            <DropdownMenu.Content align="end" sideOffset={6} class="z-50 min-w-[180px] rounded-2xl border border-line bg-surface p-1.5 shadow-pop data-[state=open]:animate-[pop-in_140ms_ease-out]">
+            <DropdownMenu.Content align="end" sideOffset={6} class="z-50 min-w-[180px] rounded-2xl border border-line bg-popover p-1.5 shadow-pop data-[state=open]:animate-[pop-in_140ms_ease-out]">
               <DropdownMenu.Item class={menuItem} onSelect={() => ((renameValue = session.conversation?.title ?? ""), (renameOpen = true))}><Pencil class="size-4" />{t("agent.rename")}</DropdownMenu.Item>
-              <DropdownMenu.Item class="{menuItem} text-danger" onSelect={() => (deleteOpen = true)}><Trash2 class="size-4" />{t("agent.delete")}</DropdownMenu.Item>
+              <DeleteMenuItem label={t("agent.delete")} onSelect={() => (deleteOpen = true)} />
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
@@ -153,7 +162,7 @@
     </header>
     <div class="min-h-0 flex-1">
       <ViewerSplit {session}>
-      <ChatView {session} onCreated={(id) => void goto(`/assistant/${id}`, { replaceState: true })}>
+      <ChatView {session} {focus} onFocused={focused} onCreated={(id) => void goto(`/assistant/${id}`, { replaceState: true })}>
         {#snippet empty(send)}
           <div class="flex flex-col items-center px-2 pt-[8vh] text-center">
             <span class="grid size-14 place-items-center rounded-full hero-gradient text-hero-ink"><Sparkles class="size-6" /></span>
@@ -191,7 +200,7 @@
   {/snippet}
 </Sheet>
 
-<ConfirmDialog bind:open={deleteOpen} title={t("agent.deleteConfirm")} description={t("agent.deleteHint")} confirmLabel={t("agent.delete")} onConfirm={remove} />
+<ConfirmDialog bind:open={deleteOpen} title={session.conversation?.title ? t("crud.conversation.deleteTitle", { title: session.conversation.title }) : t("agent.deleteConfirm")} description={t("agent.deleteHint")} confirmLabel={t("agent.delete")} onConfirm={remove} />
 
 <style>
   /* Fill the viewport below the top bar (and above the phone tab bar). */

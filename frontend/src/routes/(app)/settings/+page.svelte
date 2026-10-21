@@ -253,13 +253,13 @@
                 >
                   <div class="flex h-full gap-1.5">
                     <div class="flex w-1/4 flex-col gap-1 pt-1">
-                      {#each [0, 1, 2] as j (j)}<div class="h-1.5 rounded-full" style="background:{mode === 'dark' ? '#3a3834' : '#d6d3cc'}"></div>{/each}
+                      {#each [0, 1, 2] as j (j)}<div class="h-1.5 rounded-full" style="background:{mode === 'dark' ? '#3a3834' : '#d2cec5'}"></div>{/each}
                     </div>
                     <div class="flex flex-1 flex-col gap-1.5">
                       <div class="h-1/2 rounded-md hero-gradient" data-theme={mode}></div>
                       <div class="flex flex-1 gap-1.5">
-                        <div class="flex-1 rounded-md" style="background:{mode === 'dark' ? '#1c1b1a' : '#fff'}"></div>
-                        <div class="flex-1 rounded-md" style="background:{mode === 'dark' ? '#1c1b1a' : '#fff'}"></div>
+                        <div class="flex-1 rounded-md" style="background:{mode === 'dark' ? '#1c1b1a' : '#f5f3ee'}"></div>
+                        <div class="flex-1 rounded-md" style="background:{mode === 'dark' ? '#1c1b1a' : '#f5f3ee'}"></div>
                       </div>
                     </div>
                   </div>

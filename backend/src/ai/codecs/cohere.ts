@@ -6,7 +6,7 @@ import { AiError } from "../errors.js";
 import { guardStream, modelsDetail, send, sendJson, sseEvents, timedProbe, type Call } from "../providers/http.js";
 import type { ChatEvent, ChatMessage, ChatRequest, EmbedRequest, ModelInfo, StopReason, Usage } from "../types.js";
 import type { Codec, CodecContext } from "./codec.js";
-import { assistantParts, batchSize, blocksOf, chunk, ensureToolsSupported, finishBody, finishVectors, imageDataUrl, makeState, num, stateFor, textOf, toolResultText, ToolCalls } from "./shared.js";
+import { assistantParts, batchSize, blocksOf, chunk, ensureAudioSupported, ensureToolsSupported, finishBody, finishVectors, imageDataUrl, makeState, num, stateFor, textOf, toolResultText, ToolCalls } from "./shared.js";
 
 export interface CohereState {
   toolPlan?: string;
@@ -49,6 +49,7 @@ export function toCohereMessages(messages: ChatMessage[]) {
 
 export function buildCohereBody(ctx: CodecContext, req: ChatRequest): Record<string, unknown> {
   ensureToolsSupported(ctx, req);
+  ensureAudioSupported(ctx, req, "cohere");
   const body: Record<string, unknown> = { model: req.model, messages: toCohereMessages(req.messages), stream: true };
   if (req.maxTokens) body.max_tokens = req.maxTokens;
   if (req.temperature !== undefined) body.temperature = req.temperature;

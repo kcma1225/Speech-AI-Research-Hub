@@ -15,11 +15,13 @@ export const ROLE_ICON: Record<StepRole | "orchestrator", Component> = {
 };
 
 export const STATUS_TONE: Record<WorkflowStatus, Tone> = {
+  queued: "stone",
   planning: "sky",
   awaiting_plan_approval: "butter",
   running: "sky",
   verifying: "lilac",
   awaiting_input: "butter",
+  needs_pdf: "peach",
   paused: "stone",
   done: "mint",
   partial: "peach",

@@ -17,7 +17,8 @@
  * Other playbooks can use `askStudentView(env, step, {...})` for a single 「我的想法」-style section.
  */
 import { titleMatches } from "./checks.js";
-import { AI_OPTIONS_INTRO, answerLines, asksOf, askUser, groundedQuestions, isSkipped, type QuestionDraft } from "./questions.js";
+import { AI_OPTIONS_INTRO, answerLines, asksOf, askUser, groundedQuestions, isSkipped, normaliseCard, SKIP_VALUE, validateCardAnswers, type QuestionDraft, type StoredAnswer } from "./questions.js";
+import { finishNotice } from "./notify.js";
 import { getSteps } from "./store.js";
 import type { WorkflowEnv } from "./env.js";
 import type { OutlineItem, StepOutput, StepRow, StepSpec } from "./types.js";
@@ -25,7 +26,24 @@ import type { OutlineItem, StepOutput, StepRow, StepSpec } from "./types.js";
 export const STUDENT_INPUT_KEY = "student_input";
 export const STUDENT_CARD_ID = "student_pages";
 
-export type StudentPage = { title: string; lines: string[]; skipped: boolean; source: "option" | "own" | "mixed" | "skipped" };
+export type StudentPage = { title: string; lines: string[]; skipped: boolean; source: "option" | "own" | "mixed" | "skipped"; /** Autopilot picked the AI's grounded options (「AI 代填，待你確認」). */ ai_filled?: boolean };
+
+/** Marker on AI-filled student pages (slide + speaker note). */
+export const AI_FILLED_MARK = "AI 代填，待你確認";
+
+/**
+ * Autopilot: the AI picks from its own study-grounded options instead of stopping — choice questions get their first
+ * options (takeaways: up to 3, others: up to 2; single choice: 1); a question without options stays skipped.
+ */
+export function autopilotAnswers(questions: import("../agent/ask.js").Question[]): StoredAnswer[] {
+  return questions.map((q) => {
+    const opts = (q.options ?? []).filter((o) => o.value !== SKIP_VALUE);
+    if (!opts.length || (q.type !== "multi_choice" && q.type !== "single_choice")) return { id: q.id, value: null, skipped: true };
+    if (q.type === "single_choice") return { id: q.id, value: opts[0]!.value };
+    const n = /takeaway|帶走|收穫/i.test(q.prompt) ? 3 : 2;
+    return { id: q.id, value: opts.slice(0, n).map((o) => o.value) };
+  });
+}
 
 export function studentInputStep(ownedTitles: string[], dependsOn: string[]): StepSpec {
   return {
@@ -63,15 +81,29 @@ export async function runStudentInput(env: WorkflowEnv, step: StepRow, opts: { o
     await env.activity(step.key, "planner", "依研究資料草擬候選答案");
     questions = await groundedQuestions(env, drafts, { stepId: step.id, extra: { drafted_pages: (opts.drafted ?? "").slice(0, 12_000), paper_brief: (opts.brief ?? "").slice(0, 8000) } });
   }
-  const answers = await askUser(env, {
+  const card = {
     id: STUDENT_CARD_ID,
     title: "這幾頁要用你自己的看法",
     intro: `依老師的模板，${opts.owned.map((p) => `「${p.title}」`).join("、")}要由報告者自己寫。${AI_OPTIONS_INTRO}`,
     questions,
     step_key: step.key,
-    purpose: "input",
+    purpose: "input" as const,
     ai_suggested: true,
-  });
+  };
+  // Autopilot: never block on these pages — the AI fills them from its grounded options, clearly marked, and the card
+  // stays answerable (「修改答案」 re-runs this step and re-assembles). Outside autopilot: ask.
+  const prior = asksOf(env.run.state)[STUDENT_CARD_ID];
+  if (env.run.autopilot && !prior?.answers) {
+    const full = normaliseCard(card);
+    const picked = validateCardAnswers(full, autopilotAnswers(full.questions));
+    await env.refresh();
+    await env.setState({ asks: { ...asksOf(env.run.state), [STUDENT_CARD_ID]: { ...full, answers: picked, answered_at: new Date().toISOString(), ai_filled: true } } });
+    await env.activity(step.key, "planner", "自動駕駛：依研究資料代填學生自填頁（待你確認）");
+    await env.note(`自動駕駛：${opts.owned.map((p) => `「${p.title}」`).join("、")}由 AI 依研究資料代填，頁面標示「${AI_FILLED_MARK}」；可以隨時按「修改答案」換成你自己的看法。`);
+    await finishNotice(env, "ai_filled");
+  }
+  const answers = await askUser(env, card);
+  const aiFilled = !!asksOf(env.run.state)[STUDENT_CARD_ID]?.ai_filled;
   const pages: StudentPage[] = opts.owned.map((p, i) => {
     const q = questions!.find((x) => x.id === drafts[i]!.id)!;
     const a = answers.find((x) => x.id === q.id);
@@ -79,9 +111,11 @@ export async function runStudentInput(env: WorkflowEnv, step: StepRow, opts: { o
     const skipped = isSkipped(a) || !lines.length;
     const chosen = Array.isArray(a?.value) ? a!.value.length : typeof a?.value === "string" && (q.type === "single_choice" || q.type === "multi_choice") ? 1 : 0;
     const source = skipped ? "skipped" : a?.other && chosen ? "mixed" : a?.other || !q.options ? "own" : "option";
-    return { title: p.title, lines, skipped, source };
+    return { title: p.title, lines, skipped, source, ...(aiFilled && !skipped ? { ai_filled: true } : {}) };
   });
   const filled = pages.filter((p) => !p.skipped).length;
+  await env.setState({ ai_filled: pages.filter((p) => p.ai_filled).map((p) => p.title) });
+  if (aiFilled) return { summary: `自動駕駛代填：${filled}/${pages.length} 頁依研究資料的建議選項填入，標示「${AI_FILLED_MARK}」${filled < pages.length ? `，${pages.length - filled} 頁沒有可用的選項（保留給你補）` : ""}。`, text: pages.map((p) => `## ${p.title}\n${p.skipped ? "（先跳過）" : p.lines.map((l) => `- ${l}`).join("\n")}`).join("\n\n"), data: { pages } };
   return { summary: `收到你的回答：${filled}/${pages.length} 頁由你提供內容${filled < pages.length ? `，${pages.length - filled} 頁先跳過（保留給你之後補）` : ""}。`, text: pages.map((p) => `## ${p.title}\n${p.skipped ? "（先跳過）" : p.lines.map((l) => `- ${l}`).join("\n")}`).join("\n\n"), data: { pages } };
 }
 
@@ -95,8 +129,13 @@ export const SKIPPED_PLACEHOLDER = "〔　這頁留給你自己寫：之後補�
 
 /** Markdown of one student page (bullets = the student's words; notes say who wrote it). */
 export function studentPageMarkdown(p: StudentPage, attrs = ""): string {
-  const body = p.skipped ? SKIPPED_PLACEHOLDER : p.lines.map((l) => `- ${l}`).join("\n");
-  const notes = p.skipped ? "（由報告者補充）" : "（報告者自己的看法，依報告者在工作流程中確認的回答整理）";
+  const lines = p.lines.map((l) => `- ${l}`).join("\n");
+  const body = p.skipped ? SKIPPED_PLACEHOLDER : p.ai_filled ? `[${AI_FILLED_MARK}]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}\n\n${lines}` : lines;
+  const notes = p.skipped
+    ? "（由報告者補充）"
+    : p.ai_filled
+      ? `（${AI_FILLED_MARK}：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）`
+      : "（報告者自己的看法，依報告者在工作流程中確認的回答整理）";
   return `## ${p.title}${attrs}\n\n${body}\n\n::: {.notes}\n${notes}\n:::\n`;
 }
 
@@ -125,6 +164,21 @@ export function applyStudentPages(body: string, pages: StudentPage[]): string {
 export async function askStudentView(env: WorkflowEnv, step: StepRow, opts: { cardId: string; title: string; questions: QuestionDraft[]; context?: Record<string, string> }): Promise<Record<string, string[]>> {
   const existing = asksOf(env.run.state)[opts.cardId];
   const questions = existing?.questions ?? (await groundedQuestions(env, opts.questions, { stepId: step.id, extra: opts.context }));
-  const answers = await askUser(env, { id: opts.cardId, title: opts.title, intro: AI_OPTIONS_INTRO, questions, step_key: step.key, purpose: "input", ai_suggested: true });
+  const card = { id: opts.cardId, title: opts.title, intro: AI_OPTIONS_INTRO, questions, step_key: step.key, purpose: "input" as const, ai_suggested: true };
+  // Autopilot: filled from the AI's grounded options and marked (the playbook shows `isAiFilled`), never blocking.
+  if (env.run.autopilot && !existing?.answers) {
+    const full = normaliseCard(card);
+    await env.refresh();
+    await env.setState({ asks: { ...asksOf(env.run.state), [opts.cardId]: { ...full, answers: validateCardAnswers(full, autopilotAnswers(full.questions)), answered_at: new Date().toISOString(), ai_filled: true } } });
+    await env.note(`自動駕駛：「${opts.title}」由 AI 依研究資料代填（標示「${AI_FILLED_MARK}」），可以按「修改答案」換成你自己的看法。`);
+    await finishNotice(env, "ai_filled");
+  }
+  const answers = await askUser(env, card);
+  const filled = isAiFilled(env, opts.cardId);
+  const cur = Array.isArray(env.run.state?.ai_filled) ? (env.run.state.ai_filled as string[]) : [];
+  await env.setState({ ai_filled: filled ? [...new Set([...cur, opts.title])] : cur.filter((t) => t !== opts.title) });
   return Object.fromEntries(questions.map((q) => [q.id, answerLines(q, answers.find((a) => a.id === q.id))]));
 }
+
+/** The card was answered by autopilot (not yet by the user). */
+export const isAiFilled = (env: WorkflowEnv, cardId: string) => !!asksOf(env.run.state)[cardId]?.ai_filled;

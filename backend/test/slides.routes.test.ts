@@ -326,6 +326,10 @@ run("slides routes", () => {
     expect(row).toMatchObject({ title: "Week One", kind: "paper_report", study: { id: study.id, slug: study.slug, title: "Deck study" }, active_version: 1, reference_count: 0, author_name: "Member A" });
     expect(typeof row.review_count).toBe("number");
     expect(row.published_at).toBeTruthy();
+    // `can_edit` drives the cards' 刪除 action: members yes; the professor and outsiders see it disabled.
+    expect(row.can_edit).toBe(true);
+    expect(all.find((s: any) => s.id === deck.id).can_edit).toBe(false);
+    expect(json(await get("/api/slides", outsider.cookie)).slides.find((s: any) => s.id === deck.id).can_edit).toBe(false);
     expect((await get("/api/slides?studyId=missing-study", member.cookie)).statusCode).toBe(404);
     expect(json(await get("/api/slides?q=one", member.cookie)).slides.map((s: any) => s.id)).toEqual([deck.id]);
     expect(json(await get("/api/slides?q=%25", member.cookie)).slides).toEqual([]);

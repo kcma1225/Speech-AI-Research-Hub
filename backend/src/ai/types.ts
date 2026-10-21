@@ -20,6 +20,16 @@ export interface ImageBlock {
   source: ImageSource;
 }
 
+/**
+ * Audio input (speech transcription by multimodal chat models). Inline base64 only; `mediaType` is the audio MIME
+ * type (`audio/mpeg`, `audio/wav`, `audio/ogg`, `audio/flac`…). Only the openai-chat (`input_audio`) and gemini
+ * (`inlineData`) codecs send it; every other codec rejects it with `unsupported` (see codecs/shared.ts).
+ */
+export interface AudioBlock {
+  type: "audio";
+  source: { kind: "base64"; mediaType: string; data: string };
+}
+
 export interface ToolUseBlock {
   type: "tool_use";
   id: string;
@@ -34,7 +44,7 @@ export interface ToolResultBlock {
   is_error?: boolean;
 }
 
-export type ContentBlock = TextBlock | ImageBlock | ToolUseBlock | ToolResultBlock;
+export type ContentBlock = TextBlock | ImageBlock | AudioBlock | ToolUseBlock | ToolResultBlock;
 
 /** Codec ids (one per wire protocol). */
 export type CodecId =
@@ -68,7 +78,7 @@ export interface SystemMessage {
 }
 export interface UserMessage {
   role: "user";
-  content: string | Array<TextBlock | ImageBlock | ToolResultBlock>;
+  content: string | Array<TextBlock | ImageBlock | AudioBlock | ToolResultBlock>;
 }
 export interface AssistantMessage {
   role: "assistant";
@@ -219,7 +229,7 @@ export interface ModelInfo {
   inputPrice?: number;
   outputPrice?: number;
   /** Capability hints when the vendor publishes them. */
-  hints?: { tools?: boolean; vision?: boolean; reasoning?: boolean; jsonSchema?: boolean; params?: string[] };
+  hints?: { tools?: boolean; vision?: boolean; audioInput?: boolean; reasoning?: boolean; jsonSchema?: boolean; params?: string[] };
 }
 
 export interface ProbeResult {

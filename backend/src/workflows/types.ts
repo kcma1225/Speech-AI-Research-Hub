@@ -2,9 +2,14 @@
 import type { ChatMessage, ChatResult, ToolDefinition } from "../ai/types.js";
 import type { AiRole } from "../ai/platform/roles.js";
 
-export const WORKFLOW_STATUSES = ["planning", "awaiting_plan_approval", "running", "verifying", "awaiting_input", "paused", "done", "partial", "failed", "cancelled"] as const;
+/**
+ * `queued` = over the per-user limit of working runs, starts automatically when a slot frees (`promoteQueued`);
+ * `needs_pdf` = a paper run that could not get the paper's PDF (open access / the record's URL) — waits for 「從網址下載 PDF」
+ * / an upload, never counts as working.
+ */
+export const WORKFLOW_STATUSES = ["queued", "planning", "awaiting_plan_approval", "running", "verifying", "awaiting_input", "needs_pdf", "paused", "done", "partial", "failed", "cancelled"] as const;
 export type WorkflowStatus = (typeof WORKFLOW_STATUSES)[number];
-export const ACTIVE_STATUSES: WorkflowStatus[] = ["planning", "awaiting_plan_approval", "running", "verifying", "awaiting_input", "paused"];
+export const ACTIVE_STATUSES: WorkflowStatus[] = ["queued", "planning", "awaiting_plan_approval", "running", "verifying", "awaiting_input", "needs_pdf", "paused"];
 export const WORKING_STATUSES: WorkflowStatus[] = ["planning", "running", "verifying"];
 export const FINISHED_STATUSES: WorkflowStatus[] = ["done", "partial", "failed", "cancelled"];
 
@@ -16,7 +21,15 @@ export type StepKind = "task" | "integrate" | "final";
 export type Criterion = { id: string; text: string; kind: "check" | "judge"; check?: CheckSpec; status: "pending" | "pass" | "fail" | "skipped"; reason?: string; evidence?: string };
 export type CheckSpec = { id: string; params?: Record<string, unknown> };
 export type OutlineItem = { n: number; title: string; points: string[] };
-export type Plan = { summary: string; outline?: OutlineItem[]; writes: { kind: string; label: string }[]; notes?: string };
+/**
+ * What a planned write does (autopilot.ts): `new` = creates a new object (deck, note, LaTeX file), `draft_own` = a new
+ * draft revision of an object this run created (or an untouched template), `suggestion` = a suggestion the user accepts
+ * later — these are draft-only. `overwrite` (existing user content), `publish`, `delete`, `outbound` (user data sent
+ * outside the hub) always need the user's approval. A write without `effect` is treated as needing approval.
+ */
+export type WriteEffect = "new" | "draft_own" | "suggestion" | "overwrite" | "publish" | "delete" | "outbound";
+export type PlannedWrite = { kind: string; label: string; effect?: WriteEffect };
+export type Plan = { summary: string; outline?: OutlineItem[]; writes: PlannedWrite[]; notes?: string };
 
 export type Budget = { max_steps: number; max_calls: number; max_tokens: number; max_minutes: number; max_fix_rounds: number; concurrency: number };
 export const DEFAULT_BUDGET: Budget = { max_steps: 30, max_calls: 60, max_tokens: 800_000, max_minutes: 40, max_fix_rounds: 3, concurrency: 3 };
@@ -36,8 +49,9 @@ export type RunRow = {
   inputs: Record<string, unknown>; context: Record<string, unknown>; state: Record<string, unknown>; status: WorkflowStatus;
   question: string | null; autopilot: boolean; tainted: boolean; taint_sources: string[]; budget: Budget; usage: Usage;
   artifacts: Artifact[]; guidance: { at: string; text: string; applied: boolean }[];
-  report: { summary_md: string; done: string[]; issues: string[] } | null; stop_reason: string | null;
+  report: { summary_md: string; done: string[]; issues: string[]; confirm?: string[] } | null; stop_reason: string | null;
   error: { error: string; code?: string; hint?: string } | null; job_id: string | null; pause_requested: boolean; final_rounds: number;
+  batch_id: string | null; batch_index: number | null;
   created_at: string; updated_at: string; started_at: string | null; finished_at: string | null;
 };
 

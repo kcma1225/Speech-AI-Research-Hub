@@ -137,7 +137,7 @@
 </script>
 
 <div
-  class="composer relative rounded-[24px] border border-line-2 bg-surface shadow-card"
+  class="composer relative rounded-[24px] border border-line-2 bg-raised shadow-card"
   data-autopilot={autopilot || undefined}
   data-acting={acting || undefined}
   role="group"

@@ -30,6 +30,8 @@ export type SlideSummary = {
   metadata?: DeckMetadata;
   author_name?: string | null;
   published_at?: string | null;
+  /** GET /slides: the caller is an owner/member of the deck's study (may delete it). */
+  can_edit?: boolean;
   thumbnailUrl: string | null;
 };
 

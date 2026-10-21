@@ -189,6 +189,31 @@ export function ensureToolsSupported(ctx: CodecContext, req: ChatRequest) {
   }
 }
 
+/** Codecs that can send `audio` blocks (openai-chat `input_audio`, gemini `inlineData`). */
+export const AUDIO_CODECS: ReadonlySet<CodecId> = new Set<CodecId>(["openai-chat", "gemini"]);
+
+/** Does the request carry audio blocks? */
+export function hasAudio(messages: ChatMessage[]): boolean {
+  return messages.some((m) => m.role === "user" && typeof m.content !== "string" && m.content.some((b) => b.type === "audio"));
+}
+
+/** Audio is never dropped silently: codecs without an audio content part fail with `unsupported` (pre-stream, so routing falls back). */
+export function ensureAudioSupported(ctx: CodecContext, req: ChatRequest, codec: CodecId) {
+  if (!AUDIO_CODECS.has(codec) && hasAudio(req.messages)) {
+    throw new AiError("unsupported", { vendorMessage: `audio input is not supported by the ${codec} protocol`, providerId: ctx.entry.id });
+  }
+}
+
+/** OpenAI `input_audio.format` for a MIME type (the API documents wav and mp3; compatible servers accept more). */
+export function audioFormatOf(mediaType: string): string {
+  const t = mediaType.split(";")[0]!.trim().toLowerCase();
+  const map: Record<string, string> = {
+    "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav", "audio/ogg": "ogg", "audio/opus": "ogg",
+    "audio/flac": "flac", "audio/x-flac": "flac", "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/webm": "webm",
+  };
+  return map[t] ?? t.replace(/^audio\//, "");
+}
+
 export function toolsEnabled(ctx: CodecContext): boolean {
   if (typeof ctx.config.supportsTools === "boolean") return ctx.config.supportsTools;
   return ctx.entry.capabilities.tools;

@@ -174,7 +174,7 @@
   .card {
     border-radius: 22px;
     border: 1px solid var(--line-2);
-    background: var(--surface);
+    background: var(--raised);
     box-shadow: var(--shadow-card);
     animation:
       card-in 200ms cubic-bezier(0.2, 0, 0, 1),
