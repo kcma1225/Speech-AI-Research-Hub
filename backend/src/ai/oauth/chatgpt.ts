@@ -176,6 +176,12 @@ export const CODEX_STRIPPED_FIELDS = ["max_output_tokens", "previous_response_id
  * `store:false`, `stream:true`, encrypted reasoning included (full history is resent each turn),
  * unsupported fields removed, Codex headers added.
  */
+/**
+ * Codex CLI version we present. The backend filters models by `minimal_client_version` (e.g. 0.153.0 in 2026-10):
+ * an old value returns an empty model list. Keep it near the current `@openai/codex` release.
+ */
+export const CODEX_CLIENT_VERSION = "0.163.0";
+
 export function decorateCodexRequest(input: CodexRequestInput): { url: string; headers: Record<string, string>; body: Record<string, unknown> } {
   const body: Record<string, unknown> = { ...input.body, store: false, stream: true };
   for (const k of CODEX_STRIPPED_FIELDS) delete body[k];
@@ -190,7 +196,7 @@ export function decorateCodexRequest(input: CodexRequestInput): { url: string; h
     authorization: `Bearer ${input.tokens.accessToken}`,
     "chatgpt-account-id": accountId,
     originator: input.originator ?? "codex_cli_rs",
-    "user-agent": input.userAgent ?? "codex_cli_rs/0.80.0 (Linux; x86_64) speech-ai-hub",
+    "user-agent": input.userAgent ?? `codex_cli_rs/${CODEX_CLIENT_VERSION} (Linux; x86_64) speech-ai-hub`,
     accept: "text/event-stream",
     "content-type": "application/json",
   };
@@ -202,7 +208,7 @@ export function decorateCodexRequest(input: CodexRequestInput): { url: string; h
   return { url: `${(input.baseUrl ?? CHATGPT.codexBaseUrl).replace(/\/+$/, "")}/responses`, headers, body };
 }
 
-export const codexModelsUrl = (clientVersion = "0.80.0", baseUrl: string = CHATGPT.codexBaseUrl) => `${baseUrl.replace(/\/+$/, "")}/models?client_version=${encodeURIComponent(clientVersion)}`;
+export const codexModelsUrl = (clientVersion = CODEX_CLIENT_VERSION, baseUrl: string = CHATGPT.codexBaseUrl) => `${baseUrl.replace(/\/+$/, "")}/models?client_version=${encodeURIComponent(clientVersion)}`;
 
 /** Models visible in the picker (`visibility == "list"`). */
 export function parseCodexModels(json: any): { id: string; label: string; contextWindow?: number }[] {

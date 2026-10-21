@@ -269,7 +269,8 @@ export async function timedProbe(fn: () => Promise<{ detail_zh: string; modelCou
 }
 
 export function modelsDetail(n: number) {
-  return { detail_zh: n > 0 ? `連線成功，取得 ${n} 個模型。` : "連線成功。", modelCount: n };
+  // Zero models usually means the account/endpoint hides them (e.g. an outdated client version), not "all good".
+  return { detail_zh: n > 0 ? `連線成功，取得 ${n} 個模型。` : "連線成功，但沒有取得任何模型：請確認帳號方案或權限，或到「模型」分頁手動新增模型。", modelCount: n };
 }
 
 // ---------------------------------------------------------------- misc
