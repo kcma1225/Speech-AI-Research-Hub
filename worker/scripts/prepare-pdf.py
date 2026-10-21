@@ -17,6 +17,8 @@ for file in root.rglob("*"):
     text = file.read_text(encoding="utf-8")
     prefix = file.parent.relative_to(root)
     relative = ("../" * len(prefix.parts)) + "offline-assets/"
+    # Decks with `html-math-method: katex` but no url get Quarto's MathJax URL with the KaTeX file name appended.
+    text = re.sub(r"https://cdn\.jsdelivr\.net/npm/mathjax@2\.7\.9/MathJax\.js\?config=TeX-AMS_HTML-full(katex[\w.-]*)", lambda m: relative + "katex/" + m.group(1), text)
     text = text.replace("https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/", relative + "katex/")
     text = text.replace("https://cdn.jsdelivr.net/npm/mathjax@2.7.9/", relative + "mathjax/")
     if file == entry:

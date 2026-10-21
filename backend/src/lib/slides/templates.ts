@@ -18,6 +18,8 @@ export const LABHUB_FORMAT = `format:
     navigation-mode: linear
     html-math-method:
       method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
     include-after-body:
       - text: |
           <script>
