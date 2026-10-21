@@ -103,7 +103,13 @@
     ids.splice(index + delta, 0, moved!);
     await run(() => api.put(`${base}/stages/order`, { ids }));
   }
-  const deleteStage = (stage: StudyStage) => run(() => api.del(`${base}/stages/${stage.id}`));
+  let stageToDelete = $state<StudyStage | null>(null);
+  let stageDeleteOpen = $state(false);
+  const deleteStage = (stage: StudyStage) => ((stageToDelete = stage), (stageDeleteOpen = true));
+  async function confirmDeleteStage() {
+    const stage = stageToDelete;
+    if (stage) await run(() => api.del(`${base}/stages/${stage.id}`), t("crud.stage.deleted"));
+  }
 
   // ───── Milestones ─────
   let milestoneOpen = $state(false);
@@ -412,4 +418,5 @@
   confirmLabel={t("studies.milestones.delete")}
   onConfirm={deleteMilestone}
 />
+<ConfirmDialog bind:open={stageDeleteOpen} title={t("crud.stage.deleteTitle", { name: stageToDelete?.name ?? "" })} description={t("crud.stage.deleteDescription")} confirmLabel={t("crud.delete")} onConfirm={confirmDeleteStage} />
 <ConfirmDialog bind:open={confirmDelete} title={t("studies.deleteConfirm", { title: study.title })} description={t("studies.deleteDesc")} confirmLabel={t("studies.delete")} onConfirm={deleteStudy} />

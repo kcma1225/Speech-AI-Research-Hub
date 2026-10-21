@@ -73,11 +73,13 @@ export type SlideReference = {
   href: string;
 };
 
-export type SlideReply = { id: string; review_id: string; body: string; created_at: string; author: string; author_id: string };
+export type SlideReply = { id: string; review_id: string; body: string; created_at: string; edited_at?: string | null; author: string; author_id: string };
 export type SlideReview = {
   id: string;
   body: string;
   created_at: string;
+  /** Set when the author edited the review. */
+  edited_at?: string | null;
   author: string;
   author_id: string;
   /** Page of `versionId` the review is about; null for general reviews. */

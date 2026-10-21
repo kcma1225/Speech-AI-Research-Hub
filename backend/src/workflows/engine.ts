@@ -13,6 +13,7 @@ import { addUsage, emitRun, emitStep, getRun, getSteps, insertSteps, insertWorkf
 import { getWorkflowPlaybook, type WorkflowPlaybook } from "./playbooks/registry.js";
 import { actionable, verifyCriteria, verifyStep } from "./verify.js";
 import { finishNotice } from "./notify.js";
+import { blockedQuestion, pendingAsk } from "./questions.js";
 import { WorkflowStop, type Criterion, type RunRow, type StepOutput, type StepRow, type WorkflowStatus } from "./types.js";
 
 export class WorkflowInputError extends Error {}
@@ -200,7 +201,9 @@ async function executeStep(env: WorkflowEnv, pb: WorkflowPlaybook, initial: Step
     const blocked = /^\s*BLOCKED[:：]\s*(.+)/.exec(out.text ?? "");
     if (blocked) {
       await updateStep(env, step.id, { status: "pending", output: out, ms: step.ms + (Date.now() - t0) });
-      throw new WorkflowStop("blocked", `「${step.title}」無法繼續：${blocked[1]!.trim().slice(0, 300)}`);
+      // The orchestrator turns the blocker into a question with grounded options instead of failing.
+      await env.activity(step.key, "orchestrator", "缺少資料，準備向你提問");
+      await blockedQuestion(env, step, blocked[1]!.trim());
     }
     // No progress: a fix round that returns the same output as before stops fixing this step.
     if (fix && (out.text ?? "") === (fix.previous.text ?? "") && out.text) {
@@ -310,6 +313,14 @@ async function onStop(env: WorkflowEnv, pb: WorkflowPlaybook, stop: WorkflowStop
     await env.db.query("UPDATE workflow_steps SET status='pending' WHERE run_id=$1 AND status IN ('running','verifying')", [env.run.id]);
     await setStatus(env, "paused", { pause_requested: false });
     await env.note("已暫停；按「繼續」會從目前的步驟接著做。");
+    return;
+  }
+  if (stop.reason === "ask") {
+    await env.db.query("UPDATE workflow_steps SET status='pending' WHERE run_id=$1 AND status IN ('running','verifying')", [env.run.id]);
+    const card = pendingAsk(env.run.state);
+    await setStatus(env, "awaiting_input", { question: card?.title ?? stop.message });
+    await env.note(`等待你回答：${card?.title ?? stop.message}`);
+    await finishNotice(env, "awaiting_input");
     return;
   }
   if (stop.reason === "blocked") {

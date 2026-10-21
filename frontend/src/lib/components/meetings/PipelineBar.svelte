@@ -6,6 +6,7 @@
   import { aiStatus } from "#lib/ai/status.svelte.ts";
   import AiGate from "#lib/components/ai/AiGate.svelte";
   import Button from "#lib/components/ui/Button.svelte";
+  import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { JobInfo, MeetingDetail } from "#lib/meetings/types.ts";
@@ -49,6 +50,21 @@
     }
   }
 
+  // Stop a running transcription / analysis (POST /meetings/:id/jobs/:which/cancel).
+  let cancelWhich = $state<"transcribe" | "analyze" | null>(null);
+  let cancelOpen = $state(false);
+  async function cancelJob() {
+    const which = cancelWhich;
+    if (!which) return;
+    try {
+      await onChanged(await api.post<MeetingDetail>(`/meetings/${detail.meeting.id}/jobs/${which}/cancel`));
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+      throw e;
+    }
+    toasts.show(t("crud.meeting.cancelled"), "success");
+  }
+
   type StepState = "done" | "active" | "waiting" | "failed" | "idle";
   const steps = $derived.by(() => {
     const content: StepState = hasContent ? "done" : "idle";
@@ -88,7 +104,10 @@
       {#if asrDown}
         <p class="flex items-start gap-2 text-ink-2"><Wrench class="mt-0.5 size-4 shrink-0" /><span><strong class="font-semibold text-ink">{t("meet.pipe.asrDown")}</strong> {t("meet.pipe.asrDownHint")}</span></p>
       {:else}
-        <p class="text-ink-2">{t("meet.pipe.transcribing")} · {stageLabel(tJob)}</p>
+        <div class="flex items-center justify-between gap-2">
+          <p class="text-ink-2">{t("meet.pipe.transcribing")} · {stageLabel(tJob)}</p>
+          {#if detail.permissions.edit}<Button size="sm" variant="ghost" class="-my-1 -mr-2" onclick={() => ((cancelWhich = "transcribe"), (cancelOpen = true))}><X />{t("crud.meeting.cancelJob")}</Button>{/if}
+        </div>
         <Progress value={tJob!.stage === "queued" ? null : tJob!.progress} label={t("meet.pipe.transcribe")} />
       {/if}
     </div>
@@ -109,7 +128,10 @@
       {#if analysisDown}
         <p class="flex items-start gap-2 text-ink-2"><Wrench class="mt-0.5 size-4 shrink-0" /><span><strong class="font-semibold text-ink">{t("meet.pipe.analysisDown")}</strong> {t("meet.pipe.analysisDownHint")}</span></p>
       {:else}
-        <p class="text-ink-2">{t("meet.pipe.analyzing")} · {stageLabel(aJob)}</p>
+        <div class="flex items-center justify-between gap-2">
+          <p class="text-ink-2">{t("meet.pipe.analyzing")} · {stageLabel(aJob)}</p>
+          {#if detail.permissions.edit}<Button size="sm" variant="ghost" class="-my-1 -mr-2" onclick={() => ((cancelWhich = "analyze"), (cancelOpen = true))}><X />{t("crud.meeting.cancelJob")}</Button>{/if}
+        </div>
         <Progress value={aJob!.stage === "queued" ? null : aJob!.progress} label={t("meet.pipe.analyze")} />
       {/if}
     </div>
@@ -125,3 +147,11 @@
     </div>
   {/if}
 </div>
+
+<ConfirmDialog
+  bind:open={cancelOpen}
+  title={t(cancelWhich === "analyze" ? "crud.meeting.cancelAnalyzeTitle" : "crud.meeting.cancelTranscribeTitle")}
+  description={t("crud.meeting.cancelDescription")}
+  confirmLabel={t("crud.meeting.cancelJob")}
+  onConfirm={cancelJob}
+/>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from "$app/state";
+  import { goto } from "$app/navigation";
   import { ArrowLeft, ExternalLink, FileText, Info } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
@@ -66,7 +67,7 @@
   {/if}
   <section class="{paper?.has_pdf && pane === 'pdf' ? 'hidden lg:block' : ''} min-w-0 rounded-[var(--radius-card)] border border-line/70 bg-surface p-5 shadow-card sm:p-6">
     {#if studyLoaded}
-      <PaperDetailBody {paperId} {study} layout="page" onChanged={refresh} />
+      <PaperDetailBody {paperId} {study} layout="page" onChanged={refresh} onGone={() => void goto(study ? `/studies/${encodeURIComponent(study.slug)}?tab=papers` : "/library", { replaceState: true })} />
     {/if}
   </section>
 </div>

@@ -94,7 +94,7 @@ export type DashboardData = {
 };
 
 /** `name` = real name; `username` = login id (shown as @username in pickers). */
-export type DirectoryUser = { id: string; name: string; username: string; role: Role };
+export type DirectoryUser = { id: string; name: string; name_en?: string | null; person?: import("#lib/people.ts").Person; username: string; role: Role };
 
 /** Stage progress 0..1: completed stages plus half of the current one. */
 export function stageProgress(card: { stage_count: number; stages_done: number; current_stage: { position: number } | null }) {

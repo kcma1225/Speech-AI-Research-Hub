@@ -8,11 +8,9 @@
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import Composer from "./Composer.svelte";
-  import AskCard from "./AskCard.svelte";
+  import AssistantTurn from "./AssistantTurn.svelte";
   import MessageItem from "./MessageItem.svelte";
   import QuestionNav from "./QuestionNav.svelte";
-  import ThinkingLine from "./ThinkingLine.svelte";
-  import ToolTimeline from "./ToolTimeline.svelte";
   import AttachButton from "./attach/AttachButton.svelte";
   import AttachmentTray from "./attach/AttachmentTray.svelte";
   import { AttachDraft } from "./attach/state.svelte.ts";
@@ -20,6 +18,8 @@
   import type { ChatSession } from "#lib/agent/chat.svelte.ts";
   import { contextLabel } from "#lib/agent/context.ts";
   import { answersByCall, askArgs } from "#lib/agent/ask.ts";
+  import { buildTranscript } from "#lib/agent/transcript.ts";
+  import { agentActivity } from "#lib/agent/activity.svelte.ts";
   import type { AgentSettings, Answer, Message, PageContext, StudyPlan, ToolCall } from "#lib/agent/types.ts";
   import { workflowsApi } from "#lib/workflows/api.ts";
   import { parseAgentCommand } from "#lib/workflows/reduce.ts";
@@ -127,22 +127,14 @@
     return () => observer.disconnect();
   });
 
-  // Question cards (`ask_user`, done) render as cards, not timeline rows; once answered, the answer message shows them.
-  type Entry = { key: string; message: Message; calls: ToolCall[]; asks: ToolCall[]; laterUser: boolean };
+  // Compact transcript (`lib/agent/transcript.ts`): user messages + one item per assistant turn (live plan, one
+  // collapsed 「處理過程」 row, the answer, result chips, cards that need action). Question cards (`ask_user`) render as
+  // cards; once answered, the answer message shows them.
   const answered = $derived(answersByCall(session.messages));
   const callById = $derived(new Map(session.toolCalls.map((c) => [c.id, c])));
-  const entries = $derived.by(() => {
-    const byMessage = new Map<string, ToolCall[]>();
-    for (const c of session.toolCalls) byMessage.set(c.message_id, [...(byMessage.get(c.message_id) ?? []), c]);
-    for (const list of byMessage.values()) list.sort((a, b) => a.position - b.position);
-    const lastUserSeq = session.messages.findLast((m) => m.role === "user")?.seq ?? -1;
-    return session.messages.map((m): Entry => {
-      const calls = byMessage.get(m.id) ?? [];
-      const isAsk = (c: ToolCall) => c.tool === "ask_user" && c.status === "done" && !!askArgs(c);
-      return { key: m.id, message: m, calls: calls.filter((c) => !isAsk(c)), asks: calls.filter((c) => isAsk(c) && !answered.has(c.id)), laterUser: lastUserSeq > m.seq };
-    });
-  });
   const replying = $derived(running || run?.status === "awaiting_llm" || session.sending);
+  const items = $derived(buildTranscript(session.messages, session.toolCalls, { answered: new Set(answered.keys()), live: replying }));
+  const lastUserSeq = $derived(session.messages.findLast((m) => m.role === "user")?.seq ?? -1);
   // 「重新產生」 on the latest assistant reply (after the last user message, nothing running).
   const regenerateId = $derived.by(() => {
     if (replying || run?.status === "awaiting_approval") return null;
@@ -239,7 +231,7 @@
   });
 
   // A new question card scrolls to its top (not the bottom), so the question and its first options are visible.
-  const openCards = $derived(entries.reduce((n, e) => n + e.asks.length, 0));
+  const openCards = $derived(items.reduce((n, e) => n + (e.kind === "assistant" ? e.asks.length : 0), 0));
   let seenCards = 0;
   $effect(() => {
     const n = openCards;
@@ -270,6 +262,7 @@
     try {
       if (!session.id) await session.create({ context: ctx, ...(draftAutopilot ? { autopilot: true } : {}) });
       await workflowsApi.create({ request: request.trim(), conversation_id: session.id!, ...(ctx ? { context: ctx } : {}) });
+      void agentActivity.refresh();
       text = "";
       await session.reload();
       atBottom = true;
@@ -292,6 +285,8 @@
     try {
       if (!session.id && draftAutopilot) await session.create({ context: ctx, autopilot: true });
       await session.send(value, ctx, intent, refs);
+      // The shell's 「N 個 Agent 執行中」 picks the new run up now, not at its next idle poll.
+      setTimeout(() => void agentActivity.refresh(), 800);
       if (refs.length) attachments.clear();
       atBottom = true;
       toBottom();
@@ -434,9 +429,9 @@
         {@render empty((v) => void send(v))}
       {/if}
 
-      {#each entries as entry (entry.key)}
-        {#if entry.message}
-          {@const m = entry.message}
+      {#each items as item (item.key)}
+        {#if item.kind === "message"}
+          {@const m = item.message}
           {@const askCall = m.answers ? callById.get(m.answers.toolCallId) : undefined}
           <div data-msg-id={m.id} data-question={m.role === "user" && !m.answers && m.text.trim() ? "" : undefined} class="scroll-mt-4">
           <MessageItem
@@ -448,32 +443,27 @@
             ask={askCall ? askArgs(askCall) : null}
             onEdit={m.role === "user" && !m.answers ? (text) => editMessage(m, { text }) : undefined}
             onEditAnswers={m.role === "user" && m.answers ? (answers) => editMessage(m, { answers: { tool_call_id: m.answers!.toolCallId, answers } }) : undefined}
-            onRegenerate={m.id === regenerateId ? () => void regenerate() : undefined}
             onSwitch={m.versions ? (id) => void switchVersion(id) : undefined}
           />
           </div>
-        {/if}
-        {#if entry.calls.length}
-          <ToolTimeline calls={entry.calls} {compact} onDecide={decide} />
-        {/if}
-        {#each entry.asks as c (c.id)}
-          <div class={compact ? "" : "sm:ml-11"}>
-            <AskCard args={askArgs(c)!} deferred={entry.laterUser} disabled={replying} onSubmit={(a) => answerCard(c, a)} />
-          </div>
-        {/each}
-      {/each}
-
-      {#if running}
-        {#if session.streaming?.text || session.streaming?.reasoning}
-          <MessageItem message={{ role: "assistant", text: session.streaming.text, reasoning: session.streaming.reasoning, status: "complete", memories: [], kind: null, page_context: null }} streaming />
         {:else}
-          <div class="ml-11"><ThinkingLine since={session.streaming?.startedAt ?? (lastUserAt ? new Date(lastUserAt).getTime() : Date.now())} /></div>
+          <AssistantTurn
+            turn={item}
+            {compact}
+            streaming={item.live ? session.streaming : null}
+            {run}
+            sinceFallback={lastUserAt ? new Date(lastUserAt).getTime() : Date.now()}
+            canRemember={memoryAvailable && !interview}
+            conversationId={session.id}
+            busy={replying}
+            deferredAsks={(item.messages.at(-1)?.seq ?? Infinity) < lastUserSeq}
+            onDecide={decide}
+            onAnswer={answerCard}
+            onContinue={retry}
+            onRegenerate={item.final && item.final.id === regenerateId ? () => void regenerate() : undefined}
+          />
         {/if}
-        {#each session.streaming?.inputs ?? [] as inp (inp.index)}
-          <div class="ml-11"><ThinkingLine since={Date.now()} label={t("agent.preparing", { tool: inp.title })} /></div>
-        {/each}
-        {#if run && run.step >= 5}<p class="ml-11 text-[12px] text-ink-3 tabular-nums">{t("agent.step", { step: run.step + 1, max: run.max_steps })}</p>{/if}
-      {/if}
+      {/each}
 
       {#if run && run.status !== "running" && run.autopilot_writes > 0 && !interview}
         <p class="ml-11 text-[12.5px] text-ink-3">{t("agent.autopilotActing", { n: run.autopilot_writes })}</p>

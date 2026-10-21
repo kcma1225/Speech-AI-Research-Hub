@@ -5,6 +5,7 @@
   import NotificationsBell from "./NotificationsBell.svelte";
   import AiStatusBadge from "#lib/components/ai/AiStatusBadge.svelte";
   import AskAiButton from "#lib/components/agent/AskAiButton.svelte";
+  import AgentRunsIndicator from "./AgentRunsIndicator.svelte";
   import UserMenu from "./UserMenu.svelte";
   import Wordmark from "./Wordmark.svelte";
   import { searchPalette } from "./search.svelte";
@@ -34,6 +35,7 @@
       onclick={() => (searchPalette.open = true)}
       class="grid size-10 place-items-center rounded-full border border-line bg-surface text-ink-2 lg:hidden"><Search class="size-[18px]" /></button
     >
+    <AgentRunsIndicator />
     <AskAiButton />{/if}
     <AiStatusBadge />
     <NotificationsBell />

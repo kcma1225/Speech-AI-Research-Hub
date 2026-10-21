@@ -35,7 +35,11 @@ export const LABHUB_FORMAT = `format:
           })();
           </script>`;
 
-export type TemplateInput = { title: string; author: string; date: string; subtitle?: string };
+export type TemplateInput = { title: string; author: string; date: string; subtitle?: string; /** Generated decks: the hub-deck.css type scale + neutral Mermaid theme. */ theme?: boolean };
+
+/** Format additions of generated decks (stylesheet `hub-deck.css` written next to the entry, Mermaid theme). */
+export const GENERATED_FORMAT = `    css: hub-deck.css
+`;
 
 /** YAML-safe double-quoted string. */
 export const yamlString = (value: string) => JSON.stringify(value.replace(/[\r\n]+/g, " "));
@@ -48,7 +52,7 @@ export const qmdHeader = (input: TemplateInput) =>
     ...(input.subtitle ? [`subtitle: ${yamlString(input.subtitle)}`] : []),
     `author: ${yamlString(input.author)}`,
     `date: ${yamlString(input.date)}`,
-    LABHUB_FORMAT,
+    input.theme ? LABHUB_FORMAT.replace("    navigation-mode: linear\n", `    navigation-mode: linear\n${GENERATED_FORMAT}`) : LABHUB_FORMAT,
     "---",
   ].join("\n");
 

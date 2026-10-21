@@ -74,7 +74,13 @@
     }
   }
   async function remove() {
-    await api.del(`/latex/${detail.project.id}`);
+    try {
+      await api.del(`/latex/${detail.project.id}`);
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+      throw e;
+    }
+    toasts.show(t("crud.latex.deleted", { title: detail.project.title }), "success");
     open = false;
     await goto(`/studies/${detail.study.slug}?tab=latex`);
   }

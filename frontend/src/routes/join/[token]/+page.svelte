@@ -10,6 +10,9 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import Spinner from "#lib/components/ui/Spinner.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
+  import PersonNameFields from "#lib/components/people/PersonNameFields.svelte";
+  import { emptyNameForm, nameFormPayload, nameFormValid, type NameForm } from "#lib/people.ts";
+  import { displayName } from "#lib/people.svelte.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import Wordmark from "#lib/components/shell/Wordmark.svelte";
   import { roleLabel, roleTone } from "#lib/components/manage/manage.ts";
@@ -39,18 +42,17 @@
     void check();
   });
 
-  let realName = $state("");
+  let names = $state<NameForm>(emptyNameForm());
   let username = $state("");
   let password = $state("");
   let confirm = $state("");
-  let touched = $state({ realName: false, username: false, password: false, confirm: false });
+  let touched = $state({ names: false, username: false, password: false, confirm: false });
   let usernameServerError = $state<string | null>(null);
   let formError = $state<string | null>(null);
   let busy = $state(false);
 
   const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
-  const cleanRealName = $derived(realName.replace(/\s+/g, " ").trim());
-  const realNameOk = $derived([...cleanRealName].length >= 1 && [...cleanRealName].length <= 40);
+  const namesOk = $derived(nameFormValid(names));
   const normalized = $derived(username.trim().toLowerCase());
   const formatOk = $derived(USERNAME_RE.test(normalized));
 
@@ -78,7 +80,6 @@
     return () => clearTimeout(timer);
   });
 
-  const realNameError = $derived(touched.realName && !realNameOk ? t("manage.join.realNameInvalid") : null);
   const usernameError = $derived.by(() => {
     if (usernameServerError) return usernameServerError;
     if (normalized && !formatOk && (touched.username || normalized.length >= 3)) return t("manage.join.usernameFormat");
@@ -92,24 +93,24 @@
   });
   const passwordError = $derived(touched.password && password && password.length < 8 ? t("manage.join.short") : null);
   const confirmError = $derived(touched.confirm && confirm && confirm !== password ? t("manage.join.mismatch") : null);
-  const valid = $derived(realNameOk && formatOk && availability?.state !== "taken" && password.length >= 8 && confirm === password);
+  const valid = $derived(namesOk && formatOk && availability?.state !== "taken" && password.length >= 8 && confirm === password);
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
-    touched = { realName: true, username: true, password: true, confirm: true };
+    touched = { names: true, username: true, password: true, confirm: true };
     if (!valid) return;
     busy = true;
     usernameServerError = formError = null;
     try {
-      const result = await api.post<{ account: { id: string; name: string; username: string } }>("/join", {
+      const result = await api.post<{ account: { id: string; name: string; name_en: string | null; username: string } }>("/join", {
         token,
-        realName: cleanRealName,
+        names: nameFormPayload(names),
         username: normalized,
         password,
         passwordConfirm: confirm,
       });
       await session.load();
-      toasts.show(t("manage.join.welcome", { name: result.account.name }), "success");
+      toasts.show(t("manage.join.welcome", { name: displayName(result.account) }), "success");
       await goto("/", { replace: true });
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) usernameServerError = err.message;
@@ -156,7 +157,7 @@
 
   <main class="flex flex-col px-5 pt-[max(20px,env(safe-area-inset-top))] pb-8 sm:px-10">
     <div class="lg:hidden"><Wordmark /></div>
-    <div class="mx-auto flex w-full max-w-[400px] flex-1 flex-col justify-center py-10">
+    <div class="mx-auto flex w-full max-w-[440px] flex-1 flex-col justify-center py-10">
       {#if status === "loading"}
         <div class="flex flex-col gap-4" aria-busy="true">
           <Skeleton class="h-11 w-48" />
@@ -183,20 +184,12 @@
           </span>
         </div>
         {#if session.user}
-          <p class="mt-5 rounded-2xl bg-surface-2 px-4 py-3 text-[13px] text-ink-2">{t("manage.join.signedInAs", { name: session.user.name })}</p>
+          <p class="mt-5 rounded-2xl bg-surface-2 px-4 py-3 text-[13px] text-ink-2">{t("manage.join.signedInAs", { name: displayName(session.user) })}</p>
         {/if}
 
         <form class="mt-8 flex flex-col gap-4" onsubmit={submit} novalidate>
-          <TextField
-            label={t("manage.join.realName")}
-            bind:value={realName}
-            autocomplete="name"
-            maxlength={40}
-            required
-            hint={t("manage.join.realNameHint")}
-            error={realNameError}
-            onblur={() => (touched.realName = true)}
-          />
+          <PersonNameFields bind:value={names} showErrors={touched.names} idPrefix="join-names" />
+          <p class="-mt-1 text-[12.5px] text-ink-3">{t("manage.join.realNameHint")}</p>
           <TextField
             label={t("manage.join.username")}
             bind:value={username}

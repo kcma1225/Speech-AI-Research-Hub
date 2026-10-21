@@ -16,6 +16,7 @@
   import CreateDeckSheet from "./CreateDeckSheet.svelte";
   import DeckCard from "./DeckCard.svelte";
   import UploadSheet from "./UploadSheet.svelte";
+  import DeleteDeckDialog from "./DeleteDeckDialog.svelte";
 
   /** Study tab 簡報: the study's progress reports and paper reports (`?tab=decks&kind=progress|paper_report`). */
   let { detail }: StudyTabProps = $props();
@@ -34,6 +35,8 @@
   let createOpen = $state(false);
   let uploadOpen = $state(false);
   let uploadKind = $state<DeckKind>("progress");
+  let deleting = $state<SlideSummary | null>(null);
+  let deleteOpen = $state(false);
 
   async function load() {
     try {
@@ -129,7 +132,7 @@
         {/if}
         {#if section.decks.length}
           <div class="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
-            {#each section.decks as deck (deck.id)}<DeckCard {deck} showStudy={false} />{/each}
+            {#each section.decks as deck (deck.id)}<DeckCard {deck} showStudy={false} onDelete={canEdit ? () => ((deleting = deck), (deleteOpen = true)) : undefined} />{/each}
           </div>
         {:else}
           <p class="rounded-2xl border border-dashed border-line-2 px-4 py-6 text-center text-[13px] text-ink-3">{t("slides.study.emptyKind", { kind: t(`slides.kind.${section.kind}`) })}</p>
@@ -146,5 +149,6 @@
     kind={filter === "all" ? "progress" : filter}
     onUpload={kind => ((uploadKind = kind), (uploadOpen = true))}
   />
+  <DeleteDeckDialog bind:open={deleteOpen} deck={deleting} onDeleted={id => void ((decks = decks?.filter(d => d.id !== id) ?? null), load())} />
   <UploadSheet bind:open={uploadOpen} {limits} studyId={detail.study.id} kind={uploadKind} onUploaded={() => void load()} onRendered={() => void load()} />
 {/if}

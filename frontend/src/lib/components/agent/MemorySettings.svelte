@@ -84,10 +84,12 @@
     if (!deleting) return;
     await api.del(`/memories/${deleting.id}`);
     memories = memories?.filter((m) => m.id !== deleting!.id) ?? null;
+    toasts.show(t("crud.memory.deleted"), "success");
   }
   async function removeAll() {
     await api.del("/memories");
     memories = [];
+    toasts.show(t("crud.memory.cleared"), "success");
   }
 </script>
 

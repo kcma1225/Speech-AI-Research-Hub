@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import { FileText, Plus, Search, Sparkles } from "@lucide/svelte";
+  import { DropdownMenu } from "bits-ui";
+  import { Ellipsis, FileText, Plus, Search, Sparkles, Trash2 } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
@@ -11,6 +12,9 @@
   import Pill from "#lib/components/ui/Pill.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
+  import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
+  import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { StudyTabProps } from "#lib/components/study/tabs/registry.ts";
   import NewNoteSheet from "./NewNoteSheet.svelte";
   import { kindIcon, kindTone, templateName, type NoteCard, type NoteTemplate } from "./types.ts";
@@ -33,6 +37,17 @@
     const timer = setTimeout(() => (debounced = next.trim()), 250);
     return () => clearTimeout(timer);
   });
+
+  // Row ⋯ menu: delete a note without opening it (study editors; DELETE /notes/:id).
+  let deleting = $state<NoteCard | null>(null);
+  let deleteOpen = $state(false);
+  async function removeNote() {
+    const note = deleting;
+    if (!note) return;
+    await api.del(`/notes/${note.id}`);
+    notes = notes?.filter(x => x.id !== note.id) ?? null;
+    toasts.show(t("crud.note.deleted"), "success");
+  }
 
   async function load() {
     const params = new URLSearchParams();
@@ -99,8 +114,8 @@
     <ul class="flex flex-col">
       {#each notes as n (n.id)}
         {@const Icon = kindIcon[n.kind]}
-        <li>
-          <a href={href(n)} class="group flex min-h-[72px] items-start gap-3 rounded-2xl px-2.5 py-3 transition-colors hover:bg-surface-2 sm:gap-3.5 sm:px-3.5">
+        <li class="relative">
+          <a href={href(n)} class="group flex min-h-[72px] {canEdit ? 'pr-12' : ''} items-start gap-3 rounded-2xl px-2.5 py-3 transition-colors hover:bg-surface-2 sm:gap-3.5 sm:px-3.5">
             <span class="mt-0.5 grid size-10 shrink-0 place-items-center rounded-xl" style="background:var(--pill-{kindTone[n.kind]});color:var(--pill-{kindTone[n.kind]}-ink)" title={n.template_name ? templateName(n.template_name) : t(`notes.kind.${n.kind}` as MessageKey)}>
               <Icon class="size-4.5" />
             </span>
@@ -118,6 +133,18 @@
               </span>
             </span>
           </a>
+          {#if canEdit}
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger class="absolute top-3 right-1.5 grid size-10 cursor-pointer place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink sm:right-2.5" aria-label={t("crud.more")} title={t("crud.more")}>
+                <Ellipsis class="size-4" />
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content align="end" sideOffset={4} class={menuContent}>
+                  <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => ((deleting = n), (deleteOpen = true))}><Trash2 />{t("crud.delete")}</DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -125,3 +152,4 @@
 {/if}
 
 {#if canEdit}<NewNoteSheet bind:open={creating} studySlug={slug} {templates} onTemplatesChanged={loadTemplates} />{/if}
+<ConfirmDialog bind:open={deleteOpen} title={t("crud.note.deleteTitle", { title: deleting?.title ?? "" })} description={t("crud.note.deleteDescription")} confirmLabel={t("crud.delete")} onConfirm={removeNote} />

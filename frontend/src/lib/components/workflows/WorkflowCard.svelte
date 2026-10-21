@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import { CircleCheck, CircleX, Circle, ExternalLink, Hourglass, MessageSquarePlus, PanelRight, Pause, Pencil, Play, RotateCw, Square, Upload, Workflow as WorkflowIcon } from "@lucide/svelte";
+  import { ChevronRight, CircleCheck, CircleX, Circle, ExternalLink, Hourglass, MessageSquarePlus, PanelRight, Pause, Pencil, Play, RotateCw, Square, Upload, Workflow as WorkflowIcon } from "@lucide/svelte";
   import { i18n, t, relativeTime } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import AgentMarkdown from "#lib/components/agent/AgentMarkdown.svelte";
@@ -18,13 +18,20 @@
   import { fmtTokens, STATUS_TONE } from "./meta.ts";
   import PlanEditor from "./PlanEditor.svelte";
   import StepTimeline from "./StepTimeline.svelte";
+  import WorkflowAsk from "./WorkflowAsk.svelte";
 
   /**
    * Live card of one workflow run (in the chat under the start_workflow tool row, and on /assistant/workflows):
    * objective, criteria checklist, plan card, step timeline with sub-agent activity and verdicts, budget, artifacts,
    * controls and the final report.
    */
-  let { id, compact = false, onRemoved }: { id: string; compact?: boolean; onRemoved?: () => void } = $props();
+  let { id, compact = false, collapsible = false, onRemoved }: {
+    id: string;
+    compact?: boolean;
+    /** In the chat: compact by default (objective, progress, current activity); 「顯示詳細內容」 shows criteria, steps, budget. */
+    collapsible?: boolean;
+    onRemoved?: () => void;
+  } = $props();
 
   // The card is keyed by id at every call site; a new id mounts a new card.
   const session = new WorkflowSession(untrack(() => id));
@@ -40,9 +47,18 @@
   const usage = $derived(w ? budgetUsage(w) : null);
   const passed = $derived(w ? criteriaPassed(w) : 0);
   const fixRounds = $derived(steps.reduce((n, s) => n + Math.max(0, s.history.length - 1), 0));
+  let more = $state(false);
+  const detailed = $derived(!collapsible || more);
   let showSteps = $state<boolean | null>(null);
-  const stepsOpen = $derived(showSteps ?? (working || w?.status === "paused"));
+  const stepsOpen = $derived(showSteps ?? (collapsible ? true : working || w?.status === "paused"));
+  const stepsPassed = $derived(steps.filter((s) => s.status === "passed" || s.status === "skipped").length);
+  const progressPct = $derived(steps.length ? Math.round((stepsPassed / steps.length) * 100) : null);
+  // The newest live line of a running sub-agent.
+  const current = $derived(Object.values(session.state.activity).sort((a, b) => b.at - a.at)[0] ?? null);
+  const runningStep = $derived(steps.find((s) => s.status === "running" || s.status === "verifying") ?? null);
   let busy = $state<string | null>(null);
+  const pendingAsk = $derived(w?.asks?.find((a) => a.pending) ?? null);
+  const answeredAsks = $derived((w?.asks ?? []).filter((a) => !a.pending && a.answers));
   let panel = $state<"guidance" | "objective" | null>(null);
   let guidance = $state("");
   let objective = $state("");
@@ -122,7 +138,7 @@
     {#if w.objective}
       <div class="mt-3">
         <p class="text-[12px] font-medium text-ink-3">{t("wf.objective")}</p>
-        <p class="mt-0.5 text-[13.5px] leading-relaxed break-words text-ink-2">{w.objective}</p>
+        <p class="mt-0.5 text-[13.5px] leading-relaxed break-words text-ink-2 {detailed ? '' : 'line-clamp-3'}">{w.objective}</p>
       </div>
     {:else if w.status === "planning"}
       <p class="mt-3 text-[13px] text-ink-3">{w.request}</p>
@@ -132,7 +148,9 @@
       <div class="mt-3"><Progress value={null} label={t("wf.status.planning")} /></div>
     {/if}
 
-    {#if w.status === "awaiting_input" && w.question}
+    {#if pendingAsk}
+      <WorkflowAsk runId={id} ask={pendingAsk} onUpdated={(x) => x && session.setWorkflow(x)} />
+    {:else if w.status === "awaiting_input" && w.question}
       <div class="mt-3 flex flex-col gap-2 rounded-2xl border border-line-2 bg-surface-2 p-3">
         <p class="text-[13px] font-semibold text-ink">{t("wf.question")}</p>
         <p class="text-[13.5px] whitespace-pre-wrap text-ink-2">{w.question}</p>
@@ -144,9 +162,29 @@
       </div>
     {/if}
 
+    {#each answeredAsks as a (a.id)}
+      <WorkflowAsk runId={id} ask={a} canEdit={!working && w.status !== "cancelled"} onUpdated={(x) => x && session.setWorkflow(x)} />
+    {/each}
+
+    {#if !detailed && steps.length && w.status !== "awaiting_plan_approval"}
+      <div class="mt-3" data-wf-summary>
+        <div class="mb-1 flex flex-wrap items-center gap-x-2 text-[12px] text-ink-3">
+          <span class="tabular-nums">{t("agentRuns.steps", { done: stepsPassed, total: steps.length })}</span>
+          {#if w.criteria.length}<span class="tabular-nums">· {t("wf.criteria")} {t("wf.criteriaCount", { passed, total: w.criteria.length })}</span>{/if}
+          {#if usage && w.usage.calls > 0}<span class="tabular-nums">· {t("agentRuns.budget", { pct: usage.max })}</span>{/if}
+        </div>
+        <Progress value={progressPct} label={t("agentRuns.steps", { done: stepsPassed, total: steps.length })} class="h-1.5" />
+        {#if working && (current || runningStep)}
+          <p class="live-line mt-1.5 truncate text-[12.5px] text-ink-2" aria-live="polite">
+            <span class="font-medium text-ink">{t(`wf.role.${current?.role ?? runningStep?.role ?? "orchestrator"}` as MessageKey)}</span> · {current ? current.text : runningStep?.title}
+          </p>
+        {/if}
+      </div>
+    {/if}
+
     {#if w.status === "awaiting_plan_approval"}
       <div class="mt-3"><PlanEditor {session} workflow={w} {steps} onCancel={() => (stopOpen = true)} /></div>
-    {:else if w.criteria.length}
+    {:else if w.criteria.length && detailed}
       <div class="mt-3">
         <p class="flex items-center gap-2 text-[12px] font-medium text-ink-3">{t("wf.criteria")}<span class="tabular-nums">{t("wf.criteriaCount", { passed, total: w.criteria.length })}</span></p>
         <ul class="mt-1 flex flex-col gap-1">
@@ -166,7 +204,7 @@
       </div>
     {/if}
 
-    {#if steps.length && w.status !== "awaiting_plan_approval"}
+    {#if steps.length && w.status !== "awaiting_plan_approval" && detailed}
       <div class="mt-3">
         <button type="button" class="inline-flex min-h-10 items-center gap-1.5 rounded-full px-2 text-[12.5px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink" aria-expanded={stepsOpen} onclick={() => (showSteps = !stepsOpen)}>
           {stepsOpen ? t("wf.hideSteps") : t("wf.showSteps")} · {steps.filter((s) => s.status === "passed").length}/{steps.length}{#if fixRounds} · {t("wf.rounds", { n: fixRounds })}{/if}
@@ -175,7 +213,7 @@
       </div>
     {/if}
 
-    {#if usage && (working || finished || w.status === "paused") && w.usage.calls > 0}
+    {#if usage && detailed && (working || finished || w.status === "paused") && w.usage.calls > 0}
       <div class="mt-3" title={t("wf.budgetDetail", { calls: w.usage.calls, maxCalls: w.budget.max_calls, tokens: fmtTokens(w.usage.tokens_in + w.usage.tokens_out), maxTokens: fmtTokens(w.budget.max_tokens), min: minutes(w.usage.active_ms), maxMin: w.budget.max_minutes })}>
         <div class="mb-1 flex flex-wrap items-center justify-between gap-x-2 text-[11.5px] text-ink-3">
           <span>{t("wf.budget")}</span>
@@ -204,14 +242,14 @@
     {/if}
 
     {#if w.report?.summary_md && finished}
-      <div class="mt-3 rounded-2xl border border-line bg-surface-2 p-3 text-[13.5px]">
+      <div class="mt-3 rounded-2xl border border-line bg-surface-2 p-3 text-[13.5px] {detailed ? '' : 'max-h-28 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]'}">
         <p class="mb-1 text-[12px] font-medium text-ink-3">{t("wf.report")}</p>
         <AgentMarkdown source={w.report.summary_md} />
       </div>
     {/if}
     {#if w.error && w.status === "failed"}<p class="mt-2 text-[13px] text-danger">{w.error.error}</p>{/if}
 
-    {#if session.state.log.length && working}
+    {#if session.state.log.length && working && detailed}
       <p class="mt-2 truncate text-[12px] text-ink-3" aria-live="polite">{session.state.log.at(-1)!.text}</p>
     {/if}
 
@@ -225,6 +263,12 @@
         <Textarea rows={3} bind:value={objective} label={t("wf.editObjective")} />
         <div class="flex gap-2"><Button variant="primary" size="sm" loading={busy === "objective"} disabled={!objective.trim()} onclick={saveObjective}>{t("wf.saveObjective")}</Button><Button variant="ghost" size="sm" onclick={() => (panel = null)}>{t("wf.cancel")}</Button></div>
       </div>
+    {/if}
+
+    {#if collapsible && w.status !== "awaiting_plan_approval" && (steps.length || w.criteria.length || w.report?.summary_md)}
+      <button type="button" class="mt-2 inline-flex min-h-10 items-center gap-1.5 rounded-full px-2 text-[12.5px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink" aria-expanded={more} onclick={() => (more = !more)}>
+        <ChevronRight class="size-3.5 transition-transform duration-150 motion-reduce:transition-none {more ? 'rotate-90' : ''}" />{more ? t("wfCard.less") : t("wfCard.more")}
+      </button>
     {/if}
 
     {#if w.status !== "awaiting_plan_approval" && w.status !== "awaiting_input"}

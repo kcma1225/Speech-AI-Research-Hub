@@ -84,6 +84,31 @@ the old names: pinyin for Han characters (林雅婷 → `linyating`), accent-fol
 collision, `user<N>` when nothing is left; the initial admin keeps its old ASCII name as username and gets the real
 name 系統管理員 (also what bootstrap creates: username = `ADMIN_NAME` lower-cased/slugged).
 
+Structured names (migration `0112_person_names.sql`, helpers `backend/src/lib/users/person-name.ts`, frontend
+`#lib/people.ts` + `#lib/people.svelte.ts`): `zh_family` + `zh_given` (中文姓/名, required, 1–20 letters each, `·`
+space hyphen apostrophe allowed), `en_family` (English family name, required, 1–40 Latin letters incl. accents, space
+`.'-`), `en_given` (optional, NULL = none), `title` (稱謂, optional code `mr|ms|mx|dr|prof` → Mr./Ms./Mx./Dr./Prof.;
+Chinese labels 先生/女士/博士/教授 only in the title picker and `formalZhAddress` 王教授-style address).
+API input everywhere is `names: {zhFamily, zhGiven, enFamily, enGiven?: string|null, title?: code|""|null}`
+(POST `/join`, PATCH `/auth/profile`, PATCH `/users/:id`; the old `realName` field is gone). Every write recomputes
+`real_name` = Chinese full name (`composeZhName`: CJK family+given without a space, other scripts "Given Family"), so
+`name` keeps meaning the Chinese full name for server-side text (notifications, audit, AI prompts, OIDC).
+`users.name_en` (generated) = "Given Family" or "Family", NULL when unknown. Display rule: zh-TW UI → Chinese full
+name, never a title; English UI → `name_en`, prefixed with the title in formal contexts (member lists, meeting
+participants, admin list), without it in compact ones (avatars, menus, activity, pickers). Person API objects
+returned by `/auth/me` (`person`, `names_confirmed`), `/users/directory` and `/users` (`name_en`, `person`), and
+`/auth/accounts` + login/join `account` (`name_en`) carry the English data; other domain objects keep `{id, name}` only
+and the frontend resolves the English form through a people registry (`displayName(who, style)`, filled from
+`/users/directory` once per session; lookup by id, else by unique name; falls back to `name`). Avatar initials use the
+displayed name. Pickers match every name part, the English display (also hyphen/space-insensitive) and `@username`.
+The parts are nullable in the DB only for rows inserted outside the API (test helpers); screens then fall back to
+`name`. 0112's data step `backfillPersonNames` split existing names: CJK → first character (or a listed compound
+surname such as 歐陽/司馬/諸葛/張簡, if ≥ 3 characters) = family, rest = given, English = pinyin (`pinyin-pro`, surname
+readings; 林雅婷 → Lin / Ya-Ting, ü → yu, romanisations over 40 chars left NULL); other names split on the last space
+("Alice Wang" → Wang / Alice; English only when already valid); the initial admin 系統管理員 → 系統 / 管理員 / Admin.
+`names_confirmed_at` is NULL for backfilled accounts (set by join, bootstrap and by saving names in Settings; an admin
+edit does not confirm): the app shows a dismissible banner 「請確認你的中英文姓名」 linking to Settings → Account.
+
 Study membership (`study_members.role`): `owner` (creator, transferable, exactly one), `member`, `advisor` (must be a
 professor account; a professor can also be owner/member of their own study). Everyone signed in can read every study.
 
@@ -134,7 +159,7 @@ Defined in `backend/src/lib/storage.ts` `keys`; the worker receives full keys in
 | `slides/<deckId>/<versionId>/output-<suffix>/…` | output of a re-index render (`POST …/reindex`); on success it becomes the version's `output_prefix` and the previous prefix is deleted |
 | `slides/_shared/<hash>/…` | `offline-assets/` (MathJax, KaTeX, fonts) shared by every version rendered with the same assets; `.complete` marker written last. Never deleted per version (`slide_versions.shared_prefix`) |
 | `slides/<deckId>/source/<fileId>` | binary file (image, font, PDF…) of the deck's in-app Quarto tree (`deck_sources.s3_key`; text files live in the DB). Keys in `lib/slides/sources.ts` `sourceKeys` |
-| `slides/<deckId>/preview/<previewId>/source.zip`, `…/output/` | quick preview (`slide_preview`): the packed tree (deleted once rendered) and the HTML-only render (`deck_previews.output_prefix`); only the newest ready preview per deck is kept. A preview queued with `shots: true` also has `…/output/_hub/shots/<n>.webp` (1280 px wide, ≤ 20 slides) + `_hub/shots.json` (`{version:1,width,height,total,truncated,pages:[{index,h,v?,title?}]}`) for the AI layout review |
+| `slides/<deckId>/preview/<previewId>/source.zip`, `…/output/` | quick preview (`slide_preview`): the packed tree (deleted once rendered) and the HTML-only render (`deck_previews.output_prefix`); only the newest ready preview per deck is kept. A preview queued with `shots: true` also has `…/output/_hub/shots/<n>.webp` (1280 px wide, ≤ 20 slides) + `_hub/shots.json` (`{version:1,width,height,total,truncated,pages:[{index,h,v?,title?,metrics?}]}`; `metrics` = worker `layout-metrics.ts`: `{words, bullets, minFont, maxFont, overflowY, overflowX, visuals, tables, diagrams, diagramErrors, rawDiagramCode, codeBlocks}` in deck px) for the AI layout review |
 | `references/<deckId>/<referenceId>` | reference PDF |
 | `latex/<projectId>/blobs/<sha256>` | content-addressed file bytes of a LaTeX project: binary uploads (`latex_files.s3_key`) and every text snapshot taken for a compile or a version (`latex_files.blob_sha256` = last uploaded text hash). Never rewritten; removed with the project |
 | `latex/<projectId>/manifests/<compileId>.json` | runner snapshot manifest (`LatexSnapshotManifest`) of one compile; deleted by the finalizer |
@@ -281,21 +306,25 @@ All under `/api`. `→` describes the response body. Unless noted, routes need a
 | Method & path | Access | Notes |
 |---|---|---|
 | GET `/health`, `/health/ready`, `/config` | public | done (`health.ts`) |
-| GET `/auth/accounts?ids=a,b` | public | names for device-remembered account hints → `{accounts:[{id,name,username}]}` (only enabled users, max 10 ids) |
-| GET `/auth/me` | public | `{user: CurrentUser \| null}`; `CurrentUser = {id, name (real name), username, role: "student"\|"professor"\|"admin", is_admin, is_owner, auth_mode, theme, locale: "zh-TW"\|"en", preferences: Preferences}` (preferences with defaults filled in, see below) |
+| GET `/auth/accounts?ids=a,b` | public | names for device-remembered account hints → `{accounts:[{id,name,name_en,username}]}` (only enabled users, max 10 ids) |
+| GET `/auth/me` | public | `{user: CurrentUser \| null}`; `CurrentUser = {id, name (Chinese full name), person: {zh_family,zh_given,en_family,en_given,title}, names_confirmed, username, role: "student"\|"professor"\|"admin", is_admin, is_owner, auth_mode, theme, locale: "zh-TW"\|"en", preferences: Preferences}` (preferences with defaults filled in, see below) |
 | POST `/auth/login` `{userId?, username?, password}` | public | by remembered id or by **username** (case-insensitive; `name` accepted as a legacy alias of `username`; the real name never signs in); argon2 verify; 401 on failure; `two_factor` users → 403 (Passkey not implemented); sets session; updates `last_login_at` → `{account:{id,name,username}}` |
 | POST `/auth/logout` | user | clears session |
-| PATCH `/auth/profile` `{realName? (legacy alias name), theme?, locale?, preferences?, currentPassword?, newPassword?}` | user | password change requires current password; revokes other sessions. `preferences` is a deep-partial `Preferences` merged into the stored value (unknown keys / out-of-range values → 400) → `{user: CurrentUser}` |
+| PATCH `/auth/profile` `{names? (sets names_confirmed), theme?, locale?, preferences?, currentPassword?, newPassword?}` | user | password change requires current password; revokes other sessions. `preferences` is a deep-partial `Preferences` merged into the stored value (unknown keys / out-of-range values → 400) → `{user: CurrentUser}` |
 | GET `/auth/sessions`, DELETE `/auth/sessions/:id` | user | list / revoke own sessions |
-| POST `/join` `{token, realName, username, password, passwordConfirm?}` | public | consume invitation atomically (row lock, `use_count < max_uses`, not expired/revoked), create user, session → 201 `{account:{id,name,username}}`; bad real name / username format → 400 with the rule in 繁中; username taken (case-insensitive) → 409 「這個使用者名稱已被使用。」 (invitation not used) |
+| POST `/join` `{token, names, username, password, passwordConfirm?}` | public | consume invitation atomically (row lock, `use_count < max_uses`, not expired/revoked), create user (names confirmed), session → 201 `{account:{id,name,name_en,username}}`; bad names / username format → 400 with the rule in 繁中; username taken (case-insensitive) → 409 「這個使用者名稱已被使用。」 (invitation not used) |
 | GET `/join/username-available?u=&token=` | public + valid invitation token (else 410) | live check for the join form → `{username (normalised), valid, available, error?}`; nginx `join_check_limit` 30/min, burst 15 |
 | GET `/join/:token` | public | validate token → `{role, isAdmin, expiresAt}` or 404 |
-| GET `/users/directory` | user | enabled student/professor accounts for pickers (admins never listed) → `{users:[{id,name,username,role}]}` (by real name; pickers show `@username` and match either) |
-| GET `/users` | admin | all users: `id,name,username,role,is_admin,is_owner,auth_mode,disabled,disabled_at,created_at,last_login_at` (initial admin first) |
-| PATCH `/users/:id` `{role?: "student"\|"professor", disabled?, realName?, username?}` | admin | `realName` / `username` editable on every account (also the initial admin's and one's own; username taken → 409, audit `user_username_changed` / `user_real_name_changed`); role only between student/professor (admin accounts keep their role → 400; `is_admin` is not accepted → 400); the role / disabled state of the initial admin and of yourself cannot be changed (404/400); disabling the last enabled admin → 409; disabling revokes sessions; demoting a study advisor to student → 409; audit |
+| GET `/users/directory` | user | enabled student/professor accounts for pickers (admins never listed) → `{users:[{id,name,name_en,person,username,role}]}` (by Chinese name; pickers show `@username` and match any name part or the username) |
+| GET `/users` | admin | all users: `id,name,name_en,person,names_confirmed,username,role,is_admin,is_owner,auth_mode,disabled,disabled_at,created_at,last_login_at` (initial admin first) |
+| PATCH `/users/:id` `{role?: "student"\|"professor", disabled?, names?, username?}` | admin | `names` / `username` editable on every account (also the initial admin's and one's own; username taken → 409, audit `user_username_changed` / `user_real_name_changed`); role only between student/professor (admin accounts keep their role → 400; `is_admin` is not accepted → 400); the role / disabled state of the initial admin and of yourself cannot be changed (404/400); disabling the last enabled admin → 409; disabling revokes sessions; demoting a study advisor to student → 409; audit |
 | GET `/invitations` | admin | with derived state: active / expired / exhausted / revoked (a used-up link stays `exhausted` after its expiry), `is_admin` |
 | POST `/invitations` `{role: "student"\|"professor"\|"admin", isAdmin?: boolean (legacy, must equal role === "admin"), expiresIn: "5m"\|"30m"\|"1h"\|"2h"\|"5h"\|"1d"\|"3d"\|"5d"\|"7d"\|"never", maxUses: 1\|null}` | admin | returns the raw token **once** → `{invitation, token, url}` (`url` = `<APP_ORIGIN>/join/<token>`); the joined account gets `role` (`is_admin` = role is admin) |
 | DELETE `/invitations/:id` | admin | revoke (soft) |
+| POST `/users/:id/password-reset` `{expiresIn?: "1h"\|"1d"\|"3d"\|"7d" (default 1d), revokeSessions? = true}` | admin | one-time reset link (table `password_resets`, migration `0110_crud_gaps.sql`, sha256 of the token only): not yourself (400, use Settings), not the initial admin (400, `ADMIN_PASSWORD` re-keys it), not a disabled account (409); older unused links of the account are revoked; `revokeSessions` deletes its sessions now; audit `user_password_reset_issued` → 201 `{reset:{id,expires_at,revoked_sessions}, token, url}` (`url` = `<APP_ORIGIN>/reset/<token>`, shown once) |
+| DELETE `/users/:id/password-reset` | admin | revoke the account's unused links (audit `user_password_reset_revoked`) → `{ok, revoked}` |
+| GET `/password-reset/:token` | public | valid (unused, unrevoked, unexpired, account enabled) → `{account:{name,username}, expiresAt}`, else 404; nginx `join_check_limit` |
+| POST `/password-reset` `{token, password ≥ 8, passwordConfirm?}` | public | single use (row lock): sets the password, revokes the account's other links, deletes **every** session, audit `user_password_reset_used` (actor = the account), then signs in (not for `two_factor` accounts) → `{account:{id,name,username}, signedIn}`; invalid → 410; nginx `auth_limit`. SPA page `/reset/<token>`; admin UI 「重設密碼」 in 成員 (`ResetPasswordSheet`) |
 | GET `/notifications`, DELETE `/notifications` `{id?}` | user | latest 100 / remove one or all |
 | GET `/notifications/unread` | user | `{count}` |
 | POST `/notifications/read` `{ids?: uuid[]}` | user | mark some or all read |
@@ -470,7 +499,7 @@ Frontend: `components/doc-import/` (`DocImportSheet` — file drop, mode/placeme
 | GET `/slides/:id` | user | detail: project (incl. `creator_name`), versions (see "Version object"), `activeVersion` (the active **published** version object, also for pdf/pptx decks without a `viewUrl`), references, reviews (see "Review object", + replies, author names), `study {id,slug,title}` (null for anonymous), `viewUrl` for active version (null for pdf/pptx), `pdfUrl`, `thumbnailUrl` (same format; null for anonymous by-slug viewers), `permissions {manage /* study editor */, review /* professors only */, reply /* any member of the deck's study */}`, `limits` (as in the list; not in by-slug) |
 | GET `/slides/:id/thumbnail` | user | streams the active version's thumbnail (`thumbnail_key`): `image/png` (quarto) or `image/webp` (pdf/pptx), `Cache-Control: private, max-age=300`, `X-Content-Type-Options: nosniff`, `ETag: "<versionId>"` (`If-None-Match` → 304); 404 when there is no active version, no thumbnail or the object is missing |
 | PATCH `/slides/:id` `{title?, slug?, public_view?, kind?, paper_id?, paper?: {title,url?,abstract?}\|null, rotateShareKey?}` | study editor | `paper` sets/removes `metadata.paper` |
-| DELETE `/slides/:id` | study editor | cascade + delete S3 prefixes post-commit |
+| DELETE `/slides/:id` | study editor | in one transaction: cancels queued/running render, preview and `ai_slides_generate` jobs (payload `deckId`), deletes `deck_source` suggestions, drops the deck from `workflow_runs.artifacts`, deletes the deck (FK cascade: versions, references, reviews + replies, source tree/files, previews, `meeting_decks`), records activity `deck_deleted` (url = the study's 簡報 tab); post-commit deletes `slides/<id>/` and `references/<id>/`. Search reads decks live (nothing to forget). UI: deck page ⋯ menu and Info tab, ⋯ on study 簡報 cards (`DeleteDeckDialog`), then back to `?tab=decks` |
 | GET `/slides/:id/versions` → `{versions}`, POST `/slides/:id/versions` (multipart `.zip`/`.pdf`/`.pptx`, `entry?`) | GET user, POST study editor | new version → render job (202, same body as POST `/slides` minus `id`/`slug`) |
 | PATCH `/slides/:id/versions/:versionId` `{active:true}` | study editor | set active (must be published; a `review` version → 404) |
 | POST `/slides/:id/versions/:versionId/publish` | study editor | confirm a `review` version: status → `published`, `published_at` = now, active by the activation rule → `{ok:true, status:"published", active: boolean}`; 404 when the version is not in `review` |
@@ -484,6 +513,8 @@ Frontend: `components/doc-import/` (`DocImportSheet` — file drop, mode/placeme
 | PATCH `/slides/:id/references/:refId` `{title?, isDefault?}`, DELETE | study editor | keep exactly one default when any exist |
 | POST `/slides/:id/reviews` `{body, page?, versionId?}` | professor (`role === 'professor'`) | → 201 `{review}` (Review object, `replies: []`). `page` (int ≥ 1) refers to the pages of `versionId`, default the active version; the version must be `published`/`review` of this deck (else 404) and have pages with `page ≤ pageCount` (else 400 `此版本沒有頁面資訊…` / `頁碼超出範圍（共 N 頁）。`); `versionId` alone (no page) is stored as given. Notifies the deck creator (`kind:'slide'`, body `<title> 第 N 頁：<text>` for page reviews), never yourself |
 | POST `/slides/:id/reviews/:reviewId/replies` `{body}` | member of the deck's study (any role) | notify the review author |
+| PATCH / DELETE `/slides/:id/reviews/:reviewId` `{body}` | the review's author only (403 otherwise) | edit sets `edited_at` (migration 0110) → `{review:{id,body,edited_at}}`; delete removes its replies |
+| PATCH / DELETE `/slides/:id/reviews/:reviewId/replies/:replyId` `{body}` | the reply's author only | → `{reply:{id,review_id,body,edited_at}}` / `{ok}` |
 | GET `/slides/by-slug/:slug?key=` | public* | player data: project, active version, `viewUrl`, `pdfUrl`, references, reviews. Version `pagesUrl`s point at the by-slug page routes (with `?key=` when the key granted access) and exist only for `published` versions. *Allowed for a user, `public_view`, a valid `key`, or the `slide_share_<slug>` cookie |
 | GET `/slides/pages/:slug/:versionId?key=` | same as by-slug | page manifest of a **published** version; image URLs carry `?key=` when the key granted access |
 | GET `/slides/pages/:slug/:versionId/:n/:size?key=` | same as by-slug | page image of a published version |
@@ -598,7 +629,7 @@ fields; delete the partial output prefix post-commit. Re-index jobs (job `output
 `pageCount`/`pagesUrl` are null for versions without a manifest (rendered before pages existed, or quarto capture failed —
 the frontend falls back to the deck itself / the PDF) and for `review` versions in by-slug responses.
 
-**Review object**: `{ id, body, created_at, author, author_id, page: number | null, versionId: string | null, replies }`
+**Review object**: `{ id, body, created_at, edited_at, author, author_id, page: number | null, versionId: string | null, replies }` (replies also carry `edited_at`)
 (`versionId` becomes null when that version is deleted; `page` is kept).
 
 ### Slide pages (`slide-pages.ts`, `lib/slides/pages.ts`)
@@ -1191,8 +1222,7 @@ null = keyword fallback) or replace `search` entirely; meetings register `get_me
 suggestion, also under autopilot, because deck sources keep no version history; on MCP with the `suggest` scope); LaTeX `latex_read_file` / `latex_suggest_edit`.
 
 `update_plan {explanation?, plan: 1–12 × {step ≤ 160, status pending|in_progress|completed}}` (`tools/plan.ts`; read, chat
-only, not on MCP; ≤ 1 `in_progress`): the whole plan per call; the SPA renders the newest call of a step as a checklist
-(`PlanChecklist` in `ToolTimeline`, i18n `i18n/agent-plan.ts`).
+only, not on MCP; ≤ 1 `in_progress`): the whole plan per call; the SPA renders ONE live checklist per assistant turn (the newest `update_plan` state, `PlanChecklist`; see Compact transcript), earlier versions only as 「更新計畫（n/m）」 rows in the expanded timeline (i18n `i18n/agent-plan.ts`, `i18n/agent-activity.ts`).
 Core tools: read `list_studies`, `get_study`, `get_study_progress`, `list_notes`, `get_note`, `list_tasks`, `list_papers`,
 `get_paper`, `search_papers_online` (open-world; query stripped of URLs/opaque tokens, ≤ 300 chars, 20/min/user), `search`,
 `list_decks`, `get_deck`, `get_deck_pages`, `review_deck_layout`, `review_latex_layout`, `read_paper`, `view_paper_pages`, and (`tools/context-reads.ts`) `get_deck_reviews {deck_id? | study?, limit?}` (review comments with page, version, author role, replies), `get_study_bibtex {study, paper_ids?}` (the export route's BibTeX with study cite keys + download link `/api/studies/:slug/papers/export?format=bibtex`), `get_recent_activity {study?, since? (default 7 days), actor? me|anyone, limit?}` (`study_activity` of one study or of the caller's studies). `list_studies.member` takes `me`, `all` or a user id; `get_study_progress` also returns each recent meeting's feedback (direct feedback + the study's draft `feedback_md`) and the latest deck reviews; `search.types` also takes `meeting`, `deck`, `milestone` (meeting hits are always untrusted; results carry `date`/`author`); write `create_note`, `suggest_note_edit` (full text or exact `before`/`after` edits),
@@ -1340,6 +1370,23 @@ keys 1–9 / Enter / Shift+Tab on the first control; older unanswered cards coll
 (編輯 inline, 複製, ‹ i/n ›; hover/focus with a fine pointer, ⋯ menu or long press on touch; answer messages show a summary with
 「修改答案」), 「重新產生」 on the latest reply; editing over executed writes asks first (ConfirmDialog).
 State: `lib/agent/chat.svelte.ts` (`ChatSession`: load, SSE with replay, rAF-batched deltas; `send(text, context, intent?)`), `lib/agent/panel.svelte.ts`.
+**Compact transcript** (`lib/agent/transcript.ts` `buildTranscript`, unit-tested; `AssistantTurn`, `TurnActivity`,
+`PlanChecklist`, `ResultChips`): the current branch is grouped into user messages and **assistant turns** (everything between
+two user messages / compaction rows). Per turn the chat shows only: the live plan (one checklist from the newest
+`update_plan`, check-offs animate in place; open while the turn works, then a one-line 「工作計畫 · 3/5 完成」 /
+「停在：…」 summary), ONE 「處理過程」 row (category icons + 「讀了 7 個章節、看了 3 頁、建立 1 份草稿 · 32 秒」, failures/denials
+counted visibly; while working a live one-line status = the tool being prepared / running, 正在撰寫回覆, or the plan's
+current step, + elapsed time and step n/25), the final answer (newest text; while working only a newest message without
+tool calls), result chips for finished writes (summary + first link — hub links open in the viewer — 復原, the deck-draft
+job chip), compact workflow cards, consent cards, open question cards and notices. Expanding the row (remembered per turn in
+sessionStorage `agent.turnOpen`) shows the detailed timeline per step: reasoning (collapsed), preamble text, tool rows
+(`ToolTimeline bare`). Streamed text is shown as the answer unless the step is also preparing tool calls. `WorkflowCard
+collapsible` (in chat): objective (3 lines), step progress + criteria + budget % in one line, current sub-agent activity,
+artifacts, controls; 「顯示詳細內容」 shows criteria, steps/verdicts, budget bar and the full report. The shell's
+`AgentRunsIndicator` (topbar, workspace accounts, only while something is active; butter style when a run needs the user)
+opens a popover (sheet on phones) over `GET /workflows/active` (`lib/agent/activity.svelte.ts`: 5 s while open, 15 s while
+active, 60 s idle, paused while hidden) with status, current role + activity, progress, step/budget/tokens, 開啟對話 /
+artifact links and 暫停/繼續/停止 (assistant: `POST …/cancel`).
 **Document viewer** (「文件檢視器」, `components/agent/viewer/`, contract `lib/agent/viewer.ts`, state `viewer-state.svelte.ts`,
 i18n `i18n/viewer.ts`): `ViewerSplit` wraps the chat on `/assistant` and in the Ask-AI panel. Layout: side by side with a
 draggable, keyboard-resizable divider (page ≥ 1280 px — the conversation list collapses while it is open when the workspace is
@@ -1445,8 +1492,9 @@ the budget):
    and returns the full corrected output (≤ `max_fix_rounds`, then the step is `failed` and the run will end
    `partial`). A fix round whose output is identical to the previous one stops fixing that step (no progress).
    Sub-agents see only their brief (never the chat) and cannot delegate (depth 1). A sub-agent that lacks required data
-   answers `BLOCKED: <what is missing>` instead of inventing content → the step goes back to `pending` and the run to
-   `awaiting_input` with that question (the answer = 補充指示, then the steps continue). Researchers: the same read call a
+   answers `BLOCKED: <what is missing>` instead of inventing content → the step goes back to `pending` and the
+   orchestrator turns the blocker into a **question card** with grounded options (below; `purpose: blocked`, the answer
+   is also appended to the guidance), then the step runs again. Researchers: the same read call a
    third time is not executed (stuck guard). From 50 % of the pooled budget every brief says so (「請直接、精簡」).
    A reply cut off with no text (reasoning models) is retried once with a doubled budget and a nudge.
 4. *Integration* (playbook): writes the artifact — always a **draft or suggestion**, never a direct overwrite of user
@@ -1470,6 +1518,30 @@ job is requeued (only a user cancel sets `cancelled`). Pause: `pause_requested` 
 `cancelled` + `cancelJob` (the job's signal aborts the current call); drafts already written stay (listed in
 `artifacts`). Guidance (「補充指示」) is appended to every task dispatched after it and to the verifier's criteria.
 
+**Questions to the user** (`src/workflows/questions.ts`, `student-input.ts`). Any playbook step, the orchestrator or
+the planning phase can pause the run and ask: `await askUser(env, card)` returns the stored answers, or stores the card
+as pending (`state.asks[cardId]`, `state.ask_pending`) and throws `WorkflowStop("ask")` → running steps back to
+`pending`, status `awaiting_input` (`question` = card title, notice + notification, log 「等待你回答」), and the asking
+step re-runs after the answer. Cards use the `ask_user` schema and validation (`agent/ask.ts`: single/multi choice,
+short/long text, number, date, scale, yes/no, `allow_other`, `required`, ≤ 6 questions) and render with the same
+AskCard. `card = {id, title, intro?, questions, step_key, purpose: input|blocked, ai_suggested, asked_at, answers?,
+answered_at?, edited?}`. **Grounded options:** `groundedQuestions(env, drafts, {extra})` — a sub-agent (purpose
+`ask_options`, role planner) drafts 2–4 options per question (label ≤ 30 chars + 1–2 sentence description, first
+person, only from the data) from `studyKnowledge(env)` (study summary + stage, milestones, tasks, recent notes, deck
+feedback, the user's last messages in the conversation, the request + guidance) and the playbook's extra context
+(paper brief, drafted pages); every choice question gets `allow_other` (「其他（自己寫）」) and 「先跳過，之後自己填」
+(`__skip`); no usable options → a long-text question. The card intro says the options are AI-suggested drafts, not
+the user's opinion; a chosen option goes into the artifact as the user's approved draft (`label：description`), own
+text verbatim. **Answer** `POST …/answer {card_id, answers}` → pending card: resume (`running`, or `planning` when
+asked before steps existed); an answered card (「修改答案」, not while working → 409): the asking step + dependents +
+final go back to `pending` (a finished run is reopened with a little more budget) and the run continues from there.
+**Student-owned pages** (slides; Lab-Hub 「My assessment」, 「Takeaways for my work」 and other `student_owned` outline
+pages): step `student_input` after the writer steps (assemble depends on it) asks one batched card (assessment →
+multi-choice strengths/weaknesses; takeaways → multi-select; 啟發/卡住/下週… by title) and `applyStudentPages` fills
+those pages with the answers; skipped → `〔　這頁留給你自己寫…　〕` (allowed: owned titles are in `allow_titles`).
+`askStudentView(env, step, {cardId, title, questions})` is the same pattern for a 「我的想法」-style section in other
+playbooks.
+
 **Safety.** Runs act with the owner's permissions (study edit access re-checked before each write; a lost membership →
 `failed`). Tool results and sub-agent outputs are untrusted data for the orchestrator (wrapped in `<data>` blocks with
 the injection notice; never instructions). Content the owner did not author (papers, others' notes, meetings, web) sets
@@ -1483,13 +1555,37 @@ detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step
 
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
-| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data) | researcher reads the paper (TOC → sections, page citations) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel) → integrate into the deck's Quarto entry + preview render → designer visual review (vision only; verified find/replace fixes) → speaker-notes pass → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder`, `not_truncated`, render ok, judge: content vs. outline + paper |
+| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder`, `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
 | `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection → integrate → compile-verify (new file) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
 | `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis | new note | `table_rows` ≥ papers, `citations`, judge |
 | `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
 | `experiment_report` | 實驗報告筆記 | researcher (notes / pasted results) → writer (tables, ```chart) | new note | `table_rows`, `chart_blocks`, `numbers_from_source` |
 | `meeting_prep` | 會議準備 | researcher (open tasks, last feedback, deck changes, recent activity) → writer agenda | new note | `sections_present`, judge |
 | `generic` | 一般任務 | the orchestrator plans freely (≤ 8 steps; roles from the list) | new note | `no_placeholder`, `not_truncated`, judge |
+
+**Slides: visual-first decks** (`playbooks/slides-visual.ts`, `lib/slides/deck-visuals.ts`). The run keeps the slide
+body in *source form*; every render materialises it into the deck tree:
+- Mermaid: ```` ```mermaid ```` / ```` ```{.mermaid} ```` / bare `flowchart` fences become Quarto cells ```` ```{mermaid} ```` (a plain
+  fence renders as raw code — the cause of 「flowchart 變成文字」), risky labels are quoted (`fixMermaid`), `lintMermaid`
+  checks type line / brackets / subgraphs / ≤ 14 nodes. Quarto bundles mermaid.js into the output, so it renders offline.
+- Charts: ```` ```chart ```` JSON `{type: bar|hbar|line|scatter|heatmap, title?, labels, series[{name?, data}], rows?/values?
+  (heatmap), x_label?, y_label?, unit?, best?: max|min, source?, caption?}` → SVG (960×540, deck palette, best value per
+  series outlined, `Source:` line) stored as binary `charts/chart-<sha12>.svg`, referenced as an image. Numbers stay in the
+  source body, so `numbers_from_source` can trace them.
+- Paper figures: `![caption](paper-fig:<page>@<top>-<bottom>)` (fractions of the page height) → `pdftoppm` crop of the
+  library PDF (`lib/library/page-images.ts`, now also `left/right`), refined by one vision call (`locate_figure`) when the
+  `slides` role has vision → `figures/p<page>-<t>-<b>-<l>-<r>.jpg` in a `.figure-frame`.
+- Theme: generated decks add `css: hub-deck.css` (written once into the tree, editable): title 40 px, body 26 px,
+  tables 20 px, captions 16 px at 1280×800; `.columns`, `.takeaway`, `.big-number(-label)`, `.figure-frame`, blockquote claim.
+- `visual_qa` (after the notes pass, before final, ≤ 3 rounds, `max_rounds: 0` so the engine does not re-run it on its
+  own): render with `shots: true` → per page the worker's layout metrics + (when vision) the verifier scoring batches of
+  6 screenshots on readability / crowding / layout / visual / diagrams / overflow / consistency / professional (1–5;
+  pass = all ≥ 3 and mean ≥ 3.6). A metric issue (raw diagram code, Mermaid error, overflow > 6 px, font < 16 px,
+  > 75 words, > 6 bullets) always fails the page; text-only pages beyond the 60 % visual share fail too. Failing pages
+  go back to a writer with the issues + fix instruction (`replaceSlides`, titles unchanged) and the deck is re-rendered;
+  a broken render keeps the last good body. Student-owned / title pages fail only on rendering problems. Without vision
+  the step title says so and only metrics are used; with no screenshots at all, source heuristics. State `deck.qa`
+  (`{round, scores[], vision, failed[]}`) feeds criterion `visual_qa`; the per-page score table is appended to the report.
 
 **Chat integration.** The assistant prompt (`WORKFLOW_RULES`) says: for multi-step creation, propose and call
 `start_workflow` instead of producing the result in one reply; for a quick one-shot draft only when the user explicitly
@@ -1507,6 +1603,7 @@ planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
 |---|---|---|
 | GET `/workflows/playbooks` | user | `{playbooks: [{id, title, title_en, description, description_en, auto_approvable}]}` |
 | POST `/workflows` `{request ≤ 4000, playbook?, conversation_id?, context?, inputs?: {study?, paper_id?, deck_id?, project_id?, note_ids?, pages?}, autopilot?}` | user (study read; writes are re-checked at run time) | admins 403; 503 `llm_unavailable` when `assistant` is down; playbook auto-detected when missing; ≤ 3 active runs per user (409) → 201 `{workflow, conversation_id}` |
+| GET `/workflows/active` | user (own; admins → empty) | shell indicator 「N 個 Agent 執行中」: `{runs: ActiveAgentRun[], count, needs_you}` (`src/workflows/active.ts`) — my active workflow runs + the newest assistant run of each conversation when `running`/`awaiting_approval`/`awaiting_llm`, or ended on an unanswered `ask_user` card in the last 24 h (chat mode; status `awaiting_input`). `ActiveAgentRun = {kind: workflow\|assistant, id, title, objective, status, needs_you (awaiting_plan_approval/awaiting_input/awaiting_approval), conversation_id, study, current: {role (step role \| tool), text} \| null (latest `activity` event / running step / running tool call), progress: {done,total} (steps passed+skipped), plan: {done,total,current} (assistant: newest update_plan of the current turn), step: {step,max}, budget_pct, tokens, artifacts[≤4], started_at, updated_at}`, needs-you first; `no-store`; polled (no SSE) |
 | GET `/workflows?active=1&study=&status=&limit=` | user (own) | `{workflows: WorkflowView[]}` newest first (no steps) |
 | GET `/workflows/:id` | owner | `{workflow, steps: StepView[], resumeFrom}` |
 | GET `/workflows/:id/events` | owner | SSE (as the agent's: `Last-Event-ID` / `?after=`, `?once=1`, 15 s ping, 5 s poll fallback) |
@@ -1514,6 +1611,7 @@ planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
 | POST `/workflows/:id/revise` `{feedback ≤ 2000}` | owner | 「修改」 at plan approval: re-plan with the feedback → `planning` |
 | POST `/workflows/:id/pause` · `/resume {more?}` · `/cancel` | owner | pause while running; resume a paused / partial (`more`: 繼續改) / failed run; cancel any active run → `{workflow}` |
 | POST `/workflows/:id/guidance` `{text ≤ 2000}` | owner | 補充指示; on a finished `partial`/`done` run it starts 繼續改 with that guidance |
+| POST `/workflows/:id/answer` `{card_id, answers: [{id, value?, other?, skipped?}]}` | owner | answers a question card (400 invalid answer, 404 unknown card, 409 while working when editing) → `{workflow}`; resumes / re-runs from the asking step |
 | PATCH `/workflows/:id` `{objective?, criteria?}` | owner | 修改目標: allowed while `awaiting_plan_approval`, `paused` or finished; a changed objective on a paused/finished run re-plans |
 | POST `/workflows/:id/publish` | owner (study editor) | slides only, after the run ended: publish the draft deck as a new version (`lib/slides` publish) → 202 `{versionId, jobId}` |
 | DELETE `/workflows/:id` | owner | finished runs only; drafts stay |
@@ -1526,7 +1624,7 @@ type WorkflowView = { id, title, playbook, playbook_title, playbook_title_en, st
   study: {id, slug, title} | null, conversation_id, autopilot, tainted, taint_sources: string[],
   budget, usage: {steps, calls, tokens_in, tokens_out, active_ms, fix_rounds}, artifacts: Artifact[],
   guidance: {at, text, applied}[], report: {summary_md, done: string[], issues: string[]} | null, stop_reason, error,
-  job: {status, stage} | null, question?: string | null, created_at, updated_at, finished_at };
+  job: {status, stage} | null, question?: string | null, asks: (Card & {pending: boolean})[], created_at, updated_at, finished_at };
 type Artifact = { kind: "deck"|"note"|"latex_project"|"latex_file"|"paper"; id; url; title; role: "draft"|"suggestion"|"primary"; preview_url?; revision? };
 type StepView = { id, key, parent_key, position, role, kind, title, instructions, depends_on: string[], expected,
   verify, status, attempts, round, output: {summary, excerpt?} | null, verdict, history, tokens: {in, out}, ms, error,
@@ -1589,7 +1687,7 @@ fetches discovery server-side and requires https). Requirements read from Aldine
 | GET `/oidc/userinfo` | Bearer access token | same user claims as the ID token; 401 `invalid_token` (+ `WWW-Authenticate`) otherwise. Aldine only calls it when the ID token lacks email/name (never, today) |
 
 - ID token (ES256, `kid` = RFC 7638 thumbprint, 300 s): `iss`, `aud` = client id, `sub` = hub user id, `iat`, `exp`,
-  `nonce` (when sent); scope `profile` → `name` (real name), `preferred_username` (hub username); scope `email` →
+  `nonce` (when sent); scope `profile` → `name` (Chinese full name; no `given_name`/`family_name`, so Aldine never mixes scripts), `preferred_username` (hub username); scope `email` →
   `email` = `<hub user id>@users.speech-ai-hub.invalid`, `email_verified: true`. Hub users have no email; Aldine needs
   one for admins (`ALDINE_ADMIN_EMAILS`) and collaborator invites. The synthetic address is stable across renames,
   `.invalid` cannot receive mail, and Aldine never links an SSO identity to a password account with the same email.
@@ -1822,6 +1920,7 @@ All `/api/admin/ai/*` require `requireAdmin`; every error is `{ error, code, hin
 | `GET /admin/ai/health` · `POST /admin/ai/health/probe` | detailed role status; probe now |
 | `GET /admin/ai/calls` | filters `role, provider_id, model, ok, error_code, from, to, final, probes`, cursor `before`, `limit ≤ 200` → `{calls[+group_id, group_name, model_ref], next}` |
 | `GET /admin/ai/stats?window=1h\|24h\|7d\|30d` | `{roles[], members[], errors[], series[]}` |
+| `GET /admin/ai/usage?days=7\|30` | 「AI 用量」 (`routes/ai-usage.ts`, section `components/admin/AiUsageSection` on `/admin/system`): aggregates only, probes excluded — `{days, since, totals{calls (final rows), attempts, errors, tokens_in, tokens_out, users}, by_role[], by_model[{provider_kind, provider_name, model,…}], by_account_role[{account_role student\|professor\|admin\|system\|deleted,…}], by_user[{user{id,name,username,role}\|null,…}] (≤ 100, by tokens), top_users (10), workflows[{status, runs, tokens}] (runs created in the window)}`; never reads conversations or content |
 | `GET /admin/ai/embedding` · `POST …/embedding/precheck {target: {model_id}\|{group_id}, params?}` · `POST …/embedding/switch {target, params?}` · `POST …/embedding/spaces/:id/flip` · `…/cancel` · `DELETE …/embedding/spaces/:id` | identity overview; fingerprint comparison (`action bind\|switch`); switch wizard steps (`route_id` still accepted as a group id) |
 | `GET /admin/ai/export?include_secrets=0\|1` | `{format:"speech-ai-hub.ai-settings", version:2, secret, exported_at, providers, models[{provider, model_id, enabled, overrides}] (edited/used/hidden ones), groups[{name, capability, strategy, members[{model \| child_group, weight, params, enabled}]}], bindings{role: {model, params} \| {group}}}`; secrets only with `1` (`…-SECRET.json`); audited |
 | `POST /admin/ai/import {file, include_secrets}` | versions 1 and 2 (v1 routes are converted like migration 0101); upsert by name (accounts per family, groups) and (account, model id); secrets used only when the file says `secret:true` and the flag is set; the `embedding` binding is never imported (warning) |
@@ -1938,6 +2037,8 @@ the shown version) and `LatexLayoutReview` (LaTeX toolbar, pdf.js + `SyncClient.
 - Staging: `scripts/staging.sh` runs compose project `hubv3` (`compose.yaml` + `compose.staging.yaml`, env `.env.staging`) on
   `http://127.0.0.1:18090` with its own volumes; it never touches `hubv2`.
 - A failed render clears the version's `thumbnail_key`, `page_count` and `manifest_key`.
+- Lifecycle coverage (create/rename/delete per entity, what is deliberately missing) is tracked in `docs/crud-audit.md`.
+  `ConfirmDialog` toasts an error thrown by `onConfirm` unless the caller already showed a toast with that message.
 
 ## Aldine (LaTeX) security model
 

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
+  import { personMatches } from "#lib/people.ts";
   import { untrack } from "svelte";
   import { ArrowLeft, ArrowRight, Check, Presentation, Search, UserPlus, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
@@ -68,10 +70,8 @@
   const me = $derived(session.user?.id ?? "");
   const memberIds = $derived([...new Set(value.studies.flatMap(s => s.members.map(m => m.id)))]);
   const peopleList = $derived.by(() => {
-    const q = peopleQuery.trim().toLowerCase();
-    // Matches the real name or the username (with or without a leading @).
-    const handle = q.replace(/^@/, "");
-    const list = directory.filter(u => !q || u.name.toLowerCase().includes(q) || (!!handle && u.username?.includes(handle)));
+    // Matches any Chinese / English name part or the username (with or without a leading @).
+    const list = directory.filter(u => personMatches(u, peopleQuery));
     // Members of the chosen studies first.
     return [...list].sort((a, b) => Number(memberIds.includes(b.id)) - Number(memberIds.includes(a.id)));
   });
@@ -236,7 +236,7 @@
                 <CheckCircle checked={selectedStudy(s.id)} label={s.title} onToggle={() => toggleStudy(s)} />
                 <button type="button" class="flex min-w-0 flex-1 flex-col items-start py-1.5 text-left" onclick={() => toggleStudy(s)}>
                   <span class="w-full truncate text-[14px] font-medium text-ink">{s.title}</span>
-                  <span class="w-full truncate text-[12.5px] text-ink-3">{owner ? t("meet.form.owner", { name: owner.name }) : ""}{s.current_stage ? ` · ${s.current_stage.name}` : ""}</span>
+                  <span class="w-full truncate text-[12.5px] text-ink-3">{owner ? t("meet.form.owner", { name: displayName(owner) }) : ""}{s.current_stage ? ` · ${s.current_stage.name}` : ""}</span>
                 </button>
               </li>
             {/each}
@@ -264,10 +264,10 @@
         <ul class="divide-y divide-line/70">
           {#each peopleList as u (u.id)}
             <li class="flex items-center gap-3 px-3 py-1.5">
-              <CheckCircle checked={u.id === me || value.participants.includes(u.id)} disabled={u.id === me} label={u.name} onToggle={() => togglePerson(u.id)} />
+              <CheckCircle checked={u.id === me || value.participants.includes(u.id)} disabled={u.id === me} label={displayName(u)} onToggle={() => togglePerson(u.id)} />
               <button type="button" class="flex min-w-0 flex-1 items-center gap-2.5 py-1.5 text-left disabled:cursor-default" disabled={u.id === me} onclick={() => togglePerson(u.id)}>
-                <Avatar name={u.name} size={28} />
-                <span class="min-w-0 truncate text-[14px] text-ink">{u.name}</span>
+                <Avatar name={u.name} id={u.id} size={28} />
+                <span class="min-w-0 truncate text-[14px] text-ink">{displayName(u, "formal")}</span>
                 <span class="shrink-0 text-[12px] text-ink-3">{u.id === me ? t("meet.form.you") : u.role === "professor" ? t("meet.form.professor") : memberIds.includes(u.id) ? t("meet.form.member") : ""}</span>
               </button>
             </li>

@@ -23,6 +23,9 @@
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import Switch from "#lib/components/ui/Switch.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
+  import PersonNameFields from "#lib/components/people/PersonNameFields.svelte";
+  import { nameFormFrom, nameFormPayload, nameFormValid, sameNameForm, type NameForm } from "#lib/people.ts";
+  import { displayName } from "#lib/people.svelte.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
 
   const user = $derived(session.user!);
@@ -70,8 +73,12 @@
   const localeValue = $derived<Locale>(i18n.locale);
 
   // Account
-  let name = $state(session.user!.name);
+  let names = $state<NameForm>(nameFormFrom(session.user!.person));
   let savingName = $state(false);
+  let namesSubmitted = $state(false);
+  const namesValid = $derived(nameFormValid(names));
+  // Unconfirmed (backfilled) names can be saved unchanged: saving confirms them.
+  const namesChanged = $derived(!sameNameForm(names, nameFormFrom(user.person)) || !user.names_confirmed);
   let currentPassword = $state("");
   let newPassword = $state("");
   let confirmPassword = $state("");
@@ -79,8 +86,17 @@
   const newPasswordError = $derived(newPassword && newPassword.length < 8 ? t("settings.password.short") : null);
   const confirmError = $derived(confirmPassword && newPassword.length >= 8 && confirmPassword !== newPassword ? t("settings.password.mismatch") : null);
   async function saveName() {
+    namesSubmitted = true;
+    if (!namesValid) return;
     savingName = true;
-    await save({ realName: name.trim().replace(/\s+/g, " ") });
+    try {
+      await session.update({ names: nameFormPayload(names) });
+      names = nameFormFrom(session.user!.person);
+      namesSubmitted = false;
+      toasts.show(t("people.saved"), "success");
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    }
     savingName = false;
   }
   async function savePassword() {
@@ -259,9 +275,9 @@
     <Tabs.Content value="account" class="flex flex-col gap-5 outline-none">
       <Card>
         <div class="mb-6 flex items-center gap-4">
-          <Avatar name={name || user.name} size={56} class="ring-0" />
+          <Avatar name={user.name} id={user.id} size={56} class="ring-0" />
           <div class="min-w-0">
-            <p class="truncate text-[17px] font-semibold">{user.name}</p>
+            <p class="truncate text-[17px] font-semibold">{displayName(user)}</p>
             <div class="mt-1 flex flex-wrap items-center gap-2">
               <span class="truncate text-[13px] text-ink-3">@{user.username}</span>
               <Pill tone="lilac" size="sm">{accountLabel(user)}</Pill>
@@ -269,14 +285,27 @@
           </div>
         </div>
         <form
-          class="flex flex-col gap-4 sm:flex-row sm:items-end"
+          id="settings-names"
+          class="flex flex-col gap-4"
           onsubmit={e => {
             e.preventDefault();
             void saveName();
           }}
+          novalidate
         >
-          <TextField class="flex-1" label={t("settings.name")} hint={t("settings.name.hint")} bind:value={name} maxlength={40} autocomplete="name" />
-          <Button type="submit" variant="primary" loading={savingName} disabled={!name.trim() || name.trim() === user.name} class="sm:mb-[22px]">{t("action.save")}</Button>
+          <div>
+            <h2 class="text-[15px] font-semibold">{t("settings.name")}</h2>
+            <p class="mt-0.5 text-[13px] text-ink-3">{t("settings.name.hint")}</p>
+          </div>
+          {#if !user.names_confirmed}
+            <p class="rounded-2xl px-4 py-3 text-[13px] leading-relaxed" style="background:var(--pill-peach);color:var(--pill-peach-ink)" role="status">{t("people.confirm.settingsNote")}</p>
+          {/if}
+          <PersonNameFields bind:value={names} showErrors={namesSubmitted} idPrefix="settings-names" />
+          <div class="flex justify-end">
+            <Button type="submit" variant="primary" loading={savingName} disabled={!namesChanged || (namesSubmitted && !namesValid)} class="w-full sm:w-auto">
+              {user.names_confirmed ? t("people.save") : t("people.confirmSave")}
+            </Button>
+          </div>
         </form>
         <div class="mt-5 flex flex-col gap-1.5 border-t border-line pt-5">
           <span class="text-[13px] font-medium text-ink-2">{t("settings.username")}</span>

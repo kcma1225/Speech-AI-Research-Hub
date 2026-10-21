@@ -4,7 +4,8 @@ import { hashPassword } from "../bootstrap.js";
 import { transaction } from "../db.js";
 import { audit, createSession, randomToken, requireAdmin, sha256 } from "../lib/auth.js";
 import { badRequest, conflict, HttpError, idParams, isUniqueViolation, notFound, parse } from "../lib/http.js";
-import { realNameSchema, USERNAME_HINT, USERNAME_RE, USERNAME_TAKEN, usernameAvailable, usernameSchema } from "../lib/users/username.js";
+import { composeZhName, NAMES_HINT, personNamesSchema } from "../lib/users/person-name.js";
+import { USERNAME_HINT, USERNAME_RE, USERNAME_TAKEN, usernameAvailable, usernameSchema } from "../lib/users/username.js";
 
 /** Expiry choices offered in the admin UI; `never` = no expiry. */
 export const EXPIRY_MINUTES = { "5m": 5, "30m": 30, "1h": 60, "2h": 120, "5h": 300, "1d": 1440, "3d": 4320, "5d": 7200, "7d": 10080, never: null } as const;
@@ -19,7 +20,7 @@ const createInput = z.object({
 const joinInput = z
   .object({
     token: z.string().min(32).max(200),
-    realName: realNameSchema,
+    names: personNamesSchema,
     username: usernameSchema,
     password: z.string().max(4096).refine(value => value.trim().length >= 8, { message: "密碼至少需要 8 個字元。" }),
     passwordConfirm: z.string().optional(),
@@ -101,7 +102,7 @@ const invitations: FastifyPluginAsync = async app => {
   });
 
   app.post("/join", async (request, reply) => {
-    const data = parse(joinInput, request.body, "邀請或帳號資料不正確：請填寫真實姓名、使用者名稱與兩次相同的密碼。");
+    const data = parse(joinInput, request.body, `邀請或帳號資料不正確：${NAMES_HINT}並填寫使用者名稱與兩次相同的密碼。`);
     const passwordHash = await hashPassword(data.password);
     try {
       const account = await transaction(app.db, async client => {
@@ -111,9 +112,11 @@ const invitations: FastifyPluginAsync = async app => {
         )).rows[0];
         if (!invite) throw invalidInvite();
         if (!(await usernameAvailable(client, data.username))) throw conflict(USERNAME_TAKEN);
-        const created = (await client.query<{ id: string; name: string; username: string }>(
-          "INSERT INTO users(username,real_name,password_hash,role,is_admin) VALUES($1,$2,$3,$4,$5) RETURNING id,name,username",
-          [data.username, data.realName, passwordHash, invite.role, invite.role === "admin"],
+        const n = data.names;
+        const created = (await client.query<{ id: string; name: string; name_en: string | null; username: string }>(
+          `INSERT INTO users(username,real_name,zh_family,zh_given,en_family,en_given,title,names_confirmed_at,password_hash,role,is_admin)
+           VALUES($1,$2,$3,$4,$5,$6,$7,now(),$8,$9,$10) RETURNING id,name,name_en,username`,
+          [data.username, composeZhName(n.zh_family!, n.zh_given!), n.zh_family, n.zh_given, n.en_family, n.en_given, n.title, passwordHash, invite.role, invite.role === "admin"],
         )).rows[0]!;
         await client.query("INSERT INTO invitation_uses(invitation_id,user_id) VALUES($1,$2)", [invite.id, created.id]);
         await client.query("UPDATE invitations SET use_count=use_count+1 WHERE id=$1", [invite.id]);

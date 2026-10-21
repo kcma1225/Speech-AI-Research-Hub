@@ -4,6 +4,7 @@
   import { session } from "#lib/stores/session.svelte.ts";
   import PageHeader from "#lib/components/ui/PageHeader.svelte";
   import LibrarySettings from "#lib/components/library/LibrarySettings.svelte";
+  import AiUsageSection from "#lib/components/admin/AiUsageSection.svelte";
 
   /**
    * /admin/system — a simple stack of section components, one per module (append yours below; keep each section
@@ -21,5 +22,6 @@
   <PageHeader title={t("pages.adminSystem.title")} subtitle={t("pages.adminSystem.subtitle")} />
   <div class="flex max-w-4xl flex-col gap-5">
     <LibrarySettings />
+    <AiUsageSection />
   </div>
 {/if}

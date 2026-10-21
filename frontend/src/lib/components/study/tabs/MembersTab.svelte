@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { DropdownMenu } from "bits-ui";
   import { goto } from "$app/navigation";
   import { Crown, Ellipsis, LogOut, UserMinus, UserPlus } from "@lucide/svelte";
@@ -104,10 +105,10 @@
   <ul class="-mx-2 flex flex-col divide-y divide-line">
     {#each detail.members as member (member.id)}
       <li class="flex items-center gap-3 px-2 py-3">
-        <Avatar name={member.name} size={38} class="ring-0 {member.disabled ? 'opacity-50 grayscale' : ''}" />
+        <Avatar name={member.name} id={member.id} size={38} class="ring-0 {member.disabled ? 'opacity-50 grayscale' : ''}" />
         <div class="min-w-0 flex-1">
           <p class="flex flex-wrap items-center gap-1.5 text-[14.5px] font-medium text-ink">
-            <span class="truncate">{member.name}</span>
+            <span class="truncate">{displayName(member, "formal")}</span>
             {#if member.id === me}<span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-medium text-ink-3">{t("members.you")}</span>{/if}
             {#if member.disabled}<span class="text-[12px] text-ink-3">· {t("members.disabled")}</span>{/if}
           </p>
@@ -159,7 +160,7 @@
             bind:value={pick}
             label={t("members.pick")}
             class="w-full"
-            options={[{ value: "", label: "—" }, ...candidates.map(u => ({ value: u.id, label: u.name, hint: `@${u.username} · ${t(`role.${u.role}` as MessageKey)}` }))]}
+            options={[{ value: "", label: "—" }, ...candidates.map(u => ({ value: u.id, label: displayName(u), hint: `@${u.username} · ${t(`role.${u.role}` as MessageKey)}` }))]}
           />
         </div>
         <div class="flex flex-col gap-1.5">

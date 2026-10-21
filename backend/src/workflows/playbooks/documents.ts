@@ -15,6 +15,7 @@ import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { STEP_ROLES, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRole, type StepRow, type StepSpec } from "../types.js";
 import { clipText, depOutputs, paperOf, resolveStudy, systemFor, taskPrompt } from "./common.js";
+import { askStudentView } from "../student-input.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
@@ -142,6 +143,8 @@ const readingNote: WorkflowPlaybook = {
         verify: { checks: [...PART_CHECKS, { id: "sections_present", params: { sections: [title] } }, ...(isGroup ? [{ id: "source_refs", params: { min: 1 } }] : []), ...(isMethod && hasMath ? [{ id: "equations", params: { min: 1 } }] : [])], judge: isGroup },
       };
     });
+    // 「我的想法」 is the user's own judgement: ask with grounded options (student-input.ts) instead of inventing it.
+    steps.push({ key: "my_view", role: "planner", title: "請你寫下自己的想法", instructions: "依筆記內容與研究資料草擬候選想法，向你提問；以你的回答寫成「## 我的想法」。", depends_on: steps.map((s) => s.key), expected: "「## 我的想法」（你的回答，或先跳過）", verify: { checks: [], judge: false } });
     steps.push(assembleSpec(steps.map((s) => s.key), sections), finalSpec());
     const criteria: Omit<Criterion, "status">[] = [
       { id: "coverage", kind: "check", text: "筆記涵蓋論文的每一個主要章節", check: { id: "sections_present", params: { sections } } },
@@ -162,6 +165,19 @@ const readingNote: WorkflowPlaybook = {
   },
   async execute(env, step, fix) {
     if (step.key === "assemble") return assembleDoc(env, step);
+    if (step.key === "my_view") {
+      const drafted = (await getSteps(env.db, env.run.id)).filter((s) => s.key.startsWith("part_") && s.output?.text).map((s) => s.output!.text!).join("\n\n");
+      const got = await askStudentView(env, step, {
+        cardId: "my_view", title: "讀完這篇，你自己的想法？",
+        questions: [
+          { id: "view", prompt: "你對這篇論文的看法？（可複選）", type: "multi_choice", hint: "這篇論文具體的優點、缺點或疑問，扣住筆記內容" },
+          { id: "use", prompt: "這篇對你的研究有什麼用？", type: "multi_choice", hint: "和研究目前方向、階段、待解問題相關的具體用法或下一步" },
+        ],
+        context: { reading_note: drafted.slice(0, 12_000) },
+      });
+      const lines = [...(got.view ?? []), ...(got.use ?? [])];
+      return { summary: lines.length ? `收到你的想法（${lines.length} 點）` : "你選擇先跳過", text: `## 我的想法\n\n${lines.length ? lines.map((l) => `- ${l}`).join("\n") : "（之後自己補上）"}\n` };
+    }
     const title = (env.state<string[]>("sections") ?? [])[Number(step.key.slice(5)) - 1] ?? step.title;
     const paperId = String(step.inputs.paper_id ?? env.run.inputs.paper_id ?? "");
     const user = taskPrompt(env, step, { context: { paper: `論文：〈${env.state<string>("paper_title") ?? ""}〉，paper_id ${paperId}（呼叫 read_paper / view_paper_pages 時用這個 paper_id）${env.run.study_id ? `；研究 study id ${env.run.study_id}` : ""}` }, format: `只輸出「## ${title}」這一段的 Markdown（可以有 ### 小標），不要其他段落。` }, fix);

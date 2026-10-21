@@ -1,6 +1,5 @@
 <script lang="ts">
   import { Copy, Download, ExternalLink, FileText, Link2, RefreshCw, Star, Trash2 } from "@lucide/svelte";
-  import { goto } from "$app/navigation";
   import { api } from "#lib/api.ts";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
@@ -15,7 +14,8 @@
   import type { SlideDetail } from "#lib/slides/types.ts";
   import { absoluteUrl, copyText, DEFAULT_LIMITS, formatBytes, SLUG_RE, uploadForm } from "#lib/slides/util.ts";
 
-  let { detail, onChanged }: { detail: SlideDetail; onChanged: () => void | Promise<void> } = $props();
+  /** `onDelete` opens the page's 「刪除簡報」 dialog (DeleteDeckDialog). */
+  let { detail, onChanged, onDelete }: { detail: SlideDetail; onChanged: () => void | Promise<void>; onDelete: () => void } = $props();
   const p = $derived(detail.project);
   const manage = $derived(detail.permissions.manage);
   const limits = $derived(detail.limits ?? DEFAULT_LIMITS);
@@ -114,15 +114,6 @@
     }
   }
 
-  let deleteOpen = $state(false);
-  async function removeDeck() {
-    await api.del(`/slides/${p.id}`).catch(e => {
-      toasts.show((e as Error).message, "error");
-      throw e;
-    });
-    toasts.show(t("slides.info.deleted"), "success");
-    await goto("/slides");
-  }
 
   const section = "flex flex-col gap-3 border-t border-line pt-5 first:border-0 first:pt-0";
   const heading = "text-[12px] font-semibold tracking-wide text-ink-3 uppercase";
@@ -249,10 +240,9 @@
     <section class={section}>
       <h3 class={heading}>{t("slides.info.danger")}</h3>
       <p class="text-[12.5px] text-ink-3">{t("slides.info.dangerHint")}</p>
-      <Button variant="danger" class="w-full" onclick={() => (deleteOpen = true)}><Trash2 />{t("slides.info.delete")}</Button>
+      <Button variant="danger" class="w-full" onclick={onDelete}><Trash2 />{t("slides.info.delete")}</Button>
     </section>
   {/if}
 </div>
 
 <ConfirmDialog bind:open={rotateOpen} title={t("slides.info.rotateTitle")} description={t("slides.info.rotateDescription")} confirmLabel={t("slides.info.rotate")} onConfirm={rotate} />
-<ConfirmDialog bind:open={deleteOpen} title={t("slides.info.deleteTitle", { title: p.title })} description={t("slides.info.deleteDescription")} confirmLabel={t("slides.info.delete")} onConfirm={removeDeck} />

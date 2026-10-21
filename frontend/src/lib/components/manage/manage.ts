@@ -5,8 +5,12 @@ import type { Role } from "#lib/types.ts";
 
 export type AdminUser = {
   id: string;
-  /** Real name (真實姓名). */
+  /** Chinese full name (中文姓名). */
   name: string;
+  /** English display without title, null when unknown. */
+  name_en: string | null;
+  person: import("#lib/people.ts").Person;
+  names_confirmed: boolean;
   /** Login id (使用者名稱). */
   username: string;
   role: Role;

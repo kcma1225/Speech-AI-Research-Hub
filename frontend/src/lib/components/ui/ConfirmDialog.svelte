@@ -2,10 +2,11 @@
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "./Button.svelte";
   import Sheet from "./Sheet.svelte";
+  import { toasts } from "./toast.svelte.ts";
 
   /**
    * Confirmation for destructive actions. `onConfirm` may be async; errors keep the dialog open.
-   * Focus starts on Cancel and returns to whatever opened the dialog; when that element is gone
+   * An error thrown by `onConfirm` is toasted unless the caller already toasted it. Focus starts on Cancel and returns to whatever opened the dialog; when that element is gone
    * (e.g. the deleted row), it goes to `returnFocus` instead.
    */
   let { open = $bindable(false), title, description, confirmLabel, danger = true, onConfirm, returnFocus = null }: {
@@ -31,9 +32,12 @@
     try {
       await onConfirm();
       open = false;
-    } catch {
-      // The caller shows the error (toast or description); the dialog stays open. Not rethrown: an unhandled
-      // rejection from a click handler only ends up as a console error.
+    } catch (error) {
+      // The dialog stays open. Callers usually toast the error themselves; when they did not (no error toast with
+      // this message is showing), show it here so a failed action never looks like nothing happened. Not rethrown:
+      // an unhandled rejection from a click handler only ends up as a console error.
+      const message = error instanceof Error && error.message ? error.message : t("common.error");
+      if (!toasts.items.some(item => item.tone === "error" && item.message === message)) toasts.show(message, "error");
     } finally {
       busy = false;
     }

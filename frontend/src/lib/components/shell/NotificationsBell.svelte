@@ -6,9 +6,16 @@
   import { t } from "#lib/i18n.svelte.ts";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import Button from "#lib/components/ui/Button.svelte";
+  import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import NotificationList from "./NotificationList.svelte";
 
   let open = $state(false);
+  let clearOpen = $state(false);
+  async function clearAll() {
+    await notificationsStore.clear();
+    toasts.show(t("crud.notifications.cleared"), "success");
+  }
   $effect(() => {
     if (open) void notificationsStore.load();
   });
@@ -33,7 +40,7 @@
 
 {#snippet actions()}
   <Button size="sm" variant="ghost" disabled={!notificationsStore.unread} onclick={() => notificationsStore.markRead()}>{t("notif.markAll")}</Button>
-  <Button size="sm" variant="ghost" disabled={!notificationsStore.items.length} onclick={() => notificationsStore.clear()}>{t("notif.clear")}</Button>
+  <Button size="sm" variant="ghost" disabled={!notificationsStore.items.length} onclick={() => (clearOpen = true)}>{t("notif.clear")}</Button>
 {/snippet}
 
 {#if viewport.desktop}
@@ -62,3 +69,5 @@
     <div class="-mx-2"><NotificationList onNavigate={() => (open = false)} /></div>
   </Sheet>
 {/if}
+
+<ConfirmDialog bind:open={clearOpen} title={t("crud.notifications.clearTitle")} description={t("crud.notifications.clearDescription")} confirmLabel={t("notif.clear")} onConfirm={clearAll} />

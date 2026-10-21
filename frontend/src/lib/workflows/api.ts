@@ -29,6 +29,7 @@ export const workflowsApi = {
   resume: (id: string, more = false) => api.post<W>(`/workflows/${id}/resume`, more ? { more: true } : {}),
   cancel: (id: string) => api.post<W>(`/workflows/${id}/cancel`),
   guidance: (id: string, text: string) => api.post<W>(`/workflows/${id}/guidance`, { text }),
+  answer: (id: string, cardId: string, answers: import("#lib/agent/types.ts").Answer[]) => api.post<W>(`/workflows/${id}/answer`, { card_id: cardId, answers }),
   patch: (id: string, body: { objective?: string; criteria?: { id?: string; text: string }[] }) => api.patch<W>(`/workflows/${id}`, body),
   publish: (id: string) => api.post<{ versionId: string; version: number; jobId: string }>(`/workflows/${id}/publish`),
   remove: (id: string) => api.del<{ ok: true }>(`/workflows/${id}`),

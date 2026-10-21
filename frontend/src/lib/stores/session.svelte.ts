@@ -3,6 +3,8 @@ import { i18n } from "#lib/i18n.svelte.ts";
 import { theme } from "#lib/theme.svelte.ts";
 import { jobsStore } from "#lib/stores/jobs.svelte.ts";
 import { notificationsStore } from "#lib/stores/notifications.svelte.ts";
+import type { nameFormPayload } from "#lib/people.ts";
+import { people } from "#lib/people.svelte.ts";
 import type { ClientConfig, CurrentUser, Locale, Preferences, ThemePref } from "#lib/types.ts";
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
@@ -14,6 +16,7 @@ let loaded = $state(false);
 function adopt(next: CurrentUser | null) {
   user = next;
   if (next) {
+    people.register([next]);
     theme.set(next.theme, { animate: false });
     i18n.set(next.locale ?? "zh-TW", { animate: false });
   }
@@ -50,16 +53,23 @@ export const session = {
     await api.post("/auth/logout").catch(() => {});
     jobsStore.stop();
     notificationsStore.stop();
+    people.reset();
     user = null;
   },
   /** PATCH /auth/profile; the server returns the updated user. Optimistic for theme/locale. */
-  /** `realName` changes the real name (真實姓名); the username can only be changed by an admin. */
-  async update(patch: { realName?: string; theme?: ThemePref; locale?: Locale; preferences?: DeepPartial<Preferences>; currentPassword?: string; newPassword?: string }) {
+  /** `names` changes the structured names (and confirms them); the username can only be changed by an admin. */
+  async update(patch: { names?: ReturnType<typeof nameFormPayload>; theme?: ThemePref; locale?: Locale; preferences?: DeepPartial<Preferences>; currentPassword?: string; newPassword?: string }) {
     if (patch.theme) theme.set(patch.theme);
     if (patch.locale) i18n.set(patch.locale);
     const result = await api.patch<{ user: CurrentUser } | CurrentUser>("/auth/profile", patch);
     const next = "user" in result ? result.user : result;
-    if (next && user) user = { ...user, ...next };
+    if (next && user) {
+      user = { ...user, ...next };
+      if (patch.names) {
+        people.register([user]);
+        void people.ensure(true);
+      }
+    }
   },
 };
 

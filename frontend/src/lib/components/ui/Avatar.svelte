@@ -1,14 +1,11 @@
 <script lang="ts">
   import { toneFor } from "./Pill.svelte";
-  let { name, size = 32, class: cls = "" }: { name: string; size?: number; class?: string } = $props();
+  import { displayInitials } from "#lib/people.svelte.ts";
+  /** `name` is the person's (Chinese) name from the API; `id` helps resolve the English name in the English UI. */
+  let { name, id, size = 32, class: cls = "" }: { name: string; id?: string | null; size?: number; class?: string } = $props();
 
-  // Two Latin initials, or the last CJK character pair (given name) for Chinese names.
-  const initials = $derived.by(() => {
-    const trimmed = name.trim();
-    if (/[㐀-鿿]/.test(trimmed)) return trimmed.replace(/\s/g, "").slice(-2);
-    const parts = trimmed.split(/\s+/).filter(Boolean);
-    return ((parts[0]?.[0] ?? "?") + (parts.length > 1 ? parts.at(-1)![0] : (parts[0]?.[1] ?? ""))).toUpperCase();
-  });
+  // Initials of the locale-appropriate name: the CJK given name (two characters), or two Latin initials.
+  const initials = $derived(displayInitials(id ? { id, name } : name));
   const tone = $derived(toneFor(name));
 </script>
 

@@ -67,7 +67,7 @@ export type ModelPort = {
 };
 
 export class WorkflowStop extends Error {
-  constructor(readonly reason: "cancelled" | "paused" | "blocked" | "budget_steps" | "budget_calls" | "budget_tokens" | "budget_time" | "conflict" | "access", message: string) {
+  constructor(readonly reason: "cancelled" | "paused" | "blocked" | "ask" | "budget_steps" | "budget_calls" | "budget_tokens" | "budget_time" | "conflict" | "access", message: string) {
     super(message);
   }
 }

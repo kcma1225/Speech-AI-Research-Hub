@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { Ban, Link2, Plus } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
@@ -70,9 +71,9 @@
   {#if invite.uses?.length}
     <span class="flex items-center gap-2">
       <span class="flex -space-x-1.5">
-        {#each invite.uses.slice(0, 4) as u (u.id)}<span title={u.name}><Avatar name={u.name} size={24} /></span>{/each}
+        {#each invite.uses.slice(0, 4) as u (u.id)}<span title={displayName(u)}><Avatar name={u.name} id={u.id} size={24} /></span>{/each}
       </span>
-      {#if invite.uses.length === 1}<span class="truncate text-ink-2">{invite.uses[0]!.name}</span>{:else if invite.uses.length > 4}<span class="text-ink-3">+{invite.uses.length - 4}</span>{/if}
+      {#if invite.uses.length === 1}<span class="truncate text-ink-2">{displayName(invite.uses[0])}</span>{:else if invite.uses.length > 4}<span class="text-ink-3">+{invite.uses.length - 4}</span>{/if}
     </span>
   {:else}
     <span class="text-ink-3">{t("manage.invites.nobody")}</span>

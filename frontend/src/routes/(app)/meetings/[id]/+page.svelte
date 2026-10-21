@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { untrack } from "svelte";
   import { ArrowLeft, CalendarDays, FileAudio, MessageSquareText, Pencil, Plus, Presentation, Sparkles, Trash2, TriangleAlert, X } from "@lucide/svelte";
   import { goto } from "$app/navigation";
@@ -122,6 +123,7 @@
     if (!removeMedia) return;
     await api.del(`/meetings/${id}/media/${removeMedia}`);
     removeMedia = null;
+    toasts.show(t("crud.meeting.mediaDeleted"), "success");
     await load();
   }
 </script>
@@ -160,7 +162,7 @@
     <div class="flex flex-wrap items-center gap-2">
       {#each d.studies as s (s.id)}
         <a href="/studies/{s.slug}?tab=meetings" class="inline-flex min-h-9 max-w-full items-center gap-1 rounded-full border border-line/80 bg-surface px-3 text-[13px] text-ink-2 hover:border-line-2 hover:text-ink">
-          <span class="truncate">{s.title}</span>{#if s.owner}<span class="shrink-0 text-ink-3">· {s.owner.name}</span>{/if}
+          <span class="truncate">{s.title}</span>{#if s.owner}<span class="shrink-0 text-ink-3">· {displayName(s.owner)}</span>{/if}
         </a>
       {/each}
       {#each d.decks as deck (deck.deck_id)}

@@ -59,6 +59,10 @@ export const notificationsStore = {
     items = [];
     unread = 0;
     // Put the list back if the server refused, so nothing silently disappears.
-    await api.del("/notifications", {}).catch(() => ((items = before), pollUnread()));
+    await api.del("/notifications", {}).catch(error => {
+      items = before;
+      void pollUnread();
+      throw error;
+    });
   },
 };

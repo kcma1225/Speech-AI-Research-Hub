@@ -19,7 +19,7 @@ export type PageRenderRequest = {
   /** Output width in pixels. */
   width: number;
   /** Vertical crop as fractions of the page height (0 = top). */
-  crop?: { top: number; bottom: number };
+  crop?: { top: number; bottom: number; /** Horizontal crop (fractions of the width; default 0–1). */ left?: number; right?: number };
 };
 export type PageRenderer = (pdf: Buffer, req: PageRenderRequest[]) => Promise<Buffer[]>;
 
@@ -64,7 +64,9 @@ export const popplerRenderer: PageRenderer = async (pdf, reqs) => {
       if (r.crop) {
         const y = Math.max(0, Math.floor(r.crop.top * height));
         const h = Math.max(20, Math.min(height - y, Math.ceil((r.crop.bottom - r.crop.top) * height)));
-        args.push("-x", "0", "-y", String(y), "-W", String(width), "-H", String(h));
+        const x = Math.max(0, Math.floor((r.crop.left ?? 0) * width));
+        const w = Math.max(20, Math.min(width - x, Math.ceil(((r.crop.right ?? 1) - (r.crop.left ?? 0)) * width)));
+        args.push("-x", String(x), "-y", String(y), "-W", String(w), "-H", String(h));
       }
       const base = join(dir, `p${i}`);
       try {

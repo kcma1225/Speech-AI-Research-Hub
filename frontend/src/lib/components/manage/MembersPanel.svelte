@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { PencilLine, ShieldCheck, UserRoundCheck, UserRoundX, Users } from "@lucide/svelte";
+  import { displayName } from "#lib/people.svelte.ts";
+  import { KeyRound, PencilLine, ShieldCheck, UserRoundCheck, UserRoundX, Users } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
   import { session } from "#lib/stores/session.svelte.ts";
@@ -14,6 +15,7 @@
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import EditNamesSheet from "./EditNamesSheet.svelte";
   import RoleMenu from "./RoleMenu.svelte";
+  import ResetPasswordSheet from "./ResetPasswordSheet.svelte";
   import { adminTone, ownerTone, roleLabel, roleTone, tc, type AdminUser, type GrantableRole } from "./manage.ts";
 
   let users = $state<AdminUser[] | null>(null);
@@ -62,6 +64,9 @@
 
   const isFixed = (user: AdminUser) => user.is_owner || user.id === session.user?.id;
 
+  let resetting = $state<AdminUser | null>(null);
+  let resetOpen = $state(false);
+
   let editing = $state<AdminUser | null>(null);
   let editOpen = $state(false);
   function edit(user: AdminUser) {
@@ -77,10 +82,10 @@
 
 {#snippet who(user: AdminUser, compact = false)}
   <div class="flex min-w-0 items-center gap-3">
-    <Avatar name={user.name} size={36} class="ring-0 {user.disabled ? 'opacity-50 grayscale' : ''}" />
+    <Avatar name={user.name} id={user.id} size={36} class="ring-0 {user.disabled ? 'opacity-50 grayscale' : ''}" />
     <div class="min-w-0">
       <p class="flex items-center gap-1.5 truncate font-medium {user.disabled ? 'text-ink-3' : 'text-ink'}">
-        <span class="truncate">{user.name}</span>
+        <span class="truncate">{displayName(user, "formal")}</span>
         {#if user.id === session.user?.id}<span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-medium text-ink-3">{t("manage.members.you")}</span>{/if}
       </p>
       <p class="truncate text-[12px] text-ink-3">
@@ -125,6 +130,11 @@
   <Button size="sm" variant="ghost" onclick={() => edit(user)} aria-label={t("manage.members.editNames", { name: user.name })} title={t("manage.members.editNames", { name: user.name })}>
     <PencilLine /><span class="md:sr-only lg:not-sr-only">{t("manage.members.edit")}</span>
   </Button>
+  {#if !isFixed(user) && !user.disabled}
+    <Button size="sm" variant="ghost" onclick={() => ((resetting = user), (resetOpen = true))} aria-label={t("crud.reset.title", { name: user.name })} title={t("crud.reset.title", { name: user.name })}>
+      <KeyRound /><span class="md:sr-only lg:not-sr-only">{t("crud.reset.action")}</span>
+    </Button>
+  {/if}
   {#if !isFixed(user)}
     {#if user.disabled}
       <Button size="sm" variant="secondary" onclick={() => askToggle(user)}><UserRoundCheck />{t("manage.members.enable")}</Button>
@@ -188,6 +198,7 @@
 {/if}
 
 <EditNamesSheet bind:open={editOpen} user={editing} onSaved={saved} />
+<ResetPasswordSheet bind:open={resetOpen} user={resetting} />
 
 <ConfirmDialog
   bind:open={confirmOpen}

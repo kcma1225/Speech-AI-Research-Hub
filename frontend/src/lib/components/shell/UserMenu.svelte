@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { accountLabel } from "#lib/roles.ts";
   import { DropdownMenu } from "bits-ui";
   import { goto } from "$app/navigation";
@@ -28,18 +29,18 @@
     aria-label={t("user.menu")}
     class="flex items-center gap-2.5 rounded-full border border-line bg-surface py-1 pr-1 pl-1 transition-colors hover:border-line-2 data-[state=open]:border-ink-3 lg:pr-4"
   >
-    <Avatar name={user.name} size={32} class="ring-0" />
+    <Avatar name={user.name} id={user.id} size={32} class="ring-0" />
     <span class="hidden text-left leading-tight lg:block">
-      <span class="block max-w-32 truncate text-[13px] font-semibold text-ink">{user.name}</span>
+      <span class="block max-w-32 truncate text-[13px] font-semibold text-ink">{displayName(user)}</span>
       <span class="block text-[11.5px] text-ink-3">{accountLabel(user)}</span>
     </span>
   </DropdownMenu.Trigger>
   <DropdownMenu.Portal>
     <DropdownMenu.Content align="end" sideOffset={10} class="{menuContent} w-60">
       <div class="flex items-center gap-3 px-2.5 py-2">
-        <Avatar name={user.name} size={36} class="ring-0" />
+        <Avatar name={user.name} id={user.id} size={36} class="ring-0" />
         <div class="min-w-0">
-          <p class="truncate text-sm font-semibold">{user.name}</p>
+          <p class="truncate text-sm font-semibold">{displayName(user)}</p>
           <p class="text-xs text-ink-3">{accountLabel(user)}</p>
         </div>
       </div>

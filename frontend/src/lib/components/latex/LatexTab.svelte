@@ -8,6 +8,10 @@
   import Card from "#lib/components/ui/Card.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
+  import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import Sheet from "#lib/components/ui/Sheet.svelte";
+  import TextField from "#lib/components/ui/TextField.svelte";
+  import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { StudyTabProps } from "#lib/components/study/tabs/registry.ts";
   import { isRunning, type LatexTemplate, type ProjectCard as Card_ } from "#lib/latex/types.ts";
   import CreateProjectSheet from "./CreateProjectSheet.svelte";
@@ -22,6 +26,43 @@
   let templates = $state<LatexTemplate[]>([]);
   let error = $state<string | null>(null);
   let createOpen = $state(false);
+
+  // Card ⋯ menu: rename (PATCH /latex/:id {title}) and delete (DELETE /latex/:id).
+  let target = $state<Card_ | null>(null);
+  let renameOpen = $state(false);
+  let renameTitle = $state("");
+  let renaming = $state(false);
+  let deleteOpen = $state(false);
+  async function rename(e: SubmitEvent) {
+    e.preventDefault();
+    const project = target;
+    const title = renameTitle.trim();
+    if (!project || !title) return;
+    renaming = true;
+    try {
+      await api.patch(`/latex/${project.id}`, { title });
+      toasts.show(t("crud.latex.renamed"), "success");
+      renameOpen = false;
+      await load();
+    } catch (err) {
+      toasts.show((err as Error).message, "error");
+    } finally {
+      renaming = false;
+    }
+  }
+  async function remove() {
+    const project = target;
+    if (!project) return;
+    try {
+      await api.del(`/latex/${project.id}`);
+    } catch (err) {
+      toasts.show((err as Error).message, "error");
+      throw err;
+    }
+    projects = projects?.filter(p => p.id !== project.id) ?? null;
+    toasts.show(t("crud.latex.deleted", { title: project.title }), "success");
+    void load();
+  }
 
   async function load() {
     try {
@@ -77,11 +118,34 @@
 {:else}
   <div class="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
     {#each projects as project (project.id)}
-      <ProjectCard {project} href="/studies/{encodeURIComponent(slug)}/latex/{project.id}" />
+      <ProjectCard
+        {project}
+        href="/studies/{encodeURIComponent(slug)}/latex/{project.id}"
+        onRename={canEdit ? () => ((target = project), (renameTitle = project.title), (renameOpen = true)) : undefined}
+        onDelete={canEdit ? () => ((target = project), (deleteOpen = true)) : undefined}
+      />
     {/each}
   </div>
 {/if}
 
 {#if canEdit}
   <CreateProjectSheet bind:open={createOpen} study={detail.study} {templates} />
+  <Sheet bind:open={renameOpen} side="center" title={t("crud.latex.renameTitle")}>
+    {#snippet children()}
+      <form id="latex-rename" class="pt-1" onsubmit={rename}>
+        <TextField label={t("crud.latex.name")} bind:value={renameTitle} maxlength={200} required />
+      </form>
+    {/snippet}
+    {#snippet footer()}
+      <Button variant="ghost" onclick={() => (renameOpen = false)}>{t("action.cancel")}</Button>
+      <Button type="submit" form="latex-rename" variant="primary" loading={renaming} disabled={!renameTitle.trim() || renameTitle.trim() === target?.title}>{t("crud.save")}</Button>
+    {/snippet}
+  </Sheet>
+  <ConfirmDialog
+    bind:open={deleteOpen}
+    title={t("crud.latex.deleteTitle", { title: target?.title ?? "" })}
+    description={t("crud.latex.deleteDescription")}
+    confirmLabel={t("crud.delete")}
+    onConfirm={remove}
+  />
 {/if}

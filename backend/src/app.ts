@@ -92,6 +92,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register(auth, { prefix: "/api" });
   await app.register(users, { prefix: "/api" });
   await app.register(invitations, { prefix: "/api" });
+  await app.register((await import("./routes/password-reset.js")).default, { prefix: "/api" }); // admin-issued password reset links
   await app.register(notifications, { prefix: "/api" });
   await app.register(push, { prefix: "/api" });
   await app.register(slides, { prefix: "/api" });
@@ -114,6 +115,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register((await import("./routes/agent-attachments.js")).default, { prefix: "/api" }); // assistant attachments (uploads + picker)
   await app.register((await import("./routes/doc-import.js")).default, { prefix: "/api" }); // document import (Magika) + Markdown images
   await app.register((await import("./routes/workflows.js")).default, { prefix: "/api" }); // orchestrator → sub-agent workflows (engine in ai-worker)
+  await app.register((await import("./routes/ai-usage.js")).default, { prefix: "/api" }); // admin 「AI 用量」 aggregates (no content)
 
   return app;
 }

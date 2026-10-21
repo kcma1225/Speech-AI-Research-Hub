@@ -35,7 +35,7 @@ describe.skipIf(!hasTestDb)("identity", () => {
       const { id } = await t.ownerCookie();
       const byId = await inject("POST", "/api/auth/login", undefined, { userId: id, password: OWNER_PASSWORD });
       expect(byId.statusCode).toBe(200);
-      expect(byId.json().account).toEqual({ id, name: "系統管理員", username: "owner" });
+      expect(byId.json().account).toEqual({ id, name: "系統管理員", name_en: "Admin", username: "owner" });
       const cookie = sessionCookie(byId)!;
       const me = await inject("GET", "/api/auth/me", cookie);
       expect(me.json().user).toMatchObject({ id, name: "系統管理員", username: "owner", role: "admin", is_admin: true, is_owner: true });
@@ -69,7 +69,7 @@ describe.skipIf(!hasTestDb)("identity", () => {
     it("returns names for account hints", async () => {
       const member = await t.login("student", "hint-user");
       const response = await inject("GET", `/api/auth/accounts?ids=${member.id}`);
-      expect(response.json().accounts).toEqual([{ id: member.id, name: "hint-user", username: "hint-user" }]);
+      expect(response.json().accounts).toEqual([{ id: member.id, name: "hint-user", name_en: null, username: "hint-user" }]);
       expect((await inject("GET", "/api/auth/accounts?ids=not-a-uuid")).statusCode).toBe(400);
     });
   });
@@ -97,13 +97,24 @@ describe.skipIf(!hasTestDb)("identity", () => {
   });
 
   describe("profile", () => {
-    it("changes the real name and theme, never the username", async () => {
+    it("changes the structured names (confirming them) and theme, never the username", async () => {
       const member = await t.login("student", "before-rename");
-      const response = await inject("PATCH", "/api/auth/profile", member.cookie, { realName: "  林 雅婷  ", theme: "dark", username: "hijack" });
+      expect((await inject("GET", "/api/auth/me", member.cookie)).json().user).toMatchObject({ names_confirmed: false });
+      const names = { zhFamily: " 林 ", zhGiven: "雅  婷", enFamily: "Lin", enGiven: "  ", title: "dr" };
+      const response = await inject("PATCH", "/api/auth/profile", member.cookie, { names, theme: "dark", username: "hijack" });
       expect(response.statusCode).toBe(200);
-      expect(response.json().user).toMatchObject({ name: "林 雅婷", username: "before-rename", theme: "dark" });
-      // Legacy `name` field still sets the real name.
-      expect((await inject("PATCH", "/api/auth/profile", member.cookie, { name: "Renamed" })).json().user).toMatchObject({ name: "Renamed", username: "before-rename" });
+      expect(response.json().user).toMatchObject({
+        name: "林雅 婷",
+        username: "before-rename",
+        theme: "dark",
+        names_confirmed: true,
+        person: { zh_family: "林", zh_given: "雅 婷", en_family: "Lin", en_given: null, title: "dr" },
+      });
+      // Non-CJK Chinese-field names read "Given Family".
+      const latin = { zhFamily: "Smith", zhGiven: "Anna Maria", enFamily: "Smith", enGiven: "Anna Maria", title: "" };
+      expect((await inject("PATCH", "/api/auth/profile", member.cookie, { names: latin })).json().user).toMatchObject({ name: "Anna Maria Smith", person: { title: null } });
+      // The old single-name fields no longer change anything.
+      expect((await inject("PATCH", "/api/auth/profile", member.cookie, { realName: "Renamed", name: "Renamed" })).json().user).toMatchObject({ name: "Anna Maria Smith" });
     });
 
     it("password change needs the current password and revokes other sessions", async () => {
@@ -127,22 +138,44 @@ describe.skipIf(!hasTestDb)("identity", () => {
       expect((await inject("POST", "/api/auth/login", undefined, { userId: member.id, password: OWNER_PASSWORD })).statusCode).toBe(200);
     });
 
-    it("allows repeated real names but validates their length (zh message)", async () => {
-      await t.login("student", "same-real-name");
+    it("allows repeated names but validates every part (zh messages)", async () => {
+      const ok = { zhFamily: "王", zhGiven: "小明", enFamily: "Wang", enGiven: "Hsiao-Ming", title: "mr" };
+      const a = await t.login("student");
       const member = await t.login("student");
-      expect((await inject("PATCH", "/api/auth/profile", member.cookie, { realName: "same-real-name" })).statusCode).toBe(200);
-      for (const realName of ["   ", "字".repeat(41)]) {
-        const r = await inject("PATCH", "/api/auth/profile", member.cookie, { realName });
-        expect(r.statusCode).toBe(400);
-        expect(r.json().error).toBe("真實姓名需為 1–40 個字元。");
+      expect((await inject("PATCH", "/api/auth/profile", a.cookie, { names: ok })).statusCode).toBe(200);
+      expect((await inject("PATCH", "/api/auth/profile", member.cookie, { names: ok })).statusCode).toBe(200);
+      const cases: [object, RegExp][] = [
+        [{ zhFamily: "   " }, /中文姓與中文名/],
+        [{ zhGiven: "字".repeat(21) }, /中文姓與中文名/],
+        [{ zhGiven: "小明123" }, /中文姓與中文名/],
+        [{ enFamily: "" }, /英文姓/],
+        [{ enFamily: "王" }, /英文姓/],
+        [{ enFamily: "x".repeat(41) }, /英文姓/],
+        [{ enGiven: "Ming2" }, /英文名/],
+        [{ title: "sir" }, /姓名/],
+        [{ zhFamily: undefined }, /姓名/],
+      ];
+      for (const [change, message] of cases) {
+        const r = await inject("PATCH", "/api/auth/profile", member.cookie, { names: { ...ok, ...change } });
+        expect(r.statusCode, JSON.stringify(change)).toBe(400);
+        expect(r.json().error).toMatch(message);
+      }
+      for (const fine of [{ enFamily: "O'Brien-Smith" }, { enGiven: "J. R." }, { enFamily: "Núñez" }, { zhGiven: "安娜·瑪麗亞" }, { enGiven: null }]) {
+        expect((await inject("PATCH", "/api/auth/profile", member.cookie, { names: { ...ok, ...fine } })).statusCode, JSON.stringify(fine)).toBe(200);
       }
     });
   });
 
   describe("invitations and join", () => {
     const create = async (cookie: string, body: object) => inject("POST", "/api/invitations", cookie, body);
-    const join = (token: string, username: string, realName = `真實 ${username}`) =>
-      inject("POST", "/api/join", undefined, { token, username, realName, password: "joiner-password", passwordConfirm: "joiner-password" });
+    const join = (token: string, username: string, zhGiven = "真實") =>
+      inject("POST", "/api/join", undefined, {
+        token,
+        username,
+        names: { zhFamily: "林", zhGiven, enFamily: "Lin" },
+        password: "joiner-password",
+        passwordConfirm: "joiner-password",
+      });
 
     it("is admin-only", async () => {
       const student = await t.login("student");
@@ -182,7 +215,7 @@ describe.skipIf(!hasTestDb)("identity", () => {
       const first = await join(token, "prof-a");
       expect(first.statusCode).toBe(201);
       const cookie = sessionCookie(first)!;
-      expect((await inject("GET", "/api/auth/me", cookie)).json().user).toMatchObject({ name: "真實 prof-a", username: "prof-a", role: "professor" });
+      expect((await inject("GET", "/api/auth/me", cookie)).json().user).toMatchObject({ name: "林真實", username: "prof-a", role: "professor" });
 
       expect((await join(token, "prof-b")).statusCode).toBe(410);
       expect((await inject("GET", `/api/join/${token}`)).statusCode).toBe(404);
@@ -195,7 +228,7 @@ describe.skipIf(!hasTestDb)("identity", () => {
     it("join rejects passwords shorter than 8 characters (zh message) without using the invitation", async () => {
       const owner = await t.ownerCookie();
       const { token, invitation } = (await create(owner.cookie, { role: "student", expiresIn: "1d", maxUses: 1 })).json();
-      const r = await inject("POST", "/api/join", undefined, { token, username: "short-pass", realName: "短密碼", password: "1234567" });
+      const r = await inject("POST", "/api/join", undefined, { token, username: "short-pass", names: { zhFamily: "短", zhGiven: "密碼", enFamily: "Duan" }, password: "1234567" });
       expect(r.statusCode).toBe(400);
       expect(r.json().error).toBe("密碼至少需要 8 個字元。");
       const list = (await inject("GET", "/api/invitations", owner.cookie)).json().invitations as { id: string; state: string }[];
@@ -284,7 +317,7 @@ describe.skipIf(!hasTestDb)("identity", () => {
       const directory = await inject("GET", "/api/users/directory", professor.cookie);
       expect(directory.statusCode).toBe(200);
       const entry = (directory.json().users as { id: string }[]).find(u => u.id === member.id);
-      expect(entry).toEqual({ id: member.id, name: "dir-student", username: "dir-student", role: "student" });
+      expect(entry).toMatchObject({ id: member.id, name: "dir-student", username: "dir-student", role: "student", person: { zh_family: null } });
       expect((await inject("GET", "/api/users/directory")).statusCode).toBe(401);
     });
 

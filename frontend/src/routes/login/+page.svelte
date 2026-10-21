@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { ArrowRight, AudioLines, MessageSquareQuote, Presentation, X } from "@lucide/svelte";
@@ -112,9 +113,9 @@
           {#each accounts as a (a.id)}
             <li class="group relative">
               <button type="button" onclick={() => choose(a)} class="flex w-full items-center gap-3 rounded-2xl border border-line bg-surface p-3 text-left transition-colors hover:border-ink-3">
-                <Avatar name={a.name} size={38} class="ring-0" />
+                <Avatar name={a.name} id={a.id} size={38} class="ring-0" />
                 <span class="flex min-w-0 flex-1 flex-col">
-                  <span class="truncate text-[15px] font-medium">{a.name}</span>
+                  <span class="truncate text-[15px] font-medium">{displayName(a)}</span>
                   <span class="truncate text-[12.5px] text-ink-3">@{a.username}</span>
                 </span>
                 <ArrowRight class="mr-8 size-4 text-ink-3" />
@@ -136,9 +137,9 @@
           <!-- Lets password managers pair the saved password with the remembered account. -->
           <input type="text" name="username" autocomplete="username" value={chosen.username} readonly hidden />
           <div class="flex items-center gap-3 rounded-2xl border border-line bg-surface p-3">
-            <Avatar name={chosen.name} size={38} class="ring-0" />
+            <Avatar name={chosen.name} id={chosen.id} size={38} class="ring-0" />
             <span class="flex min-w-0 flex-1 flex-col">
-              <span class="truncate text-[15px] font-medium">{chosen.name}</span>
+              <span class="truncate text-[15px] font-medium">{displayName(chosen)}</span>
               <span class="truncate text-[12.5px] text-ink-3">@{chosen.username}</span>
             </span>
             <Button size="sm" variant="ghost" onclick={() => choose(null)}>{t("login.other")}</Button>

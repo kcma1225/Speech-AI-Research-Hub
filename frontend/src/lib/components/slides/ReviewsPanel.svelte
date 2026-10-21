@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { FileText, MessageSquareQuote, Reply } from "@lucide/svelte";
+  import { DropdownMenu } from "bits-ui";
+  import { Ellipsis, FileText, MessageSquareQuote, PencilLine, Reply, Trash2 } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
@@ -10,6 +11,9 @@
   import Switch from "#lib/components/ui/Switch.svelte";
   import Textarea from "#lib/components/ui/Textarea.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
+  import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
+  import { menuContent, menuItem, menuSeparator } from "#lib/components/ui/menu.ts";
+  import { session } from "#lib/stores/session.svelte.ts";
   import type { SlideReply, SlideReview, SlideVersion } from "#lib/slides/types.ts";
 
   /**
@@ -96,6 +100,44 @@
     }
   }
 
+  // Own content: the author edits or deletes their review / reply (the server enforces it too).
+  type Target = { kind: "review" | "reply"; id: string; reviewId: string; body: string };
+  let editing = $state<Target | null>(null);
+  let editDraft = $state("");
+  let saving = $state(false);
+  let removing = $state<Target | null>(null);
+  let removeOpen = $state(false);
+  const mine = (authorId: string) => authorId === session.user?.id;
+  const targetUrl = (x: Target) => `/slides/${projectId}/reviews/${x.reviewId}${x.kind === "reply" ? `/replies/${x.id}` : ""}`;
+
+  async function saveEdit() {
+    const x = editing;
+    if (!x || !editDraft.trim()) return;
+    saving = true;
+    try {
+      const result = await api.patch<{ review?: { body: string; edited_at: string }; reply?: { body: string; edited_at: string } }>(targetUrl(x), { body: editDraft.trim() });
+      const updated = (result.review ?? result.reply)!;
+      reviews = reviews.map(r =>
+        x.kind === "review"
+          ? r.id === x.id ? { ...r, ...updated } : r
+          : r.id === x.reviewId ? { ...r, replies: r.replies.map(p => (p.id === x.id ? { ...p, ...updated } : p)) } : r,
+      );
+      editing = null;
+      toasts.show(t(x.kind === "review" ? "crud.review.saved" : "crud.reply.saved"), "success");
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    } finally {
+      saving = false;
+    }
+  }
+  async function remove() {
+    const x = removing;
+    if (!x) return;
+    await api.del(targetUrl(x));
+    reviews = x.kind === "review" ? reviews.filter(r => r.id !== x.id) : reviews.map(r => (r.id === x.reviewId ? { ...r, replies: r.replies.filter(p => p.id !== x.id) } : r));
+    toasts.show(t(x.kind === "review" ? "crud.review.deleted" : "crud.reply.deleted"), "success");
+  }
+
   const submitOnMod = (fn: () => void) => (e: KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -109,10 +151,10 @@
     id="review-{review.id}"
     class="scroll-mt-24 rounded-2xl border p-3.5 transition-[border-color,box-shadow,background-color] duration-700 {highlight === review.id ? 'border-ink bg-surface-2 shadow-[0_0_0_3px_var(--surface-3)]' : 'border-line'}"
   >
-    {@render entry(review.author, review.created_at, review.body)}
+    {@render entry({ kind: "review", id: review.id, reviewId: review.id, body: review.body }, review.author, review.author_id, review.created_at, review.edited_at ?? null)}
     {#if review.replies.length}
       <ul class="mt-3 ml-4 flex flex-col gap-3 border-l-2 border-line pl-3.5">
-        {#each review.replies as r (r.id)}<li>{@render entry(r.author, r.created_at, r.body, true)}</li>{/each}
+        {#each review.replies as r (r.id)}<li>{@render entry({ kind: "reply", id: r.id, reviewId: review.id, body: r.body }, r.author, r.author_id, r.created_at, r.edited_at ?? null, true)}</li>{/each}
       </ul>
     {/if}
     {#if canReply}
@@ -134,15 +176,40 @@
   </li>
 {/snippet}
 
-{#snippet entry(author: string, at: string, body: string, small = false)}
+{#snippet entry(x: Target, author: string, authorId: string, at: string, editedAt: string | null, small = false)}
   <div class="flex gap-3">
     <Avatar name={author} size={small ? 26 : 32} class="ring-0" />
     <div class="min-w-0 flex-1">
-      <div class="flex items-baseline gap-2">
+      <div class="flex items-center gap-2">
         <span class="truncate text-[13.5px] font-medium text-ink">{author}</span>
         <time class="shrink-0 text-[12px] text-ink-3" datetime={at} title={formatDate(at, { dateStyle: "medium", timeStyle: "short" })}>{relativeTime(at)}</time>
+        {#if editedAt}<span class="shrink-0 text-[12px] text-ink-3" title={formatDate(editedAt, { dateStyle: "medium", timeStyle: "short" })}>· {t("crud.edited")}</span>{/if}
+        {#if mine(authorId) && editing?.id !== x.id}
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger class="-my-2 -mr-2 ml-auto grid size-10 shrink-0 cursor-pointer place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("crud.more")} title={t("crud.more")}>
+              <Ellipsis class="size-4" />
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={4} class={menuContent}>
+                <DropdownMenu.Item class={menuItem} onSelect={() => ((editing = x), (editDraft = x.body))}><PencilLine />{t(x.kind === "review" ? "crud.review.edit" : "crud.reply.edit")}</DropdownMenu.Item>
+                <DropdownMenu.Separator class={menuSeparator} />
+                <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => ((removing = x), (removeOpen = true))}><Trash2 />{t(x.kind === "review" ? "crud.review.delete" : "crud.reply.delete")}</DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        {/if}
       </div>
-      <p class="mt-1 text-[13.5px] leading-relaxed break-words whitespace-pre-wrap text-ink-2">{body}</p>
+      {#if editing?.id === x.id}
+        <div class="mt-2 flex flex-col gap-2">
+          <Textarea bind:value={editDraft} rows={3} maxlength={10000} aria-label={t(x.kind === "review" ? "crud.review.edit" : "crud.reply.edit")} onkeydown={submitOnMod(saveEdit)} />
+          <div class="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onclick={() => (editing = null)}>{t("action.cancel")}</Button>
+            <Button size="sm" variant="primary" loading={saving} disabled={!editDraft.trim() || editDraft.trim() === x.body} onclick={saveEdit}>{t("crud.save")}</Button>
+          </div>
+        </div>
+      {:else}
+        <p class="mt-1 text-[13.5px] leading-relaxed break-words whitespace-pre-wrap text-ink-2">{x.body}</p>
+      {/if}
     </div>
   </div>
 {/snippet}
@@ -208,3 +275,11 @@
     </div>
   {/if}
 </div>
+
+<ConfirmDialog
+  bind:open={removeOpen}
+  title={t(removing?.kind === "reply" ? "crud.reply.deleteTitle" : "crud.review.deleteTitle")}
+  description={t(removing?.kind === "reply" ? "crud.reply.deleteDescription" : "crud.review.deleteDescription")}
+  confirmLabel={t("crud.delete")}
+  onConfirm={remove}
+/>

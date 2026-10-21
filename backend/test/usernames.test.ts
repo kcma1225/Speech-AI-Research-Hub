@@ -118,6 +118,8 @@ describe.skipIf(!hasTestDb)("usernames and real names", () => {
     const owner = await t.ownerCookie();
     return (await inject("POST", "/api/invitations", owner.cookie, { role: "student", expiresIn: "1d", maxUses: null })).json().token as string;
   };
+  /** Structured names for a CJK name: first character = family name. */
+  const nm = (zh: string, enFamily = "Lin", enGiven: string | null = "Ya-Ting") => ({ zhFamily: zh.trim().slice(0, 1), zhGiven: zh.trim().slice(1), enFamily, enGiven });
   const join = (token: string, body: object) =>
     inject("POST", "/api/join", undefined, { token, password: "joiner-password", passwordConfirm: "joiner-password", ...body });
 
@@ -128,25 +130,25 @@ describe.skipIf(!hasTestDb)("usernames and real names", () => {
       expect(r.statusCode).toBe(400);
       expect(r.json().error).toMatch(message);
     };
-    await bad({ username: "ya-ting" }, /真實姓名|邀請或帳號資料/);
-    await bad({ username: "ya-ting", realName: "   " }, "真實姓名需為 1–40 個字元。");
-    await bad({ username: "ya-ting", realName: "字".repeat(41) }, "真實姓名需為 1–40 個字元。");
-    for (const username of ["ab", "-yating", "雅婷", "ya ting", "a".repeat(33)]) await bad({ username, realName: "林雅婷" }, /使用者名稱需為 3–32 個字元/);
-    await bad({ username: "ya-ting", realName: "林雅婷", passwordConfirm: "different-1" }, /邀請或帳號資料/);
+    await bad({ username: "ya-ting" }, /中文姓|邀請或帳號資料/);
+    await bad({ username: "ya-ting", names: { ...nm("林雅婷"), zhFamily: "   " } }, /中文姓與中文名各需 1–20 個字/);
+    await bad({ username: "ya-ting", names: { ...nm("林雅婷"), zhGiven: "字".repeat(21) } }, /中文姓與中文名各需 1–20 個字/);
+    for (const username of ["ab", "-yating", "雅婷", "ya ting", "a".repeat(33)]) await bad({ username, names: nm("林雅婷") }, /使用者名稱需為 3–32 個字元/);
+    await bad({ username: "ya-ting", names: nm("林雅婷"), passwordConfirm: "different-1" }, /邀請或帳號資料/);
 
-    const ok = await join(token, { username: "Ya-Ting", realName: " 林雅婷 " });
+    const ok = await join(token, { username: "Ya-Ting", names: { zhFamily: " 林 ", zhGiven: "雅婷", enFamily: "Lin", enGiven: "Ya-Ting", title: "ms" } });
     expect(ok.statusCode).toBe(201);
-    expect(ok.json().account).toMatchObject({ name: "林雅婷", username: "ya-ting" });
-    const dup = await join(token, { username: "YA-TING", realName: "另一位林雅婷" });
+    expect(ok.json().account).toMatchObject({ name: "林雅婷", name_en: "Ya-Ting Lin", username: "ya-ting" });
+    const dup = await join(token, { username: "YA-TING", names: nm("另一位林雅婷") });
     expect(dup.statusCode).toBe(409);
     expect(dup.json().error).toBe("這個使用者名稱已被使用。");
     // Same real name with another username is fine.
-    expect((await join(token, { username: "yating2", realName: "林雅婷" })).statusCode).toBe(201);
+    expect((await join(token, { username: "yating2", names: nm("林雅婷") })).statusCode).toBe(201);
   });
 
   it("checks username availability only for holders of a valid invitation", async () => {
     const token = await invite();
-    await join(token, { username: "taken.name", realName: "已有人" });
+    await join(token, { username: "taken.name", names: nm("已有人") });
     const check = (u: string, tk = token) => inject("GET", `/api/join/username-available?u=${encodeURIComponent(u)}&token=${encodeURIComponent(tk)}`);
     expect((await check("Taken.Name")).json()).toMatchObject({ username: "taken.name", valid: true, available: false, error: "這個使用者名稱已被使用。" });
     expect((await check("free.name")).json()).toEqual({ username: "free.name", valid: true, available: true });
@@ -157,7 +159,7 @@ describe.skipIf(!hasTestDb)("usernames and real names", () => {
 
   it("logs in by username case-insensitively, never by real name", async () => {
     const token = await invite();
-    await join(token, { username: "chen.boyu", realName: "陳柏宇" });
+    await join(token, { username: "chen.boyu", names: nm("陳柏宇", "Chen", "Bo-Yu") });
     const login = (body: object) => inject("POST", "/api/auth/login", undefined, { password: "joiner-password", ...body });
     const r = await login({ username: "Chen.BoYu" });
     expect(r.statusCode).toBe(200);
@@ -180,9 +182,9 @@ describe.skipIf(!hasTestDb)("usernames and real names", () => {
     const bob = await t.login("student", "bob.old");
     await t.login("student", "carol");
     const patch = (id: string, body: object, cookie = owner.cookie) => inject("PATCH", `/api/users/${id}`, cookie, body);
-    const r = await patch(bob.id, { username: "Bob.New", realName: "鮑伯" });
+    const r = await patch(bob.id, { username: "Bob.New", names: nm("鮑伯", "Bao", "Bo") });
     expect(r.statusCode).toBe(200);
-    expect(r.json().user).toMatchObject({ username: "bob.new", name: "鮑伯" });
+    expect(r.json().user).toMatchObject({ username: "bob.new", name: "鮑伯", name_en: "Bo Bao", person: { zh_family: "鮑", zh_given: "伯", en_family: "Bao", en_given: "Bo", title: null } });
     const taken = await patch(bob.id, { username: "CAROL" });
     expect(taken.statusCode).toBe(409);
     expect(taken.json().error).toBe("這個使用者名稱已被使用。");
@@ -192,10 +194,10 @@ describe.skipIf(!hasTestDb)("usernames and real names", () => {
     expect((await login("bob.old")).statusCode).toBe(401);
     expect((await login("bob.new")).statusCode).toBe(200);
     // Names of the initial admin (and one's own) are editable; its role/disabled state still is not.
-    expect((await patch(owner.id, { realName: "實驗室管理員" })).json().user).toMatchObject({ name: "實驗室管理員", username: "owner" });
+    expect((await patch(owner.id, { names: { zhFamily: "實驗室", zhGiven: "管理員", enFamily: "Admin" } })).json().user).toMatchObject({ name: "實驗室管理員", name_en: "Admin", username: "owner" });
     expect((await patch(owner.id, { disabled: true })).statusCode).toBe(400);
     // Students cannot use the admin endpoint.
-    expect((await patch(bob.id, { realName: "x" }, bob.cookie)).statusCode).toBe(403);
+    expect((await patch(bob.id, { names: nm("某某") }, bob.cookie)).statusCode).toBe(403);
     const list = (await inject("GET", "/api/users", owner.cookie)).json().users as { id: string; username: string; name: string }[];
     expect(list.find(u => u.id === bob.id)).toMatchObject({ username: "bob.new", name: "鮑伯" });
   });

@@ -3,6 +3,7 @@
  * step's structured output data, and returns {ok, detail} with a 繁中 detail the fixer can act on.
  */
 import type { CheckResult, CheckSpec } from "./types.js";
+import { chartBlocks, lintMermaid, mermaidBlocks } from "../lib/slides/deck-visuals.js";
 
 export type Slide = { title: string; body: string; notes: string; index: number };
 
@@ -111,6 +112,48 @@ export const CHECKS: Record<string, CheckFn> = {
     });
     return bad.length ? { ok: false, detail: `這些頁面內容太多，投影片放不下（> ${maxChars} 字或 > ${maxBullets} 個條列）：${bad.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請精簡或移到講稿。` } : { ok: true, detail: "每頁份量適中" };
   },
+  /** Slide density: visible bullets and words per slide (code, charts, notes excluded; CJK chars count as ½ word). */
+  slide_density(text, { params }) {
+    const maxBullets = num(params.max_bullets, 6);
+    const maxWords = num(params.max_words, 75);
+    const allow = strs(params.allow_titles);
+    const bad: string[] = [];
+    for (const s of parseSlides(text)) {
+      if (allow.some((a) => titleMatches(a, s.title))) continue;
+      const w = visibleWords(s.body);
+      const b = (s.body.replace(/^```[\s\S]*?^```/gm, "").match(/^\s*(?:[-*+]|\d+\.) /gm) ?? []).length;
+      if (w > maxWords || b > maxBullets) bad.push(`第 ${s.index} 頁「${s.title}」（約 ${w} 字詞、${b} 個條列）`);
+    }
+    return bad.length ? { ok: false, detail: `這些頁面文字太多（上限約 ${maxWords} 字詞、${maxBullets} 個條列；中文 2 字算 1 詞）：${bad.join("、")}。保留一個重點，把細節移到講稿，改用圖、表或圖表呈現。` } : { ok: true, detail: "每頁文字量適中" };
+  },
+  /** Mermaid cells lint (```{mermaid}); a plain ```mermaid fence would show as raw code. */
+  diagram_syntax(text) {
+    const problems: string[] = [];
+    if (/^```\s*mermaid\b/m.test(text)) problems.push("Mermaid 必須寫成 ```{mermaid}（加大括號），```mermaid 會直接顯示成程式碼");
+    mermaidBlocks(text).forEach((code, i) => {
+      for (const issue of lintMermaid(code)) problems.push(`第 ${i + 1} 張圖：${issue}`);
+    });
+    for (const c of chartBlocks(text)) if (!c.spec) problems.push(`有一個 \`\`\`chart 區塊不是有效的圖表 JSON：${c.source.slice(0, 80)}`);
+    return problems.length ? { ok: false, detail: `圖表語法有問題：${problems.slice(0, 8).join("；")}。` } : { ok: true, detail: "圖與圖表語法正確" };
+  },
+  /** At least `min_ratio` of content slides carry a visual (diagram, chart, figure, image, table). */
+  visual_ratio(text, { params }) {
+    const ratio = num(params.min_ratio, 0.5);
+    const allow = strs(params.allow_titles);
+    const slides = parseSlides(text).filter((s) => !allow.some((a) => titleMatches(a, s.title)));
+    if (!slides.length) return { ok: true, detail: "（沒有內容頁）" };
+    const without = slides.filter((s) => !hasVisual(s.body));
+    const have = slides.length - without.length;
+    const need = Math.ceil(slides.length * ratio);
+    return have >= need ? { ok: true, detail: `${have}/${slides.length} 頁有視覺元素` } : { ok: false, detail: `只有 ${have}/${slides.length} 頁有圖、表或圖表（至少需要 ${need} 頁）。這些頁面只有文字：${without.slice(0, 8).map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請改用 Mermaid 流程圖、\`\`\`chart 圖表、論文圖（paper-fig）或表格。` };
+  },
+  /** Result of the slides playbook's screenshot QA (`data.visualQa`). */
+  visual_qa(_text, { data }) {
+    const qa = (data as { visualQa?: { failed?: number[]; scored?: number; vision?: boolean } } | null)?.visualQa;
+    if (!qa) return { ok: false, detail: "還沒有做逐頁視覺檢查。" };
+    const failed = qa.failed ?? [];
+    return failed.length ? { ok: false, detail: `這些頁面沒有通過視覺檢查：${failed.map((n) => `第 ${n} 頁`).join("、")}。` } : { ok: true, detail: `${qa.scored ?? 0} 頁都通過${qa.vision ? "截圖" : "版面量測"}檢查` };
+  },
   sections_present(text, { params }) {
     const want = strs(params.sections);
     const heads = [...[...text.matchAll(/^#{1,4}\s+(.+)$/gm)].map((m) => m[1]!.trim()), ...[...text.matchAll(/\\(?:chapter|(?:sub)*section)\*?\{([^}]*)\}/g)].map((m) => m[1]!.trim())];
@@ -173,6 +216,22 @@ export const CHECKS: Record<string, CheckFn> = {
     return d.status === "success" || (d.status === "partial" && !d.errors.length) ? { ok: true, detail: "LaTeX 編譯成功" } : { ok: false, detail: `LaTeX 編譯有錯誤：${d.errors.slice(0, 5).join("；") || d.status}` };
   },
 };
+
+/** Visible words of a slide body: code/diagram/chart blocks, HTML tags, images and Markdown syntax removed. */
+export function visibleWords(body: string): number {
+  const t = body
+    .replace(/^```[\s\S]*?^```/gm, " ")
+    .replace(/!\[[^\]]*\]\([^)]*\)(\{[^}]*\})?/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\{[.#][^}]*\}/g, " ")
+    .replace(/^:::.*$/gm, " ")
+    .replace(/\$[^$]*\$/g, " x ");
+  const cjk = (t.match(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/g) ?? []).length;
+  const latin = (t.replace(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/g, " ").match(/[A-Za-z0-9][\w'.%-]*/g) ?? []).length;
+  return Math.round(latin + cjk / 2);
+}
+
+export const hasVisual = (body: string) => /^```\{?\.?(mermaid|chart|dot)\b|!\[[^\]]*\]\([^)]+\)|^\s*\|.*\|\s*$|<img\b|<svg\b|\.big-number/m.test(body);
 
 export function runChecks(specs: CheckSpec[], text: string, data: unknown): CheckResult[] {
   return specs.map((s) => {

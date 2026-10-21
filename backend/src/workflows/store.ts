@@ -6,6 +6,7 @@ import type pg from "pg";
 import type { Db, Queryable } from "../db.js";
 import type { Artifact, RunRow, StepRow, StepSpec, Usage } from "./types.js";
 import { getWorkflowPlaybook } from "./playbooks/registry.js";
+import { asksOf } from "./questions.js";
 
 export type WorkflowEventType = "workflow" | "step" | "activity" | "verdict" | "artifact" | "log";
 
@@ -87,6 +88,8 @@ export async function runView(db: Queryable, r: RunRow) {
     stop_reason: r.stop_reason,
     error: r.error,
     question: r.question,
+    // Question cards (questions.ts): the pending one (`ask_pending`) and the answered ones (「修改答案」).
+    asks: Object.values(asksOf(r.state)).map((a) => ({ ...a, pending: r.state?.ask_pending === a.id && r.status === "awaiting_input" })),
     job: job ? { status: job.status, stage: job.stage } : null,
     created_at: r.created_at,
     updated_at: r.updated_at,

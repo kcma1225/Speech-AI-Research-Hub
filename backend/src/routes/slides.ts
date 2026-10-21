@@ -14,7 +14,9 @@ import { receiveUpload, type ReceivedUpload } from "../lib/slides/upload.js";
 import { cancelJob, enqueueJob, type SlideSourceType } from "../jobs/queue.js";
 import { insertVersion, nextVersionNumber, renderPayload } from "../lib/slides/versions.js";
 import { activateIfNewest, recordDeckPublished, registerSlideFinalizer } from "../jobs/slide-finalizer.js";
-import { findStudy, requireStudyEditor } from "../lib/studies/access.js";
+import { findStudy, requireStudyEditor, studyUrl } from "../lib/studies/access.js";
+import { recordActivity } from "../lib/studies/activity.js";
+import { SLIDES_GENERATE_JOB } from "../ai-jobs/slides/generate.js";
 import { registerStudyCleanup } from "../lib/studies/cleanup.js";
 import { registerSlidePreviewFinalizer } from "../jobs/slide-preview-finalizer.js";
 import { freeSlug, paperMeta, withPaper } from "../lib/slides/create.js";
@@ -308,17 +310,34 @@ const slides: FastifyPluginAsync = async app => {
 
   app.delete("/slides/:id", async request => {
     const { id } = parse(projectParams, request.params);
-    await requireDeckEditor(request, id);
+    const { user } = await requireDeckEditor(request, id);
     await transaction(app.db, async client => {
-      await lockProject(client, id);
+      const project = await lockProject(client, id);
       const jobs = await client.query<{ job_id: string }>(
         "SELECT v.job_id FROM slide_versions v JOIN jobs j ON j.id=v.job_id WHERE v.deck_id=$1 AND j.status IN ('queued','running')",
         [id],
       );
       for (const job of jobs.rows) await cancelJob(client, job.job_id);
       for (const preview of (await client.query<{ job_id: string }>("SELECT job_id FROM deck_previews WHERE deck_id=$1 AND job_id IS NOT NULL", [id])).rows) await cancelJob(client, preview.job_id);
+      // AI drafts reference the deck only by payload (no FK): stop them before they write into a deck that is gone.
+      const drafts = await client.query<{ id: string }>(
+        "SELECT id FROM jobs WHERE kind=$1 AND payload->>'deckId'=$2 AND status IN ('queued','running')",
+        [SLIDES_GENERATE_JOB, id],
+      );
+      for (const job of drafts.rows) await cancelJob(client, job.id);
       await client.query("DELETE FROM suggestions WHERE target_type='deck_source' AND target_id IN (SELECT id::text FROM deck_sources WHERE deck_id=$1)", [id]);
+      // Workflow runs list the decks they wrote; drop the dead link (the run's report keeps its text).
+      await client.query(
+        `UPDATE workflow_runs SET artifacts=(SELECT coalesce(jsonb_agg(a),'[]'::jsonb) FROM jsonb_array_elements(artifacts) a WHERE NOT (a->>'kind'='deck' AND a->>'id'=$1))
+          WHERE artifacts @> jsonb_build_array(jsonb_build_object('kind','deck','id',$1::text))`,
+        [id],
+      );
       await client.query("DELETE FROM decks WHERE id=$1", [id]);
+      const study = (await client.query<{ slug: string }>("SELECT slug FROM studies WHERE id=$1", [project.study_id])).rows[0];
+      await recordActivity(client, {
+        studyId: project.study_id, actorId: user.id, kind: "deck_deleted", title: project.title,
+        url: study ? studyUrl(study.slug, "decks") : null, targetType: "deck", targetId: id,
+      });
     });
     await Promise.all([
       app.storage.deletePrefix(keys.slideProjectPrefix(id)),

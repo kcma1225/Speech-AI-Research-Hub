@@ -1,17 +1,19 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
+  import { i18n } from "#lib/i18n.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
 
   /** Overlapping member avatars with a +N overflow chip; names are exposed as a tooltip and to screen readers. */
   let { people, max = 4, size = 28 }: { people: { id: string; name: string }[]; max?: number; size?: number } = $props();
   const shown = $derived(people.slice(0, max));
   const extra = $derived(people.length - shown.length);
-  const names = $derived(people.map(p => p.name).join("、"));
+  const names = $derived(people.map(p => displayName(p, "formal")).join(i18n.locale === "en" ? ", " : "、"));
 </script>
 
 <span class="inline-flex items-center" title={names}>
   <span class="sr-only">{names}</span>
   {#each shown as person, i (person.id)}
-    <span class="-ml-1 first:ml-0" style="z-index:{shown.length - i}"><Avatar name={person.name} {size} /></span>
+    <span class="-ml-1 first:ml-0" style="z-index:{shown.length - i}"><Avatar name={person.name} id={person.id} {size} /></span>
   {/each}
   {#if extra > 0}
     <span

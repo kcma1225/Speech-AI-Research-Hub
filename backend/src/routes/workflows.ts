@@ -11,13 +11,16 @@ import { aiFor } from "../ai/platform/index.js";
 import { pageContextSchema } from "./agent.js";
 import { closeWorkflowEventHub, getRun, lastWorkflowSeq, runView, workflowEventHub, workflowEventsAfter } from "../workflows/store.js";
 import {
-  addGuidance, approveWorkflow, cancelWorkflow, createWorkflow, deleteWorkflow, patchWorkflow, pauseWorkflow, publishWorkflowDeck, resumeWorkflow, revisePlan, startFromChat, sweepWorkflows, workflowDetail,
+  addGuidance, answerWorkflow, approveWorkflow, cancelWorkflow, createWorkflow, deleteWorkflow, patchWorkflow, pauseWorkflow, publishWorkflowDeck, resumeWorkflow, revisePlan, startFromChat, sweepWorkflows, workflowDetail,
 } from "../workflows/service.js";
+import { answerInput } from "../agent/ask.js";
 import { listWorkflowPlaybooks } from "../workflows/playbooks/index.js";
 import "../workflows/agent-tools.js";
+import { activeAgentRuns } from "../workflows/active.js";
 import type { RunRow } from "../workflows/types.js";
 
 const idParams = z.object({ id: z.uuid() });
+const answerBody = z.object({ card_id: z.string().min(1).max(80), answers: z.array(answerInput).max(6) });
 const uuid = z.uuid();
 const inputsSchema = z.object({
   study: z.string().max(80).optional(),
@@ -95,6 +98,15 @@ export default async function workflows(app: FastifyInstance) {
     )).rows;
     reply.header("Cache-Control", "no-store");
     return { workflows: await Promise.all(rows.map((r) => runView(app.db, r))) };
+  });
+
+  // Shell indicator 「N 個 Agent 執行中」 + its live overview (polled ~5 s while open): my active workflow runs and
+  // assistant runs that work or wait for me. Admin accounts have no workspace → always empty.
+  app.get("/workflows/active", async (request, reply) => {
+    const user = await requireUser(request);
+    reply.header("Cache-Control", "no-store");
+    const runs = user.role === "admin" ? [] : await activeAgentRuns(app.db, user.id);
+    return { runs, count: runs.length, needs_you: runs.filter((r) => r.needs_you).length };
   });
 
   app.get("/workflows/:id", async (request, reply) => {
@@ -195,6 +207,11 @@ export default async function workflows(app: FastifyInstance) {
     const user = await requireUser(request);
     const { id } = parse(idParams, request.params, "找不到這個工作流程。");
     return view(await addGuidance(app, user, id, parse(textInput, request.body).text));
+  });
+  app.post("/workflows/:id/answer", async (request) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params, "找不到這個工作流程。");
+    return view(await answerWorkflow(app, user, id, parse(answerBody, request.body)));
   });
   app.patch("/workflows/:id", async (request) => {
     const user = await requireUser(request);

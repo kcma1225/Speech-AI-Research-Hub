@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import { Tabs } from "bits-ui";
-  import { ArrowLeft, CircleAlert, Download, Expand, FileCode2, FilePen, FileSearch, Globe, History, Info, LoaderCircle, MessageSquareQuote, Play, Presentation, Send, Trash2 } from "@lucide/svelte";
+  import { DropdownMenu, Tabs } from "bits-ui";
+  import { ArrowLeft, CircleAlert, Download, Ellipsis, Expand, FileCode2, FilePen, FileSearch, Globe, History, Info, LoaderCircle, MessageSquareQuote, Play, Presentation, Send, Trash2 } from "@lucide/svelte";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { api, ApiError } from "#lib/api.ts";
@@ -15,6 +15,8 @@
   import Progress from "#lib/components/ui/Progress.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
+  import { menuContent, menuItem, menuSeparator } from "#lib/components/ui/menu.ts";
+  import DeleteDeckDialog from "#lib/components/slides/DeleteDeckDialog.svelte";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
   import SlidePlayer from "#lib/components/slides/SlidePlayer.svelte";
   import DraftState from "#lib/components/slides/DraftState.svelte";
@@ -116,6 +118,12 @@
   // Review version shown in the player: publish or discard it from here too.
   let publishing = $state(false);
   let discardOpen = $state(false);
+  let deleteOpen = $state(false);
+  async function showInfo() {
+    tab = "info";
+    await tick();
+    panel?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  }
   async function publishShown() {
     const v = shownVersion;
     if (!v || v.status !== "review") return;
@@ -253,6 +261,20 @@
       <Button variant="secondary" disabled={!canPlay} onclick={() => player?.fullscreen()}><Expand />{t("slides.fullscreen")}</Button>
       <Button variant="secondary" href={d.activeVersion ? d.project.playerUrl : undefined} disabled={!d.activeVersion}><Play />{t("slides.player")}</Button>
       {#if d.pdfUrl}<Button variant="primary" href={d.pdfUrl}><Download />PDF</Button>{/if}
+      {#if d.permissions.manage}
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-surface text-ink-2 hover:bg-surface-2 hover:text-ink" aria-label={t("crud.more")} title={t("crud.more")}>
+            <Ellipsis class="size-4" />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content align="end" sideOffset={6} class={menuContent}>
+              <DropdownMenu.Item class={menuItem} onSelect={() => void showInfo()}><Info />{t("crud.deck.info")}</DropdownMenu.Item>
+              <DropdownMenu.Separator class={menuSeparator} />
+              <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => (deleteOpen = true)}><Trash2 />{t("crud.deck.delete")}</DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      {/if}
     </div>
   </header>
 
@@ -366,7 +388,7 @@
             />
           </Tabs.Content>
           <Tabs.Content value="info" class="outline-none">
-            <InfoPanel detail={d} onChanged={load} />
+            <InfoPanel detail={d} onChanged={load} onDelete={() => (deleteOpen = true)} />
           </Tabs.Content>
         </div>
       </Tabs.Root>
@@ -388,5 +410,6 @@
       confirmLabel={t("slides.versions.discard")}
       onConfirm={discardShown}
     />
+    <DeleteDeckDialog bind:open={deleteOpen} deck={{ id: d.project.id, title: d.project.title }} studySlug={d.study?.slug ?? studySlug} />
   {/if}
 {/if}

@@ -11,6 +11,8 @@
   import CommandPalette from "#lib/components/shell/CommandPalette.svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import { ADMIN_HOME, adminMayOpen } from "#lib/nav.ts";
+  import { people } from "#lib/people.svelte.ts";
+  import NamesConfirmBanner from "#lib/components/people/NamesConfirmBanner.svelte";
 
   let { children } = $props();
 
@@ -22,6 +24,7 @@
     else {
       jobsStore.start();
       notificationsStore.start();
+      void people.ensure();
     }
   });
 </script>
@@ -35,6 +38,7 @@
       <main id="main" tabindex="-1" class="flex-1 outline-none px-4 pt-2 pb-[calc(96px+env(safe-area-inset-bottom))] sm:px-6 lg:px-0 lg:pt-7 lg:pb-10">
         <!-- A collapsed sidebar frees ~190px; wide screens give it to the content (max-width eases with the rail). -->
         <div class="mx-auto w-full max-w-[1280px] transition-[max-width] duration-[220ms] ease-[cubic-bezier(.2,.8,.2,1)] {sidebar.collapsed ? 'lg:max-w-[1600px]' : ''}">
+          {#if !page.url.pathname.startsWith("/settings")}<NamesConfirmBanner />{/if}
           {@render children()}
         </div>
       </main>

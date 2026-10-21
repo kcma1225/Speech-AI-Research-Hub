@@ -16,6 +16,7 @@ import { enqueueWorkflow } from "./jobs.js";
 import { emitRun, getRun, getSteps, insertSteps, insertWorkflowEvent, runView, stepView } from "./store.js";
 import { detectPlaybook, getWorkflowPlaybook } from "./playbooks/index.js";
 import { WorkflowEnv } from "./env.js";
+import { asksOf, cardAnswersText, validateCardAnswers } from "./questions.js";
 import { DEFAULT_BUDGET, FINISHED_STATUSES, type Criterion, type RunRow, type StepRow } from "./types.js";
 
 export const MAX_ACTIVE_PER_USER = 3;
@@ -217,7 +218,7 @@ export async function resumeWorkflow(app: FastifyInstance, user: CurrentUser, id
     } else if (r.status === "awaiting_input") {
       // Blocked during planning → plan again; blocked during execution (steps exist) → continue the steps.
       const hasSteps = (await getSteps(client, id)).length > 0;
-      await client.query("UPDATE workflow_runs SET status=$3, question=NULL, guidance=$2, updated_at=now() WHERE id=$1", [id, JSON.stringify(guidance), hasSteps ? "running" : "planning"]);
+      await client.query("UPDATE workflow_runs SET status=$3, question=NULL, guidance=$2, state = state - 'ask_pending', updated_at=now() WHERE id=$1", [id, JSON.stringify(guidance), hasSteps ? "running" : "planning"]);
     } else if (r.status === "partial" || r.status === "done" || r.status === "failed" || (r.status === "cancelled" && opts.more)) {
       const n = await reopenForMore(client, id);
       const budget = { ...r.budget, max_steps: r.budget.max_steps + 12, max_calls: r.budget.max_calls + 24, max_minutes: r.budget.max_minutes + 15, max_tokens: r.budget.max_tokens + 300_000 };
@@ -320,4 +321,61 @@ export async function sweepWorkflows(app: FastifyInstance) {
   for (const r of rows) await transaction(app.db, (client) => enqueueWorkflow(client, r.id, r.user_id, r.title)).catch(() => undefined);
   await app.db.query("DELETE FROM workflow_events e USING workflow_runs r WHERE r.id=e.run_id AND r.finished_at < now() - interval '7 days'").catch(() => undefined);
   return rows.length;
+}
+
+// ---------------------------------------------------------------- questions to the user
+
+/**
+ * Answers a question card (`state.asks[cardId]`, see `questions.ts`). The pending card → the run resumes (planning
+ * or running) from the step that asked. An answered card edited later (「修改答案」) → the asking step and its
+ * dependents run again (a finished run is reopened); not while the run is working (409).
+ */
+export async function answerWorkflow(app: FastifyInstance, user: CurrentUser, id: string, input: { card_id: string; answers: { id: string; value?: unknown; other?: string; skipped?: boolean }[] }) {
+  let logText = "";
+  await transaction(app.db, async (client) => {
+    const r = await ownRun(client, user, id, true);
+    const asks = asksOf(r.state);
+    const card = asks[input.card_id];
+    if (!card) throw notFound("找不到這張問題卡。");
+    const pending = r.state?.ask_pending === card.id && r.status === "awaiting_input";
+    if (!pending && !card.answers) throw conflict("這張問題卡已經不再需要回答。");
+    if (!pending && ["planning", "running", "verifying"].includes(r.status)) throw conflict("工作流程正在執行，請等它停下來（或先暫停）再修改答案。");
+    if (r.status === "cancelled") throw conflict("工作流程已停止，請重新開始一個。");
+    const answers = validateCardAnswers(card, input.answers);
+    const next = { ...card, answers, answered_at: new Date().toISOString(), ...(card.answers ? { edited: (card.edited ?? 0) + 1 } : {}) };
+    const state = { ...(r.state ?? {}), asks: { ...asks, [card.id]: next } } as Record<string, unknown>;
+    delete state.ask_pending;
+    const answerText = cardAnswersText(next);
+    const guidance = card.purpose === "blocked" ? [...r.guidance, { at: new Date().toISOString(), text: `（回答「${card.title.slice(0, 80)}」）\n${answerText}`.slice(0, 2000), applied: false }] : r.guidance;
+    logText = `${card.answers ? "已修改答案" : "收到你的回答"}：${card.title.slice(0, 80)}`;
+    if (pending) {
+      const hasSteps = (await getSteps(client, id)).length > 0;
+      await client.query("UPDATE workflow_runs SET status=$2, question=NULL, state=$3, guidance=$4, updated_at=now() WHERE id=$1", [id, hasSteps ? "running" : "planning", JSON.stringify(state), JSON.stringify(guidance)]);
+      await enqueueWorkflow(client, id, user.id, r.title);
+      return;
+    }
+    // Edited answers: re-run the asking step and everything after it.
+    const steps = await getSteps(client, id);
+    const keys = new Set<string>(card.step_key ? [card.step_key] : []);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const s of steps) if (!keys.has(s.key) && s.depends_on.some((d) => keys.has(d))) (keys.add(s.key), (grew = true));
+    }
+    for (const s of steps) if (keys.has(s.key) || s.kind === "final") await client.query("UPDATE workflow_steps SET status='pending', error=NULL, inputs = inputs || '{\"fix_issues\":[]}'::jsonb WHERE id=$1", [s.id]);
+    const finished = FINISHED_STATUSES.includes(r.status);
+    const planningAsk = !card.step_key && !steps.length;
+    const status = r.status === "awaiting_plan_approval" || r.status === "paused" ? r.status : planningAsk ? "planning" : "running";
+    const budget = finished ? { ...r.budget, max_steps: r.budget.max_steps + 10, max_calls: r.budget.max_calls + 20, max_minutes: r.budget.max_minutes + 15, max_tokens: r.budget.max_tokens + 200_000 } : r.budget;
+    await client.query(
+      `UPDATE workflow_runs SET status=$2, state=$3, guidance=$4, budget=$5, question=NULL, report=CASE WHEN $6 THEN NULL ELSE report END, finished_at=CASE WHEN $6 THEN NULL ELSE finished_at END,
+         stop_reason=CASE WHEN $6 THEN NULL ELSE stop_reason END, error=NULL,
+         criteria=CASE WHEN $6 THEN (SELECT coalesce(jsonb_agg(c || '{"status":"pending"}'::jsonb), '[]'::jsonb) FROM jsonb_array_elements(criteria) c) ELSE criteria END, updated_at=now() WHERE id=$1`,
+      [id, status, JSON.stringify(state), JSON.stringify(guidance), JSON.stringify(budget), finished],
+    );
+    if (status === "running" || status === "planning") await enqueueWorkflow(client, id, user.id, r.title);
+  });
+  for (const s of await getSteps(app.db, id)) await insertWorkflowEvent(app.db, id, "step", { step: stepView(s) });
+  await insertWorkflowEvent(app.db, id, "log", { level: "info", text: logText });
+  return emitRun(app.db, id);
 }

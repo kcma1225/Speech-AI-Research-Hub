@@ -3,11 +3,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyBaseLogger } from "fastify";
 import type { Db } from "./db.js";
+import { backfillPersonNames } from "./lib/users/person-name.js";
 import { backfillUsernames } from "./lib/users/username.js";
 
 /** Data steps that need application code; each runs right after its migration file, in the same transaction. */
 const DATA_STEPS: Record<string, (client: Pick<Db, "query">) => Promise<void>> = {
   "0103_usernames.sql": backfillUsernames,
+  "0112_person_names.sql": backfillPersonNames,
 };
 
 const MIGRATION_LOCK = 473921;

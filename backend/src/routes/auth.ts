@@ -5,7 +5,7 @@ import { transaction } from "../db.js";
 import { audit, clearSession, createSession, CURRENT_USER_COLUMNS, currentUser, requireUser, SESSION_COOKIE, sha256, toCurrentUser } from "../lib/auth.js";
 import { badRequest, forbidden, idParams, notFound, parse, unauthorized } from "../lib/http.js";
 import { mergePreferences, preferencesPatchSchema } from "../lib/preferences.js";
-import { realNameSchema } from "../lib/users/username.js";
+import { NAMES_HINT, personNamesSchema, personNamesUpdate } from "../lib/users/person-name.js";
 
 const password = z.string().max(4096).refine(value => value.trim().length >= 8, { message: "密碼至少需要 8 個字元。" });
 /** Sign in by remembered account id or by username (case-insensitive; `name` is a legacy alias of `username`). */
@@ -20,17 +20,15 @@ const loginInput = z
   .refine(data => Boolean(data.userId) !== Boolean(data.username));
 const profileInput = z
   .object({
-    /** Real name (真實姓名); `name` is a legacy alias. The username is changed only by an admin. */
-    realName: realNameSchema.optional(),
-    name: realNameSchema.optional(),
+    /** Structured names (中文姓/名, English family/given, 稱謂); saving them also confirms them. Username: admin only. */
+    names: personNamesSchema.optional(),
     theme: z.enum(["system", "light", "dark"]).optional(),
     locale: z.enum(["zh-TW", "en"]).optional(),
     preferences: preferencesPatchSchema.optional(),
     currentPassword: z.string().min(1).max(4096).optional(),
     newPassword: password.optional(),
   })
-  .refine(data => !data.newPassword || data.currentPassword, { path: ["currentPassword"] })
-  .transform(({ name, ...rest }) => ({ ...rest, realName: rest.realName ?? name }));
+  .refine(data => !data.newPassword || data.currentPassword, { path: ["currentPassword"] });
 
 const auth: FastifyPluginAsync = async app => {
   /** Real names + usernames for account hints remembered on the device. */
@@ -39,8 +37,8 @@ const auth: FastifyPluginAsync = async app => {
     const list = (ids ?? "").split(",").map(id => id.trim()).filter(Boolean);
     if (!list.length) return { accounts: [] };
     if (list.length > 10 || !list.every(id => z.uuid().safeParse(id).success)) throw badRequest();
-    const result = await app.db.query<{ id: string; name: string; username: string }>(
-      "SELECT id,name,username FROM users WHERE id=ANY($1::uuid[]) AND disabled_at IS NULL ORDER BY lower(name)",
+    const result = await app.db.query<{ id: string; name: string; name_en: string | null; username: string }>(
+      "SELECT id,name,name_en,username FROM users WHERE id=ANY($1::uuid[]) AND disabled_at IS NULL ORDER BY lower(name)",
       [list],
     );
     return { accounts: result.rows };
@@ -54,9 +52,9 @@ const auth: FastifyPluginAsync = async app => {
   app.post("/auth/login", async (request, reply) => {
     const data = parse(loginInput, request.body, "登入資訊不正確。");
     const result = data.userId
-      ? await app.db.query("SELECT id,name,username,password_hash,auth_mode FROM users WHERE id=$1 AND disabled_at IS NULL", [data.userId])
-      : await app.db.query("SELECT id,name,username,password_hash,auth_mode FROM users WHERE lower(username)=lower($1) AND disabled_at IS NULL", [data.username]);
-    const user = result.rows[0] as { id: string; name: string; username: string; password_hash: string; auth_mode: string } | undefined;
+      ? await app.db.query("SELECT id,name,name_en,username,password_hash,auth_mode FROM users WHERE id=$1 AND disabled_at IS NULL", [data.userId])
+      : await app.db.query("SELECT id,name,name_en,username,password_hash,auth_mode FROM users WHERE lower(username)=lower($1) AND disabled_at IS NULL", [data.username]);
+    const user = result.rows[0] as { id: string; name: string; name_en: string | null; username: string; password_hash: string; auth_mode: string } | undefined;
     if (!user || !(await verifyPassword(user.password_hash, data.password))) {
       await audit(request, user?.id ?? null, "login_failed", "user", user?.id ?? null, { ip: request.ip });
       throw unauthorized("登入資訊不正確。");
@@ -64,7 +62,7 @@ const auth: FastifyPluginAsync = async app => {
     if (user.auth_mode === "two_factor") throw forbidden("此帳號需要 Passkey 2FA；功能將於下一階段啟用。");
     await createSession(request, reply, user.id);
     await app.db.query("UPDATE users SET last_login_at=now() WHERE id=$1", [user.id]);
-    return { account: { id: user.id, name: user.name, username: user.username } };
+    return { account: { id: user.id, name: user.name, name_en: user.name_en, username: user.username } };
   });
 
   app.post("/auth/logout", async (request, reply) => {
@@ -74,7 +72,7 @@ const auth: FastifyPluginAsync = async app => {
 
   app.patch("/auth/profile", async (request, reply) => {
     const user = await requireUser(request);
-    const data = parse(profileInput, request.body, "請確認真實姓名（1–40 個字元）、目前密碼與偏好設定；新密碼不可只有空白。");
+    const data = parse(profileInput, request.body, `請確認姓名（${NAMES_HINT}）、目前密碼與偏好設定；新密碼不可只有空白。`);
     const currentToken = sha256(request.cookies[SESSION_COOKIE] ?? "");
     const updated = await transaction(app.db, async client => {
       const record = (await client.query<{ password_hash: string; preferences: unknown }>("SELECT password_hash,preferences FROM users WHERE id=$1 FOR UPDATE", [user.id])).rows[0];
@@ -82,7 +80,10 @@ const auth: FastifyPluginAsync = async app => {
       if (data.currentPassword !== undefined && !(await verifyPassword(record.password_hash, data.currentPassword))) {
         throw forbidden("目前密碼不正確。");
       }
-      if (data.realName !== undefined) await client.query("UPDATE users SET real_name=$1 WHERE id=$2", [data.realName, user.id]);
+      if (data.names !== undefined) {
+        const update = personNamesUpdate(data.names, 2);
+        await client.query(`UPDATE users SET ${update.sql},names_confirmed_at=now() WHERE id=$1`, [user.id, ...update.params]);
+      }
       if (data.theme !== undefined) await client.query("UPDATE users SET theme=$1 WHERE id=$2", [data.theme, user.id]);
       if (data.locale !== undefined) await client.query("UPDATE users SET locale=$1 WHERE id=$2", [data.locale, user.id]);
       if (data.preferences !== undefined) {
@@ -94,7 +95,7 @@ const auth: FastifyPluginAsync = async app => {
         await client.query("DELETE FROM sessions WHERE user_id=$1 AND token_hash<>$2", [user.id, currentToken]);
         await client.query("INSERT INTO audit_log(actor_id,action,target_type,target_id) VALUES($1,'profile_password_changed','user',$2)", [user.id, user.id]);
       }
-      if (data.realName !== undefined) {
+      if (data.names !== undefined) {
         await client.query("INSERT INTO audit_log(actor_id,action,target_type,target_id) VALUES($1,'profile_name_changed','user',$2)", [user.id, user.id]);
       }
       return toCurrentUser((await client.query(`SELECT ${CURRENT_USER_COLUMNS} FROM users u WHERE u.id=$1`, [user.id])).rows[0]);

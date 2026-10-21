@@ -297,7 +297,7 @@ run("workflow engine", () => {
       const block = /<data name="your_pages"[^>]*>\n([\s\S]*?)\n<\/data>/.exec(u)?.[1] ?? "";
       return [...block.matchAll(/^\d+\. (.+?)(?:（學生自填）)?$/gm)].map((x) => x[1]!);
     };
-    const write = (list: string[]) => list.map((title) => `## ${title}\n\n- 依據研究資料的重點\n\n::: {.notes}\n這一頁說明${title}的內容與資料來源，報告時大約一分鐘，重點放在研究資料裡實際記錄的進展與數字。\n:::`).join("\n\n");
+    const write = (list: string[]) => list.map((title) => `## ${title}\n\n- 依據研究資料的重點\n\n| 項目 | 狀態 |\n|---|---|\n| 資料 | 完成 |\n\n::: {.notes}\n這一頁說明${title}的內容與資料來源，報告時大約一分鐘，重點放在研究資料裡實際記錄的進展與數字。\n:::`).join("\n\n");
     let truncatedOnce = false;
     m.set("write_slides", (req) => {
       const list = pagesOf(req);
@@ -314,6 +314,13 @@ run("workflow engine", () => {
     expect(planned.plan!.outline!.length).toBe(11);
     expect(planned.criteria.find((c) => c.id === "pages")!.text).toContain("11 頁");
     await approveWorkflow(t.app, await asUser(alice.id), id, {});
+    // Student-owned pages (卡住, Idea card, 下週與要問): the run asks once, after the writers, with grounded options.
+    m.set("ask_options", JSON.stringify({ questions: [{ id: "p1", options: [{ label: "資料量不足", description: "我目前卡在標註資料太少。" }, { label: "訓練不穩", description: "loss 會發散。" }] }] }));
+    expect((await runWorkflow(deps(), id)).status).toBe("awaiting_input");
+    const asked = (await getRun(t.db, id))!;
+    expect(asked.state.ask_pending).toBe("student_pages");
+    const { answerWorkflow } = await import("../src/workflows/service.js");
+    await answerWorkflow(t.app, await asUser(alice.id), id, { card_id: "student_pages", answers: [{ id: "p1", value: ["o1"] }, { id: "p2", value: "我想試資料增強" }, { id: "p3", skipped: true }] });
     const out = await runWorkflow(deps(), id);
     stop = true;
     await worker;
@@ -321,12 +328,15 @@ run("workflow engine", () => {
     const w1 = steps.find((s) => s.key === "write_1")!;
     expect(w1.history[0]!.verdict.checks.find((c) => c.id === "slide_count")!.ok).toBe(false);
     expect(w1.status, JSON.stringify(w1.history.map((h) => h.verdict))).toBe("passed");
-    expect(out.status).toBe("done");
+    expect(out.status, JSON.stringify((await getRun(t.db, id))!.report?.issues)).toBe("done");
     const r = (await getRun(t.db, id))!;
     const deck = r.artifacts.find((a) => a.kind === "deck")!;
     expect(deck).toBeTruthy();
     const src = (await t.db.query<{ content: string }>("SELECT content FROM deck_sources WHERE deck_id=$1 AND path='index.qmd'", [deck.id])).rows[0]!.content;
     expect((src.match(/^## /gm) ?? []).length).toBe(11);
+    expect(src).toMatch(/## 卡住\n\n- 資料量不足：我目前卡在標註資料太少。/);
+    expect(src).toMatch(/## Idea card\n\n- 我想試資料增強/);
+    expect(src).toMatch(/## 下週與要問\n\n〔　這頁留給你自己寫/);
     expect(r.criteria.find((c) => c.id === "pages")!.status).toBe("pass");
     // Publishing is a separate, explicit action.
     expect((await t.db.query("SELECT 1 FROM slide_versions WHERE deck_id=$1", [deck.id])).rowCount).toBe(0);

@@ -1,9 +1,10 @@
 <script lang="ts">
   import { ArrowUpRight, BookOpen, CalendarClock, Check, ClipboardCheck, Flag, FlaskConical, ListTodo, PenLine, Plus, Presentation, Sparkles, UserPlus, UsersRound, Workflow } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
-  import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
+  import { formatDate, i18n, relativeTime, t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import { session } from "#lib/stores/session.svelte.ts";
+  import { displayName } from "#lib/people.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
   import Button from "#lib/components/ui/Button.svelte";
   import Card from "#lib/components/ui/Card.svelte";
@@ -25,6 +26,8 @@
   }
   $effect(load);
 
+  // English greets by given name ("Good evening, Ya-Ting"); Chinese by full name.
+  const greetingName = $derived(i18n.locale === "en" ? session.user!.person?.en_given || displayName(session.user!) : session.user!.name);
   const hour = Number(new Intl.DateTimeFormat("en", { hour: "numeric", hourCycle: "h23", timeZone: "Asia/Taipei" }).format(new Date()));
   const greeting: MessageKey = hour >= 5 && hour < 11 ? "dash.greeting.morning" : hour >= 11 && hour < 18 ? "dash.greeting.afternoon" : "dash.greeting.evening";
 
@@ -61,7 +64,7 @@
 
 <div class="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
   <div>
-    <h1 class="font-display text-[34px] leading-[1.05] sm:text-[46px]">{t(greeting, { name: session.user!.name })}</h1>
+    <h1 class="font-display text-[34px] leading-[1.05] sm:text-[46px]">{t(greeting, { name: greetingName })}</h1>
     <p class="mt-2 text-[14px] text-ink-3">{t("dash.subtitle")}</p>
   </div>
   <Button variant="primary" href="/studies/new" class="w-fit"><Plus />{t("dash.newStudy")}</Button>
@@ -212,7 +215,7 @@
                 <span class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl" style="background:var(--pill-{meta.tone});color:var(--pill-{meta.tone}-ink)"><Icon class="size-4" /></span>
                 <div class="min-w-0 flex-1">
                   <p class="text-[13.5px] leading-snug text-ink">
-                    {#if item.actor}<span class="font-semibold">{item.actor.name}</span>{/if}
+                    {#if item.actor}<span class="font-semibold">{displayName(item.actor)}</span>{/if}
                     <span class="text-ink-2">{kindLabel(item.kind)}</span>
                     <span class="font-medium break-words">{item.title}</span>
                   </p>
@@ -221,7 +224,7 @@
                     <span class="shrink-0">{relativeTime(item.at)}</span>
                   </p>
                 </div>
-                {#if item.actor}<span class="hidden sm:block"><Avatar name={item.actor.name} size={28} class="ring-0" /></span>{/if}
+                {#if item.actor}<span class="hidden sm:block"><Avatar name={item.actor.name} id={item.actor.id} size={28} class="ring-0" /></span>{/if}
               </a>
             </li>
           {/each}

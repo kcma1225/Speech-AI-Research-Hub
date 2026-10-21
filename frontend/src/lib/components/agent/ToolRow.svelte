@@ -10,7 +10,7 @@
   import WorkflowCard from "#lib/components/workflows/WorkflowCard.svelte";
 
   /** One tool call in the timeline: icon, verb + object, status, duration; expands to arguments and result. */
-  let { call, nested = false }: { call: ToolCall; nested?: boolean } = $props();
+  let { call, nested = false, bare = false }: { call: ToolCall; nested?: boolean; /** Job chip, workflow card and 復原 live in the turn's result chips. */ bare?: boolean } = $props();
   let open = $state(false);
   const Icon = $derived(toolIcon(call.tool));
   // Delete/remove summaries only know ids ("刪除待辦"); name the object from the resolved target.
@@ -86,14 +86,14 @@
     </button>
     {#if undone}
       <span class="tag mt-2.5 shrink-0">{t("agent.tool.undone")}</span>
-    {:else if call.undo === "available"}
+    {:else if call.undo === "available" && !bare}
       <button type="button" class="mt-0.5 inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full px-3 text-[12.5px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink disabled:opacity-50" title={t("agent.tool.undoTitle")} disabled={undoing} onclick={undo}><Undo2 class="size-3.5" />{t("agent.tool.undo")}</button>
     {/if}
   </div>
-  {#if draftJob}
+  {#if draftJob && !bare}
     <DraftJobChip deckId={draftJob.deckId} jobId={draftJob.jobId} />
   {/if}
-  {#if workflowId}
+  {#if workflowId && !bare}
     <div class="sm:ml-[38px]">{#key workflowId}<WorkflowCard id={workflowId} compact={nested} />{/key}</div>
   {/if}
   {#if links.length}

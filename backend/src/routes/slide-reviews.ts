@@ -6,6 +6,7 @@ import { deckPermissions, projectById, slideUrls } from "../lib/slides/access.js
 
 const reviewParams = z.object({ id: z.uuid() });
 const replyParams = z.object({ id: z.uuid(), reviewId: z.uuid() });
+const ownReplyParams = replyParams.extend({ replyId: z.uuid() });
 const body = z.object({ body: z.string().trim().min(1).max(10000) });
 const reviewInput = body.extend({ page: z.number().int().min(1).max(1000).optional(), versionId: z.uuid().optional() });
 
@@ -43,7 +44,7 @@ const slideReviews: FastifyPluginAsync = async app => {
       await app.notifier.notify([project.created_by], { kind: "slide", title: `${user.name} 新增了簡報審閱`, body: `${project.title}${where}：${input.body}`, url: slideUrls.player(project.slug) }, { pref: "reviews", tag: `review-${row.id}` })
         .catch(error => request.log.warn({ err: error }, "review notification failed"));
     }
-    return reply.code(201).send({ review: { id: row.id, body: input.body, created_at: row.created_at, author: user.name, author_id: user.id, page, versionId, replies: [] } });
+    return reply.code(201).send({ review: { id: row.id, body: input.body, created_at: row.created_at, edited_at: null, author: user.name, author_id: user.id, page, versionId, replies: [] } });
   });
 
   /** Reply by a member of the deck's study; notifies the review author. */
@@ -69,7 +70,63 @@ const slideReviews: FastifyPluginAsync = async app => {
       await app.notifier.notify([row.author_id], { kind: "slide", title: `${user.name} 回覆了你的審閱`, body: `${row.title}：${input.body}`, url: slideUrls.player(row.slug) }, { pref: "replies", tag: `reply-${row.id}` })
         .catch(error => request.log.warn({ err: error }, "reply notification failed"));
     }
-    return reply.code(201).send({ reply: { id: row.id, review_id: reviewId, body: input.body, created_at: row.created_at, author: user.name, author_id: user.id } });
+    return reply.code(201).send({ reply: { id: row.id, review_id: reviewId, body: input.body, created_at: row.created_at, edited_at: null, author: user.name, author_id: user.id } });
+  });
+
+  // Own content: only the author edits or deletes a review / reply (professors never edit students' replies and vice versa).
+  // Deleting a review removes its replies (FK cascade). Page/version of a review stay fixed.
+  app.patch("/slides/:id/reviews/:reviewId", async request => {
+    const user = await requireUser(request);
+    const { id, reviewId } = parse(replyParams, request.params);
+    const input = parse(body, request.body, "審閱內容須為 1–10000 字。");
+    const row = (await app.db.query<{ author_id: string }>("SELECT author_id FROM slide_reviews WHERE id=$1 AND deck_id=$2", [reviewId, id])).rows[0];
+    if (!row) throw notFound("審閱不存在。");
+    if (row.author_id !== user.id) throw forbidden("只能修改自己的審閱。");
+    const updated = (await app.db.query<{ body: string; edited_at: string }>(
+      "UPDATE slide_reviews SET body=$2,edited_at=now() WHERE id=$1 RETURNING body,edited_at",
+      [reviewId, input.body],
+    )).rows[0]!;
+    return { review: { id: reviewId, ...updated } };
+  });
+
+  app.delete("/slides/:id/reviews/:reviewId", async request => {
+    const user = await requireUser(request);
+    const { id, reviewId } = parse(replyParams, request.params);
+    const row = (await app.db.query<{ author_id: string }>("SELECT author_id FROM slide_reviews WHERE id=$1 AND deck_id=$2", [reviewId, id])).rows[0];
+    if (!row) throw notFound("審閱不存在。");
+    if (row.author_id !== user.id) throw forbidden("只能刪除自己的審閱。");
+    await app.db.query("DELETE FROM slide_reviews WHERE id=$1", [reviewId]);
+    return { ok: true };
+  });
+
+  app.patch("/slides/:id/reviews/:reviewId/replies/:replyId", async request => {
+    const user = await requireUser(request);
+    const { id, reviewId, replyId } = parse(ownReplyParams, request.params);
+    const input = parse(body, request.body, "回覆內容須為 1–10000 字。");
+    const row = (await app.db.query<{ author_id: string }>(
+      "SELECT p.author_id FROM slide_review_replies p JOIN slide_reviews r ON r.id=p.review_id WHERE p.id=$1 AND p.review_id=$2 AND r.deck_id=$3",
+      [replyId, reviewId, id],
+    )).rows[0];
+    if (!row) throw notFound("回覆不存在。");
+    if (row.author_id !== user.id) throw forbidden("只能修改自己的回覆。");
+    const updated = (await app.db.query<{ body: string; edited_at: string }>(
+      "UPDATE slide_review_replies SET body=$2,edited_at=now() WHERE id=$1 RETURNING body,edited_at",
+      [replyId, input.body],
+    )).rows[0]!;
+    return { reply: { id: replyId, review_id: reviewId, ...updated } };
+  });
+
+  app.delete("/slides/:id/reviews/:reviewId/replies/:replyId", async request => {
+    const user = await requireUser(request);
+    const { id, reviewId, replyId } = parse(ownReplyParams, request.params);
+    const row = (await app.db.query<{ author_id: string }>(
+      "SELECT p.author_id FROM slide_review_replies p JOIN slide_reviews r ON r.id=p.review_id WHERE p.id=$1 AND p.review_id=$2 AND r.deck_id=$3",
+      [replyId, reviewId, id],
+    )).rows[0];
+    if (!row) throw notFound("回覆不存在。");
+    if (row.author_id !== user.id) throw forbidden("只能刪除自己的回覆。");
+    await app.db.query("DELETE FROM slide_review_replies WHERE id=$1", [replyId]);
+    return { ok: true };
   });
 };
 

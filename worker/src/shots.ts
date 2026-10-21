@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import puppeteer, { type Browser } from "puppeteer-core";
 import { JobAbortedError, abortReason } from "./errors.js";
+import { SLIDE_METRICS, type SlideMetrics } from "./layout-metrics.js";
 import { DECK_SIZE, GOTO_SLIDE, openSettled, RELAYOUT, SLIDE_LIST, THUMBNAIL_CSS } from "./pdf.js";
 
 /**
@@ -14,7 +15,7 @@ export const MAX_SHOTS = 20;
 export const SHOTS_DIR = "_hub/shots/";
 export const SHOTS_MANIFEST = "_hub/shots.json";
 
-export type Shot = { index: number; h: number; v?: number; title?: string; file: string };
+export type Shot = { index: number; h: number; v?: number; title?: string; file: string; metrics?: SlideMetrics };
 export type ShotsManifest = { version: 1; width: number; height: number; total: number; truncated: boolean; pages: Array<Omit<Shot, "file">> };
 
 export type ShotOptions = { chromeBin: string; profileDir: string; signal: AbortSignal; timeoutMs?: number; budgetMs?: number; maxSlides?: number; width?: number };
@@ -73,6 +74,8 @@ export async function captureShots(url: string, dir: string, opts: ShotOptions):
       const file = path.join(dir, `${index}.webp`);
       await writeFile(file, await view.screenshot({ type: "webp", quality: 82, clip: { x: 0, y: 0, ...size } }));
       const shot: Shot = { index, h, file };
+      const metrics = (await view.evaluate(SLIDE_METRICS).catch(() => null)) as SlideMetrics | null;
+      if (metrics) shot.metrics = metrics;
       if (v !== undefined && v > 0) shot.v = v;
       if (typeof item.title === "string" && item.title.trim()) shot.title = item.title.trim().slice(0, 200);
       shots.push(shot);

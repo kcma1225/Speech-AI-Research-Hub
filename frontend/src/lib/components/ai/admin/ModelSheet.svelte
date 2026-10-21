@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import { RotateCcw, Trash2 } from "@lucide/svelte";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import { aiApi, toErrorBody, type AiErrorBody, type ModelProfile, type ProfileField } from "#lib/ai/admin.ts";
@@ -97,6 +98,7 @@
     }
   }
 
+  let confirmRemove = $state(false);
   async function remove() {
     if (!model) return;
     saving = true;
@@ -185,7 +187,7 @@
       {/if}
       {#if error}<AiErrorPanel compact {error} />{/if}
       <div class="flex flex-wrap justify-between gap-2 pt-1">
-        <Button variant="ghost" class="text-danger" disabled={saving || model.used_by.length > 0} onclick={remove}><Trash2 />{t("aiAdmin.models.delete")}</Button>
+        <Button variant="ghost" class="text-danger" disabled={saving || model.used_by.length > 0} onclick={() => (confirmRemove = true)}><Trash2 />{t("aiAdmin.models.delete")}</Button>
         <div class="flex gap-2">
           <Button variant="ghost" onclick={() => (open = false)}>{t("action.cancel")}</Button>
           <Button variant="primary" loading={saving} onclick={save}>{t("aiAdmin.models.save")}</Button>
@@ -194,3 +196,5 @@
     </div>
   {/if}
 </Sheet>
+
+<ConfirmDialog bind:open={confirmRemove} title={t("crud.model.deleteTitle", { name: model?.model_id ?? "" })} description={t("crud.model.deleteDescription")} confirmLabel={t("aiAdmin.models.delete")} onConfirm={remove} />

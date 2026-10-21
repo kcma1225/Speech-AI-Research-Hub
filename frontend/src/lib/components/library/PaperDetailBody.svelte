@@ -137,6 +137,20 @@
       if (fileInput) fileInput.value = "";
     }
   }
+  // Remove the current (newest) PDF file; an older one becomes the main PDF (DELETE /library/papers/:id/pdf/:fileId).
+  let removePdfOpen = $state(false);
+  async function removePdf() {
+    const file = paper?.files[0];
+    if (!paper || !file) return;
+    try {
+      paper = (await api.del<{ paper: PaperDetail }>(`/library/papers/${paper.id}/pdf/${file.id}`)).paper;
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+      throw e;
+    }
+    toasts.show(t("crud.paper.pdfRemoved"), "success");
+    onChanged?.();
+  }
   async function fetchPdf() {
     if (!paper) return;
     fetching = true;
@@ -291,6 +305,7 @@
           <Button href={pdfUrl(paper.id)} target="_blank"><ExternalLink />{t("library.pdf.openTab")}</Button>
           <Button variant="ghost" href={pdfUrl(paper.id, true)}><Download />{t("library.pdf.download")}</Button>
           {#if paper.permissions.edit}<Button variant="ghost" loading={uploading} onclick={() => fileInput?.click()}><FileUp />{t("library.pdf.replace")}</Button>{/if}
+          {#if paper.permissions.edit && paper.files.length}<Button variant="ghost" class="text-danger hover:text-danger" onclick={() => (removePdfOpen = true)}><Trash2 />{t("crud.paper.removePdf")}</Button>{/if}
         </div>
         <p class="text-[12px] text-ink-3">{t("library.pdf.privateNote")}</p>
       {:else}
@@ -381,5 +396,6 @@
   <PaperEditSheet bind:open={editOpen} {paper} onSaved={p => ((paper = p), onChanged?.())} />
   <AiDraftDialog bind:open={aiOpen} bind:markdown={aiMarkdown} note={aiNote} onInsert={canEditStudy ? insertAi : undefined} />
   <ConfirmDialog bind:open={removeOpen} title={t("library.removeConfirm", { title: paper.title })} description={t("library.removeHint")} confirmLabel={t("library.removeFromStudy")} onConfirm={remove} />
+  <ConfirmDialog bind:open={removePdfOpen} title={t("crud.paper.removePdfTitle", { name: paper.files[0]?.file_name ?? "PDF" })} description={t("crud.paper.removePdfDescription")} confirmLabel={t("crud.paper.removePdf")} onConfirm={removePdf} />
   <ConfirmDialog bind:open={deleteOpen} title={t("library.detail.deleteConfirm", { title: paper.title })} description={t("library.detail.deleteHint")} confirmLabel={t("library.detail.delete")} onConfirm={destroy} />
 {/if}

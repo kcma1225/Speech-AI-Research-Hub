@@ -10,7 +10,7 @@ export const verifyPassword = (hash: string, password: string) => argon2.verify(
  * Creates the initial admin (初始管理員; `role='admin'`, `is_owner`) on first boot from ADMIN_NAME / ADMIN_PASSWORD
  * (legacy OWNER_* accepted, see config.ts). When ADMIN_PASSWORD changes between boots, resets that account's password and
  * revokes its sessions; a password changed in Settings survives restarts as long as the env value stays the same.
- * ADMIN_NAME becomes the username (slugged if needed); the real name is 系統管理員. Both are only used on creation
+ * ADMIN_NAME becomes the username (slugged if needed); the names are 系統 / 管理員 (系統管理員) and English "Admin". Both are only used on creation
  * (the real name can be changed later in Settings, the username in user management).
  */
 export async function bootstrapAdmin(pool: Db, config: Config) {
@@ -24,7 +24,8 @@ export async function bootstrapAdmin(pool: Db, config: Config) {
       const taken = new Set((await client.query<{ u: string }>("SELECT lower(username) AS u FROM users")).rows.map(r => r.u));
       const username = USERNAME_RE.test(wanted) && !taken.has(wanted) ? wanted : uniqueUsername(usernameSlug(config.ADMIN_NAME) || "admin", taken, 1);
       await client.query(
-        "INSERT INTO users(username,real_name,password_hash,role,is_admin,is_owner) VALUES($1,'系統管理員',$2,'admin',true,true)",
+        `INSERT INTO users(username,real_name,zh_family,zh_given,en_family,names_confirmed_at,password_hash,role,is_admin,is_owner)
+         VALUES($1,'系統管理員','系統','管理員','Admin',now(),$2,'admin',true,true)`,
         [username, await hashPassword(config.ADMIN_PASSWORD)],
       );
     } else if (envChanged) {

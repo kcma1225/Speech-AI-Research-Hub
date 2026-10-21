@@ -1,18 +1,25 @@
 <script lang="ts">
-  import { ChevronRight, Layers } from "@lucide/svelte";
+  import { ChevronRight, Layers, ListChecks } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import ConsentCard from "./ConsentCard.svelte";
   import ToolRow from "./ToolRow.svelte";
-  import PlanChecklist from "./PlanChecklist.svelte";
+  import { latestPlan } from "#lib/agent/transcript.ts";
   import { cardKind } from "#lib/agent/tools.ts";
   import type { ToolCall } from "#lib/agent/types.ts";
 
-  /** Tool calls of one step: rows (consecutive finished reads grouped), then consent cards for pending calls. */
-  let { calls, compact = false, onDecide }: {
+  /**
+   * Tool calls of one step: rows (consecutive finished reads grouped), then consent cards for pending calls. Plan
+   * updates are one-line history rows here — the live checklist itself is rendered once per turn (PlanChecklist).
+   * `bare` rows leave job chips, workflow cards and 復原 to the turn's result chips.
+   */
+  let { calls, compact = false, bare = false, indent = true, onDecide }: {
     calls: ToolCall[];
     compact?: boolean;
+    bare?: boolean;
+    /** Align with the assistant's avatar column (off inside the turn's expanded view). */
+    indent?: boolean;
     onDecide: (call: ToolCall, decision: "approve" | "approve_conversation" | "deny", opts?: { reason?: string; editedArgs?: Record<string, unknown> }) => Promise<void>;
   } = $props();
 
@@ -27,9 +34,8 @@
     };
     for (const c of calls) {
       if (c.status === "pending_approval") continue;
-      // update_plan: the latest plan of the step as a checklist (earlier updates of the same step are superseded).
+      // update_plan: a history row (「更新計畫（2/5）」).
       if (c.tool === "update_plan" && c.status === "done") {
-        if (calls.some((o) => o.tool === "update_plan" && o.status === "done" && o.position > c.position)) continue;
         flush();
         out.push({ kind: "plan", call: c });
         continue;
@@ -62,12 +68,16 @@
 </script>
 
 {#if items.length}
-  <ul class="ml-11 flex flex-col">
+  <ul class="{indent ? 'ml-11' : ''} flex flex-col">
     {#each items as item (item.kind === "group" ? item.key : item.call.id)}
       {#if item.kind === "plan"}
-        <PlanChecklist call={item.call} />
+        {@const p = latestPlan([item.call])}
+        <li class="flex min-h-9 items-center gap-2.5 px-1 text-[13px] text-ink-3">
+          <span class="grid size-7 shrink-0 place-items-center rounded-full bg-surface-3"><ListChecks class="size-3.5" /></span>
+          <span class="tabular-nums">{t("agent.plan.updateRow", { done: p?.done ?? 0, total: p?.total ?? 0 })}</span>
+        </li>
       {:else if item.kind === "row"}
-        <ToolRow call={item.call} />
+        <ToolRow call={item.call} {bare} />
       {:else}
         <li>
           <button type="button" class="flex min-h-10 w-full items-center gap-2.5 rounded-xl px-1 text-left text-[13.5px] text-ink-2 hover:bg-surface-2" aria-expanded={!!openGroups[item.key]} onclick={() => (openGroups[item.key] = !openGroups[item.key])}>
@@ -77,7 +87,7 @@
           </button>
           {#if openGroups[item.key]}
             <ul class="ml-3 border-l border-line pl-2">
-              {#each item.calls as c (c.id)}<ToolRow call={c} nested />{/each}
+              {#each item.calls as c (c.id)}<ToolRow call={c} nested {bare} />{/each}
             </ul>
           {/if}
         </li>
@@ -87,7 +97,7 @@
 {/if}
 
 {#if pending.length}
-  <div class="flex flex-col gap-2.5 {compact ? '' : 'sm:ml-11'}">
+  <div class="flex flex-col gap-2.5 {compact || !indent ? '' : 'sm:ml-11'}">
     {#if pending.length > 1}
       <div class="flex flex-wrap items-center justify-between gap-2 px-1">
         <p class="text-[13px] font-medium text-ink-2">{t("agent.consent.several", { n: pending.length })}</p>

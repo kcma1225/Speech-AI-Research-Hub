@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { Bot, UsersRound } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
@@ -40,7 +41,7 @@
     <a href={task.study ? `/studies/${task.study.slug}?tab=tasks` : undefined} class="flex min-h-11 min-w-0 flex-1 flex-col justify-center gap-0.5 text-left sm:flex-row sm:items-center sm:gap-3">{@render body()}</a>
   {/if}
   {#if task.assignee}
-    <span title={task.assignee.name}><Avatar name={task.assignee.name} size={26} class="ring-0" /></span>
+    <span title={displayName(task.assignee)}><Avatar name={task.assignee.name} id={task.assignee.id} size={26} class="ring-0" /></span>
   {:else}
     <span class="grid size-[26px] shrink-0 place-items-center rounded-full border border-dashed border-line-2 text-[10px] text-ink-3" title={t("tasks.unassigned")} aria-label={t("tasks.unassigned")}>?</span>
   {/if}

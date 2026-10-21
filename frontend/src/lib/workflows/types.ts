@@ -36,6 +36,8 @@ export type Workflow = {
   stop_reason: string | null;
   error: { error: string; code?: string; hint?: string } | null;
   question: string | null;
+  /** Question cards the run asked (pending = waiting for the answer; answered ones can be edited). */
+  asks?: WorkflowAsk[];
   job: { status: string; stage: string | null } | null;
   created_at: string;
   updated_at: string;
@@ -77,3 +79,19 @@ export type Playbook = { id: string; title: string; title_en: string; descriptio
 export const ACTIVE: WorkflowStatus[] = ["planning", "awaiting_plan_approval", "running", "verifying", "awaiting_input", "paused"];
 export const WORKING: WorkflowStatus[] = ["planning", "running", "verifying"];
 export const FINISHED: WorkflowStatus[] = ["done", "partial", "failed", "cancelled"];
+
+/** A workflow question card (backend `questions.ts`), rendered with the `ask_user` AskCard. */
+export type WorkflowAsk = {
+  id: string;
+  title: string;
+  intro?: string;
+  questions: import("#lib/agent/types.ts").AskQuestion[];
+  step_key: string | null;
+  purpose: "input" | "blocked";
+  ai_suggested: boolean;
+  asked_at: string;
+  answers?: import("#lib/agent/types.ts").Answer[];
+  answered_at?: string;
+  edited?: number;
+  pending: boolean;
+};

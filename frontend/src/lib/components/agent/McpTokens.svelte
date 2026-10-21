@@ -58,6 +58,7 @@
   async function revoke() {
     if (!revoking) return;
     await api.del(`/agent/mcp-tokens/${revoking.id}`);
+    toasts.show(t("crud.mcp.revoked"), "success");
     await load();
   }
 </script>

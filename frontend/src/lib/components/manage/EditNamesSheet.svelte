@@ -4,44 +4,47 @@
   import Button from "#lib/components/ui/Button.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
+  import PersonNameFields from "#lib/components/people/PersonNameFields.svelte";
+  import { emptyNameForm, nameFormFrom, nameFormPayload, nameFormValid, sameNameForm, type NameForm } from "#lib/people.ts";
+  import { displayName } from "#lib/people.svelte.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { AdminUser } from "./manage.ts";
 
-  /** Admin edit of an account's real name (真實姓名) and username (登入用). */
+  /** Admin edit of an account's structured names and username (登入用). */
   let { open = $bindable(false), user, onSaved }: { open?: boolean; user: AdminUser | null; onSaved: (user: AdminUser) => void } = $props();
 
   const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
-  let realName = $state("");
+  let names = $state<NameForm>(emptyNameForm());
   let username = $state("");
   let usernameError = $state<string | null>(null);
   let formError = $state<string | null>(null);
   let busy = $state(false);
   $effect(() => {
     if (open && user) {
-      realName = user.name;
+      names = nameFormFrom(user.person);
       username = user.username;
       usernameError = formError = null;
     }
   });
 
-  const cleanName = $derived(realName.replace(/\s+/g, " ").trim());
   const normalized = $derived(username.trim().toLowerCase());
-  const nameOk = $derived([...cleanName].length >= 1 && [...cleanName].length <= 40);
+  const nameOk = $derived(nameFormValid(names));
+  const namesChanged = $derived(!!user && !sameNameForm(names, nameFormFrom(user.person)));
   const formatOk = $derived(USERNAME_RE.test(normalized));
-  const changed = $derived(!!user && (cleanName !== user.name || normalized !== user.username));
+  const changed = $derived(!!user && (namesChanged || normalized !== user.username));
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
     if (!user || !nameOk || !formatOk || !changed) return;
     busy = true;
     usernameError = formError = null;
-    const patch: { realName?: string; username?: string } = {};
-    if (cleanName !== user.name) patch.realName = cleanName;
+    const patch: { names?: ReturnType<typeof nameFormPayload>; username?: string } = {};
+    if (namesChanged) patch.names = nameFormPayload(names);
     if (normalized !== user.username) patch.username = normalized;
     try {
       const result = await api.patch<{ user: AdminUser }>(`/users/${user.id}`, patch);
       onSaved(result.user);
-      toasts.show(t("manage.members.namesSaved", { name: result.user.name }), "success");
+      toasts.show(t("manage.members.namesSaved", { name: displayName(result.user) }), "success");
       open = false;
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) usernameError = err.message;
@@ -55,13 +58,7 @@
 <Sheet bind:open side="right" title={t("manage.members.editTitle")} description={t("manage.members.editDesc")}>
   {#snippet children()}
     <form id="edit-names-form" class="flex flex-col gap-4 pt-1" onsubmit={submit} novalidate>
-      <TextField
-        label={t("manage.join.realName")}
-        bind:value={realName}
-        maxlength={40}
-        autocomplete="off"
-        error={nameOk ? null : t("manage.join.realNameInvalid")}
-      />
+      <PersonNameFields bind:value={names} showErrors idPrefix="admin-names" />
       <TextField
         label={t("manage.join.username")}
         bind:value={username}

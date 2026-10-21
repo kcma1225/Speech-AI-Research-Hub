@@ -93,8 +93,12 @@ describe("workflow helpers", () => {
     const count = steps[0]!.verify!.checks.find((c) => c.id === "slide_count");
     expect(count!.params).toEqual({ expected: 3 });
     const later = slides.laterSteps(outline, false).map((s) => s.key);
-    expect(later).toEqual(["write_1", "write_4", "write_7", "write_10", "assemble", "notes", "final"]);
-    expect(slides.laterSteps(outline, true).map((s) => s.key)).toContain("design");
+    // Student-owned pages (page 11) are asked right after the writers, before the assembly.
+    expect(later.slice(0, 6)).toEqual(["write_1", "write_4", "write_7", "write_10", "student_input", "assemble"]);
+    expect(later).toContain("notes");
+    expect(later.at(-1)).toBe("final");
+    expect(slides.laterSteps(outline, true).map((s) => s.key)).toContain("visual_qa");
+    expect(slides.laterSteps(outline, false).map((s) => s.key)).toContain("visual_qa");
   });
 
   it("injects speaker notes into the matching slides", () => {

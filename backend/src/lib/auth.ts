@@ -3,6 +3,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { secureCookies } from "../config.js";
 import { forbidden, unauthorized } from "./http.js";
 import { resolvePreferences, type Preferences } from "./preferences.js";
+import { toPerson, type PersonNames } from "./users/person-name.js";
 
 /**
  * Account kind. `admin` accounts are system-only (models, system settings, users, invitations) and never act in the
@@ -24,11 +25,18 @@ export type CurrentUser = {
   locale: Locale;
   /** Stored preferences with defaults filled in. */
   preferences: Preferences;
+  /** Structured names (lib/users/person-name.ts); `name` stays the Chinese full name. */
+  person: PersonNames;
+  /** False until the user saved (or joined with) structured names; the app then shows a one-time confirm banner. */
+  names_confirmed: boolean;
 };
 
 /** Columns of `users` (alias `u`) that make up a CurrentUser; pass the row to `toCurrentUser`. */
-export const CURRENT_USER_COLUMNS = "u.id,u.name,u.username,u.role,u.is_admin,u.is_owner,u.auth_mode,u.theme,u.locale,u.preferences";
-export const toCurrentUser = (row: Omit<CurrentUser, "preferences"> & { preferences: unknown }): CurrentUser => ({
+export const CURRENT_USER_COLUMNS =
+  "u.id,u.name,u.username,u.role,u.is_admin,u.is_owner,u.auth_mode,u.theme,u.locale,u.preferences,u.zh_family,u.zh_given,u.en_family,u.en_given,u.title,(u.names_confirmed_at IS NOT NULL) AS names_confirmed";
+export const toCurrentUser = (
+  row: Omit<CurrentUser, "preferences" | "person" | "names_confirmed"> & { preferences: unknown; names_confirmed?: boolean } & Partial<PersonNames>,
+): CurrentUser => ({
   id: row.id,
   name: row.name,
   username: row.username,
@@ -39,6 +47,8 @@ export const toCurrentUser = (row: Omit<CurrentUser, "preferences"> & { preferen
   theme: row.theme,
   locale: row.locale,
   preferences: resolvePreferences(row.preferences),
+  person: toPerson(row),
+  names_confirmed: row.names_confirmed ?? false,
 });
 
 export const SESSION_COOKIE = "hub_session";
@@ -98,6 +108,7 @@ const ADMIN_ALLOWED = [
   /^\/api\/users(\/|$)/,
   /^\/api\/invitations(\/|$)/,
   /^\/api\/join(\/|$)/,
+  /^\/api\/password-reset(\/|$)/,
   /^\/api\/admin(\/|$)/,
   /^\/api\/ai\/status(\/|$)/,
   /^\/api\/library\/settings$/,

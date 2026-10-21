@@ -13,8 +13,12 @@ export type Preferences = {
 
 export type CurrentUser = {
   id: string;
-  /** Real name (真實姓名), shown wherever the person appears. */
+  /** Chinese full name (中文姓名, from the structured names); display through `displayName` (#lib/people.svelte.ts). */
   name: string;
+  /** Structured names: 中文姓/名, English family/given, title code. */
+  person: import("./people.ts").Person;
+  /** False until the user confirmed backfilled names in Settings (shows a banner). */
+  names_confirmed: boolean;
   /** Login id (使用者名稱), lower-case. */
   username: string;
   role: Role;

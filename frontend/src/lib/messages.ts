@@ -19,6 +19,9 @@ import * as workflows from "./i18n/workflows.ts";
 import * as drafts from "./i18n/drafts.ts";
 import * as viewer from "./i18n/viewer.ts";
 import * as agentPlan from "./i18n/agent-plan.ts";
+import * as agentActivity from "./i18n/agent-activity.ts";
+import * as crud from "./i18n/crud.ts";
+import * as people from "./i18n/people.ts";
 
 const zh = {
   ...core.zh,
@@ -40,6 +43,9 @@ const zh = {
   ...drafts.zh,
   ...viewer.zh,
   ...agentPlan.zh,
+  ...agentActivity.zh,
+  ...crud.zh,
+  ...people.zh,
 };
 export type MessageKey = keyof typeof zh;
 
@@ -63,6 +69,9 @@ const en: Record<MessageKey, string> = {
   ...drafts.en,
   ...viewer.en,
   ...agentPlan.en,
+  ...agentActivity.en,
+  ...crud.en,
+  ...people.en,
 };
 
 export const messages: Record<"zh-TW" | "en", Record<MessageKey, string>> = { "zh-TW": zh, en };

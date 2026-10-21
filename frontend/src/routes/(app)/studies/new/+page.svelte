@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { goto } from "$app/navigation";
   import { ArrowLeft, FileInput, Info, Sparkles, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
@@ -132,7 +133,7 @@
             <ul class="flex flex-wrap gap-2">
               {#each ids as id (id)}
                 <li class="inline-flex h-10 items-center gap-2 rounded-full border border-line bg-surface-2 pr-1 pl-1.5 text-[13.5px]">
-                  <Avatar name={nameOf(id)} size={26} class="ring-0" />{nameOf(id)}
+                  <Avatar name={nameOf(id)} {id} size={26} class="ring-0" />{displayName({ id, name: nameOf(id) })}
                   <button type="button" class="grid size-8 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("studies.field.remove", { name: nameOf(id) })} onclick={() => remove(id)}><X class="size-3.5" /></button>
                 </li>
               {/each}
@@ -140,9 +141,9 @@
           {/if}
           {#if choices.length}
             {#if pick === "member"}
-              <Select bind:value={pickMember} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: u.name, hint: `@${u.username} · ${t(`role.${u.role}` as MessageKey)}` }))]} />
+              <Select bind:value={pickMember} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: displayName(u), hint: `@${u.username} · ${t(`role.${u.role}` as MessageKey)}` }))]} />
             {:else}
-              <Select bind:value={pickAdvisor} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: u.name, hint: `@${u.username}` }))]} />
+              <Select bind:value={pickAdvisor} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: displayName(u), hint: `@${u.username}` }))]} />
             {/if}
           {/if}
         </div>

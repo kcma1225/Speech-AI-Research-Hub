@@ -77,13 +77,13 @@ export async function slideDetail(db: Queryable, secret: string, project: SlideP
       "SELECT id,title,url,file_key,file_name,file_bytes,is_default,created_at FROM slide_references WHERE deck_id=$1 ORDER BY is_default DESC,created_at,id",
       [project.id],
     ),
-    db.query<{ id: string; body: string; created_at: string; author: string; author_id: string; page: number | null; versionId: string | null }>(
-      `SELECT r.id,r.body,r.created_at,u.name AS author,r.author_id,r.page,r.version_id AS "versionId"
+    db.query<{ id: string; body: string; created_at: string; edited_at: string | null; author: string; author_id: string; page: number | null; versionId: string | null }>(
+      `SELECT r.id,r.body,r.created_at,r.edited_at,u.name AS author,r.author_id,r.page,r.version_id AS "versionId"
          FROM slide_reviews r JOIN users u ON u.id=r.author_id WHERE r.deck_id=$1 ORDER BY r.created_at,r.id`,
       [project.id],
     ),
-    db.query<{ id: string; review_id: string; body: string; created_at: string; author: string; author_id: string }>(
-      "SELECT p.id,p.review_id,p.body,p.created_at,u.name AS author,p.author_id FROM slide_review_replies p JOIN slide_reviews r ON r.id=p.review_id JOIN users u ON u.id=p.author_id WHERE r.deck_id=$1 ORDER BY p.created_at,p.id",
+    db.query<{ id: string; review_id: string; body: string; created_at: string; edited_at: string | null; author: string; author_id: string }>(
+      "SELECT p.id,p.review_id,p.body,p.created_at,p.edited_at,u.name AS author,p.author_id FROM slide_review_replies p JOIN slide_reviews r ON r.id=p.review_id JOIN users u ON u.id=p.author_id WHERE r.deck_id=$1 ORDER BY p.created_at,p.id",
       [project.id],
     ),
     db.query<{ id: string; slug: string; title: string }>("SELECT id,slug,title FROM studies WHERE id=$1", [project.study_id]),
