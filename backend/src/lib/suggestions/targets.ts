@@ -40,6 +40,8 @@ export type SuggestionTarget = {
   writeText?(client: pg.PoolClient, targetId: string, text: string, actorId: string | null): Promise<void>;
   /** Runs in the decision transaction after hunks were applied (versions, activity, materialized text). */
   afterApply?(client: pg.PoolClient, targetId: string, info: AppliedInfo): Promise<void>;
+  /** Runs after the decision committed when hunks were applied (side effects outside the database, e.g. a re-render). Errors are ignored. */
+  afterCommit?(targetId: string, info: { accepted: number; actorId: string | null }): Promise<void> | void;
 };
 
 const targets = new Map<string, SuggestionTarget>();

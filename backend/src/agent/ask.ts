@@ -60,10 +60,18 @@ export type Question = z.infer<typeof questionObject>;
 
 export const askUserInput = z
   .object({
-    intro: z.string().trim().max(500).optional().describe("One short sentence shown above the questions"),
+    intro: z.string().trim().max(4000).optional().describe("Shown above the questions: one short sentence, or — when a question refers to a structure/plan/outline (「以下的架構」) — that full content (e.g. every page title + key points), one item per line"),
     questions: z.array(questionSchema).min(1).max(6),
   })
   .superRefine((v, ctx) => {
+    // A question about "the structure below" must show it: the user must never approve content they cannot see.
+    const refers = /(?:以下|下列|如下|上述|上面)的?\s*(?:\d+\s*(?:頁|張|點|項)\s*的?)?(?:架構|結構|大綱|計畫|規劃|頁面|內容|安排|流程|步驟)|這(?:個|份)(?:架構|結構|大綱|計畫|規劃)|(?:outline|structure|plan) (?:below|above)/i;
+    if (v.questions.some((q) => refers.test(q.prompt)) || (v.intro && refers.test(v.intro))) {
+      const intro = v.intro ?? "";
+      const items = intro.split("\n").filter((l) => /^\s*(?:[-*•]|\d{1,2}[.、)）]|第\s*\d+\s*頁)/.test(l)).length;
+      if (items < 3 && intro.length < 120)
+        ctx.addIssue({ code: "custom", path: ["intro"], message: "a question refers to content (以下／上述的架構…) that the card does not show: put the full content (every page title + key points, one per line) in `intro`" });
+    }
     const seen = new Set<string>();
     v.questions.forEach((q, i) => {
       if (seen.has(q.id)) ctx.addIssue({ code: "custom", path: ["questions", i, "id"], message: "duplicate id" });

@@ -73,6 +73,7 @@ export const zh = {
   "slides.upload.another": "再上傳一份",
   "slides.upload.close": "關閉",
   "slides.upload.background": "可以關閉視窗，處理會在背景繼續進行。",
+  "slides.upload.continuesInBackground": "上傳會在背景繼續，重新打開即可查看進度。",
   "slides.upload.tooLarge": "檔案超過上限 {size}。",
   "slides.upload.needFile": "請選擇簡報檔案。",
 
@@ -449,6 +450,7 @@ export const en: Record<keyof typeof zh, string> = {
   "slides.upload.another": "Upload another",
   "slides.upload.close": "Close",
   "slides.upload.background": "You can close this; processing continues in the background.",
+  "slides.upload.continuesInBackground": "The upload continues in the background; reopen this to see its progress.",
   "slides.upload.tooLarge": "The file exceeds the {size} limit.",
   "slides.upload.needFile": "Choose a deck file.",
 

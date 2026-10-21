@@ -12,6 +12,7 @@ import "./interview.js";
 import "./ask.js";
 import "./context-reads.js";
 import "./more-writes.js";
+import "./plan.js";
 
 export * from "./registry.js";
 export { setAgentSearchProvider, type AgentSearchHit, type AgentSearchProvider, type AgentSearchQuery } from "./search.js";

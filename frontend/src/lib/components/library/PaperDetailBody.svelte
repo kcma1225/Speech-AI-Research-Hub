@@ -25,6 +25,7 @@
   import CitationBox from "./CitationBox.svelte";
   import PaperEditSheet from "./PaperEditSheet.svelte";
   import TagInput from "./TagInput.svelte";
+  import { uploadMdImage } from "#lib/components/doc-import/api.ts";
   import { STATUSES } from "./StatusPill.svelte";
 
   /**
@@ -51,6 +52,8 @@
   let citeKey = $state("");
   let notesLayout = $state<"split" | "edit" | "preview">(session.user?.preferences.editor.layout ?? "split");
   const canEditStudy = $derived(Boolean(study?.canEdit && sp));
+  /** Reading-note images live with the study (same store as note / summary images). */
+  const uploadNoteImage = (file: File) => uploadMdImage(`study:${study!.id}`, file);
 
   async function load() {
     try {
@@ -318,7 +321,7 @@
       {#if aiBusy}<p class="flex items-center gap-2 text-[12.5px] text-ink-3"><Spinner />{t("library.ai.working")}</p>{/if}
       {#if sp}
         {#if canEditStudy}
-          <div class="min-h-56"><MarkdownEditor bind:value={notes} bind:layout={notesLayout} label={t("library.notes")} fontSize={session.user?.preferences.editor.fontSize ?? 15} /></div>
+          <div class="min-h-56"><MarkdownEditor bind:value={notes} bind:layout={notesLayout} label={t("library.notes")} fontSize={session.user?.preferences.editor.fontSize ?? 15} imageUpload={uploadNoteImage} /></div>
           <div class="flex flex-wrap items-center justify-end gap-2">
             <span class="mr-auto text-[12px] text-ink-3">
               {#if dirty}{t("library.notes.unsaved")}{:else if sp.notes_updated_at}{t("library.notes.updated", { name: sp.notes_updated_by ?? "", time: relativeTime(sp.notes_updated_at) })}{/if}

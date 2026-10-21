@@ -113,6 +113,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   await app.register((await import("./routes/agent.js")).default, { prefix: "/api" }); // agent + memories + MCP (M3)
   await app.register((await import("./routes/agent-attachments.js")).default, { prefix: "/api" }); // assistant attachments (uploads + picker)
   await app.register((await import("./routes/doc-import.js")).default, { prefix: "/api" }); // document import (Magika) + Markdown images
+  await app.register((await import("./routes/workflows.js")).default, { prefix: "/api" }); // orchestrator → sub-agent workflows (engine in ai-worker)
 
   return app;
 }

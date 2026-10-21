@@ -7,3 +7,4 @@ import "../ai-jobs/library/import-job.js";
 import "../ai-jobs/slides/register.js";
 import "../lib/search/index-job.js";
 import "../ai-jobs/meetings/register.js";
+import "../ai-jobs/workflows/register.js";

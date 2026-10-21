@@ -145,7 +145,8 @@ Defined in `backend/src/lib/storage.ts` `keys`; the worker receives full keys in
 | `agent/<conversationId>/<toolCallId>-<n>.jpg` | page images a tool returned to the model (`view_paper_pages`; `tool_calls.result.images[{key,mediaType,label}]`, never in API views); deleted with the conversation |
 | `agent/<conversationId>/uploads/<uploadId>.<ext>` | file uploaded into an assistant conversation (`agent_uploads.object_key`; documents keep their extension, images png/jpg/webp); deleted with the conversation |
 | `library/imports/<batchId>/upload.pdf` | PDF of an unconfirmed PDF import (moved to `library/papers/…` on confirm, deleted on cancel) |
-| `md-images/<studyId>/<imageId>.<png\|jpg\|gif\|webp>` | image inserted into a note / the study summary (`md_images.object_key`), served by `GET /api/md-images/:id`; the prefix is removed when the study is deleted (cleanup hook `md-images`) |
+| `md-images/<studyId>/<imageId>.<png\|jpg\|gif\|webp>` | image inserted into a note / the study summary / paper reading notes / a meeting draft (`md_images.object_key`), served by `GET /api/md-images/:id`; the prefix is removed when the study is deleted (cleanup hook `md-images`) |
+| `md-images/_drafts/<userId>/<imageId>.<ext>` | draft image from the `/studies/new` editor (`md_images.study_id` NULL); moved under `md-images/<studyId>/` when the study is created, else swept after 24 h |
 
 ## Jobs
 
@@ -155,7 +156,7 @@ touching a shared constraint; each consumer must claim only the kinds it handles
 a module adding a kind for another consumer must add a kind filter to the worker's claim). Core kinds: `slide_render`,
 `media_transcode` (meeting media; finalizer in `lib/meetings/media.ts`). Meetings adds `ai_meeting_transcribe` and `ai_meeting_analyze` (ai-worker, see "Meetings"). Slides adds `slide_preview` (worker; claimed
 only when no other claimable job is waiting: `ORDER BY (kind = 'slide_preview'), created_at`) and `ai_slides_generate` (ai-worker).
-Search adds `ai_search_index` (ai-worker, see "Search"). LaTeX adds `latex_compile` (latex-runner only; payload/manifest/result in
+Search adds `ai_search_index` (ai-worker, see "Search"). Workflows add `ai_workflow` (ai-worker, see "Workflows"). LaTeX adds `latex_compile` (latex-runner only; payload/manifest/result in
 `backend/src/lib/latex/contract.ts` = `latex-runner/README.md` "Job contract"; enqueued with `created_by` NULL and `max_attempts` 2, so it
 stays out of the jobs tray; finalizer `jobs/latex-finalizer.ts`, see "LaTeX").
 
@@ -230,7 +231,9 @@ type SlidePreviewResult  = { entryHtml: string; fileCount: number; quartoVersion
   shots?: { count: number; total?: number; width?: number; height?: number; truncated?: boolean; error?: string /* capture failed: count 0 */ } };
 // kind = "ai_slides_generate" (ai-worker, role `slides`, max_attempts 2; src/ai-jobs/slides/generate.ts)
 type SlidesGeneratePayload = { deckId: string; userId: string; mode: "progress" | "paper_report"; instructions?: string; fileName?: string /* jobs-tray label */ };
-type SlidesGenerateResult  = { revision: number; previewId: string | null; valid: boolean | null /* null: preview did not finish in 4 min */; fixed: boolean; pages: number; visualFixes?: number };
+type SlidesGenerateResult  = { revision: number; previewId: string | null; valid: boolean | null /* null: preview did not finish in 4 min */; fixed: boolean; pages: number;
+  expectedPages?: number; continued?: number /* continuation rounds */; partial?: boolean; warning?: string /* 繁中, shown by the UI */;
+  publishedVersion?: number /* automatic v1 */; visualFixes?: number };
 ```
 
 `slide_preview` = Quarto → revealjs HTML only (extract + validate the ZIP like `slide_render`, drop `_quarto.yml`, `quarto render
@@ -243,14 +246,24 @@ the worker has no internet) and screenshots every slide with puppeteer (`worker/
 1280 px at the deck ratio, WebP q82, ≤ 20 slides / 30 s); a capture failure only sets `shots.error` (the preview stays ready).
 `enqueuePreview(…, {shots})` does not reuse a same-revision preview without shots; a plain request reuses one with shots.
 Progress drafts also get recent meeting feedback of the study (`meeting_study_drafts.feedback_md` and `meeting_feedback`,
-last 60 days). `ai_slides_generate` stages (`jobs.stage`): `context` → `generating` → `writing` → `validating` → (`fixing` → `validating`) → `done`
+last 60 days). `ai_slides_generate` stages (`jobs.stage`): `context` → `generating` → (`continuing`)* → `writing` → `validating` → (`fixing` → `validating`) → (`visual_check`) → (`publishing`) → `done`
 (`waiting_llm` while the role is down). It re-checks that `userId` is still an owner/member of the deck's study (AI acts with the
 caller's permissions), gathers context (`lib/slides/ai-context.ts`), streams `ai.chatStream("slides", …)`, writes the cleaned body
 under the fixed Lab-Hub YAML into the tree's entry file (`origin='ai'`), queues a preview and waits for it; on a render failure it
 feeds the log back to the model **once** and re-validates. When role `slides` has vision the validation previews capture shots and,
 after a successful render, one **visual self-check** (stage `visual_check`, `lib/vision/slides.ts` `visualSelfFix`, ≤ 4000 output
 tokens) applies the verified `find/replace` fixes of high/medium `overflow|crowding|font_size` issues, re-renders, and reverts
-when that render fails (`visualFixes` = fixes kept). Any error skips the check.
+when that render fails (`visualFixes` = fixes kept). Any error skips the check (logged, never shown).
+**Page plan + truncation guard**: `expectedPages(mode, instructions)` = an explicit 「N 頁」/"N slides" in the instructions, else
+the highest number of a numbered structure (≥ 3 items), else the format default (progress 8, paper 13); the user's structure
+overrides the fixed Lab-Hub page plan in the prompt. When the reply has < 80 % of the planned `## ` pages or stopped on
+`max_tokens`/`content_filter`/`other` (the last slide is then dropped and rewritten), the job sends up to 3 continuation turns
+(assistant = body so far, user = 「從第 N 頁接著寫…」) and appends only new titles. Still ≤ 1 page of ≥ 3 → the job fails
+(`AiJobInputError`, source untouched); still short → the draft is written with `partial: true` + `warning`. The render fix is
+rejected when it returns fewer pages. **Automatic v1**: a complete (not partial) draft whose preview rendered is published through
+`lib/slides/publish.ts` `publishTree` (same as POST `/source/publish`) when the deck has no version yet and the tree is still at
+the draft's revision. **Notifications**: kind `slide` (push pref `slideRendered`), url `/studies/<slug>/decks/<id>`, on success
+(「AI 簡報草稿完成」/「…只完成一部分」) and on the final failure (「AI 簡報草稿失敗」, `ai-jobs/slides/register.ts`).
 
 Media stages (shown to users, 繁中): `排隊中` → `分析媒體` → `音訊轉碼` → `上傳結果` → `完成`. The worker downloads every source,
 sums the ffprobe durations, probes the first source's streams (`codec_type,attached_pic`; cover art is not video), fails with
@@ -434,10 +447,16 @@ Extraction runs in-process (≈ 0.1–0.4 s per file; first call loads the model
 | GET `/doc-import/formats` | user | `{formats:[{format, extensions}], accept /* for <input accept> */, maxBytes}` |
 | POST `/doc-import` (multipart: `mode` markdown\|condense, `purpose` study_summary\|note, `study_id?`, file; a legacy `style` is ignored) | user; with `study_id`: study editor | stateless → `{markdown, document: {filename, format, detected:{label,score}, title, chars, truncated, pages?, warnings}}`. `condense`: role `writing` rewrites the text (≤ 24 000 chars of input) into a sectioned summary (the model picks bullets for lists of facts, short prose for narrative) or the note structure; 503 `llm_unavailable` when the role is down |
 | POST `/studies/:ref/summary/import` (multipart: `mode`, `placement` append\|replace, file) | study editor | → 201 `{suggestion, document}`: a **`study_summary` suggestion** (title 「從檔案匯入：<file>」 `source:user`, or 「AI 摘要文件：<file>」 `source:ai`); append keeps the current text, replace (condense) merges it into the new version. Never writes directly |
-| POST `/md-images` (multipart: `scope` = `study:<id>` \| `note:<id>`, file ≤ 10 MB) | study editor | Magika must say png/jpeg/gif/webp (SVG refused) → 201 `{image:{id, url:"/api/md-images/<id>"}}`; identical bytes in the same study → 200 with the existing image |
-| GET `/md-images/:id` | user | the image (`Content-Type` from the row, `nosniff`, sandbox CSP, `private, immutable`) |
+| POST `/md-images` (multipart: `scope` = `study:<id>` \| `note:<id>` \| `draft`, file ≤ 10 MB) | study editor (`draft`: any user) | Magika must say png/jpeg/gif/webp (SVG refused) → 201 `{image:{id, url:"/api/md-images/<id>"}}`; identical bytes in the same study (or the caller's drafts) → 200 with the existing image. A `draft` upload first sweeps drafts older than 24 h |
+| GET `/md-images/:id` | user (draft: its uploader only, else 404) | the image (`Content-Type` from the row, `nosniff`, sandbox CSP, `private, immutable`) |
 
-Table `md_images` (`0106_md_images.sql`): `study_id` (cascade), `note_id?`, `object_key`, `mime`, `bytes`, `sha256`, `original_name`, `created_by`.
+Table `md_images` (`0106_md_images.sql`, `0108_md_image_drafts.sql`): `study_id?` (cascade; NULL = draft), `note_id?`, `object_key`, `mime`, `bytes`, `sha256`, `original_name`, `created_by`.
+**Draft images** (`lib/md-images/drafts.ts`): `/studies/new` has no study yet, so its editor uploads with scope `draft`
+(key `md-images/_drafts/<userId>/<id>.<ext>`, uploader-only). POST `/studies` claims the caller's drafts referenced by
+`summary_md` (`/api/md-images/<id>`): inside the create transaction the objects are copied to `md-images/<studyId>/…` and the
+rows get `study_id` + the new key; the old objects are deleted after commit (the copies on rollback). The URL never changes.
+Unclaimed drafts expire after 24 h (swept on the next draft upload). Image upload is on in every Markdown editor: notes
+(`note:<id>`), study summary / paper reading notes / meeting drafts (`study:<id>`), new study (`draft`).
 Frontend: `components/doc-import/` (`DocImportSheet` — file drop, mode/placement; `SummaryReview` — banner
 「有 N 項研究簡述的建議待審」 + sheet with `SuggestionPanel` for `study_summary` suggestions on the overview; `api.ts`).
 
@@ -531,7 +550,9 @@ type PreviewInfo = {
 
 Suggestion target `deck_source` (`lib/slides/suggest-target.ts`, plain text): readers = everyone signed in, decide = study
 owner/member; accepting writes `deck_sources.content`, bumps the file `version` and the tree `revision`; `url` =
-`/studies/<slug>/decks/<deckId>/edit?file=<fileId>`. Deleting a file or deck deletes its suggestions.
+`/studies/<slug>/decks/<deckId>/edit?file=<fileId>`. Deleting a file or deck deletes its suggestions. After an accepted decision
+commits (`SuggestionTarget.afterCommit`), a preview of the deck is queued (not awaited), so changes accepted from the assistant /
+viewer / MCP show on the deck page's draft preview.
 AI context (`ai-context.ts`): progress = study title/summary/current stage, stages, milestones (open + done in 30 days), tasks
 done in 21 days + open, the 5 latest notes (when `notes` exists), the 6 latest reviews of the study's other decks; paper = the
 library paper (`papers` + `record.authors`, abstract, PDF text of `pdf_key`) or `metadata.paper`, plus the deck's first reference
@@ -1001,7 +1022,7 @@ Tables (`0070_agent.sql`):
   The transcript is always valid: every assistant `tool_use` gets one `tool` message with a result per call.
 - `agent_runs` (`status running|awaiting_approval|awaiting_llm|done|cancelled|failed`, `step`/`max_steps` 25, `tainted` +
   `taint_sources` (provenance labels), `autopilot_writes`, tokens, `active_ms`, `stop_reason
-  limit_steps|limit_time|limit_tokens|repeat|expired|cancelled|superseded`, `error {error,code,hint}`, `llm_waits`,
+  limit_steps|limit_time|limit_tokens|limit_output|repeat|stuck|expired|cancelled|superseded`, `error {error,code,hint}`, `llm_waits`,
   `next_retry_at`, lease `lease_owner/lease_expires_at`; also `awaiting_input` = ended after an `ask_user` card, `superseded` =
   cancelled by an edit / a new message).
 - `tool_calls` (`message_id`+`position`, `provider_call_id`, `tool`, `args`, `edited_args`, `risk read|write|destructive`,
@@ -1018,14 +1039,21 @@ Tables (`0070_agent.sql`):
 1. Open step (last assistant message with `tool_use` and no tool message): run its `approved` calls in order; if any call is
    `pending_approval` → run `awaiting_approval` and the executor ends (no open model request); otherwise append the tool message.
 2. Limits: 25 steps, 10 min active time, 400 k tokens per run, 20 autopilot writes, the same tool + args 3× → stop with a
-   `notice` message (`kind` = stop reason; the UI offers 「繼續」 = `POST …/continue`).
+   `notice` message (`kind` = stop reason; the UI offers 「繼續」 = `POST …/continue`). At the step / time limit the model
+   first gets one **wrap-up** call (`toolChoice: "none"`, hidden prompt: what is done, what is left, 「繼續」; tool calls in
+   it are dropped). Loop guards (`src/agent/guards.ts`): an identical read repeated once gets a 「完全相同」 note appended to
+   its result; the 3rd failed call in a row (unknown tool, bad args, tool error; denials don't count) gets a 「換個方法」 note,
+   the 6th stops the run (`stuck`).
 3. Model call: role **`assistant`** (`ai.chatStream`), system prompt (+ memories block when on) + transcript + tools of the
    conversation mode. Page context is a `<page_context trust="hint">` text block **in the user message**. Deltas are
    batched into `agent_events` (~100 ms). `llm_unavailable` / retryable AI errors → `awaiting_llm` (backoff 20 s, 40 s, 80 s,
    160 s, 300 s; then `failed`; `ai.onStatus` → retry at once). Non-retryable → `failed` with `{error, code, hint}`.
+   `context_too_long` before any output → forced compaction (keep the last user turn and the last tool result) and one retry.
 4. Tool calls of the step: unknown tool / invalid JSON / zod failure → `failed` (the model sees the error, no card); a call
    identical to one the user denied in this run → auto-`denied`. **Reads run first** (so the taint they cause applies to the
-   writes of the same step), then each write: `precheck` → `target()` (403/404 here fail the call without asking) → policy.
+   writes of the same step) — local reads concurrently (≤ 4, `readConcurrency`), then open-world reads one by one (their
+   policy sees the taint of the local reads) — then each write: `precheck` → `target()` (403/404 here fail the call without
+   asking) → policy.
 5. Policy (`src/agent/policy.ts`, deny-first): `alwaysAsk` (memory) and `destructive` always ask in every mode; open-world
    tools ask once the run is tainted (`outbound`); reads run; a grant for (tool, target study) runs (`conversation_grant`);
    autopilot runs writes unless tainted (`tainted`) or over the cap (`autopilot_limit`); otherwise ask (`write`).
@@ -1034,10 +1062,13 @@ Tables (`0070_agent.sql`):
    「依據：〈…〉」). Study reads (`get_study`, `list_studies`) are untrusted only when a listed study was created by someone
    else or has another owner/member (advisors cannot edit, so a student + advisor study does not taint autopilot).
 7. Tool results go back as `<tool_result tool=… trust="untrusted|user" source=…>` with an injection notice; closing tags are
-   escaped, zero-width/bidi characters stripped (`scrub`), results capped at 12 000 chars (tools page with `offset`).
-8. Context: > 24 k estimated tokens → tool results older than the last 2 tool messages become placeholders; > 40 k → messages
-   before the last 2 user turns are summarised with role **`fast`** into `conversations.summary` (a `compaction` row marks it;
-   the UI keeps the full history; fallback when `fast` fails: older turns dropped with a note).
+   escaped, zero-width/bidi characters stripped (`scrub`), results capped at 12 000 chars keeping head (70 %) and tail
+   (30 %) with a 「中間省略 N 字」 marker (tools page with `offset`).
+8. Context: > 24 k estimated tokens → tool results older than the last 2 tool messages become placeholders naming the call
+   (`[已省略：<tool> <args ≤ 160> 的結果（約 N 字）；需要時用相同參數重新呼叫]`); > 40 k → messages before the last 2 user turns
+   are summarised with role **`fast`** into `conversations.summary` (handoff template: 目標 / 要求與偏好 / 已完成 / 進行中 /
+   重要資料, ids kept verbatim; an unfinished `update_plan` plan of the summarised part is appended as `<current_plan>`;
+   a `compaction` row marks it; the UI keeps the full history; fallback when `fast` fails: older turns dropped with a note).
 9. Title: role `fast` after the first step (fallback: first 24 chars of the message).
 
 **Branches** (edit / regenerate / ‹ 1/2 ›): the current branch is always `agent_messages WHERE hidden_by IS NULL ORDER BY seq`
@@ -1159,6 +1190,9 @@ null = keyword fallback) or replace `search` entirely; meetings register `get_me
 `suggest_deck_edit` (`lib/slides/agent-tools.ts`: one text file of the Quarto tree, `content` or exact `edits`; always a pending
 suggestion, also under autopilot, because deck sources keep no version history; on MCP with the `suggest` scope); LaTeX `latex_read_file` / `latex_suggest_edit`.
 
+`update_plan {explanation?, plan: 1–12 × {step ≤ 160, status pending|in_progress|completed}}` (`tools/plan.ts`; read, chat
+only, not on MCP; ≤ 1 `in_progress`): the whole plan per call; the SPA renders the newest call of a step as a checklist
+(`PlanChecklist` in `ToolTimeline`, i18n `i18n/agent-plan.ts`).
 Core tools: read `list_studies`, `get_study`, `get_study_progress`, `list_notes`, `get_note`, `list_tasks`, `list_papers`,
 `get_paper`, `search_papers_online` (open-world; query stripped of URLs/opaque tokens, ≤ 300 chars, 20/min/user), `search`,
 `list_decks`, `get_deck`, `get_deck_pages`, `review_deck_layout`, `review_latex_layout`, `read_paper`, `view_paper_pages`, and (`tools/context-reads.ts`) `get_deck_reviews {deck_id? | study?, limit?}` (review comments with page, version, author role, replies), `get_study_bibtex {study, paper_ids?}` (the export route's BibTeX with study cite keys + download link `/api/studies/:slug/papers/export?format=bibtex`), `get_recent_activity {study?, since? (default 7 days), actor? me|anyone, limit?}` (`study_activity` of one study or of the caller's studies). `list_studies.member` takes `me`, `all` or a user id; `get_study_progress` also returns each recent meeting's feedback (direct feedback + the study's draft `feedback_md`) and the latest deck reviews; `search.types` also takes `meeting`, `deck`, `milestone` (meeting hits are always untrusted; results carry `date`/`author`); write `create_note`, `suggest_note_edit` (full text or exact `before`/`after` edits),
@@ -1170,7 +1204,7 @@ the identifier online, reuses a same/likely lab copy, then fetches the open-acce
 
 **Audit tools** (`tools/more-writes.ts`; admins refused in every tool, `403 管理員帳號只能…`; none on MCP):
 - `update_milestone {study, milestone_id, title?, due_on?, done?, stage_id?}` (write, study editors; `lib/studies/milestones.ts`
-  `updateMilestone` = the PATCH route's rules: `done:true` records `milestone_done` once).
+  `updateMilestone`, also used by PATCH `/studies/:ref/milestones/:id`: `done:true` records `milestone_done` once).
 - `update_study_paper {study, paper_id, reading_status?, tags?, notes_md? | edits?: [{before, after}]}` (write, study editors;
   same columns as PATCH `/studies/:ref/papers/:id`, `paper_read` activity). Reading notes are the user's own field: a call that
   changes them is a **direct** update that always shows a card (`requireCard`, also under autopilot / grants); the card's
@@ -1206,7 +1240,8 @@ before the policy runs; use with `grantable: false`.
 - `create_deck {study, kind paper_report|progress, paper_id? (required for paper_report), title?, instructions?, generate?}`
   (write, study editors): inserts the deck + its in-app Quarto tree from the template (as POST `/slides`), and when role
   `slides` is up enqueues `ai_slides_generate` with `instructions` (the structure agreed in the chat) → `{deck:{id,title,kind,url},
-  draft: queued|slides_unavailable|not_requested, job_id}`. Paper-report drafts now use the paper's sectioned full text
+  draft: queued|slides_unavailable|not_requested, job_id}`; the chat's tool row shows a live job chip (`DraftJobChip`, polls
+  GET `/slides/:id/ai/generate`) and the tool text tells the model the user will be notified. Paper-report drafts now use the paper's sectioned full text
   (`digest`, ≤ 18 000 chars; context ≤ 24 000) when the library paper has a PDF.
 - System prompt (`PAPER_RULES`): read the paper before explaining (TOC → relevant sections; say so when only the abstract was
   read), look at equation/figure pages first when vision is available, explain step by step (problem → intuition → method →
@@ -1243,6 +1278,7 @@ codes as there), images must be PNG/JPEG/WebP by Magika (≤ 10 MB); ≤ 50 uplo
 | GET `/agent/attach/formats` | user | `{accept, maxBytes, maxImageBytes, maxPerMessage}` |
 | POST `/agent/conversations/:id/uploads` (multipart, one file) | conversation owner | → 201 `{attachment: {id, kind:"upload", title, upload_kind, format, mime, bytes, chars, truncated, pages, warnings, url}}` |
 | GET / DELETE `/agent/uploads/:id` | conversation owner | the file (images inline, documents as attachment; `nosniff`, sandbox CSP) · delete only while no message references it (`{ok, kept}`) |
+| GET `/agent/uploads/:id/text` | conversation owner | the extracted Markdown the assistant reads (document viewer) → `{upload (as POST), text_md}`, `no-store` |
 | GET `/agent/attach/studies?q=&limit=` | user | `{studies:[{id,slug,title,status,activity_at,mine,my_role,owner}]}` — mine first, archived last |
 | GET `/agent/attach/items?study=&kind=note\|paper\|deck\|meeting\|latex_project&q=&limit=` | user (study read) | `{study, kind, items}` most recent first (decks carry `versions` + `active_version_id`, LaTeX projects `text_files`) |
 | GET `/agent/attach/latex/:projectId/files` | user (study read) | text files, main first then sections in `\input` order, with section `heading` |
@@ -1254,7 +1290,11 @@ Frontend (`components/agent/attach/`): `AttachButton` (composer toolbar, icon-on
 「選擇章節」 step) with breadcrumb + back; 「上傳檔案」 (multiple, drag & drop); 「目前頁面」 shortcut from the page context and
 「瀏覽目前的研究」), `AttachmentTray` (chips above the input), `MessageAttachments` (chips above a sent user bubble; click opens
 the item, uploads open the file), `AttachDraft` state (uploads create the conversation on demand; send waits for uploads).
-Typing `@` at a word start opens the picker. i18n `i18n/attach.ts`.
+Typing `@` at a word start opens the picker. The composer also takes **pasted clipboard images** (renamed
+`pasted-<yyyymmdd-hhmmss>.<ext>`; text on the same clipboard still pastes) and **files dropped on it** (dashed overlay
+「放開以附加檔案」); both go through `AttachDraft.upload`, which checks type/size against `GET /agent/attach/formats` first
+(red chip 「不支援的檔案格式」/「檔案超過 N MB」), uploads one at a time over XHR (`attach/api.ts uploadFile`) and shows a
+progress bar + percentage on each chip; × on an uploading chip aborts it (a finished-but-cancelled upload is deleted). i18n `i18n/attach.ts`.
 
 **Decks and layout** (`tools/vision-tools.ts`, read, not on MCP): `get_deck_pages {deck_id, version_id?, from?, images? ≤ 4}`
 (titles + speaker notes of the active / newest rendered version from `pages.json` — also uploaded PDF/PPTX decks — 40 pages per
@@ -1267,7 +1307,14 @@ find/replace fixes that the model may only turn into suggestions.
 **Reply quality**: a step with no tool calls whose text is empty or whose stop reason is `max_tokens`/`other` (reasoning models
 spending the whole budget thinking) is discarded (`step_discarded`), logged with the stop reason, and retried once with a hidden
 nudge (「直接給出完整回答」), `maxTokens ≥ 12 000` and `reasoning.effort low`; still incomplete → the text is kept and the run ends
-with a `limit_output` notice (「繼續」). `ASSIST_RULES` in the prompt: next steps / milestones / schedules / venues only when asked;
+with a `limit_output` notice (「繼續」). **Completion review** (chat mode, once per model step, `options.review`): before a
+final answer is kept, a deterministic check compares it with the turn (all calls since the last user message, across runs):
+a completed-write claim (「已建立／已新增…筆記／待辦…」, "I've created…") while no write of the turn succeeded (and either one
+failed/was denied or nothing was ever written on the branch), or an `update_plan` plan of the turn with unfinished steps →
+the answer is discarded (`step_discarded`) and the model gets its draft + a hidden 「系統檢查」 prompt listing the issues
+(it may continue with tools); an empty corrected reply keeps the draft. `WORK_RULES` in the prompt: `update_plan` for ≥ 3
+distinct actions (good vs bad steps), keep going until done, one-line preambles before tool calls, self-check before
+claiming. `ASSIST_RULES` in the prompt: next steps / milestones / schedules / venues only when asked;
 for "prepare X" tasks draft first from real data, ask only when blocked; numbers as ```chart blocks. Moving a run to
 `awaiting_approval` happens under the conversation lock and only while a call is still pending (an approval racing the wait
 used to strand the run); the ticker also resumes runs left `awaiting_approval` with only approved calls (> 5 s).
@@ -1293,6 +1340,27 @@ keys 1–9 / Enter / Shift+Tab on the first control; older unanswered cards coll
 (編輯 inline, 複製, ‹ i/n ›; hover/focus with a fine pointer, ⋯ menu or long press on touch; answer messages show a summary with
 「修改答案」), 「重新產生」 on the latest reply; editing over executed writes asks first (ConfirmDialog).
 State: `lib/agent/chat.svelte.ts` (`ChatSession`: load, SSE with replay, rAF-batched deltas; `send(text, context, intent?)`), `lib/agent/panel.svelte.ts`.
+**Document viewer** (「文件檢視器」, `components/agent/viewer/`, contract `lib/agent/viewer.ts`, state `viewer-state.svelte.ts`,
+i18n `i18n/viewer.ts`): `ViewerSplit` wraps the chat on `/assistant` and in the Ask-AI panel. Layout: side by side with a
+draggable, keyboard-resizable divider (page ≥ 1280 px — the conversation list collapses while it is open when the workspace is
+narrower than list + 1000 px; Ask-AI panel ≥ 1024 px, the panel widens to `min(1320px, 100vw−24px)`), an overlay drawer on
+the page at 768–1279 px, a 對話／文件 tab switch on phones (AI-opened documents only badge the tab). It opens: hub links clicked
+in the chat (attachment chips, tool-result links, answer links — modifier/middle clicks still navigate), page citations of an
+answer about a paper (`p. 5`, `pp. 4–6`, `第 5 頁` → chips that open the last paper attached/read up to that answer at that
+page), the 「文件」 menu (documents the conversation attached or touched, AI-edited ones marked; setting 「AI 修改時自動開啟」,
+localStorage), and automatically when a write tool call of the open conversation finishes (`notifyArtifactChanged`; calls
+present at load never open anything). Viewers (lazy) use only the routes the pages use, so they show only what the user may
+read: deck = 「草稿預覽」 (newest ready `slide_preview` in `PreviewPane`'s sandboxed iframe; editors queue a preview when the
+source revision is newer; polls while a preview/AI draft runs; pending `deck_source` suggestions with 接受／拒絕) or
+「已發布版本」 (`SlidePlayer`); note / LaTeX file = live read-only Yjs view (`LiveText`: 閱讀 rendered / 標記 source with inline
+suggestion review; a document whose own page is open shows the stored text instead, so one page never holds two providers of a
+doc); LaTeX = newest PDF (`PdfViewer`, reloads on `latex_compiled` / polling) + section text; paper = library PDF (Range route,
+pdf.js) at `focus.page`; meeting = `TranscriptPanel` + per-study drafts (read); upload = image or extracted text. 「已更新」
+flash on remote changes; 「跟隨 AI」 scrolls to the change (Y.Text delta → line → rendered block). Contract (also for workflow
+`artifact` events): `ArtifactRef {kind: deck|note|paper|meeting|latex_project|latex_file|upload, id, project_id?, version?,
+url?, title?}`, `openArtifact(ref, {focus?: {page, fileId, suggestionId, time, line}, highlight?, auto?})`,
+`refreshArtifact(ref, {focus?})`, `notifyArtifactChanged(ref, {focus?})`, `closeViewer()`, `refFromArtifact({kind?, id?, url?})`,
+`artifactFromUrl(href)`.
 `/assistant` layout: conversation sidebar (`ConversationList`: search, groups 今天/昨天/本週/更早, ⋯ rename/delete, empty
 state, 「新對話」 in a sticky footer) collapsible with animation (button or Ctrl/⌘+Shift+B, remembered in localStorage; below
 `lg` a bottom sheet); `QuestionNav` lists the user's questions of the current branch (messages carry `data-msg-id`, typed
@@ -1305,6 +1373,178 @@ back (not on touch devices); `ToolRow` shows 「復原」 for calls with `undo: 
 interview first. Tool results carry `*_label` fields (task/study status, member role, deck kind) and the system prompt maps
 the remaining codes to 繁中, so answers never show raw enum values. Locale without an account or a stored choice
 (anonymous deck viewers) follows the browser (`en*` before any `zh*` → English).
+
+### Workflows: orchestrator → sub-agents (`workflows.ts`; `src/workflows/`, job `ai_workflow`)
+
+Task-oriented creation (a deck from zero, a thesis section, a literature review, a reading note…) is never a one-shot LLM
+call: an **orchestrator** writes an explicit objective + acceptance criteria + plan, the user approves it on a **plan card**,
+sub-agents do focused tasks, every task is **verified** (deterministic checks + an LLM verifier) and revised in bounded fix
+rounds, the result is integrated and verified against the objective, and the run ends `done` only when every criterion
+passed — otherwise `partial` with the reasons and 「繼續改」. The AI assists, never steers: it plans the work the user asked
+for, asks only when blocked, never adds schedules.
+
+**Execution.** A run is a row in `workflow_runs`; it executes in the **ai-worker** as job `ai_workflow {workflowId}`
+(`src/ai-jobs/workflows/register.ts`, roles `["assistant"]`, concurrency 2, timeout 40 min, `max_attempts` 3,
+`created_by` = owner so it shows in the jobs tray with `fileName` 「Agent：<title>」). One job advances the run until it
+must wait (plan approval, input, pause) or ends; every state change is persisted first (steps are the checkpoints), so a
+restarted / reaped job resumes from the database: a step left `running` goes back to `pending` (its attempt counts).
+Approve / resume / guidance / 繼續改 enqueue a new job when none is queued or running for the run (`workflow_runs.job_id`).
+`llm_unavailable` from any call → the runner's usual backoff (`waiting_llm`, no attempt consumed; the card shows
+「等待模型恢復」 from the job stage). Sub-agent roles that are unconfigured/unavailable fall back to `assistant`.
+
+Tables (`0109_workflows.sql`):
+- `workflow_runs` — `user_id` (owner; the run acts with exactly their permissions, re-checked before every write),
+  `study_id`, `conversation_id` + `tool_call_id` (the chat that started it; SET NULL), `playbook`, `title`, `request` (the
+  user's words), `objective`, `criteria` jsonb `[{id, text, kind: check|judge, check?, status: pending|pass|fail|skipped,
+  reason?}]`, `plan` jsonb `{summary, outline?: [{n, title, points[]}], writes: [{kind, label}], notes?}`, `inputs` jsonb
+  (playbook parameters: `paper_id`, `deck_id`, `project_id`, `note_ids`, `pages`, `language`…), `context` (page context),
+  `status` (below), `autopilot`, `tainted` + `taint_sources`, `budget` jsonb `{max_steps, max_calls, max_tokens,
+  max_minutes, max_fix_rounds, concurrency}` (defaults 30 / 60 / 800 000 / 40 / 2 / 3), `usage` jsonb `{steps, calls,
+  tokens_in, tokens_out, active_ms, fix_rounds}`, `artifacts` jsonb `[{kind: deck|note|latex_project|latex_file|paper,
+  id, url, title, role: draft|suggestion|primary, preview_url?, revision?}]`, `guidance` jsonb `[{at, text, applied}]`,
+  `report` jsonb `{summary_md, done[], issues[], next?}`, `stop_reason`, `error {error, code?, hint?}`, `job_id`,
+  `pause_requested`, `final_rounds`, timestamps.
+- `workflow_steps` — tree (`parent_id` = the step a fix round belongs to), `key` (plan id, unique per run), `position`,
+  `role planner|researcher|writer|designer|coder|verifier|integrator`, `kind task|integrate|final`, `title`,
+  `instructions`, `depends_on text[]` (keys), `inputs` jsonb (context refs), `expected`, `verify` jsonb `{checks: [{id,
+  params?}], judge: boolean}`, `status pending|running|verifying|passed|failed|skipped|cancelled`, `attempts`, `round`
+  (fix round, 0 = first try), `output` jsonb `{summary, text?, data?}` (text kept ≤ 200 000 chars, never sent to the
+  browser in full), `artifacts`, `verdict` jsonb `{verdict: pass|revise, issues: [{severity: high|medium|low, text,
+  where?}], checks: [{id, ok, detail}]}`, `history` jsonb (verdicts of earlier rounds), `tokens_in/out`, `ms`, `error`.
+- `workflow_events` (`seq` = SSE id, `run_id`, `type`, `data`) + `NOTIFY workflow_events '<runId>'`; pruned 7 days after
+  the run finished.
+
+Status: `planning → awaiting_plan_approval → running ⇄ verifying → done | partial | failed | cancelled`, plus `paused`
+(user) and `awaiting_input` (the orchestrator is blocked on a question, e.g. no paper PDF). `partial` = finished with
+unmet criteria or exhausted budget (never reported as success). `failed` = could not run (no access, bad input, model
+error after retries).
+
+**Engine** (`src/workflows/engine.ts`; every model call goes through `llm()` with a `purpose` tag, usage counted against
+the budget):
+1. *Planning* (orchestrator, role `assistant`): the playbook gathers context with the **same read tools as the assistant**
+   (`read_paper`, `view_paper_pages` with vision, `get_study_progress`, `list_notes`/`get_note`, `get_meeting`,
+   `latex_read_file`, `get_study_bibtex`, `search`…; a researcher sub-agent for open-ended context), then writes
+   objective + criteria + plan (steps with dependencies, role, inputs, expected output, how it is verified). Playbooks
+   produce a deterministic skeleton that the orchestrator adapts to the request; slides also produce the **page-by-page
+   outline** (title + key points), which the plan card always shows in full. → `awaiting_plan_approval` (notification
+   「工作計畫待確認」). Autopilot conversations auto-approve only when the playbook is non-destructive, the run is not
+   tainted and the plan writes only new drafts.
+2. *Dispatch*: ready steps (dependencies passed/skipped) run in parallel up to `budget.concurrency`. A sub-agent gets a
+   focused context (its instructions, the outputs of its dependencies, the user's guidance, the relevant source excerpt)
+   and only its role's tools — researchers: read tools (open-world `search_papers_online` only while the run is
+   untainted); writers/designers/coders/integrators: none (they return text; the engine writes it); verifier: none
+   (+ page images with vision). **Sub-agents never get write tools; destructive actions do not exist in workflows.**
+3. *Verification* after every step: deterministic checks (`src/workflows/checks.ts`: `slide_count`, `slide_titles`,
+   `speaker_notes`, `no_placeholder` (〔　〕, 待補, TODO, TBD, lorem, XXX unless allowed), `not_truncated` (unclosed
+   `:::`/fences/`\begin`, last slide cut off), `length` (chars/bullets per slide), `sections_present`, `citations`
+   (`[@key]` / `\cite{}` keys ∈ the study BibTeX), `equations`, `table_rows`, `chart_blocks` (valid ```chart JSON),
+   `numbers_from_source`, `source_refs`, `render_ok`, `compile_ok`) then, when `verify.judge` and the checks passed, the
+   **verifier** sub-agent (role `analysis`) judges the output against the step's expected output and the run's criteria
+   and answers `{verdict, issues[{severity, confidence 0–1, text, where}]}`. Any failed check, or a `revise` verdict with
+   a high/medium issue of confidence ≥ 0.6, → **fix round**: the same role gets its previous output + the exact issues
+   and returns the full corrected output (≤ `max_fix_rounds`, then the step is `failed` and the run will end
+   `partial`). A fix round whose output is identical to the previous one stops fixing that step (no progress).
+   Sub-agents see only their brief (never the chat) and cannot delegate (depth 1). A sub-agent that lacks required data
+   answers `BLOCKED: <what is missing>` instead of inventing content → the step goes back to `pending` and the run to
+   `awaiting_input` with that question (the answer = 補充指示, then the steps continue). Researchers: the same read call a
+   third time is not executed (stuck guard). From 50 % of the pooled budget every brief says so (「請直接、精簡」).
+   A reply cut off with no text (reasoning models) is retried once with a doubled budget and a nudge.
+4. *Integration* (playbook): writes the artifact — always a **draft or suggestion**, never a direct overwrite of user
+   content: a new deck (or the run's own draft deck; a deck the user edited during the run is never overwritten —
+   optimistic `baseVersion`, conflict → `partial`), a new note, a new LaTeX section file or a `latex_file` suggestion.
+   Each write emits an `artifact` event.
+5. *Final verification* against the objective: every criterion is evaluated (deterministic ones by their check, the
+   rest by the verifier over the integrated artifact, in the order delivery → matches the approved plan → faithful to
+   sources → consistent → usable → no placeholders) and turns `pass`/`fail` on the card. A judged criterion passes only
+   with quoted evidence (`criteria[].evidence`); one the verifier could not judge is `skipped`, never `pass` (the run
+   then ends `partial`). Failing criteria map back to
+   steps and get one more targeted fix round while the budget allows (`final_rounds` ≤ 2), then re-integrate.
+6. *Report*: `report.summary_md` (what was done, verification results, remaining issues, links) + a `notice` message
+   (`kind workflow_done|workflow_partial|workflow_failed`) in the conversation + a notification (in-app always, Web Push
+   to the owner). `partial` lists the unmet criteria and offers 「繼續改」 (`POST …/resume {more: true}`: +1 fix round per
+   failed step, +1 final round).
+Budgets are checked before each dispatch: steps, sub-agent calls, tokens, wall time (`active_ms`); exhaustion → the
+remaining steps are `skipped` and the run integrates what passed and ends `partial` (`stop_reason budget_*`).
+A worker shutdown / lost lease aborts the job without touching the run: interrupted steps go back to `pending` and the
+job is requeued (only a user cancel sets `cancelled`). Pause: `pause_requested` is honoured between steps (`paused`; running sub-agents finish their call). Cancel: status
+`cancelled` + `cancelJob` (the job's signal aborts the current call); drafts already written stay (listed in
+`artifacts`). Guidance (「補充指示」) is appended to every task dispatched after it and to the verifier's criteria.
+
+**Safety.** Runs act with the owner's permissions (study edit access re-checked before each write; a lost membership →
+`failed`). Tool results and sub-agent outputs are untrusted data for the orchestrator (wrapped in `<data>` blocks with
+the injection notice; never instructions). Content the owner did not author (papers, others' notes, meetings, web) sets
+`tainted` (+ `taint_sources`, shown on the card): a tainted run is never auto-approved and its plan card says which
+sources it read. Write targets are chosen by the playbook code, never by model output, and are listed on the plan card
+(`plan.writes`). Publishing a deck version (`POST …/publish`) always needs the user's click. Nothing is sent outside
+the hub except the open-world search query rules of the assistant.
+
+**Playbooks** (`registerWorkflowPlaybook(def)`, `src/workflows/playbooks/`; `def = {id, title, titleEn, description,
+detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step, env), integrate(env), finalize?(env)}`):
+
+| id | Title | Plan (roles) | Writes | Key checks |
+|---|---|---|---|---|
+| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data) | researcher reads the paper (TOC → sections, page citations) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel) → integrate into the deck's Quarto entry + preview render → designer visual review (vision only; verified find/replace fixes) → speaker-notes pass → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder`, `not_truncated`, render ok, judge: content vs. outline + paper |
+| `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection → integrate → compile-verify (new file) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
+| `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis | new note | `table_rows` ≥ papers, `citations`, judge |
+| `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
+| `experiment_report` | 實驗報告筆記 | researcher (notes / pasted results) → writer (tables, ```chart) | new note | `table_rows`, `chart_blocks`, `numbers_from_source` |
+| `meeting_prep` | 會議準備 | researcher (open tasks, last feedback, deck changes, recent activity) → writer agenda | new note | `sections_present`, judge |
+| `generic` | 一般任務 | the orchestrator plans freely (≤ 8 steps; roles from the list) | new note | `no_placeholder`, `not_truncated`, judge |
+
+**Chat integration.** The assistant prompt (`WORKFLOW_RULES`) says: for multi-step creation, propose and call
+`start_workflow` instead of producing the result in one reply; for a quick one-shot draft only when the user explicitly
+asks for it (`create_deck {generate: true}` stays as that fast path). Tools: `start_workflow {request, playbook?, study?,
+paper_id?, deck_id?, project_id?, note_ids?, pages?}` (risk read: it only plans; nothing is written before the plan card
+is approved; not on MCP) → `{workflow_id, status: "planning"}` and the model must end its turn without describing
+results; `get_workflow {workflow_id?}` (read) → status, criteria, report (the model reports state honestly: queued /
+running / partial — never outcomes that were not verified). `ask_user` refuses a card whose question refers to
+「以下／下列／上述／這個架構…」 unless `intro` contains the referenced content (≥ 3 list lines or ≥ 120 chars).
+The composer has 「交給 Agent」 and the slash command `/agent <request>` → `POST /workflows {conversation_id, request}`,
+which appends the user message and a synthetic `start_workflow` call (valid transcript, no model call) and starts
+planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
+
+| Method & path | Access | Notes |
+|---|---|---|
+| GET `/workflows/playbooks` | user | `{playbooks: [{id, title, title_en, description, description_en, auto_approvable}]}` |
+| POST `/workflows` `{request ≤ 4000, playbook?, conversation_id?, context?, inputs?: {study?, paper_id?, deck_id?, project_id?, note_ids?, pages?}, autopilot?}` | user (study read; writes are re-checked at run time) | admins 403; 503 `llm_unavailable` when `assistant` is down; playbook auto-detected when missing; ≤ 3 active runs per user (409) → 201 `{workflow, conversation_id}` |
+| GET `/workflows?active=1&study=&status=&limit=` | user (own) | `{workflows: WorkflowView[]}` newest first (no steps) |
+| GET `/workflows/:id` | owner | `{workflow, steps: StepView[], resumeFrom}` |
+| GET `/workflows/:id/events` | owner | SSE (as the agent's: `Last-Event-ID` / `?after=`, `?once=1`, 15 s ping, 5 s poll fallback) |
+| POST `/workflows/:id/approve` `{objective?, criteria?: [{id?, text}], steps?: [{key, title?, instructions?, skip?}], outline?: [{title, points[]}]}` | owner | only `awaiting_plan_approval` (409) → `{workflow}`; edits are applied first (outline edits re-derive the writer steps) |
+| POST `/workflows/:id/revise` `{feedback ≤ 2000}` | owner | 「修改」 at plan approval: re-plan with the feedback → `planning` |
+| POST `/workflows/:id/pause` · `/resume {more?}` · `/cancel` | owner | pause while running; resume a paused / partial (`more`: 繼續改) / failed run; cancel any active run → `{workflow}` |
+| POST `/workflows/:id/guidance` `{text ≤ 2000}` | owner | 補充指示; on a finished `partial`/`done` run it starts 繼續改 with that guidance |
+| PATCH `/workflows/:id` `{objective?, criteria?}` | owner | 修改目標: allowed while `awaiting_plan_approval`, `paused` or finished; a changed objective on a paused/finished run re-plans |
+| POST `/workflows/:id/publish` | owner (study editor) | slides only, after the run ended: publish the draft deck as a new version (`lib/slides` publish) → 202 `{versionId, jobId}` |
+| DELETE `/workflows/:id` | owner | finished runs only; drafts stay |
+
+```ts
+type WorkflowStatus = "planning"|"awaiting_plan_approval"|"running"|"verifying"|"awaiting_input"|"paused"|"done"|"partial"|"failed"|"cancelled";
+type WorkflowView = { id, title, playbook, playbook_title, playbook_title_en, status, request, objective,
+  criteria: {id, text, kind, status: "pending"|"pass"|"fail"|"skipped", reason?}[],
+  plan: { summary, outline?: {n, title, points: string[]}[], writes: {kind, label}[], notes? } | null,
+  study: {id, slug, title} | null, conversation_id, autopilot, tainted, taint_sources: string[],
+  budget, usage: {steps, calls, tokens_in, tokens_out, active_ms, fix_rounds}, artifacts: Artifact[],
+  guidance: {at, text, applied}[], report: {summary_md, done: string[], issues: string[]} | null, stop_reason, error,
+  job: {status, stage} | null, question?: string | null, created_at, updated_at, finished_at };
+type Artifact = { kind: "deck"|"note"|"latex_project"|"latex_file"|"paper"; id; url; title; role: "draft"|"suggestion"|"primary"; preview_url?; revision? };
+type StepView = { id, key, parent_key, position, role, kind, title, instructions, depends_on: string[], expected,
+  verify, status, attempts, round, output: {summary, excerpt?} | null, verdict, history, tokens: {in, out}, ms, error,
+  started_at, finished_at };
+```
+SSE event types: `workflow {workflow}` (status, criteria, usage, artifacts, report changed), `step {step}` (upsert),
+`activity {step_key, role, text}` (short live line of a running sub-agent: 「讀取 §3 Method」), `verdict {step_key, round,
+verdict}`, `artifact {artifact}` — **contract for the assistant's document viewer panel**: `artifact = {kind, id, url,
+title, preview_url?, revision?}`; the SPA re-dispatches it as `window` event `hub:artifact` `{...artifact, source:
+"workflow", workflowId}` so the panel can open/refresh it — and `log {level: info|warn, text}`.
+
+Frontend: `lib/workflows/` (`api.ts`, `types.ts`, `session.svelte.ts` = one run: GET + SSE with replay, rAF-batched
+activity), `components/workflows/` — `WorkflowCard` (in the chat under the `start_workflow` tool row and on the list
+page: header with playbook + status pill; objective; criteria checklist turning green; **plan card** while
+`awaiting_plan_approval` with the full outline/steps/criteria editable inline and 「開始」/「修改」/「取消」; step
+timeline with role icons, live activity line, verdict chips and fix rounds; budget bar; artifacts with 「在檢視器開啟」;
+controls 暫停/繼續/停止/修改目標/補充指示; report + 「繼續改」/「發布為新版本」), `/assistant/workflows` (list of my runs:
+active first, filters), the study page's 「工作流程」 strip. i18n `i18n/workflows.ts`. Notifications use kind `workflow`.
 
 ### UI support (`dashboard.ts`, `jobs.ts`)
 
@@ -1326,6 +1566,9 @@ max 10, newest first. `stage` is the worker's 繁中 stage; the raw values `queu
 database/backend are shown as `排隊中`/`準備中`/`已取消`, and the ai-worker's machine stages (`generating`, `validating`, …) get 繁中 labels too. `progress` is 100 once succeeded. `label` = `<deck title> v<n>`
 (`已刪除的簡報` when gone), else the payload's `fileName` or the kind; `url` = `/slides/<deckId>`, null otherwise (modules
 with their own kinds extend this route). `updatedAt` = latest of created/started/heartbeat/finished.
+The frontend store (`stores/jobs.svelte.ts`) prepends browser-side uploads still sending bytes
+(`jobsStore.trackUpload(label)` → `{progress(f), done()}`, kind `upload`, stage `uploading`); `UploadSheet` uses it, so a deck
+upload shows in the tray while the sheet is closed (closing mid-upload never asks; toast 「上傳會在背景繼續，重新打開即可查看進度。」).
 
 ### OIDC provider (`oidc.ts`, `lib/oidc/`)
 
@@ -1397,7 +1640,9 @@ typing with `baseVersion`, preview ~2 s after a save in the sandboxed iframe fol
 「請 AI 修改」 inline suggestion review — editing pauses while hunks are pending, 「發布新版本」). The study tab 簡報
 (`components/slides/DecksTab.svelte`, `?tab=decks&kind=`) lists both kinds and opens `CreateDeckSheet` (kind, source: editor /
 AI / upload → `UploadSheet`). The v2 app route `/slides/<id>` (still used by notifications, activity and the jobs tray) redirects
-to the study deck page; `/slides` stays as the lab-wide list.
+to the study deck page; `/slides` stays as the lab-wide list. A deck with an in-app source and no playable version shows `DraftState` instead of the
+player: the running AI draft (stage/progress), then 「AI 草稿已完成，尚未發布」 with page count, partial warning, the live preview
+(newest ready `slide_preview`) and 「編輯」/「發布為第 1 版」 (POST `/source/publish`).
 
 Frontend player (`frontend/src/lib/components/slides/SlidePlayer.svelte`): pdf/pptx versions are drawn from the manifest's
 page images, quarto decks in the iframe above; both get the same counter, thumbnails (review counts per page), keyboard,
@@ -1572,7 +1817,7 @@ All `/api/admin/ai/*` require `requireAdmin`; every error is `{ error, code, hin
 | `GET /admin/ai/bindings` | `{bindings[{role, target: {type:model, model_id, name} \| {type:group, group_id, name} \| null, params, updated_at, status}]}` |
 | `PUT /admin/ai/bindings {roles[], target: Target \| null, params?}` | **bulk bind** every listed role to one target in one transaction (all roles must need the target's capability, else `capability_mismatch`); `null` unbinds; → `{bindings, created_space, warnings[]}` (e.g. assistant on a model without tools) |
 | `PUT /admin/ai/bindings/:role {target, params?}` | one role (quick change) |
-| `GET /admin/ai/overview` | diagram live chips (24 h): `{window, models[{model_ref, provider_id, model, calls, ok, success_rate, p50_ms, last_used…}], roles[…]}` |
+| `GET /admin/ai/overview?since=` | diagram live chips (24 h): `{version, routing_version, stats_version, window, models[{model_ref, provider_id, model, calls, ok, success_rate, p50_ms, last_used…}], roles[…]}`. `version` = `<routing>.<stats>` (md5 digests: routing = accounts/profiles/groups/members/bindings/role health; stats = non-probe calls in 24 h); `since=<version>` unchanged → `{version, routing_version, stats_version, unchanged: true}` without computing stats |
 | `GET/POST /admin/ai/routes`, `PUT/DELETE /admin/ai/routes/:id`, `GET /admin/ai/roles`, `PUT /admin/ai/roles/:role {route_id \| null}` | **deprecated v1 aliases** kept for scripts/tests: a route is a group (`single` → `fallback`, members `{provider_id, model}` / `child_route_id`), `route_id` binds that group |
 | `GET /admin/ai/health` · `POST /admin/ai/health/probe` | detailed role status; probe now |
 | `GET /admin/ai/calls` | filters `role, provider_id, model, ok, error_code, from, to, final, probes`, cursor `before`, `limit ≤ 200` → `{calls[+group_id, group_name, model_ref], next}` |
@@ -1612,7 +1857,12 @@ errors render as 發生什麼事 / 建議怎麼做 / 技術細節 via `AiErrorPa
 LEGO flow: function blocks → bound model brick or group baseplate (stacked `BrickFace` bricks: account colour, studs
 with the health light, order chip `1 2 3` / weight `%` / `↻`; nested groups are nested plates, `diagram/GroupStack`) →
 provider blocks; SVG connectors (role colour = health, provider wires dotted), hover highlights one path; live chips
-(p50 · success · last used) from `/admin/ai/overview`; zoom/pan (Ctrl/⌘+wheel, drag background, + − 0 and arrows when
+(p50 · success · last used) from `/admin/ai/overview`. Live (「即時」 pill: last update + refresh): every panel edits
+through the shared `adminStore`, so the diagram follows at once (diagram edits are optimistic via `adminStore.mutate`,
+rolled back on error); while the 總覽 tab is shown and the page visible it polls `?since=` every 12 s and on each
+`/api/ai/status/stream` push — a changed routing half (another admin, role health) refetches the routing lists, equal
+payloads keep identity (no re-render; zoom/pan/sections stay); counts tween and bricks pulse on change, connectors
+of routes used in the last minute flow (static under reduced motion); zoom/pan (Ctrl/⌘+wheel, drag background, + − 0 and arrows when
 focused); pointer drag (`diagram/dnd.svelte.ts`: brick reorder/move between groups, model or group onto a function, model
 shelf → function/group) with a menu/keyboard equivalent on every brick (⋯ menu: up/down, move to group, bind to
 function, remove; Alt+↑↓); phones get one vertical stack per target, no canvas. **供應商** (LLM + speech accounts,
@@ -1644,8 +1894,12 @@ the shown version) and `LatexLayoutReview` (LaTeX toolbar, pdf.js + `SyncClient.
   (accepted body: `{roles: {<role>: {status, message_zh?, hint_zh?}}}`; 404/errors = unavailable).
 - Reusable pieces: `components/markdown/MarkdownEditor|MarkdownView`, `components/audio/*` (`lib/audio/time.ts`), slides
   components, `ui/DatePicker` (`clearable`), `ui/CheckCircle`, `study/{StudyCard,StageBar,AvatarStack,DueLabel,TaskRow,TaskSheet}`.
+- Sheets (`ui/Sheet.svelte`): on phones (every side renders as a bottom sheet) the grab handle + header drag down with the
+  finger (pointer events, `touch-action: none` there); past 30 % of the height (max 140 px) or a flick (> 0.6 px/ms) it
+  dismisses through the same unsaved-changes guard as Esc/X (`close-guard.svelte.ts`: a dirty form asks
+  「要放棄未儲存的變更嗎？」 and the sheet springs back), otherwise it springs back; reduced motion closes/snaps without sliding.
 - Markdown editor (`components/markdown/MarkdownEditor.svelte`, used by notes (collaborative), study summary, new study,
-  paper notes): CodeMirror 6 + `lib/editor/` modules — `editor-actions.ts` (one action list for toolbar, slash menu and
+  paper notes, meeting draft cards (summary + feedback, split by default)): CodeMirror 6 + `lib/editor/` modules — `editor-actions.ts` (one action list for toolbar, slash menu and
   shortcut sheet), `MarkdownToolbar` (ranked buttons, the rest in 「更多」; table tools while the cursor is in a table),
   `markdown-commands.ts`, `markdown-table.ts` (GFM table find/format/add/delete/align, Tab navigation), `markdown-slash.ts`
   (`/` menu on @codemirror/autocomplete), `markdown-paste.ts` (HTML → Markdown via Turndown + GFM, image paste/drop →

@@ -248,10 +248,12 @@ export async function decideSuggestion(deps: SuggestionDeps, input: DecideInput)
   let applied = 0;
   let skipped = 0;
   let docName: string | null = null;
+  let committed: { target: SuggestionTarget; targetId: string } | null = null;
   await transaction(deps.db, async (client) => {
     const row = (await loadRows(client, "s.id=$1", [input.suggestionId], true))[0];
     if (!row) throw notFound("建議不存在。");
     const { target, resolved } = await resolveTarget(client, row.target_type, row.target_id);
+    committed = { target, targetId: row.target_id };
     if (input.user && !(await target.canEdit(client, input.user, resolved))) throw forbidden("只有研究成員可以處理建議。");
     docName = resolved.docName;
     const chosen = row.hunks.filter((h) => h.status === "pending" && (input.hunkIds === "all" || input.hunkIds.includes(h.id)));
@@ -310,6 +312,14 @@ export async function decideSuggestion(deps: SuggestionDeps, input: DecideInput)
     ]);
   });
   if (docName) deps.collab?.broadcast(docName, { type: "suggestions", id: input.suggestionId });
+  const done = committed as { target: SuggestionTarget; targetId: string } | null;
+  if (applied && done?.target.afterCommit) {
+    try {
+      await done.target.afterCommit(done.targetId, { accepted: applied, actorId: input.actorId });
+    } catch {
+      // best effort (e.g. a deck preview re-render)
+    }
+  }
   return { suggestion: (await getSuggestion(deps, input.suggestionId))!, applied, skipped };
 }
 

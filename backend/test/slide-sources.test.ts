@@ -263,7 +263,7 @@ run("slide sources, previews, publish and AI drafts", () => {
   });
 
   /** AiJobContext with a scripted model: each call returns the next reply, streamed in small chunks. */
-  function aiContext(payload: SlidesGeneratePayload, replies: string[], seen: { messages: any[] }[]) {
+  function aiContext(payload: SlidesGeneratePayload, replies: (string | { text: string; stop: string })[], seen: { messages: any[] }[]) {
     const stages: string[] = [];
     const fakeAi = {
       async capabilities() {
@@ -272,9 +272,10 @@ run("slide sources, previews, publish and AI drafts", () => {
       async *chatStream(role: string, request: { messages: any[] }) {
         expect(role).toBe("slides");
         seen.push({ messages: request.messages });
-        const text = replies.shift() ?? "";
+        const next = replies.shift() ?? "";
+        const { text, stop } = typeof next === "string" ? { text: next, stop: "end_turn" } : next;
         for (let i = 0; i < text.length; i += 40) yield { type: "text_delta", text: text.slice(i, i + 40) };
-        yield { type: "done", stopReason: "end_turn" };
+        yield { type: "done", stopReason: stop };
       },
     };
     const context = {
@@ -290,9 +291,10 @@ run("slide sources, previews, publish and AI drafts", () => {
     await ctx.db.query("INSERT INTO tasks(study_id,title,status,completed_at,created_by) VALUES($1,'重跑 baseline WER','done',now(),$2)", [study.id, member.id]);
     const created = json(await write("POST", "/api/slides", member.cookie, { studyId: study.id, title: "AI 進度", kind: "progress", source: "ai" }));
     const seen: { messages: any[] }[] = [];
-    const broken = "```markdown\n---\ntitle: x\n---\n\n## 問題定義\n\n```{mermaid}\nflowchart LR\n  A[a (b)] --> B\n```\n\n::: {.notes}\n講稿\n:::\n```";
+    const broken = "```markdown\n---\ntitle: x\n---\n\n## 問題定義\n\n```{mermaid}\nflowchart LR\n  A[a (b)] --> B\n```\n\n::: {.notes}\n講稿\n:::\n\n## 對帳\n\n- 重跑 baseline WER\n```";
     const fixedBody = "## 問題定義\n\n〔　〕\n\n::: {.notes}\n講稿\n:::\n\n## 對帳\n\n- 重跑 baseline WER\n";
-    const { context, stages } = aiContext({ deckId: created.id, userId: member.id, mode: "progress", instructions: "請強調 WER" }, [broken, fixedBody], seen);
+    const notes: any[] = [];
+    const { context, stages } = aiContext({ deckId: created.id, userId: member.id, mode: "progress", instructions: "請強調 WER，做 2 頁就好" }, [broken, fixedBody], seen);
     // Fake worker: the first preview render fails, the second succeeds.
     let renders = 0;
     let stopped = false;
@@ -304,13 +306,18 @@ run("slide sources, previews, publish and AI drafts", () => {
       }
     })();
     try {
-      const result = await runSlidesGenerate(context, { storage: ctx.storage, waitMs: 30_000 });
-      expect(result).toMatchObject({ valid: true, fixed: true, pages: 2 });
+      const result = await runSlidesGenerate(context, { storage: ctx.storage, waitMs: 30_000, notify: async (_db, _payload, outcome) => void notes.push(outcome) });
+      expect(result).toMatchObject({ valid: true, fixed: true, pages: 2, expectedPages: 2, publishedVersion: 1 });
+      expect(result.partial).toBeUndefined();
     } finally {
       stopped = true;
       await worker;
     }
-    expect(stages).toEqual(expect.arrayContaining(["context", "generating", "writing", "validating", "fixing"]));
+    expect(stages).toEqual(expect.arrayContaining(["context", "generating", "writing", "validating", "fixing", "publishing"]));
+    // A complete draft of a deck without versions is published as v1 (normal render job) and the user is told.
+    const versions = (await ctx.db.query<{ version: number; job_id: string }>("SELECT version,job_id FROM slide_versions WHERE deck_id=$1", [created.id])).rows;
+    expect(versions.map(v => v.version)).toEqual([1]);
+    expect(notes).toEqual([{ ok: true, title: "AI 簡報草稿完成", body: "2 頁，已發布為第 1 版。" }]);
     const prompt = seen[0]!.messages.map((m: any) => m.content).join("\n");
     expect(prompt).toContain("以自監督特徵改善台語辨識");
     expect(prompt).toContain("重跑 baseline WER");
@@ -334,8 +341,12 @@ run("slide sources, previews, publish and AI drafts", () => {
     await ctx.app.inject({ method: "POST", url: `/api/slides/${created.id}/references`, headers: { origin: ORIGIN, cookie: member.cookie, ...ref.headers }, payload: ref.payload });
     const seen: { messages: any[] }[] = [];
     const { context } = aiContext({ deckId: created.id, userId: member.id, mode: "paper_report" }, ["## One-sentence claim\n\nIn ASR …\n"], seen);
-    const result = await runSlidesGenerate(context, { storage: ctx.storage, waitMs: 200, extractText: async () => "WEAK SUPERVISION BODY TEXT" });
-    expect(result).toMatchObject({ valid: null, fixed: false, pages: 1 });
+    // One page of 13 (and the continuations bring nothing): fail clearly, keep the template source.
+    await expect(runSlidesGenerate(context, { storage: ctx.storage, waitMs: 200, extractText: async () => "WEAK SUPERVISION BODY TEXT", notify: async () => {} })).rejects.toThrow("只產生了 1 / 13 頁");
+    expect(seen.length).toBe(2); // the draft + one continuation that returned nothing
+    expect(seen[1]!.messages.at(-2)).toMatchObject({ role: "assistant" });
+    const kept = json(await get(`/api/slides/${created.id}/source`, member.cookie)).files.find((f: any) => f.path === "index.qmd").content as string;
+    expect(kept).not.toContain("In ASR …");
     const prompt = seen[0]!.messages[1].content as string;
     expect(prompt).toContain("Whisper");
     expect(prompt).toContain("large-scale weak supervision");
@@ -344,6 +355,45 @@ run("slide sources, previews, publish and AI drafts", () => {
 
     const denied = aiContext({ deckId: created.id, userId: advisor.id, mode: "paper_report" }, ["## x\n"], []);
     await expect(runSlidesGenerate(denied.context, { storage: ctx.storage, waitMs: 100 })).rejects.toThrow("只有研究成員");
+  });
+
+  const slide = (n: number, extra = "") => `## Page ${n}\n\n- point ${n}${extra}\n\n::: {.notes}\n講稿 ${n}\n:::\n`;
+  const deckOf = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => slide(from + i)).join("\n");
+
+  it("continues a draft that stopped early (end_turn after 3 of 11 pages, then max_tokens mid-slide)", async () => {
+    const created = json(await write("POST", "/api/slides", member.cookie, { studyId: study.id, title: "Paper 11", kind: "paper_report", paper: { title: "Neural biasing", abstract: "Early context injection." } }));
+    const seen: { messages: any[] }[] = [];
+    const replies = [
+      deckOf(1, 3), // stopped early with a normal end (the ChatGPT case)
+      { text: `${deckOf(3, 6)}\n## Page 7\n\n- cut off mid`, stop: "max_tokens" }, // repeats page 3, then hits the limit
+      deckOf(7, 11),
+    ];
+    const instructions = "請建立一份 11 頁的論文報告。\n頁面結構：\n1. 標題頁\n2. 動機\n3. 背景\n11. 結論";
+    const { context, stages } = aiContext({ deckId: created.id, userId: member.id, mode: "paper_report", instructions }, replies, seen);
+    const result = await runSlidesGenerate(context, { storage: ctx.storage, waitMs: 200, notify: async () => {} });
+    expect(result).toMatchObject({ pages: 11, expectedPages: 11, continued: 2, valid: null });
+    expect(result.partial).toBeUndefined();
+    expect(result.publishedVersion).toBeUndefined(); // the preview did not finish: no automatic v1
+    expect(stages).toContain("continuing");
+    expect(seen[0]!.messages[1].content).toContain("請一次輸出完整的 11 頁");
+    expect(seen[0]!.messages[1].content).toContain("優先於上面的規則");
+    expect(seen[1]!.messages.at(-1).content).toContain("從第 4 頁接著寫");
+    // After max_tokens the cut slide (Page 7) is dropped and rewritten by the next round.
+    expect(seen[2]!.messages.at(-2).content).not.toContain("cut off mid");
+    expect(seen[2]!.messages.at(-1).content).toContain("從第 7 頁接著寫");
+    const qmd = json(await get(`/api/slides/${created.id}/source`, member.cookie)).files.find((f: any) => f.path === "index.qmd").content as string;
+    expect((qmd.match(/^## Page \d+$/gm) ?? [])).toEqual(Array.from({ length: 11 }, (_, i) => `## Page ${i + 1}`));
+    expect(qmd).not.toContain("cut off mid");
+  });
+
+  it("marks a still-short draft partial (written, not published) and tells the user", async () => {
+    const created = json(await write("POST", "/api/slides", member.cookie, { studyId: study.id, title: "Paper short", kind: "paper_report", paper: { title: "Short", abstract: "x" } }));
+    const notes: any[] = [];
+    const { context } = aiContext({ deckId: created.id, userId: member.id, mode: "paper_report", instructions: "11 頁" }, [deckOf(1, 5), deckOf(1, 2), ""], []);
+    const result = await runSlidesGenerate(context, { storage: ctx.storage, waitMs: 200, notify: async (_db, _p, o) => void notes.push(o) });
+    expect(result).toMatchObject({ pages: 5, expectedPages: 11, partial: true, warning: "AI 只完成了 5 / 11 頁，其餘頁面請在編輯器補上，或重新產生草稿。" });
+    expect(notes[0]).toMatchObject({ ok: true, title: "AI 簡報草稿只完成一部分" });
+    expect((await ctx.db.query("SELECT 1 FROM slide_versions WHERE deck_id=$1", [created.id])).rowCount).toBe(0);
   });
 
   it("takes suggestions on a source file (target deck_source) and refuses AI edits while the role is down", async () => {
@@ -364,6 +414,13 @@ run("slide sources, previews, publish and AI drafts", () => {
     expect(updated.content).toBe(proposed);
     expect(updated.version).toBe(file.version + 1);
     expect(after.source.revision).toBe(source.source.revision + 1);
+    // Accepting re-renders the preview (the deck page's draft view), without slowing down the accept request.
+    let queued = 0;
+    for (let i = 0; i < 40 && !queued; i++) {
+      queued = (await ctx.db.query("SELECT 1 FROM deck_previews WHERE deck_id=$1 AND revision=$2", [deckId, after.source.revision])).rowCount ?? 0;
+      if (!queued) await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    expect(queued).toBe(1);
 
     const edit = await write("POST", `/api/slides/${deckId}/source/files/${file.id}/ai-edit`, member.cookie, { instruction: "改成英文" });
     expect(edit.statusCode).toBe(503);

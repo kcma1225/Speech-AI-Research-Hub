@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { ArrowUp, Brain, NotebookPen, Rocket, Square, X } from "@lucide/svelte";
+  import { ArrowUp, Brain, NotebookPen, Rocket, Square, Workflow, X } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
 
@@ -24,9 +24,12 @@
     onClearContext,
     onMakeNote,
     makeNoteDisabled = false,
+    onAgent,
+    agentCompact = false,
     attach,
     tray,
     onAt,
+    onFiles,
     value = $bindable(""),
     ref = $bindable(null),
   }: {
@@ -48,10 +51,16 @@
     /** 「整理成筆記」 quick action (chat mode). */
     onMakeNote?: () => void;
     makeNoteDisabled?: boolean;
+    /** 「交給 Agent」: hands the typed text to a workflow (also `/agent <text>` in onSend's caller). */
+    onAgent?: (text: string) => void;
+    /** Icon-only button (narrow panels). */
+    agentCompact?: boolean;
     /** Attachments: toolbar button, chips above the input, and typing @ (at a word start) to open the picker. */
     attach?: Snippet;
     tray?: Snippet;
     onAt?: () => void;
+    /** Pasted clipboard images / files dropped on the composer (uploaded as attachments). */
+    onFiles?: (files: File[]) => void;
     value?: string;
     ref?: HTMLTextAreaElement | null;
   } = $props();
@@ -80,6 +89,40 @@
     value = before + value.slice(at);
     onAt();
   }
+  /** Clipboard images (screenshots, copied pictures). Text that comes along (e.g. alt text from a web page) still pastes. */
+  function onpaste(e: ClipboardEvent) {
+    if (!onFiles || disabled) return;
+    const items = [...(e.clipboardData?.items ?? [])];
+    const files = items.filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter((f): f is File => !!f);
+    if (!files.length) return;
+    if (!e.clipboardData?.types.includes("text/plain")) e.preventDefault();
+    onFiles(files);
+  }
+
+  // Drag files onto the composer: a dashed overlay while over it. Counted so child enter/leave pairs don't flicker.
+  let dragDepth = $state(0);
+  const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  function ondragenter(e: DragEvent) {
+    if (!onFiles || disabled || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+  }
+  function ondragover(e: DragEvent) {
+    if (!onFiles || disabled || !hasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  }
+  function ondragleave(e: DragEvent) {
+    if (dragDepth) dragDepth--;
+  }
+  function ondrop(e: DragEvent) {
+    if (!onFiles || disabled || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    const files = [...(e.dataTransfer?.files ?? [])];
+    if (files.length) onFiles(files);
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (e.key === "Escape" && busy) {
       e.preventDefault();
@@ -93,7 +136,25 @@
   }
 </script>
 
-<div class="composer relative rounded-[24px] border border-line-2 bg-surface shadow-card" data-autopilot={autopilot || undefined} data-acting={acting || undefined}>
+<div
+  class="composer relative rounded-[24px] border border-line-2 bg-surface shadow-card"
+  data-autopilot={autopilot || undefined}
+  data-acting={acting || undefined}
+  role="group"
+  aria-label={t("agent.composer")}
+  {ondragenter}
+  {ondragover}
+  {ondragleave}
+  {ondrop}
+>
+  {#if dragDepth > 0}
+    <div class="drop pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-[24px] border-2 border-dashed border-ink/40 bg-surface/90 text-center" aria-hidden="true">
+      <div>
+        <p class="text-[14px] font-medium text-ink">{t("attach.dropHere")}</p>
+        <p class="mt-0.5 text-[12px] text-ink-3">{t("attach.dropHint")}</p>
+      </div>
+    </div>
+  {/if}
   {#if autopilot}<span class="band" aria-hidden="true"></span>{/if}
   {#if contextLabel}
     <div class="flex px-3 pt-2.5">
@@ -112,6 +173,7 @@
     rows="1"
     {onkeydown}
     {oninput}
+    {onpaste}
     placeholder={placeholder ?? (busy ? t("agent.placeholderBusy") : t("agent.placeholder"))}
     disabled={disabled}
     aria-keyshortcuts="Enter Shift+Enter Escape"
@@ -127,7 +189,7 @@
         aria-label={t("agent.autopilot")}
         title={t("agent.autopilotHint")}
         onclick={() => onAutopilot(!autopilot)}
-        class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium transition-colors {autopilot ? 'bg-[var(--pill-butter)] text-[var(--pill-butter-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
+        class="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[12.5px] font-medium transition-colors {autopilot ? 'bg-[var(--pill-butter)] text-[var(--pill-butter-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
       >
         <Rocket class="size-4" /><span class="hidden sm:inline">{t("agent.autopilot")}</span>
         <span class="thumb {autopilot ? 'on' : ''}" aria-hidden="true"></span>
@@ -142,9 +204,21 @@
         disabled={!memory.available}
         title={memory.available ? (memory.on ? t("agent.memoryOn") : t("agent.memoryOff")) : t("agent.memoryDisabledHint")}
         onclick={() => onMemory(!memory.on)}
-        class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium transition-colors disabled:opacity-50 {memory.on ? 'bg-[var(--pill-lilac)] text-[var(--pill-lilac-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
+        class="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[12.5px] font-medium transition-colors disabled:opacity-50 {memory.on ? 'bg-[var(--pill-lilac)] text-[var(--pill-lilac-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
       >
         <Brain class="size-4" /><span class="hidden sm:inline">{t("agent.memory")}</span>
+      </button>
+    {/if}
+    {#if onAgent}
+      <button
+        type="button"
+        disabled={disabled || busy}
+        title={value.trim() ? t("wf.handOffHint") : t("wf.handOffEmpty")}
+        aria-label={t("wf.handOff")}
+        onclick={() => (value.trim() ? onAgent(value.trim()) : ref?.focus())}
+        class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium whitespace-nowrap text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
+      >
+        <Workflow class="size-4" /><span class={agentCompact ? "sr-only" : "hidden sm:inline"}>{t("wf.handOff")}</span>
       </button>
     {/if}
     {#if onMakeNote}
@@ -152,10 +226,11 @@
         type="button"
         disabled={makeNoteDisabled || busy}
         title={t("agent.makeNote.hint")}
+        aria-label={t("agent.makeNote.label")}
         onclick={onMakeNote}
         class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium whitespace-nowrap text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
       >
-        <NotebookPen class="size-4" /><span>{t("agent.makeNote.label")}</span>
+        <NotebookPen class="size-4" /><span class={agentCompact ? "sr-only" : "hidden sm:inline"}>{t("agent.makeNote.label")}</span>
       </button>
     {/if}
     <span class="hidden flex-1 truncate text-right text-[11.5px] text-ink-3 lg:block" aria-hidden="true">{t("agent.keys")}</span>
@@ -169,6 +244,14 @@
 </div>
 
 <style>
+  .drop {
+    animation: drop-in 120ms ease-out;
+  }
+  @keyframes drop-in {
+    from {
+      opacity: 0;
+    }
+  }
   .band {
     position: absolute;
     left: 18px;
@@ -221,6 +304,7 @@
     transform: translateX(10px);
   }
   @media (prefers-reduced-motion: reduce) {
+    .drop,
     .band,
     [data-acting] .band {
       animation: none;

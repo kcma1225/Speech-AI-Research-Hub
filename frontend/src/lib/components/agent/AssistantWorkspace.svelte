@@ -13,6 +13,9 @@
   import { ChatSession } from "#lib/agent/chat.svelte.ts";
   import ChatView from "./ChatView.svelte";
   import ConversationList from "./ConversationList.svelte";
+  import ViewerSplit from "./viewer/ViewerSplit.svelte";
+  import DocsMenu from "./viewer/DocsMenu.svelte";
+  import { viewer } from "#lib/agent/viewer.ts";
 
   /**
    * /assistant and /assistant/:id — conversation list (collapsible sidebar from `lg`, remembered, Ctrl/⌘+Shift+B;
@@ -41,12 +44,29 @@
       return;
     }
     collapsed = !collapsed;
+    autoCollapsed = false;
     try {
       localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
     } catch {
       // storage unavailable: the choice lasts for this page only
     }
   }
+  // The document viewer needs the room: on narrower desktops the list collapses while it is open (not remembered).
+  let autoCollapsed = false;
+  let workspaceWidth = $state(0);
+  $effect(() => {
+    const side = viewer.open && !!viewer.current && viewer.layout === "split";
+    untrack(() => {
+      // Chat (≥ 420) + viewer (≥ 560) need ~1000 px next to the 288 px list.
+      if (side && !collapsed && workspaceWidth - 288 < 1000) {
+        collapsed = true;
+        autoCollapsed = true;
+      } else if (!side && autoCollapsed) {
+        collapsed = false;
+        autoCollapsed = false;
+      }
+    });
+  });
   function onWindowKey(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
       e.preventDefault();
@@ -104,7 +124,7 @@
 
 <svelte:window onkeydown={onWindowKey} />
 
-<div class="workspace grid min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden rounded-[var(--radius-card)] border border-line bg-surface shadow-card" data-collapsed={collapsed || undefined}>
+<div bind:clientWidth={workspaceWidth} class="workspace grid min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden rounded-[var(--radius-card)] border border-line bg-surface shadow-card" data-collapsed={collapsed || undefined}>
   <aside class="side hidden min-h-0 overflow-hidden bg-surface-2/60 lg:block" aria-hidden={collapsed || undefined} inert={collapsed || undefined}>
     <div class="h-full w-[288px] border-r border-line">
       <ConversationList activeId={session.id} version={listVersion} onSelect={select} onNew={newChat} onRenamed={onRenamed} onDeleted={onDeleted} />
@@ -118,6 +138,7 @@
       </Button></span>
       <h1 class="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">{session.id ? title : t("agent.newChat")}</h1>
       <Button variant="ghost" size="icon" class={collapsed ? "" : "lg:hidden"} aria-label={t("agent.newChat")} title={t("agent.newChat")} onclick={newChat}><MessageSquarePlus /></Button>
+      <DocsMenu {session} />
       {#if session.id}
         <DropdownMenu.Root>
           <DropdownMenu.Trigger class="grid size-10 place-items-center rounded-full text-ink-2 hover:bg-surface-3" aria-label={t("agent.conversations")}><MoreHorizontal class="size-4.5" /></DropdownMenu.Trigger>
@@ -131,6 +152,7 @@
       {/if}
     </header>
     <div class="min-h-0 flex-1">
+      <ViewerSplit {session}>
       <ChatView {session} onCreated={(id) => void goto(`/assistant/${id}`, { replaceState: true })}>
         {#snippet empty(send)}
           <div class="flex flex-col items-center px-2 pt-[8vh] text-center">
@@ -145,6 +167,7 @@
           </div>
         {/snippet}
       </ChatView>
+      </ViewerSplit>
     </div>
   </section>
 </div>

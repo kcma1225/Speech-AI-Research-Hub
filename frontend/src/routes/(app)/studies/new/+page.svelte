@@ -15,7 +15,7 @@
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import MarkdownEditor from "#lib/components/markdown/MarkdownEditor.svelte";
   import DocImportSheet from "#lib/components/doc-import/DocImportSheet.svelte";
-  import type { ImportedDocument } from "#lib/components/doc-import/api.ts";
+  import { uploadMdImage, type ImportedDocument } from "#lib/components/doc-import/api.ts";
   import type { DirectoryUser, StudyDetail } from "#lib/studies/types.ts";
   import { STUDY_SLUG_RE } from "#lib/studies/ui.ts";
   import { MATURITIES } from "#lib/agent/maturity.ts";
@@ -110,7 +110,7 @@
           <span class="text-[13px] font-medium text-ink-2">{t("studies.field.summary")}</span>
           <Button size="sm" variant="ghost" onclick={() => (importOpen = true)}><FileInput />{t("docimport.title")}</Button>
         </div>
-        <MarkdownEditor bind:value={summary} bind:layout fontSize={session.user?.preferences.editor.fontSize ?? 15} label={t("studies.field.summary")} onImport={() => (importOpen = true)} />
+        <MarkdownEditor bind:value={summary} bind:layout fontSize={session.user?.preferences.editor.fontSize ?? 15} label={t("studies.field.summary")} imageUpload={(f) => uploadMdImage("draft", f)} onImport={() => (importOpen = true)} />
         <DocImportSheet bind:open={importOpen} target={{ kind: "draft", purpose: "study_summary" }} onMarkdown={imported} />
         <p class="text-[12.5px] text-ink-3">{t("studies.field.summaryHint")}</p>
       </div>

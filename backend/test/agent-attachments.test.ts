@@ -159,6 +159,12 @@ describe.skipIf(!hasTestDb || !hasTestS3)("attachments (routes + runtime)", () =
     expect((await upload(bob, conv, { filename: "報告.docx", data: fixture("sample.docx") })).statusCode).toBe(404);
     expect((await get(alice, att.url)).statusCode).toBe(200);
     expect((await get(bob, att.url)).statusCode).toBe(404);
+    // the extracted text (assistant document viewer): owner only
+    const text = await get(alice, `${att.url}/text`);
+    expect(text.statusCode, text.body).toBe(200);
+    expect(json(text)).toMatchObject({ upload: { id: att.id, title: "報告.docx", upload_kind: "document" } });
+    expect(json(text).text_md.length).toBeGreaterThan(0);
+    expect((await get(bob, `${att.url}/text`)).statusCode).toBe(404);
     // an upload of another user cannot be attached
     const bobConv = await newConversation(bob);
     const r = await send(bobConv, { text: "這是什麼？", attachments: [{ kind: "upload", id: att.id }] }, bob);

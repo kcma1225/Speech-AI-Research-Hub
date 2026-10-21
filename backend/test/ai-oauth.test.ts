@@ -134,7 +134,7 @@ describe("refreshIfNeeded", () => {
 describe("Codex request decoration", () => {
   it("store:false, stream, encrypted reasoning, strips max_output_tokens, headers", () => {
     const tokens: OAuthTokens = { provider: "chatgpt", accessToken: "at", idToken, obtainedAt: 0 };
-    const d = decorateCodexRequest({ tokens, body: { model: "gpt-6-sol", input: [], store: true, max_output_tokens: 100, include: ["x"] }, sessionId: "conv-1" });
+    const d = decorateCodexRequest({ tokens, body: { model: "gpt-6-sol", input: [], store: true, max_output_tokens: 100, temperature: 0.2, top_p: 0.9, include: ["x"] }, sessionId: "conv-1" });
     expect(d.url).toBe("https://chatgpt.com/backend-api/codex/responses");
     expect(d.body).toEqual({ model: "gpt-6-sol", input: [], store: false, stream: true, include: ["x", "reasoning.encrypted_content"], prompt_cache_key: "conv-1" });
     expect(d.headers).toMatchObject({ authorization: "Bearer at", "chatgpt-account-id": "acct_123", originator: "codex_cli_rs", "session-id": "conv-1", accept: "text/event-stream" });

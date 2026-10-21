@@ -331,6 +331,76 @@ describe("openai-responses codec", () => {
     expect((await client.chat({ model: "grok", messages: [user("x")] })).stopReason).toBe("max_tokens");
   });
 
+  // Event order recorded from the ChatGPT/Codex backend (gpt-5.6-luna, 2026-10): reasoning item, one `final_answer`
+  // message with one output_text part streamed as ~4000 deltas, `response.metadata`, then `response.completed`.
+  it("Codex recording: reasoning + final_answer message, metadata event, all deltas kept", async () => {
+    const slides = Array.from({ length: 11 }, (_, i) => `## Slide ${i + 1}\n\nBody ${i + 1}\n\n::: {.notes}\n講稿\n:::\n\n`).join("");
+    const deltas = slides.match(/[\s\S]{1,3}/g)!.map((delta) => ev("response.output_text.delta", { item_id: "msg_1", output_index: 1, content_index: 0, delta }));
+    srv.once("POST", "/v1/responses", {
+      chunks: sse(
+        [
+          ev("response.created", { response: { id: "r1", status: "in_progress" } }),
+          ev("response.in_progress", { response: { id: "r1" } }),
+          ev("response.output_item.added", { output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [] } }),
+          ev("response.reasoning_summary_part.added", { item_id: "rs_1", output_index: 0, summary_index: 0, part: { type: "summary_text", text: "" } }),
+          ev("response.reasoning_summary_text.delta", { item_id: "rs_1", output_index: 0, summary_index: 0, delta: "**Planning slides**" }),
+          ev("response.reasoning_summary_text.done", { item_id: "rs_1", output_index: 0, summary_index: 0, text: "**Planning slides**" }),
+          ev("response.reasoning_summary_part.done", { item_id: "rs_1", output_index: 0, summary_index: 0 }),
+          ev("response.output_item.done", { output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "ENC" } }),
+          ev("response.output_item.added", { output_index: 1, item: { type: "message", id: "msg_1", role: "assistant", phase: "final_answer", status: "in_progress", content: [] } }),
+          ev("response.content_part.added", { item_id: "msg_1", output_index: 1, content_index: 0, part: { type: "output_text", text: "" } }),
+          ...deltas,
+          ev("response.metadata", { metadata: {} }),
+          ev("response.output_text.done", { item_id: "msg_1", output_index: 1, content_index: 0, text: slides }),
+          ev("response.content_part.done", { item_id: "msg_1", output_index: 1, content_index: 0, part: { type: "output_text", text: slides } }),
+          ev("response.output_item.done", { output_index: 1, item: { type: "message", id: "msg_1", phase: "final_answer", status: "completed", content: [{ type: "output_text", text: slides }] } }),
+          ev("response.completed", { response: { status: "completed", usage: { input_tokens: 6236, output_tokens: 4337, output_tokens_details: { reasoning_tokens: 97 } }, output: [{ type: "reasoning" }, { type: "message", phase: "final_answer", content: [{ type: "output_text", text: slides }] }] } }),
+        ],
+        false,
+      ),
+    });
+    const client = createClient("openai", { baseUrl: `${srv.url}/v1` }, { apiKey: "sk" });
+    const r = await client.chat({ model: "gpt-5.6-luna", messages: [user("deck")] });
+    expect(r.text).toBe(slides); // not doubled by output_text.done / output_item.done / completed
+    expect(r.stopReason).toBe("end_turn");
+    expect(r.usage).toMatchObject({ outputTokens: 4337, reasoningTokens: 97 });
+  });
+
+  it("keeps text across several message items and content parts; takes whole items sent without deltas", async () => {
+    srv.once("POST", "/v1/responses", {
+      chunks: sse(
+        [
+          ev("response.output_item.added", { output_index: 0, item: { type: "message", id: "m0", phase: "commentary", content: [] } }),
+          ev("response.output_text.delta", { item_id: "m0", output_index: 0, content_index: 0, delta: "A" }),
+          ev("response.output_text.delta", { item_id: "m0", output_index: 0, content_index: 1, delta: "B" }),
+          ev("response.output_item.done", { output_index: 0, item: { type: "message", id: "m0", content: [{ type: "output_text", text: "A" }, { type: "output_text", text: "B" }] } }),
+          // Second message: no deltas, only the finished item (some gateways).
+          ev("response.output_item.done", { output_index: 1, item: { type: "message", id: "m1", content: [{ type: "output_text", text: "C" }, { type: "output_text", text: "D" }] } }),
+          ev("response.output_text.delta", { item_id: "m2", output_index: 2, content_index: 0, delta: "E" }),
+          ev("response.completed", { response: { usage: {} } }),
+        ],
+        false,
+      ),
+    });
+    const client = createClient("openai", { baseUrl: `${srv.url}/v1` }, { apiKey: "sk" });
+    expect((await client.chat({ model: "m", messages: [user("x")] })).text).toBe("ABCDE");
+    // Non-streaming proxy: only response.completed with the output array.
+    srv.once("POST", "/v1/responses", { chunks: sse([ev("response.completed", { response: { usage: {}, output: [{ type: "message", content: [{ type: "output_text", text: "## A" }, { type: "output_text", text: "\n## B" }] }] } })], false) });
+    expect((await client.chat({ model: "m", messages: [user("x")] })).text).toBe("## A\n## B");
+  });
+
+  it("reports response.incomplete reasons (content filter, max tokens) with the partial text", async () => {
+    const client = createClient("openai", { baseUrl: `${srv.url}/v1` }, { apiKey: "sk" });
+    srv.once("POST", "/v1/responses", {
+      chunks: sse([ev("response.output_text.delta", { item_id: "m", output_index: 0, delta: "## One" }), ev("response.incomplete", { response: { status: "incomplete", incomplete_details: { reason: "content_filter" }, usage: { output_tokens: 418 } } })], false),
+    });
+    expect(await client.chat({ model: "m", messages: [user("x")] })).toMatchObject({ text: "## One", stopReason: "content_filter" });
+    srv.once("POST", "/v1/responses", {
+      chunks: sse([ev("response.output_text.delta", { item_id: "m", output_index: 0, delta: "## One" }), ev("response.incomplete", { response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: {} } })], false),
+    });
+    expect(await client.chat({ model: "m", messages: [user("x")] })).toMatchObject({ text: "## One", stopReason: "max_tokens" });
+  });
+
   it("Azure: v1 path, api-key header, Entra token", async () => {
     srv.on("POST", "/openai/v1/responses", { chunks: sse([ev("response.output_text.delta", { delta: "hi" }), ev("response.completed", { response: { usage: {} } })], false) });
     const az = createClient("azure", { endpoint: `${srv.url}/` }, { apiKey: "az-key" });

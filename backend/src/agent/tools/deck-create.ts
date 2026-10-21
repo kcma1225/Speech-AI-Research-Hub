@@ -40,8 +40,8 @@ registerAgentTool({
   titleEn: "Create deck",
   risk: "write",
   description:
-    "Create a new slide deck in a study the user is a member of and (by default) start an AI draft in the background. kind \"paper_report\" needs `paper_id` (a library paper; the draft uses its full text); kind \"progress\" uses the study's progress. " +
-    "Put the slide structure agreed with the user (page titles + key points, language, emphasis) in `instructions`. Returns the deck URL; the draft takes a minute or two.",
+    "Create a new slide deck in a study the user is a member of and (by default) start a quick one-shot AI draft in the background. For building a full deck (verified outline, per-page writing, render and checks) use start_workflow instead; use this only for an empty deck (generate:false) or when the user explicitly asks for a quick draft. kind \"paper_report\" needs `paper_id` (a library paper; the draft uses its full text); kind \"progress\" uses the study's progress. " +
+    "Put the slide structure agreed with the user (page titles + key points, language, emphasis) in `instructions`. Returns the deck URL and the draft's job_id; the draft takes a minute or two and the user is notified when it is done (the chat shows its live status).",
   input: z.object({
     study: studyRef,
     kind: z.enum(["paper_report", "progress"]),
@@ -89,7 +89,8 @@ registerAgentTool({
       data: { deck: { id: deckId, title, kind: a.kind, url }, draft, job_id: jobId },
       text: JSON.stringify({
         deck_id: deckId, url, draft,
-        message: draft === "queued" ? "簡報已建立，AI 草稿正在背景產生（約一兩分鐘），完成後可在簡報頁預覽與編輯。" : draft === "slides_unavailable" ? "簡報已建立，但 AI 簡報生成目前維護中，沒有產生草稿；使用者可以之後在簡報頁按「AI 產生草稿」。" : "簡報已建立（空白範本）。",
+        job_id: jobId,
+        message: draft === "queued" ? "簡報已建立，AI 草稿正在背景產生（約一兩分鐘；聊天中的工作狀態會即時更新）。完成或失敗時使用者會收到通知；完整且能編譯的草稿會自動發布為第 1 版，否則可在簡報頁預覽後按「發布」。草稿完成前不要用 suggest_deck_edit 改寫或續寫（會被草稿覆蓋）。" : draft === "slides_unavailable" ? "簡報已建立，但 AI 簡報生成目前維護中，沒有產生草稿；使用者可以之後在簡報頁按「AI 產生草稿」。" : "簡報已建立（空白範本）。",
       }),
       links: [{ label: title, url, kind: "deck" }],
     };

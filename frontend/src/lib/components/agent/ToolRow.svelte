@@ -6,6 +6,8 @@
   import type { MessageKey } from "#lib/messages.ts";
   import { argsSummary, linkLabel, toolIcon, toolTitle } from "#lib/agent/tools.ts";
   import type { ToolCall } from "#lib/agent/types.ts";
+  import DraftJobChip from "./DraftJobChip.svelte";
+  import WorkflowCard from "#lib/components/workflows/WorkflowCard.svelte";
 
   /** One tool call in the timeline: icon, verb + object, status, duration; expands to arguments and result. */
   let { call, nested = false }: { call: ToolCall; nested?: boolean } = $props();
@@ -19,6 +21,16 @@
   // Execution time only: user-approved calls start counting at the decision, not while the card waited.
   const duration = $derived(call.finished_at ? Math.max(0, new Date(call.finished_at).getTime() - new Date(call.decided_at ?? call.created_at).getTime()) : null);
   const links = $derived(call.result?.links ?? []);
+  // create_deck starts a background AI draft: show its live status under the row.
+  const draftJob = $derived.by(() => {
+    const data = call.result?.data as { job_id?: unknown; deck?: { id?: unknown } } | null | undefined;
+    return call.tool === "create_deck" && typeof data?.job_id === "string" && typeof data.deck?.id === "string" ? { jobId: data.job_id, deckId: data.deck.id } : null;
+  });
+  // start_workflow: the live workflow card (plan approval, steps, verification) under the row.
+  const workflowId = $derived.by(() => {
+    const data = call.result?.data as { workflow_id?: unknown } | null | undefined;
+    return call.tool === "start_workflow" && typeof data?.workflow_id === "string" ? data.workflow_id : null;
+  });
   const muted = $derived(call.status === "denied" || call.status === "cancelled" || call.status === "expired");
   const uid = $props.id();
   let undoing = $state(false);
@@ -78,6 +90,12 @@
       <button type="button" class="mt-0.5 inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full px-3 text-[12.5px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink disabled:opacity-50" title={t("agent.tool.undoTitle")} disabled={undoing} onclick={undo}><Undo2 class="size-3.5" />{t("agent.tool.undo")}</button>
     {/if}
   </div>
+  {#if draftJob}
+    <DraftJobChip deckId={draftJob.deckId} jobId={draftJob.jobId} />
+  {/if}
+  {#if workflowId}
+    <div class="sm:ml-[38px]">{#key workflowId}<WorkflowCard id={workflowId} compact={nested} />{/key}</div>
+  {/if}
   {#if links.length}
     <div class="mt-0.5 mb-1 ml-[38px] flex flex-wrap gap-1.5">
       {#each links as link (link.url + link.label)}

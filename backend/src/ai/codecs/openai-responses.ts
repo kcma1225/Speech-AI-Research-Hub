@@ -105,6 +105,19 @@ async function* parseResponsesStream(ctx: CodecContext, res: Response, call: Cal
   let respModel: string | undefined;
   let finished = false;
   let refused = false;
+  /** Output items (`i:<id>` / `o:<index>`) whose text arrived as deltas; others are taken from their final item. */
+  const streamed = new Set<string>();
+  let anyText = false;
+  const markStreamed = (d: Record<string, unknown>) => {
+    anyText = true;
+    if (d.item_id != null) streamed.add(`i:${String(d.item_id)}`);
+    if (d.output_index != null) streamed.add(`o:${String(d.output_index)}`);
+  };
+  /** Text of a finished `message` item (every output_text / refusal part, in order). */
+  const messageText = (item: Record<string, unknown>) =>
+    (Array.isArray(item.content) ? (item.content as Record<string, unknown>[]) : [])
+      .map((c) => (c.type === "output_text" && typeof c.text === "string" ? c.text : c.type === "refusal" && typeof c.refusal === "string" ? ((refused = true), c.refusal) : ""))
+      .join("");
 
   for await (const ev of sseEvents(res, call)) {
     if (ev.data.trim() === "[DONE]") break;
@@ -117,11 +130,17 @@ async function* parseResponsesStream(ctx: CodecContext, res: Response, call: Cal
     const type = String(d.type ?? ev.event ?? "");
     switch (type) {
       case "response.output_text.delta":
-        if (typeof d.delta === "string" && d.delta) yield { type: "text_delta", text: d.delta };
+        if (typeof d.delta === "string" && d.delta) {
+          markStreamed(d);
+          yield { type: "text_delta", text: d.delta };
+        }
         break;
       case "response.refusal.delta":
         refused = true;
-        if (typeof d.delta === "string" && d.delta) yield { type: "text_delta", text: d.delta };
+        if (typeof d.delta === "string" && d.delta) {
+          markStreamed(d);
+          yield { type: "text_delta", text: d.delta };
+        }
         break;
       case "response.reasoning_summary_text.delta":
       case "response.reasoning_text.delta":
@@ -151,6 +170,13 @@ async function* parseResponsesStream(ctx: CodecContext, res: Response, call: Cal
           for (const e of tools.end(key)) yield e;
         } else if (item.type === "reasoning") {
           reasoningItems.push(item);
+        } else if (item.type === "message" && !streamed.has(`i:${String(item.id)}`) && !streamed.has(`o:${String(d.output_index)}`)) {
+          // Some gateways send a message item whole (no output_text deltas): keep its text instead of dropping it.
+          const text = messageText(item);
+          if (text) {
+            markStreamed({ item_id: item.id, output_index: d.output_index });
+            yield { type: "text_delta", text };
+          }
         }
         break;
       }
@@ -163,6 +189,11 @@ async function* parseResponsesStream(ctx: CodecContext, res: Response, call: Cal
         stop = type === "response.incomplete" ? (reason === "content_filter" ? "content_filter" : reason === "max_output_tokens" ? "max_tokens" : "other") : undefined;
         // Collect reasoning items from the final response if output_item.done was not streamed.
         if (!reasoningItems.length && Array.isArray(r.output)) for (const it of r.output as Record<string, unknown>[]) if (it.type === "reasoning") reasoningItems.push(it);
+        // Nothing streamed at all (non-streaming proxy): the final response carries the message items.
+        if (!anyText && Array.isArray(r.output)) {
+          const text = (r.output as Record<string, unknown>[]).filter((it) => it.type === "message").map(messageText).join("");
+          if (text) yield { type: "text_delta", text };
+        }
         finished = true;
         break;
       }

@@ -29,6 +29,8 @@ import {
   type PageContext, type StoredMessage,
 } from "./prompt.js";
 import { getAgentSettings } from "./settings.js";
+import { completionReview, failureNote, failureStreak, FAILURE_NOTE_AT, FAILURE_STOP, planReminder, REPEAT_NOTE, type RunCall } from "./guards.js";
+import type { Plan } from "./tools/plan.js";
 import { inlineToolImages, storeToolImages, toolResultContent, type StoredToolImage } from "./images.js";
 import "./tools/index.js";
 import { inlineAttachmentImages, prepareAttachments, refOf, type AttachmentRef, type PreparedAttachments, type StoredAttachment } from "./attachments/index.js";
@@ -73,10 +75,18 @@ export type AgentOptions = {
   leaseMs?: number;
   /** Delays between LLM retries (ms), by attempt. */
   backoffMs?: number[];
+  /** Completion review before a chat turn ends (default on; src/agent/guards.ts). */
+  review?: boolean;
+  /** Concurrent read-only tool calls per step (default 4; open-world reads always run after them, one by one). */
+  readConcurrency?: number;
 };
 
 /** Second attempt after an empty / cut-off reply (the user never sees it; it is not stored). */
 const RETRY_NUDGE = "（系統提示：上一次的回覆在給出答案前就中斷或用完了輸出額度。請不要長篇思考，直接用繁體中文給出完整的回答；內容很多時先給最重要的部分，最後問使用者要不要繼續。）";
+
+/** Hidden last turn when a run hits its step / time limit: answer in text only. */
+const wrapUpNudge = (kind: "steps" | "time") =>
+  `（系統提示：這一輪已達${kind === "steps" ? "步數" : "時間"}上限，現在不能再呼叫工具。請直接用文字簡短回覆：1) 目前已經完成了什麼（只說真的完成的），2) 還有哪些沒做完，3) 告訴使用者可以按「繼續」讓你接著做。不要道歉，也不要重複先前已經寫過的內容。）`;
 
 const ACTIVE = ["running", "awaiting_approval", "awaiting_llm"] as const;
 const UNRESOLVED = ["pending_approval", "approved", "running"];
@@ -713,7 +723,7 @@ export class AgentRuntime {
         });
         await writer.drain();
         await this.emitAll(conv.id, run.id, events);
-        if (stopAfterStep) return this.finish(run, "done", { stopReason: "repeat", notice: stopAfterStep });
+        if (stopAfterStep) return this.finish(run, "done", { stopReason: stopAfterStep[0], notice: stopAfterStep });
         // A question card was shown: the turn ends here; the answers come back as the next user message.
         const asked = await this.db.query("SELECT 1 FROM tool_calls WHERE message_id=$1 AND tool='ask_user' AND status='done' LIMIT 1", [step.id]);
         if (asked.rowCount) {
@@ -726,8 +736,17 @@ export class AgentRuntime {
 
       // 2. Limits.
       const active = run.active_ms + (Date.now() - t0);
-      if (run.step >= run.max_steps) return this.finish(run, "done", { stopReason: "limit_steps", notice: ["limit_steps", `已達這一輪的步數上限（${run.max_steps} 步）。要繼續的話請按「繼續」。`] });
-      if (active > this.limits.maxActiveMs) return this.finish(run, "done", { stopReason: "limit_time", notice: ["limit_time", "這一輪執行太久，已先停止。要繼續的話請按「繼續」。"] });
+      // Step / time limit: one last model call without tools so the user gets a summary of what was done and what is
+      // left instead of a bare stop (opencode's max-steps prompt; tool definitions stay for the prompt cache).
+      if (run.step >= run.max_steps || active > this.limits.maxActiveMs) {
+        const steps = run.step >= run.max_steps;
+        const res = await this.modelStep(run, conv, user, writer, signal, { wrapUp: steps ? "steps" : "time" });
+        if (res.kind === "stopped") return;
+        await writer.drain();
+        return steps
+          ? this.finish(run, "done", { stopReason: "limit_steps", notice: ["limit_steps", `已達這一輪的步數上限（${run.max_steps} 步）。要繼續的話請按「繼續」。`] })
+          : this.finish(run, "done", { stopReason: "limit_time", notice: ["limit_time", "這一輪執行太久，已先停止。要繼續的話請按「繼續」。"] });
+      }
       if (run.tokens_in + run.tokens_out > this.limits.maxTokens) return this.finish(run, "done", { stopReason: "limit_tokens", notice: ["limit_tokens", "這一輪用量已達上限，已先停止。要繼續的話請按「繼續」。"] });
 
       // 3. Model call.
@@ -768,7 +787,7 @@ export class AgentRuntime {
     return listAgentTools({ mode: conv.mode }).filter((t) => t.name !== "remember" || memoryOn);
   }
 
-  private async modelStep(run: RunRow, conv: ConversationRow, user: CurrentUser, writer: EventWriter, signal: AbortSignal):
+  private async modelStep(run: RunRow, conv: ConversationRow, user: CurrentUser, writer: EventWriter, signal: AbortSignal, opts: { wrapUp?: "steps" | "time" } = {}):
     Promise<{ kind: "ok"; messageId: string; calls: ToolUseBlock[]; truncated?: boolean } | { kind: "stopped" } | { kind: "llm_down" | "failed"; error: { error: string; code?: string; hint?: string } }> {
     const settings = await getAgentSettings(this.db, user.id);
     const memoryOn = conv.mode === "chat" && settings.memory_enabled && conv.memory_enabled;
@@ -784,6 +803,14 @@ export class AgentRuntime {
       maxTokens: this.options.maxOutputTokens ?? 8000,
       signal,
     };
+    if (opts.wrapUp) {
+      req.toolChoice = "none";
+      req.messages = [...req.messages, { role: "user", content: [{ type: "text", text: wrapUpNudge(opts.wrapUp) }] }];
+    }
+    // Completion review (src/agent/guards.ts): at most one hidden correction round per model step.
+    let reviewed = !!opts.wrapUp || conv.mode !== "chat" || this.options.review === false;
+    let draft: { text: string; reasoning: string; stop: string | null } | null = null;
+    let overflowRetried = false;
     await writer.emit("step_start", { runId: run.id, step: run.step });
     let text = "";
     let reasoning = "";
@@ -823,6 +850,22 @@ export class AgentRuntime {
         await this.savePartial(run, conv, text, reasoning, writer);
         return { kind: "stopped" };
       }
+      // Context rejected as too long (our estimate is rough): compact harder and retry once (OpenHands'
+      // CondensationRequest, opencode's overflow recovery).
+      if ((e as { code?: string })?.code === "context_too_long" && !overflowRetried && !text && !calls.length) {
+        overflowRetried = true;
+        this.app.log.warn({ runId: run.id, model }, "agent context too long; compacting and retrying");
+        const fresh = (await this.db.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1", [conv.id])).rows[0] ?? conv;
+        const again = await inlineAttachmentImages(this.app.storage, await inlineToolImages(this.app.storage, await this.contextMessages(fresh, user, system, true), { vision }), { vision });
+        const extra = req.messages.slice(1 + messages.length);
+        req.messages = [{ role: "system", content: system }, ...again, ...extra];
+        await writer.emit("step_discarded", { runId: run.id });
+        await writer.drain();
+        await writer.emit("step_start", { runId: run.id, step: run.step });
+        reasoning = "";
+        stop = null;
+        continue;
+      }
       if (isLlmUnavailable(e)) return { kind: "llm_down", error: (e as { toResponse(): { error: string; code: string; hint: string } }).toResponse() };
       if (e instanceof AiError) {
         if (e.retryable) return { kind: "llm_down", error: e.toResponse() };
@@ -837,8 +880,33 @@ export class AgentRuntime {
     }
     // An empty or cut-off final answer (reasoning models can spend the whole budget thinking, or the stream just ends):
     // retry once with a nudge to answer directly, a bigger budget and low reasoning; still cut off → notice + 「繼續」.
+    if (opts.wrapUp) calls = []; // no tools after a limit, even if the provider ignored tool_choice
     const incomplete = !calls.length && (!text.replace(/\n?data: \[DONE\]\s*$/, "").trim() || stop === "max_tokens" || stop === "other");
-    if (!incomplete) break;
+    if (incomplete && draft) {
+      // The corrected reply failed: keep the reviewed draft rather than nothing.
+      ({ text, reasoning, stop } = draft);
+      break;
+    }
+    if (!incomplete) {
+      if (reviewed || calls.length) break;
+      reviewed = true;
+      const nudge = await this.reviewFinal(conv, text).catch((e) => {
+        this.app.log.warn({ err: e, runId: run.id }, "agent completion review failed");
+        return null;
+      });
+      if (!nudge) break;
+      this.app.log.info({ runId: run.id, model }, "agent completion review: asking for a correction");
+      draft = { text, reasoning, stop };
+      await writer.emit("step_discarded", { runId: run.id });
+      await writer.drain();
+      await writer.emit("step_start", { runId: run.id, step: run.step });
+      req.messages = [...req.messages, { role: "assistant", content: [{ type: "text", text: text.replace(/\n?data: \[DONE\]\s*$/, "") }] }, { role: "user", content: [{ type: "text", text: nudge }] }];
+      text = "";
+      reasoning = "";
+      calls = [];
+      stop = null;
+      continue;
+    }
     this.app.log.warn({ runId: run.id, attempt, stopReason: stop, textChars: text.length, reasoningChars: reasoning.length, model }, "agent reply empty or cut off");
     if (attempt >= 1) {
       truncated = true;
@@ -879,6 +947,32 @@ export class AgentRuntime {
     return { kind: "ok", messageId: saved.id, calls, truncated };
   }
 
+  /**
+   * Facts of the current turn (every call since the last user message on the current branch, across runs) for the
+   * completion review, and the latest plan when it was set in this turn.
+   */
+  private async turnFacts(conversationId: string) {
+    const lastUser = (await this.db.query<{ seq: string | null }>("SELECT max(seq) AS seq FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL", [conversationId])).rows[0]?.seq ?? "0";
+    const rows = (await this.db.query<{ tool: string; risk: RunCall["risk"]; status: string; step: number; args: unknown; edited_args: unknown }>(
+      `SELECT tc.tool, tc.risk, tc.status, tc.step, tc.args, tc.edited_args FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
+        WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL AND m.seq > $2 ORDER BY m.seq, tc.position`,
+      [conversationId, lastUser],
+    )).rows;
+    const earlierWrite = ((await this.db.query(
+      `SELECT 1 FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
+        WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL AND m.seq < $2 AND tc.risk <> 'read' AND tc.status='done' LIMIT 1`,
+      [conversationId, lastUser],
+    )).rowCount ?? 0) > 0;
+    const planRow = [...rows].reverse().find((r) => r.tool === "update_plan" && r.status === "done");
+    return { calls: rows as RunCall[], earlierWrite, plan: planRow ? ((planRow.edited_args ?? planRow.args) as Plan) : null };
+  }
+
+  /** Deterministic review of a final answer against the turn; returns the hidden correction prompt or null. */
+  private async reviewFinal(conv: ConversationRow, text: string) {
+    const facts = await this.turnFacts(conv.id);
+    return completionReview({ text: stripMemoryMarkers(text), ...facts });
+  }
+
   /** Keeps text streamed before a stop (marked 已中止); never tool calls of an unfinished step. */
   private async savePartial(run: RunRow, conv: ConversationRow, text: string, reasoning: string, writer: EventWriter) {
     const display = stripMemoryMarkers(text).trim();
@@ -893,18 +987,20 @@ export class AgentRuntime {
   }
 
   /** Model context with compaction: clear old tool results, then summarise older turns (role `fast`). */
-  private async contextMessages(conv: ConversationRow, user: CurrentUser, system: string) {
+  private async contextMessages(conv: ConversationRow, user: CurrentUser, system: string, force = false) {
     const load = async () => (await this.db.query<StoredMessage>("SELECT id,seq,role,content,text,reasoning,provider_state,status FROM agent_messages WHERE conversation_id=$1 AND hidden_by IS NULL ORDER BY seq", [conv.id])).rows;
     let rows = await load();
-    const th = this.options.compaction ?? { clearAbove: 24_000, compactAbove: 40_000 };
+    // `force`: the provider rejected the context as too long — clear and summarise regardless of the estimate.
+    const th = force ? { clearAbove: 0, compactAbove: 0 } : (this.options.compaction ?? { clearAbove: 24_000, compactAbove: 40_000 });
+    const keep = force ? { keepResults: 1 } : {};
     const base = { summary: conv.summary, summaryUntil: conv.summary_until ? Number(conv.summary_until) : null };
     let msgs = toModelMessages(rows, base);
     const sys = system.length / 2;
     if (estimateTokens(msgs) + sys <= th.clearAbove) return msgs;
-    msgs = toModelMessages(rows, { ...base, clearOldResults: true });
+    msgs = toModelMessages(rows, { ...base, clearOldResults: true, ...keep });
     if (estimateTokens(msgs) + sys <= th.compactAbove) return msgs;
     const live = rows.filter((r) => !(base.summaryUntil && Number(r.seq) <= base.summaryUntil));
-    const cut = compactionCut(live);
+    const cut = compactionCut(live, force ? 1 : 2);
     if (cut === null || cut === 0) return msgs;
     const older = live.slice(0, cut);
     const until = Number(older.at(-1)!.seq);
@@ -918,12 +1014,16 @@ export class AgentRuntime {
       this.app.log.warn({ err: e }, "agent compaction summary failed; dropping older turns");
       summary = `${conv.summary ? `${conv.summary}\n` : ""}（較早的對話已省略，摘要服務暫時無法使用。）`;
     }
-    await this.db.query("UPDATE conversations SET summary=$2, summary_until=$3 WHERE id=$1", [conv.id, summary.slice(0, 8000), until]);
+    // An unfinished plan set in the summarised part would vanish with its tool call: keep it next to the summary.
+    const planUse = older.flatMap((r) => (r.role === "assistant" ? r.content : [])).filter((b): b is ToolUseBlock => b.type === "tool_use" && b.name === "update_plan").at(-1);
+    const reminder = planUse ? planReminder(planUse.input as Plan) : null;
+    summary = summary.slice(0, 8000 - (reminder?.length ?? 0) - 1) + (reminder ? `\n${reminder}` : "");
+    await this.db.query("UPDATE conversations SET summary=$2, summary_until=$3 WHERE id=$1", [conv.id, summary, until]);
     await this.db.query("INSERT INTO agent_messages(conversation_id,role,content,text) VALUES($1,'compaction',$2,$3)", [conv.id, JSON.stringify([{ type: "compaction", until }]), "較早的對話已整理成摘要（只影響 AI 看到的內容）。"]);
     conv.summary = summary;
     conv.summary_until = String(until);
     rows = await load();
-    return toModelMessages(rows, { summary, summaryUntil: until, clearOldResults: true });
+    return toModelMessages(rows, { summary, summaryUntil: until, clearOldResults: true, ...keep });
   }
 
   private toolCtx(conv: ConversationRow, user: CurrentUser, run: RunRow, signal: AbortSignal, autopilot: boolean): AgentToolContext {
@@ -969,8 +1069,10 @@ export class AgentRuntime {
     };
     const fail = (p: Planned, message: string, summary = "") => insert(p, { status: "failed", error: message, summary, result_text: envelope(p.use.name, `錯誤：${message}`, { untrusted: false, error: true }) });
 
-    // Pass 1: invalid calls, repeats, reads (executed now).
+    // Pass 1: invalid calls, repeats, reads. Reads run concurrently (codex runs parallel-safe tools in parallel);
+    // open-world reads wait for them, because a taint they cause decides whether an outbound call must ask.
     const writes: Planned[] = [];
+    const reads: { p: Planned; summary: string; note?: string }[] = [];
     for (const p of planned) {
       if (signal.aborted) return null;
       if (!p.def || !p.args) {
@@ -999,12 +1101,24 @@ export class AgentRuntime {
         writes.push(p);
         continue;
       }
-      const decision = decide({ risk: "read", openWorld: p.def.openWorld, autopilot: false, tainted: await this.isTainted(run.id), granted: false, autopilotWrites: 0, autopilotWriteLimit: 0 });
+      reads.push({ p, summary, ...(same.length ? { note: REPEAT_NOTE } : {}) });
+    }
+    const local = reads.filter((r) => !r.p.def!.openWorld);
+    const rows = [];
+    for (const r of local) rows.push({ row: await insert(r.p, { status: "approved", summary: r.summary }), note: r.note });
+    const width = Math.max(1, this.options.readConcurrency ?? 4);
+    for (let i = 0; i < rows.length; i += width) {
+      if (signal.aborted) return null;
+      await Promise.all(rows.slice(i, i + width).map((x) => this.executeCall(x.row, conv, user, run, writer, signal, x.note)));
+    }
+    for (const r of reads.filter((x) => x.p.def!.openWorld)) {
+      if (signal.aborted) return null;
+      const decision = decide({ risk: "read", openWorld: true, autopilot: false, tainted: await this.isTainted(run.id), granted: false, autopilotWrites: 0, autopilotWriteLimit: 0 });
       if (decision.run) {
-        const row = await insert(p, { status: "approved", summary });
-        await this.executeCall(row, conv, user, run, writer, signal);
+        const row = await insert(r.p, { status: "approved", summary: r.summary });
+        await this.executeCall(row, conv, user, run, writer, signal, r.note);
       } else {
-        await insert(p, { status: "pending_approval", approval_reason: decision.reason, summary });
+        await insert(r.p, { status: "pending_approval", approval_reason: decision.reason, summary: r.summary });
       }
     }
 
@@ -1044,7 +1158,25 @@ export class AgentRuntime {
         await insert(p, { status: "pending_approval", approval_reason: decision.reason, summary, target: target ?? undefined });
       }
     }
-    return stop;
+    return stop ?? (await this.failureGuard(run.id, messageId));
+  }
+
+  /**
+   * Consecutive failed calls (unknown tool, bad arguments, tool errors) across the run: the third gets a "change
+   * approach" note in its result, the sixth stops the run (src/agent/guards.ts).
+   */
+  private async failureGuard(runId: string, messageId: string): Promise<[string, string] | null> {
+    const all = (await this.db.query<RunCall & { id: string; message_id: string }>("SELECT id, message_id, tool, risk, status, step FROM tool_calls WHERE run_id=$1 ORDER BY step, position", [runId])).rows;
+    const streak = failureStreak(all);
+    if (!streak) return null;
+    const before = failureStreak(all.filter((c) => c.message_id !== messageId));
+    if (before < FAILURE_NOTE_AT && streak >= FAILURE_NOTE_AT) {
+      const last = [...all].reverse().find((c) => c.status === "failed")!;
+      const note = failureNote(FAILURE_NOTE_AT)!;
+      await this.db.query("UPDATE tool_calls SET result_text = coalesce(result_text,'') || $2 WHERE id=$1", [last.id, `\n${note}`]);
+    }
+    if (streak >= FAILURE_STOP) return ["stuck", `AI 連續 ${streak} 次工具呼叫失敗，已先停止。可以換個說法、提供更多資訊，或按「繼續」再試一次。`];
+    return null;
   }
 
   private async isTainted(runId: string) {
@@ -1062,7 +1194,7 @@ export class AgentRuntime {
     return (pending.rowCount ?? 0) > 0;
   }
 
-  private async executeCall(row: ToolCallRow, conv: ConversationRow, user: CurrentUser, run: RunRow, writer: EventWriter, signal: AbortSignal) {
+  private async executeCall(row: ToolCallRow, conv: ConversationRow, user: CurrentUser, run: RunRow, writer: EventWriter, signal: AbortSignal, note?: string) {
     const claimed = await this.db.query("UPDATE tool_calls SET status='running' WHERE id=$1 AND status='approved'", [row.id]);
     if (!claimed.rowCount) return;
     await writer.emit("tool_call", (await this.toolCallEvent(this.db, row.id)).data);
@@ -1072,7 +1204,7 @@ export class AgentRuntime {
       if (!def) throw new HttpError(400, "這個工具已不存在。");
       const res = await def.execute(def.input.parse(args) as never, this.toolCtx(conv, user, run, signal, row.approved_via === "autopilot"));
       const body = res.text ?? JSON.stringify(res.data, null, 0);
-      const text = envelope(row.tool, capResult(body), { untrusted: !!res.untrusted || !!def.openWorld, source: res.source });
+      const text = envelope(row.tool, capResult(body), { untrusted: !!res.untrusted || !!def.openWorld, source: res.source }) + (note ? `\n${note}` : "");
       const images = res.images?.length ? await storeToolImages(this.app.storage, conv.id, row.id, res.images.slice(0, 6)) : undefined;
       await this.db.query("UPDATE tool_calls SET status='done', result=$2, result_text=$3, finished_at=now() WHERE id=$1", [row.id, JSON.stringify({ data: res.data, links: res.links ?? [], source: res.source ?? null, untrusted: !!res.untrusted, ...(images ? { images } : {}), ...(res.undo && row.approved_via !== "user" ? { undo: res.undo } : {}) }), text]);
       if (res.untrusted || def.openWorld) {

@@ -10,7 +10,9 @@ import {
 } from "../lib/studies/access.js";
 import { recordActivity } from "../lib/studies/activity.js";
 import { runStudyCleanups } from "../lib/studies/cleanup.js";
-import { listMembers, listMilestones, listStages, MILESTONE_SELECT, studyCards, type Milestone } from "../lib/studies/queries.js";
+import { claimDraftImages } from "../lib/md-images/drafts.js";
+import { assertStageOf, getMilestone, updateMilestone } from "../lib/studies/milestones.js";
+import { listMembers, listMilestones, listStages, studyCards } from "../lib/studies/queries.js";
 import { uniqueStudySlug, validStudySlug } from "../lib/studies/slug.js";
 import { createTask, dateOnly, getTask, TASK_SELECT, taskCreateInput, taskPatchInput, updateTask, type AfterCommit, type Task } from "../lib/studies/tasks.js";
 
@@ -160,6 +162,7 @@ const studies: FastifyPluginAsync = async app => {
   app.post("/studies", async (request, reply) => {
     const user = await requireUser(request);
     const input = parse(createInput, request.body, "請確認研究名稱（1–200 字）、網址代稱與成員。");
+    const images = { afterCommit: async () => {}, onRollback: async () => {} };
     try {
       const result = await transaction(app.db, async client => {
         const slugValue = await uniqueStudySlug(client, input.title, input.slug);
@@ -193,11 +196,15 @@ const studies: FastifyPluginAsync = async app => {
           await addMember(client, access.study, user, member.userId, member.role);
         }
         await recordActivity(client, { studyId: study.id, actorId: user.id, kind: "study_created", title: input.title, url: studyUrl(slugValue), targetType: "study", targetId: study.id });
+        // Images pasted into the new-study form were uploaded as drafts: move them under the study.
+        Object.assign(images, await claimDraftImages(client, app.storage, user.id, study.id, input.summary_md ?? ""));
         return studyDetail(client, await loadStudyAccess(client, study.id, user));
       });
+      await images.afterCommit().catch(e => request.log.warn({ err: e }, "md-images draft cleanup failed"));
       await audit(request, user.id, "study_created", "study", result.study.id);
       return reply.code(201).send(result);
     } catch (error) {
+      await images.onRollback().catch(() => {});
       if (isUniqueViolation(error)) throw conflict("這個網址代稱已被使用。");
       throw error;
     }
@@ -471,7 +478,7 @@ const studies: FastifyPluginAsync = async app => {
     const { user } = await requireStudyEditor(request, params.ref);
     const milestone = await transaction(app.db, async client => {
       const { study } = await lockedAccess(client, params.ref, user);
-      await assertStage(client, study.id, input.stage_id);
+      await assertStageOf(client, study.id, input.stage_id);
       const id = (await client.query<{ id: string }>(
         "INSERT INTO milestones(study_id,stage_id,title,due_on,created_by) VALUES($1,$2,$3,$4,$5) RETURNING id",
         [study.id, input.stage_id ?? null, input.title, input.due_on ?? null, user.id],
@@ -488,26 +495,8 @@ const studies: FastifyPluginAsync = async app => {
     const { user } = await requireStudyEditor(request, params.ref);
     return transaction(app.db, async client => {
       const { study } = await lockedAccess(client, params.ref, user);
-      const current = (await client.query<{ done_at: string | null; title: string }>("SELECT done_at,title FROM milestones WHERE id=$1 AND study_id=$2 FOR UPDATE", [params.milestoneId, study.id])).rows[0];
-      if (!current) throw notFound("里程碑不存在。");
-      if (input.stage_id !== undefined) await assertStage(client, study.id, input.stage_id);
-      await client.query(
-        `UPDATE milestones SET title=COALESCE($3,title),
-                due_on=CASE WHEN $4::boolean THEN $5::date ELSE due_on END,
-                stage_id=CASE WHEN $6::boolean THEN $7::uuid ELSE stage_id END,
-                done_at=CASE WHEN $8::boolean IS NULL THEN done_at WHEN $8 THEN COALESCE(done_at,now()) ELSE NULL END,
-                done_by=CASE WHEN $8::boolean IS NULL THEN done_by WHEN $8 THEN COALESCE(done_by,$9) ELSE NULL END,
-                updated_at=now()
-          WHERE id=$1 AND study_id=$2`,
-        [params.milestoneId, study.id, input.title ?? null, input.due_on !== undefined, input.due_on ?? null,
-          input.stage_id !== undefined, input.stage_id ?? null, input.done ?? null, user.id],
-      );
-      if (input.done && !current.done_at) {
-        await recordActivity(client, { studyId: study.id, actorId: user.id, kind: "milestone_done", title: input.title ?? current.title, url: studyUrl(study.slug), targetType: "milestone", targetId: params.milestoneId });
-      } else {
-        await client.query("UPDATE studies SET activity_at=now() WHERE id=$1", [study.id]);
-      }
-      return { milestone: await getMilestone(client, study.id, params.milestoneId) };
+      const { milestone } = await updateMilestone(client, study, user, params.milestoneId, input);
+      return { milestone };
     });
   });
 
@@ -601,16 +590,6 @@ const studies: FastifyPluginAsync = async app => {
     return reply.header("Cache-Control", "no-store").send({ tasks: rows });
   });
 };
-
-async function assertStage(client: Queryable, studyId: string, stageId: string | null | undefined) {
-  if (!stageId) return;
-  const found = await client.query("SELECT 1 FROM study_stages WHERE id=$1 AND study_id=$2", [stageId, studyId]);
-  if (!found.rowCount) throw badRequest("階段不存在。");
-}
-
-async function getMilestone(client: Queryable, studyId: string, id: string): Promise<Milestone> {
-  return (await client.query<Milestone>(`${MILESTONE_SELECT} WHERE m.id=$1 AND m.study_id=$2`, [id, studyId])).rows[0]!;
-}
 
 async function setCurrentStage(client: Queryable, study: Study, user: CurrentUser, stageId: string) {
   const stage = (await client.query<{ position: number; name: string }>("SELECT position,name FROM study_stages WHERE id=$1 AND study_id=$2", [stageId, study.id])).rows[0];

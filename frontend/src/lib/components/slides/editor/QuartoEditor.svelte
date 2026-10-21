@@ -332,7 +332,8 @@
   function onDraftDone(job: AiDraftJob) {
     if (job.status === "succeeded") {
       const r = job.result;
-      toasts.show(r?.valid === false ? t("slides.editor.ai.draftInvalid") : r?.fixed ? t("slides.editor.ai.draftFixed") : t("slides.editor.ai.draftDone"), r?.valid === false ? "error" : "success");
+      if (r?.partial && r.warning) toasts.show(r.warning, "error");
+      else toasts.show(r?.valid === false ? t("slides.editor.ai.draftInvalid") : r?.fixed ? t("slides.editor.ai.draftFixed") : t("slides.editor.ai.draftDone"), r?.valid === false ? "error" : "success");
       void load(false);
     } else if (job.status === "failed") toasts.show(job.error ?? t("slides.editor.ai.draftFailed"), "error");
   }
@@ -360,7 +361,7 @@
     }
   }
   const stageLabel = (stage: string) => {
-    const known = ["context", "generating", "writing", "validating", "fixing", "waiting_llm", "queued", "starting"];
+    const known = ["context", "generating", "continuing", "writing", "validating", "fixing", "visual_check", "publishing", "waiting_llm", "queued", "starting", "done"];
     return known.includes(stage) ? t(`slides.editor.ai.stage.${stage}` as "slides.editor.ai.stage.context") : stage;
   };
 

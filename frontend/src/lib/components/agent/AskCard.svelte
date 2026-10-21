@@ -175,7 +175,7 @@
     <header class="flex flex-col gap-2.5 px-4 pt-4 sm:px-5">
       <div class="flex items-start gap-2.5">
         <span class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-[var(--pill-lilac)] text-[var(--pill-lilac-ink)]" aria-hidden="true"><MessageCircleQuestion class="size-3.5" /></span>
-        <h3 id="{uid}-title" class="min-w-0 flex-1 text-[13.5px] leading-relaxed text-ink-2">{args.intro || (editing ? t("agent.ask.editTitle") : t("agent.ask.title"))}</h3>
+        <h3 id="{uid}-title" class="min-w-0 flex-1 whitespace-pre-line text-[13.5px] leading-relaxed text-ink-2">{args.intro || (editing ? t("agent.ask.editTitle") : t("agent.ask.title"))}</h3>
         {#if multi}<span class="shrink-0 pt-1 text-[12px] font-medium text-ink-3 tabular-nums" aria-live="polite">{reviewing ? t("agent.ask.review") : `${step + 1} / ${questions.length}`}</span>{/if}
       </div>
       {#if multi}

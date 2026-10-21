@@ -1,6 +1,6 @@
 <script lang="ts">
   import { DropdownMenu } from "bits-ui";
-  import { Ellipsis, MessageSquarePlus, MessagesSquare, Pencil, Rocket, Search, Trash2, X } from "@lucide/svelte";
+  import { Ellipsis, MessageSquarePlus, MessagesSquare, Pencil, Rocket, Search, Trash2, Workflow, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
@@ -167,6 +167,7 @@
   </nav>
   <div class="sticky bottom-0 shrink-0 border-t border-line bg-[color-mix(in_srgb,var(--surface-2)_94%,transparent)] p-3 pb-[max(12px,env(safe-area-inset-bottom))] backdrop-blur-sm">
     <button type="button" class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-ink px-4 text-sm font-medium text-primary-ink transition-opacity hover:opacity-90" onclick={onNew}><MessageSquarePlus class="size-4" />{t("agent.newChat")}</button>
+    <a href="/assistant/workflows" class="mt-1.5 inline-flex h-10 w-full items-center justify-center gap-2 rounded-full px-4 text-[13px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink"><Workflow class="size-4" />{t("wf.title")}</a>
   </div>
 </div>
 

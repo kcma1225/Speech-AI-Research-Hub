@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AudioLines, Captions, CircleCheck, CircleX, Cog, DatabaseZap, LibraryBig, LoaderCircle, Presentation, Sparkles, WandSparkles } from "@lucide/svelte";
+  import { AudioLines, CloudUpload, Captions, CircleCheck, CircleX, Cog, DatabaseZap, LibraryBig, LoaderCircle, Presentation, Sparkles, WandSparkles } from "@lucide/svelte";
   import type { Component } from "svelte";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
   import { t } from "#lib/i18n.svelte.ts";
@@ -11,6 +11,7 @@
   const running = $derived(jobsStore.running.length);
   /** One icon per job kind (unknown kinds get a neutral cog). */
   const KIND_ICON: Record<string, Component> = {
+    upload: CloudUpload,
     slide_render: Presentation,
     ai_slides_generate: WandSparkles,
     media_transcode: AudioLines,

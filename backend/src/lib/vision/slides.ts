@@ -180,7 +180,8 @@ export async function visualSelfFix(
     if (!applied) return null;
     return { text: text + entry.content.slice(cursor), applied };
   } catch (err) {
-    opts.log?.warn({ err }, "slides visual self-check skipped");
+    // Optional step: a model/provider that refuses the images only means no visual fixes (the draft is kept as is).
+    opts.log?.warn({ reason: err instanceof Error ? err.message : String(err) }, "slides visual self-check skipped (optional)");
     return null;
   }
 }

@@ -168,8 +168,11 @@ export type CodexRequestInput = {
   baseUrl?: string;
 };
 
-/** Fields the ChatGPT backend rejects. */
-export const CODEX_STRIPPED_FIELDS = ["max_output_tokens", "previous_response_id", "metadata", "user", "safety_identifier", "prompt_cache_retention", "background", "truncation"];
+/**
+ * Fields the ChatGPT backend rejects. `temperature` / `top_p` answer HTTP 400 `{"detail":"Unsupported parameter: temperature"}`
+ * (seen 2026-10 with gpt-5.6-luna): the slides visual self-check and other callers that pass a temperature failed on it.
+ */
+export const CODEX_STRIPPED_FIELDS = ["max_output_tokens", "temperature", "top_p", "previous_response_id", "metadata", "user", "safety_identifier", "prompt_cache_retention", "background", "truncation"];
 
 /**
  * Turns a Responses API request into a Codex backend request:

@@ -105,4 +105,6 @@ export const keys = {
   /** Images in Markdown documents (notes, study summary): table `md_images`, served by GET /api/md-images/:id. */
   mdImage: (studyId: string, imageId: string, ext: string) => `md-images/${studyId}/${imageId}.${ext}`,
   mdImagePrefix: (studyId: string) => `md-images/${studyId}/`,
+  /** Draft image uploaded on /studies/new before the study exists (moved to `mdImage` when the study is created). */
+  mdImageDraft: (userId: string, imageId: string, ext: string) => `md-images/_drafts/${userId}/${imageId}.${ext}`,
 };

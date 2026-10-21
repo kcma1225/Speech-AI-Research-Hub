@@ -170,6 +170,27 @@ describe.skipIf(!hasTestDb)("AI routing v2 (profiles, groups, bulk bindings)", (
     expect(ov.models.find((m: { model: string }) => m.model === "glm/glm-5-turbo")).toMatchObject({ calls: 1, ok: 1 });
   });
 
+  it("overview carries a version: unchanged polls are cheap, routing and traffic changes bump their half", async () => {
+    expect((await get(student, "/api/admin/ai/overview")).statusCode).toBe(403);
+    const a = json(await get(admin, "/api/admin/ai/overview"));
+    expect(a.version).toBe(`${a.routing_version}.${a.stats_version}`);
+    expect(a.roles).toBeInstanceOf(Array);
+    const same = json(await get(admin, `/api/admin/ai/overview?since=${a.version}`));
+    expect(same).toEqual({ version: a.version, routing_version: a.routing_version, stats_version: a.stats_version, unchanged: true });
+    // A call changes only the traffic half.
+    await platform.chat("writing", { messages: [{ role: "user", content: "hi" }], maxTokens: 20 }, { userId: student.id });
+    await platform.logger.flush();
+    const b = json(await get(admin, `/api/admin/ai/overview?since=${a.version}`));
+    expect(b.unchanged).toBeUndefined();
+    expect(b.stats_version).not.toBe(a.stats_version);
+    expect(b.models.length).toBeGreaterThan(0);
+    // A binding change (another admin) changes the routing half.
+    await send(admin, "PUT", "/api/admin/ai/bindings", { roles: ["fast"], target: { group_id: ids.inner } });
+    const c = json(await get(admin, `/api/admin/ai/overview?since=${b.version}`));
+    expect(c.routing_version).not.toBe(b.routing_version);
+    await send(admin, "PUT", "/api/admin/ai/bindings", { roles: ["fast"], target: null });
+  });
+
   it("limits come from the model profile (max output clamp, role limits)", async () => {
     const id = await modelId("glm/glm-5.3-flash");
     await send(admin, "PATCH", `/api/admin/ai/models/${id}`, { overrides: { max_output_tokens: 64 } });

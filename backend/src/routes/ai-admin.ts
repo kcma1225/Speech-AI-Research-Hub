@@ -27,7 +27,7 @@ import {
   updateProvider,
   type TargetInput,
 } from "../ai/platform/admin-service.js";
-import { callStats, listCalls, STAT_WINDOWS, type StatWindow } from "../ai/platform/call-log.js";
+import { callStats, listCalls, overviewVersions, STAT_WINDOWS, type StatWindow } from "../ai/platform/call-log.js";
 import { encryptJson, decryptJson, oauthAad, sessionAad } from "../ai/platform/crypto.js";
 import { probeProvider } from "../ai/platform/health.js";
 import { clearTokens, saveTokens } from "../ai/platform/oauth-store.js";
@@ -515,11 +515,20 @@ export default async function aiAdmin(app: FastifyInstance) {
     return { bindings: await bindingsPayload(), created_space: r.space, warnings: r.warnings };
   });
 
-  /** Live chips for the routing diagram: per model (attempts) and per role (calls), last 24 h. */
+  /**
+   * Live chips for the routing diagram: per model (attempts) and per role (calls), last 24 h. `version` is
+   * `<routing>.<stats>`; polling with `?since=<version>` returns `{ unchanged: true }` without recomputing stats
+   * when nothing changed. A changed routing half tells the client to refetch accounts/models/groups/bindings.
+   */
   app.get("/admin/ai/overview", async (request) => {
     await requireAdmin(request);
-    const stats = await callStats(app.db, "24h");
-    return { window: stats.window, models: stats.members, roles: stats.roles };
+    const { since } = parse(z.object({ since: z.string().max(80).optional() }), request.query);
+    const v = await overviewVersions(app.db);
+    const version = `${v.routing}.${v.stats}`;
+    const head = { version, routing_version: v.routing, stats_version: v.stats };
+    if (since === version) return { ...head, unchanged: true };
+    const stats = await callStats(app.db, "24h", { live: true });
+    return { ...head, window: stats.window, models: stats.members, roles: stats.roles };
   });
 
   // ---------------------------------------------------------------- legacy routes API (deprecated aliases)

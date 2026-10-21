@@ -17,6 +17,7 @@
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
   import SlidePlayer from "#lib/components/slides/SlidePlayer.svelte";
+  import DraftState from "#lib/components/slides/DraftState.svelte";
   import InfoPanel from "#lib/components/slides/InfoPanel.svelte";
   import ReviewsPanel from "#lib/components/slides/ReviewsPanel.svelte";
   import UploadSheet from "#lib/components/slides/UploadSheet.svelte";
@@ -257,6 +258,10 @@
 
   <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_400px]">
     <div class="flex min-w-0 flex-col gap-3 lg:sticky lg:top-6">
+      {#if d.project.source && !d.activeVersion && !(latest && (isBusy(latest.status) || latest.status === "review"))}
+        <!-- In-app source without a playable version (e.g. a finished AI draft): show the draft, not just 「還沒有發布的版本」. -->
+        <DraftState deckId={d.project.id} editUrl={deckUrl(studySlug, d.project.id, "edit")} canManage={d.permissions.manage} hasVersions={d.versions.length > 0} onPublished={() => void load()} />
+      {:else}
       <SlidePlayer
         bind:this={player}
         bind:page={currentPage}
@@ -298,6 +303,7 @@
           </div>
         {/snippet}
       </SlidePlayer>
+      {/if}
       {#if preview?.status === "review"}
         <div class="flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center" style="border-color:var(--pill-lilac-ink);background:var(--pill-lilac)">
           <span class="hidden size-10 shrink-0 place-items-center rounded-xl bg-surface/70 sm:grid" style="color:var(--pill-lilac-ink)"><FileSearch class="size-5" /></span>

@@ -89,7 +89,7 @@
         </Tabs.Trigger>
       {/each}
     </Tabs.List>
-    <Tabs.Content value="overview" class="outline-none"><RoutingDiagram onEditGroup={id => ((editGroupId = id), (tab = "groups"))} /></Tabs.Content>
+    <Tabs.Content value="overview" class="outline-none"><RoutingDiagram active={tab === "overview"} onEditGroup={id => ((editGroupId = id), (tab = "groups"))} /></Tabs.Content>
     <Tabs.Content value="providers" class="flex flex-col gap-10 outline-none">
       <ProvidersPanel family="llm" title={t("aiAdmin.providers.llmTitle")} onShowModels={id => ((modelsProvider = id), (tab = "models"))} />
       <div class="flex flex-col gap-3">

@@ -15,6 +15,10 @@ import * as latex from "./i18n/latex.ts";
 import * as vision from "./i18n/vision.ts";
 import * as editor from "./i18n/editor.ts";
 import * as attach from "./i18n/attach.ts";
+import * as workflows from "./i18n/workflows.ts";
+import * as drafts from "./i18n/drafts.ts";
+import * as viewer from "./i18n/viewer.ts";
+import * as agentPlan from "./i18n/agent-plan.ts";
 
 const zh = {
   ...core.zh,
@@ -32,6 +36,10 @@ const zh = {
   ...vision.zh,
   ...editor.zh,
   ...attach.zh,
+  ...workflows.zh,
+  ...drafts.zh,
+  ...viewer.zh,
+  ...agentPlan.zh,
 };
 export type MessageKey = keyof typeof zh;
 
@@ -51,6 +59,10 @@ const en: Record<MessageKey, string> = {
   ...vision.en,
   ...editor.en,
   ...attach.en,
+  ...workflows.en,
+  ...drafts.en,
+  ...viewer.en,
+  ...agentPlan.en,
 };
 
 export const messages: Record<"zh-TW" | "en", Record<MessageKey, string>> = { "zh-TW": zh, en };

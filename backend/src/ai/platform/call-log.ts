@@ -225,7 +225,7 @@ export const STAT_WINDOWS = { "1h": "1 hour", "24h": "24 hours", "7d": "7 days",
 export type StatWindow = keyof typeof STAT_WINDOWS;
 
 /** Per-role (logical calls) and per-provider/model (attempts) stats: count, success rate, p50/p95, tokens, errors. */
-export async function callStats(db: Queryable, window: StatWindow) {
+export async function callStats(db: Queryable, window: StatWindow, opts: { live?: boolean } = {}) {
   const since = `now() - interval '${STAT_WINDOWS[window]}'`;
   const agg = `count(*)::int AS calls, count(*) FILTER (WHERE ok)::int AS ok,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) FILTER (WHERE ok) AS p50_ms,
@@ -240,9 +240,13 @@ export async function callStats(db: Queryable, window: StatWindow) {
                 FROM ai_call_log l LEFT JOIN ai_providers p ON p.id = l.provider_id
                WHERE l.provider_id IS NOT NULL AND NOT l.probe AND l.started_at >= ${since}
                GROUP BY l.provider_id, p.name, l.provider_kind, l.model, l.model_ref ORDER BY calls DESC LIMIT 200`),
-    db.query(`SELECT error_code, count(*)::int AS count FROM ai_call_log
+    opts.live
+      ? { rows: [] }
+      : db.query(`SELECT error_code, count(*)::int AS count FROM ai_call_log
                WHERE NOT ok AND NOT probe AND started_at >= ${since} GROUP BY error_code ORDER BY count DESC`),
-    db.query(`SELECT date_bin('${window === "1h" ? "5 minutes" : window === "24h" ? "1 hour" : "1 day"}', started_at, '2000-01-01') AS bucket,
+    opts.live
+      ? { rows: [] }
+      : db.query(`SELECT date_bin('${window === "1h" ? "5 minutes" : window === "24h" ? "1 hour" : "1 day"}', started_at, '2000-01-01') AS bucket,
                      count(*)::int AS calls, count(*) FILTER (WHERE ok)::int AS ok
                 FROM ai_call_log WHERE final AND NOT probe AND started_at >= ${since} GROUP BY bucket ORDER BY bucket`),
   ]);
@@ -256,6 +260,25 @@ export async function callStats(db: Queryable, window: StatWindow) {
     success_rate: Number(r.calls) ? Number(r.ok) / Number(r.calls) : null,
   });
   return { window, roles: roles.rows.map(round), members: members.rows.map(round), errors: errors.rows, series: series.rows };
+}
+
+/**
+ * Cheap change detectors for the live routing overview: `routing` changes whenever accounts, model profiles,
+ * groups, members, bindings or role health change; `stats` whenever a call lands in the last 24 h (or ages out).
+ * Both are md5 digests over small tables / one index range, so polling them every few seconds is fine.
+ */
+export async function overviewVersions(db: Queryable): Promise<{ routing: string; stats: string }> {
+  const r = await db.query<{ routing: string; stats: string }>(`SELECT
+      md5(concat_ws('|',
+        (SELECT string_agg(id::text || updated_at::text || enabled::text || coalesce(last_probe_at::text, ''), ',' ORDER BY id) FROM ai_providers),
+        (SELECT string_agg(id::text || updated_at::text || enabled::text || listed::text, ',' ORDER BY id) FROM ai_models),
+        (SELECT string_agg(id::text || updated_at::text, ',' ORDER BY id) FROM ai_groups),
+        (SELECT string_agg(group_id::text || position::text || coalesce(model_ref::text, child_group_id::text) || weight::text || enabled::text || params::text, ',' ORDER BY group_id, position) FROM ai_group_members),
+        (SELECT string_agg(role || updated_at::text, ',' ORDER BY role) FROM ai_role_bindings),
+        (SELECT string_agg(role || state || detail::text, ',' ORDER BY role) FROM ai_role_status)
+      )) AS routing,
+      (SELECT md5(count(*)::text || coalesce(max(started_at)::text, '')) FROM ai_call_log WHERE NOT probe AND started_at >= now() - interval '24 hours') AS stats`);
+  return r.rows[0]!;
 }
 
 /** Retention: keep 90 days. */

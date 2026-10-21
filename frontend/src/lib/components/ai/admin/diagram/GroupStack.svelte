@@ -23,6 +23,7 @@
   import ProfileBadges from "../ProfileBadges.svelte";
   import GroupStack from "./GroupStack.svelte";
   import type { DragController } from "./dnd.svelte.ts";
+  import { pulseOnChange } from "./live.ts";
 
   /** A group as a baseplate of stacked bricks (models and nested groups); interactive when `dnd`/`actions` are given. */
   let { group, dnd, actions, depth = 0, seen = [], live = false }: { group: Group; dnd?: DragController; actions?: StackActions; depth?: number; seen?: string[]; live?: boolean } = $props();
@@ -92,7 +93,7 @@
         {:else}
           <!-- Focusable so Alt+↑↓ can reorder; every other action is in the brick's menu button. -->
           <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-          <div role="group" aria-roledescription={t("aiAdmin.diagram.brick")} tabindex={actions ? 0 : undefined} onkeydown={e => onKey(e, i)} class="rounded-[12px] outline-offset-2" data-leaf-provider={model?.provider_id} aria-label={actions ? t("aiAdmin.diagram.brickLabel", { name: model?.model_id ?? child?.name ?? "?", n: i + 1 }) : undefined}>
+          <div role="group" aria-roledescription={t("aiAdmin.diagram.brick")} tabindex={actions ? 0 : undefined} onkeydown={e => onKey(e, i)} class="rounded-[12px] outline-offset-2" data-leaf-provider={model?.provider_id} data-leaf-model={model?.id} use:pulseOnChange={live && model ? `${s?.calls ?? 0}|${modelHealth(model, adminStore.providers, adminStore.bindings)}` : 0} aria-label={actions ? t("aiAdmin.diagram.brickLabel", { name: model?.model_id ?? child?.name ?? "?", n: i + 1 }) : undefined}>
             <BrickFace
               tone={child ? "stone" : providerTone(model?.provider_id)}
               vendor={!child && model ? { kind: model.provider_kind } : undefined}

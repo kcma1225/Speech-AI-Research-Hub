@@ -122,4 +122,40 @@ describe.skipIf(!hasTestDb || !hasTestS3)("doc import routes", () => {
     expect((await t.app.inject({ method: "GET", url })).statusCode).toBe(401);
     expect((await upload(alice, "/api/md-images", { scope: "study:nope" }, { filename: "a.png", data: PNG })).statusCode).toBe(400);
   });
+
+  it("Markdown images: drafts on the new-study form are owner-only until the study claims them", async () => {
+    const r = await upload(alice, "/api/md-images", { scope: "draft" }, { filename: "draft.png", data: PNG });
+    expect(r.statusCode, r.body).toBe(201);
+    const url = r.json().image.url as string;
+    const id = url.split("/").pop()!;
+    expect((await t.app.inject({ method: "GET", url, headers: { cookie: alice.cookie } })).statusCode).toBe(200);
+    expect((await t.app.inject({ method: "GET", url, headers: { cookie: bob.cookie } })).statusCode).toBe(404);
+    const draftKey = (await t.db.query<{ object_key: string }>("SELECT object_key FROM md_images WHERE id=$1", [id])).rows[0]!.object_key;
+    expect(draftKey).toBe(`md-images/_drafts/${alice.id}/${id}.png`);
+    // Bob cannot claim Alice's draft by referencing it.
+    const bobStudy = await t.app.inject({ method: "POST", url: "/api/studies", headers: { origin: ORIGIN, cookie: bob.cookie }, payload: { title: "Bob 的研究", summary_md: `![x](${url})` } });
+    expect(bobStudy.statusCode, bobStudy.body).toBe(201);
+    expect((await t.db.query("SELECT study_id FROM md_images WHERE id=$1", [id])).rows[0].study_id).toBeNull();
+    const created = await t.app.inject({ method: "POST", url: "/api/studies", headers: { origin: ORIGIN, cookie: alice.cookie }, payload: { title: "有圖片的研究", summary_md: `圖：\n\n![draft](${url})\n` } });
+    expect(created.statusCode, created.body).toBe(201);
+    const studyId = created.json().study.id as string;
+    const row = (await t.db.query<{ study_id: string; object_key: string }>("SELECT study_id, object_key FROM md_images WHERE id=$1", [id])).rows[0]!;
+    expect(row).toEqual({ study_id: studyId, object_key: `md-images/${studyId}/${id}.png` });
+    expect(await t.app.storage.get(draftKey)).toBeNull();
+    // Same URL, now readable by everyone signed in.
+    const get = await t.app.inject({ method: "GET", url, headers: { cookie: bob.cookie } });
+    expect(get.statusCode).toBe(200);
+    expect(get.rawPayload.equals(PNG)).toBe(true);
+  });
+
+  it("Markdown images: stale unclaimed drafts are swept on the next draft upload", async () => {
+    const r = await upload(bob, "/api/md-images", { scope: "draft" }, { filename: "old.gif", data: Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64") });
+    expect(r.statusCode, r.body).toBe(201);
+    const id = (r.json().image.url as string).split("/").pop()!;
+    const key = (await t.db.query<{ object_key: string }>("SELECT object_key FROM md_images WHERE id=$1", [id])).rows[0]!.object_key;
+    await t.db.query("UPDATE md_images SET created_at=now() - interval '2 days' WHERE id=$1", [id]);
+    expect((await upload(alice, "/api/md-images", { scope: "draft" }, { filename: "new.png", data: PNG })).statusCode).toBeLessThan(300);
+    expect((await t.db.query("SELECT 1 FROM md_images WHERE id=$1", [id])).rowCount).toBe(0);
+    expect(await t.app.storage.get(key)).toBeNull();
+  });
 });

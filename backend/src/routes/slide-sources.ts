@@ -1,23 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
 import { transaction } from "../db.js";
 import { requireUser, type CurrentUser } from "../lib/auth.js";
-import { badRequest, conflict, HttpError, isUniqueViolation, notFound, parse } from "../lib/http.js";
-import { keys } from "../lib/storage.js";
+import { badRequest, conflict, isUniqueViolation, notFound, parse } from "../lib/http.js";
 import { projectById, requireDeckEditor, type SlideProject } from "../lib/slides/access.js";
 import { enqueuePreview, previewState, previewToken, previewViewUrl, type PreviewRow } from "../lib/slides/preview.js";
-import { detectDeck, SOURCE_CONTENT_TYPES } from "../lib/slides/source.js";
 import {
   BINARY_CONTENT_TYPES, createTree, fileById, listFiles, loadTree, packTree, requireTree, saveBinary, saveText, SOURCE_LIMITS, sourceKeys, sourcePath, touchTree,
 } from "../lib/slides/sources.js";
 import { DECK_TEMPLATES, progressTitle, taipeiToday, templateQmd, type DeckTemplate } from "../lib/slides/templates.js";
 import { receiveUpload } from "../lib/slides/upload.js";
-import { insertVersion, nextVersionNumber } from "../lib/slides/versions.js";
+import { publishTree } from "../lib/slides/publish.js";
+import { setDeckSourcePreview } from "../lib/slides/suggest-target.js";
 import { loadStudyAccess } from "../lib/studies/access.js";
 import { deleteSuggestionsOf } from "../lib/suggestions/service.js";
 
@@ -78,6 +76,12 @@ function sendFileBody(reply: FastifyReply, body: Buffer | NodeJS.ReadableStream,
 
 const slideSources: FastifyPluginAsync = async app => {
   const secret = app.config.AUTH_SECRET;
+  // Accepted suggestions on a source file (assistant / viewer / MCP): queue a preview so the deck page shows the change.
+  setDeckSourcePreview(async (fileId, actorId) => {
+    const deckId = (await app.db.query<{ deck_id: string }>("SELECT deck_id FROM deck_sources WHERE id=$1", [fileId])).rows[0]?.deck_id;
+    // Not awaited: packing + upload must not slow down the accept request.
+    if (deckId) void enqueuePreview(app.db, app.storage, deckId, actorId).catch(error => app.log.warn({ err: error, deckId }, "preview after accepted suggestion failed"));
+  });
 
   /** The deck's source tree (text contents included), latest preview and the caller's edit permission. */
   app.get("/slides/:id/source", async (request, reply) => {
@@ -262,37 +266,8 @@ const slideSources: FastifyPluginAsync = async app => {
   app.post("/slides/:id/source/publish", async (request, reply) => {
     const { id } = parse(deckParams, request.params);
     const { user } = await requireDeckEditor(request, id);
-    const { zip, tree } = await packTree(app.db, app.storage, id);
-    const dir = await mkdtemp(path.join(tmpdir(), "hub-publish-"));
-    try {
-      const zipPath = path.join(dir, "source.zip");
-      await writeFile(zipPath, zip);
-      let deck;
-      try {
-        deck = await detectDeck({ path: zipPath, filename: "source.zip" }, tree.entry, app.config.MAX_SLIDE_ZIP_BYTES);
-      } catch (error) {
-        if (error instanceof HttpError) throw badRequest(`原始檔無法發布：${error.message}`);
-        throw error;
-      }
-      const versionId = randomUUID();
-      await app.storage.put(keys.slideSource(id, versionId, "zip"), createReadStream(zipPath), SOURCE_CONTENT_TYPES.quarto);
-      try {
-        const result = await transaction(app.db, async client => {
-          await client.query("SELECT 1 FROM decks WHERE id=$1 FOR UPDATE", [id]);
-          const version = await nextVersionNumber(client, id);
-          const jobId = await insertVersion(client, user.id, id, versionId, version, deck, `quarto-r${tree.revision}.zip`);
-          await client.query("UPDATE deck_source_trees SET published_revision=$2 WHERE deck_id=$1", [id, tree.revision]);
-          await client.query("UPDATE decks SET updated_by=$2,updated_at=now() WHERE id=$1", [id, user.id]);
-          return { version, jobId };
-        });
-        return reply.code(202).send({ versionId, ...result, revision: tree.revision, sourceType: "quarto", entry: deck.entry });
-      } catch (error) {
-        await app.storage.deletePrefix(`${keys.slideProjectPrefix(id)}${versionId}/`).catch(() => {});
-        throw error;
-      }
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+    const published = (await publishTree(app.db, app.storage, id, user.id, { maxZipBytes: app.config.MAX_SLIDE_ZIP_BYTES }))!;
+    return reply.code(202).send({ versionId: published.versionId, version: published.version, jobId: published.jobId, revision: published.revision, sourceType: "quarto", entry: published.entry });
   });
 };
 

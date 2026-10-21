@@ -87,6 +87,12 @@
     wasOpen = open;
   });
   $effect(() => () => stop?.());
+  // Closing mid-upload keeps everything (the upload and the form state); say so instead of asking to discard.
+  let openBefore = false;
+  $effect(() => {
+    if (openBefore && !open && phase === "uploading") toasts.show(t("slides.upload.continuesInBackground"), "default", 5000);
+    openBefore = open;
+  });
 
   /** Slug the server refused as taken (409); the field shows it until the slug changes. */
   let takenSlug = $state<string | null>(null);
@@ -138,9 +144,13 @@
     form.append("file", file, file.name);
     phase = "uploading";
     sent = 0;
+    const tracker = jobsStore.trackUpload(isVersion ? file.name : title.trim() || file.name);
     try {
       const path = isVersion ? `/slides/${projectId}/versions` : "/slides";
-      const result = await uploadForm<{ id?: string; slug?: string; version: number; scan?: { skipped?: string[]; skippedCount?: number } | null }>(path, form, f => (sent = f));
+      const result = await uploadForm<{ id?: string; slug?: string; version: number; scan?: { skipped?: string[]; skippedCount?: number } | null }>(path, form, f => {
+        sent = f;
+        tracker.progress(f);
+      }).finally(() => tracker.done());
       const skipped = result.scan?.skippedCount ?? 0;
       if (skipped) toasts.show(t("slides.upload.skippedFiles", { n: skipped, names: (result.scan?.skipped ?? []).slice(0, 3).join("、") }), "default", 6000);
       const id = result.id ?? projectId!;

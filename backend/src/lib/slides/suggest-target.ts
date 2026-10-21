@@ -10,8 +10,21 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const deckEditorUrl = (studySlug: string, deckId: string, fileId?: string) =>
   `/studies/${encodeURIComponent(studySlug)}/decks/${deckId}/edit${fileId ? `?file=${fileId}` : ""}`;
 
+/**
+ * Re-renders the deck preview after accepted suggestions (set by the slide-sources plugin, which has db + storage):
+ * changes accepted from the assistant or the viewer otherwise never reach the deck page's draft preview.
+ */
+let previewAfterAccept: ((fileId: string, actorId: string | null) => Promise<unknown>) | null = null;
+export const setDeckSourcePreview = (fn: typeof previewAfterAccept) => {
+  previewAfterAccept = fn;
+};
+
 registerSuggestionTarget({
   type: "deck_source",
+  async afterCommit(targetId, info) {
+    if (!previewAfterAccept || !info.accepted) return;
+    await previewAfterAccept(targetId, info.actorId);
+  },
   async resolve(db, targetId) {
     if (!UUID.test(targetId)) return null;
     const row = (await db.query<{ path: string; version: number; deck_id: string; study_id: string; slug: string; title: string }>(

@@ -5,6 +5,7 @@
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import ConsentCard from "./ConsentCard.svelte";
   import ToolRow from "./ToolRow.svelte";
+  import PlanChecklist from "./PlanChecklist.svelte";
   import { cardKind } from "#lib/agent/tools.ts";
   import type { ToolCall } from "#lib/agent/types.ts";
 
@@ -15,7 +16,7 @@
     onDecide: (call: ToolCall, decision: "approve" | "approve_conversation" | "deny", opts?: { reason?: string; editedArgs?: Record<string, unknown> }) => Promise<void>;
   } = $props();
 
-  type Item = { kind: "row"; call: ToolCall } | { kind: "group"; calls: ToolCall[]; key: string };
+  type Item = { kind: "row"; call: ToolCall } | { kind: "plan"; call: ToolCall } | { kind: "group"; calls: ToolCall[]; key: string };
   const items = $derived.by(() => {
     const out: Item[] = [];
     let reads: ToolCall[] = [];
@@ -26,7 +27,15 @@
     };
     for (const c of calls) {
       if (c.status === "pending_approval") continue;
-      if (c.risk === "read" && c.status === "done" && !(c.result?.links?.length)) reads.push(c);
+      // update_plan: the latest plan of the step as a checklist (earlier updates of the same step are superseded).
+      if (c.tool === "update_plan" && c.status === "done") {
+        if (calls.some((o) => o.tool === "update_plan" && o.status === "done" && o.position > c.position)) continue;
+        flush();
+        out.push({ kind: "plan", call: c });
+        continue;
+      }
+      // start_workflow carries the live workflow card: never folded into a read group.
+      if (c.risk === "read" && c.status === "done" && !(c.result?.links?.length) && c.tool !== "start_workflow") reads.push(c);
       else {
         flush();
         out.push({ kind: "row", call: c });
@@ -54,8 +63,10 @@
 
 {#if items.length}
   <ul class="ml-11 flex flex-col">
-    {#each items as item (item.kind === "row" ? item.call.id : item.key)}
-      {#if item.kind === "row"}
+    {#each items as item (item.kind === "group" ? item.key : item.call.id)}
+      {#if item.kind === "plan"}
+        <PlanChecklist call={item.call} />
+      {:else if item.kind === "row"}
         <ToolRow call={item.call} />
       {:else}
         <li>

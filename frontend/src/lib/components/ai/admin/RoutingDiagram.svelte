@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { DropdownMenu } from "bits-ui";
-  import { ArrowDown, Boxes, ChevronsDownUp, ChevronsUpDown, Ellipsis, Eye, FolderInput, Link2, Maximize, Search, Unlink, ZoomIn, ZoomOut } from "@lucide/svelte";
-  import { i18n, relativeTime, t } from "#lib/i18n.svelte.ts";
+  import { ArrowDown, Boxes, ChevronsDownUp, ChevronsUpDown, Ellipsis, Eye, FolderInput, Link2, Maximize, RefreshCw, Search, Unlink, ZoomIn, ZoomOut } from "@lucide/svelte";
+  import { formatDate, i18n, relativeTime, t } from "#lib/i18n.svelte.ts";
   import { ROLE_KEYS, STATE_KEYS, toErrorBody, type Group, type ModelProfile, type Provider, type TargetInput } from "#lib/ai/admin.ts";
   import { adminStore } from "#lib/ai/admin-store.svelte.ts";
+  import { LivePoller } from "#lib/ai/live-poll.ts";
   import { L } from "#lib/ai/form.ts";
   import { dot, descendants, diagramRows, modelHealth, ms, pct, providerHealth, providersOf, providerTone, ROLE_CAP, ROLE_ORDER, stateTone, statFor, targetKey, type TargetKey } from "#lib/ai/routing.ts";
   import { aiStatus, type AiRole } from "#lib/ai/status.svelte.ts";
@@ -20,14 +21,20 @@
   import BrickFace from "./diagram/BrickFace.svelte";
   import GroupStack, { type StackActions } from "./diagram/GroupStack.svelte";
   import { DragController, type DragItem, type DropTarget } from "./diagram/dnd.svelte.ts";
+  import RoleLive from "./diagram/RoleLive.svelte";
+  import { pulseOnChange, recentlyUsed } from "./diagram/live.ts";
 
   /**
    * 總覽: the whole routing configuration as a left-to-right LEGO flow — functions → bound model or group
    * (stacked bricks; nested groups are nested plates) → provider accounts. Drag bricks to reorder or move them,
    * drop a model or group on a function to bind it; every drag has a menu/keyboard equivalent. Phones get a
    * vertical stack per target instead of the canvas.
+   *
+   * Live: every panel edits through `adminStore`, so changes elsewhere show here at once; while `active` (the
+   * 總覽 tab is shown) and the page is visible it polls the overview version every 12 s and on each AI status push,
+   * refetching only what changed. Zoom, pan and open sections are local state and survive refreshes.
    */
-  let { onEditGroup }: { onEditGroup?: (groupId: string) => void } = $props();
+  let { onEditGroup, active = true }: { onEditGroup?: (groupId: string) => void; active?: boolean } = $props();
 
   const groupsById = $derived(new Map((adminStore.groups ?? []).map(g => [g.id, g])));
   const layout = $derived(diagramRows(adminStore.bindings));
@@ -50,7 +57,6 @@
       announce = done;
       toasts.show(done, "success");
       void aiStatus.refresh();
-      void adminStore.reloadStats();
     } catch (e) {
       const err = toErrorBody(e);
       toasts.show(`${err.error}${err.hint ? ` ${err.hint}` : ""}`, "error", 7000);
@@ -73,6 +79,27 @@
     return run(() => adminStore.saveGroup(g, list), t("aiAdmin.diagram.added", { name: label, group: g.name }));
   }
 
+  /** Moves a member between groups as one optimistic step (both plates change at once, both roll back on error). */
+  function moveAcross(src: Group, index: number, dst: Group, at: number, label: string) {
+    const m = plain(src)[index];
+    if (!m) return;
+    const list = plain(dst);
+    list.splice(Math.min(at, list.length), 0, m);
+    const rest = plain(src);
+    rest.splice(index, 1);
+    return run(
+      () =>
+        adminStore.mutate(
+          () => (adminStore.localMembers(dst.id, list), adminStore.localMembers(src.id, rest)),
+          async () => {
+            await adminStore.putGroup(dst, list, false);
+            await adminStore.putGroup(src, rest);
+          },
+        ),
+      t("aiAdmin.diagram.movedTo", { name: label, group: dst.name }),
+    );
+  }
+
   const actions: StackActions = {
     move(groupId, from, to) {
       const g = groupsById.get(groupId);
@@ -86,15 +113,7 @@
       const from = groupsById.get(groupId);
       const to = groupsById.get(toGroupId);
       if (!from || !to) return;
-      const m = plain(from)[index]!;
-      const label = labelOfMember(from, index);
-      void run(async () => {
-        await adminStore.saveGroup(to, [...plain(to), m]);
-        const fresh = adminStore.group(groupId) ?? from;
-        const rest = plain(fresh);
-        rest.splice(index, 1);
-        await adminStore.saveGroup(fresh, rest);
-      }, t("aiAdmin.diagram.movedTo", { name: label, group: to.name }));
+      void moveAcross(from, index, to, to.members.length, labelOfMember(from, index));
     },
     remove(groupId, index) {
       const g = groupsById.get(groupId);
@@ -140,16 +159,7 @@
     const src = groupsById.get(item.groupId);
     const dst = groupsById.get(target.groupId);
     if (!src || !dst) return;
-    const m = plain(src)[item.index]!;
-    void run(async () => {
-      const list = plain(dst);
-      list.splice(target.index, 0, m);
-      await adminStore.saveGroup(dst, list);
-      const fresh = adminStore.group(src.id) ?? src;
-      const rest = plain(fresh);
-      rest.splice(item.index, 1);
-      await adminStore.saveGroup(fresh, rest);
-    }, t("aiAdmin.diagram.movedTo", { name: item.label, group: dst.name }));
+    void moveAcross(src, item.index, dst, target.index, item.label);
   }
   const dnd = new DragController(accept, drop);
 
@@ -161,7 +171,7 @@
   let panX = $state(0);
   let panY = $state(0);
   let size = $state({ w: 0, h: 0 });
-  type Line = { d: string; color: string; role?: AiRole; key?: TargetKey; provider?: string; kind: "role" | "provider" };
+  type Line = { d: string; color: string; role?: AiRole; key?: TargetKey; provider?: string; model?: string; kind: "role" | "provider" };
   let lines = $state<Line[]>([]);
   let focusRole = $state<AiRole | null>(null);
   let focusKey = $state<TargetKey | null>(null);
@@ -206,11 +216,12 @@
       const z = rel(tgtEl);
       for (const leaf of tgtEl.querySelectorAll<HTMLElement>("[data-leaf-provider]")) {
         const pid = leaf.dataset.leafProvider;
+        const mid = leaf.dataset.leafModel;
         const pEl = pid ? content.querySelector(`[data-provider-id="${pid}"]`) : null;
         if (!pEl || !pid) continue;
         const l = rel(leaf);
         const p = rel(pEl);
-        out.push({ kind: "provider", key, provider: pid, d: curve(z.r, (l.t + l.b) / 2, p.l, (p.t + p.b) / 2), color: `var(--pill-${providerTone(pid)}-ink)` });
+        out.push({ kind: "provider", key, provider: pid, model: mid, d: curve(z.r, (l.t + l.b) / 2, p.l, (p.t + p.b) / 2), color: `var(--pill-${providerTone(pid)}-ink)` });
       }
     }
     lines = out;
@@ -230,19 +241,63 @@
     void adminStore.groups;
     void adminStore.models;
     void adminStore.stats;
+    void adminStore.providers;
     void i18n.locale;
+    void active;
     void tick().then(schedule);
   });
-  onMount(() => {
+  // The canvas only exists once data has loaded, so observe it when it appears (not on mount).
+  $effect(() => {
+    const c = content;
+    const v = viewport;
+    if (!c || !v) return;
     const ro = new ResizeObserver(schedule);
-    if (content) ro.observe(content);
-    if (viewport) ro.observe(viewport);
+    ro.observe(c);
+    ro.observe(v);
     void document.fonts?.ready.then(schedule);
     // Ctrl/⌘ + wheel zooms; needs a non-passive listener to keep the page from zooming.
     const wheel = (e: WheelEvent) => onWheel(e);
-    viewport?.addEventListener("wheel", wheel, { passive: false });
-    return () => (ro.disconnect(), cancelAnimationFrame(raf), viewport?.removeEventListener("wheel", wheel));
+    v.addEventListener("wheel", wheel, { passive: false });
+    return () => (ro.disconnect(), v.removeEventListener("wheel", wheel));
   });
+  onMount(() => () => cancelAnimationFrame(raf));
+
+  // ---------------------------------------------------------------- live refresh
+
+  const POLL_MS = 12_000;
+  let now = $state(Date.now());
+  let visible = $state(typeof document === "undefined" || !document.hidden);
+  const poller = new LivePoller(() => adminStore.sync(), { interval: POLL_MS, active: () => active });
+  $effect(() => {
+    if (!active) return;
+    const stop = poller.start();
+    untrack(() => void poller.kick());
+    now = Date.now();
+    const clock = setInterval(() => (now = Date.now()), 5_000);
+    return () => (stop(), clearInterval(clock));
+  });
+  onMount(() => {
+    const unwatch = aiStatus.watch();
+    const onVis = () => (visible = !document.hidden);
+    document.addEventListener("visibilitychange", onVis);
+    return () => (unwatch(), document.removeEventListener("visibilitychange", onVis));
+  });
+  // Health pushes (AI status SSE): refresh at once instead of waiting for the next poll.
+  let lastPush: string | null | undefined;
+  $effect(() => {
+    const at = aiStatus.updatedAt;
+    if (lastPush !== undefined && at !== lastPush) untrack(() => void poller.kick());
+    lastPush = at;
+  });
+  const syncedLabel = $derived(adminStore.syncedAt ? formatDate(new Date(adminStore.syncedAt).toISOString(), { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }) : null);
+  const liveState = $derived(adminStore.syncFailed ? "failed" : !visible || !active ? "paused" : adminStore.syncedAt ? "live" : "connecting");
+  const LIVE_TITLE = { failed: "aiAdmin.live.failed", paused: "aiAdmin.live.paused", live: "aiAdmin.live.live", connecting: "aiAdmin.live.connecting" } as const;
+  /** Connector animation: the route carried traffic in the last minute. */
+  function flowing(l: Line) {
+    if (l.kind === "role") return l.role ? recentlyUsed(roleStat(l.role)?.last_used, now) : false;
+    const m = adminStore.model(l.model);
+    return m ? recentlyUsed(statFor(adminStore.stats?.models, m)?.last_used, now) : false;
+  }
 
   let panning = $state<{ x: number; y: number; px: number; py: number } | null>(null);
   function onViewportDown(e: PointerEvent) {
@@ -307,6 +362,7 @@
   const modelOf = (key: TargetKey) => (key.startsWith("model:") ? adminStore.model(key.slice(6)) : undefined);
   const groupOf = (key: TargetKey) => (key.startsWith("group:") ? groupsById.get(key.slice(6)) : undefined);
   const live = (m: ModelProfile) => {
+    void now;
     const s = statFor(adminStore.stats?.models, m);
     return s ? `${ms(s.p50_ms)} · ${pct(s.success_rate)}${s.last_used ? ` · ${relativeTime(s.last_used)}` : ""}` : (m.provider_name ?? "");
   };
@@ -361,6 +417,7 @@
     aria-label={roleName(role)}
     onpointerenter={() => (focusRole = role)}
     onpointerleave={() => (focusRole = null)}
+    use:pulseOnChange={`${rs?.calls ?? 0}|${st?.state ?? ""}`}
     class="role relative flex min-h-[60px] items-center gap-2.5 rounded-[16px] border bg-surface px-3 py-2 shadow-card transition-colors {b?.target ? 'border-line' : 'border-dashed border-line-2'} {isOver ? (dnd.valid ? 'border-ink ring-2 ring-ink/15' : 'border-danger') : ''}"
   >
     <StateDot state={st?.state ?? "unconfigured"} pulse />
@@ -368,7 +425,7 @@
       <p class="truncate text-[13.5px] font-semibold">{roleName(role)}</p>
       <p class="truncate text-[11.5px] text-ink-3">
         {#if !b?.target}{t(mobile ? "aiAdmin.diagram.tapToBind" : "aiAdmin.diagram.dropHere")}
-        {:else if rs}{t("aiAdmin.diagram.roleLive", { calls: rs.calls, rate: pct(rs.success_rate) })}{#if rs.last_used} · {relativeTime(rs.last_used)}{/if}
+        {:else if rs}<RoleLive stat={rs} {now} />
         {:else}{t(STATE_KEYS[st?.state ?? "unconfigured"])}{/if}
       </p>
     </div>
@@ -401,8 +458,10 @@
         role="group"
         aria-label={m.model_id}
         data-leaf-provider={m.provider_id}
+        data-leaf-model={m.id}
+        use:pulseOnChange={`${statFor(adminStore.stats?.models, m)?.calls ?? 0}|${modelHealth(m, adminStore.providers, adminStore.bindings)}`}
         onpointerdown={mobile ? undefined : e => dnd.press(e, { kind: "model", modelId: m.id, label: m.model_id, capability: m.fields.capability })}
-        class={mobile ? "" : "cursor-grab active:cursor-grabbing"}
+        class="rounded-[12px] {mobile ? '' : 'cursor-grab active:cursor-grabbing'}"
       >
         <BrickFace tone={providerTone(m.provider_id)} vendor={{ kind: m.provider_kind }} title={m.model_id} subtitle={live(m)} health={modelHealth(m, adminStore.providers, adminStore.bindings)} lifted={dnd.item?.kind === "model" && dnd.item.modelId === m.id}>
           {#snippet badges()}<ProfileBadges model={m} />{/snippet}
@@ -428,18 +487,36 @@
 {/snippet}
 
 <section class="flex flex-col gap-4">
-  <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-[12.5px] text-ink-2">
+  <div class="flex flex-wrap items-start gap-x-5 gap-y-3">
     <p class="mr-auto max-w-[60ch] text-[13.5px] text-ink-3">{t("aiAdmin.diagram.intro")}</p>
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="inline-flex items-center gap-2 rounded-full border border-line bg-surface py-1 pr-1 pl-3 shadow-card" title={t(LIVE_TITLE[liveState])}>
+        <span class="relative flex size-2.5" aria-hidden="true">
+          {#if liveState === "live"}<span class="absolute inset-0 animate-ping rounded-full bg-success/60 motion-reduce:hidden"></span>{/if}
+          <span class="relative size-2.5 rounded-full {liveState === 'failed' ? 'bg-danger' : liveState === 'live' ? 'bg-success' : 'bg-ink-3/45'}"></span>
+        </span>
+        <span class="text-[12.5px] font-semibold text-ink">{t("aiAdmin.live.label")}</span>
+        <span class="text-[12px] text-ink-3 tabular-nums" data-live-updated>
+          {#if liveState === "failed"}{t("aiAdmin.live.failed")}{:else if syncedLabel}{t("aiAdmin.live.updated", { time: syncedLabel })}{:else}{t("aiAdmin.live.connecting")}{/if}
+        </span>
+        <span class="sr-only">{t(LIVE_TITLE[liveState])}</span>
+        <Button size="icon-sm" variant="ghost" aria-label={t("aiAdmin.live.refresh")} title={t("aiAdmin.live.refresh")} disabled={adminStore.syncing} onclick={() => adminStore.refresh()}>
+          <RefreshCw class={adminStore.syncing ? "animate-spin motion-reduce:animate-none" : ""} />
+        </Button>
+      </div>
+      <div class="hidden items-center gap-1 rounded-full border border-line bg-surface p-1 shadow-card md:flex">
+        <Button size="icon-sm" variant="ghost" aria-label={t("aiAdmin.diagram.zoomOut")} onclick={() => zoom(-0.1)}><ZoomOut /></Button>
+        <span class="w-11 text-center text-[12px] text-ink-2 tabular-nums">{Math.round(scale * 100)}%</span>
+        <Button size="icon-sm" variant="ghost" aria-label={t("aiAdmin.diagram.zoomIn")} onclick={() => zoom(0.1)}><ZoomIn /></Button>
+        <Button size="icon-sm" variant="ghost" aria-label={t("aiAdmin.diagram.fit")} onclick={fit}><Maximize /></Button>
+      </div>
+    </div>
+  </div>
+  <div class="-mt-1 flex flex-wrap items-center gap-x-5 gap-y-2 text-[12.5px] text-ink-2">
     <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-full bg-success"></span>{t("aiAdmin.health.up")}</span>
     <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-full bg-[var(--pill-butter-ink)]"></span>{t("aiStatus.state.degraded")}</span>
     <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-full bg-danger"></span>{t("aiAdmin.health.down")}</span>
     <span class="inline-flex items-center gap-1.5"><span class="size-2.5 rounded-full bg-ink-3/45"></span>{t("aiAdmin.health.unknown")}</span>
-      <div class="hidden items-center gap-1 rounded-full border border-line bg-surface p-1 shadow-card md:flex">
-      <Button size="icon-sm" variant="ghost" aria-label={t("aiAdmin.diagram.zoomOut")} onclick={() => zoom(-0.1)}><ZoomOut /></Button>
-      <span class="w-11 text-center text-[12px] text-ink-2 tabular-nums">{Math.round(scale * 100)}%</span>
-      <Button size="icon-sm" variant="ghost" aria-label={t("aiAdmin.diagram.zoomIn")} onclick={() => zoom(0.1)}><ZoomIn /></Button>
-      <Button size="icon-sm" variant="ghost" aria-label={t("aiAdmin.diagram.fit")} onclick={fit}><Maximize /></Button>
-    </div>
   </div>
   <p class="sr-only" aria-live="polite">{announce}</p>
 
@@ -468,7 +545,8 @@
         <div bind:this={content} data-pan class="absolute top-0 left-0 w-max origin-top-left p-6" style="transform: translate({panX}px, {panY}px) scale({scale})">
           <svg class="pointer-events-none absolute top-0 left-0 overflow-visible" width={size.w} height={size.h} aria-hidden="true">
             {#each lines as l, i (i)}
-              <path d={l.d} fill="none" stroke={l.color} stroke-width={l.kind === "role" ? 2.25 : 1.75} stroke-linecap="round" stroke-dasharray={l.kind === "provider" ? "1 5" : undefined} class="wire" style="opacity: {dimmed(l) ? 0.14 : l.kind === 'role' ? 0.9 : 0.75}" />
+              {@const flow = flowing(l)}
+              <path d={l.d} fill="none" stroke={l.color} stroke-width={l.kind === "role" ? 2.25 : 1.75} stroke-linecap="round" stroke-dasharray={l.kind === "provider" ? "1 5" : undefined} class="wire {l.kind} {flow ? 'flow' : ''}" data-flow={flow ? "" : undefined} style="opacity: {dimmed(l) ? 0.14 : flow ? 1 : l.kind === 'role' ? 0.9 : 0.75}" />
             {/each}
           </svg>
           <div data-pan class="relative grid grid-cols-[250px_minmax(340px,430px)_250px] gap-x-[96px]">
@@ -582,9 +660,30 @@
   .wire {
     transition: opacity 160ms;
   }
+  /* Routes used in the last minute: dashes flow from function to account. */
+  .wire.role.flow {
+    stroke-dasharray: 8 6;
+    animation: flow-role 0.9s linear infinite;
+  }
+  .wire.provider.flow {
+    animation: flow-provider 0.7s linear infinite;
+  }
+  @keyframes flow-role {
+    to {
+      stroke-dashoffset: -14;
+    }
+  }
+  @keyframes flow-provider {
+    to {
+      stroke-dashoffset: -6;
+    }
+  }
   @media (prefers-reduced-motion: reduce) {
     .wire {
       transition: none;
+    }
+    .wire.flow {
+      animation: none;
     }
   }
 </style>

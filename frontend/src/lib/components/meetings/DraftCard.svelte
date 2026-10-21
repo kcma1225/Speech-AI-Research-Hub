@@ -10,7 +10,9 @@
   import Pill from "#lib/components/ui/Pill.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
-  import Textarea from "#lib/components/ui/Textarea.svelte";
+  import MarkdownEditor from "#lib/components/markdown/MarkdownEditor.svelte";
+  import { uploadMdImage } from "#lib/components/doc-import/api.ts";
+  import { session } from "#lib/stores/session.svelte.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import type { Draft, MeetingDetail, MeetingStudy, ProposedTask } from "#lib/meetings/types.ts";
   import { DRAFT_LABEL, DRAFT_TONE } from "#lib/meetings/util.ts";
@@ -28,6 +30,12 @@
   } = $props();
 
   let editing = $state(false);
+  // Both draft editors open side by side with a live preview (math, tables…); phones get the edit/preview toggle.
+  let summaryLayout = $state<"split" | "edit" | "preview">("split");
+  let feedbackLayout = $state<"split" | "edit" | "preview">("split");
+  const fontSize = $derived(session.user?.preferences.editor.fontSize ?? 15);
+  /** Images pasted into a draft are stored with its study (where the confirmed note lands). */
+  const uploadImage = (file: File) => uploadMdImage(`study:${draft.study_id}`, file);
   let summary = $state("");
   let feedback = $state("");
   let tasks = $state<ProposedTask[]>([]);
@@ -93,8 +101,14 @@
 
   {#if editing}
     <div class="flex flex-col gap-3">
-      <Textarea label={t("meet.draft.summary")} bind:value={summary} rows={5} />
-      <Textarea label={t("meet.draft.feedback")} bind:value={feedback} rows={4} />
+      <div class="flex flex-col gap-1.5">
+        <span class="text-[13px] font-medium text-ink-2">{t("meet.draft.summary")}</span>
+        <div class="min-h-48"><MarkdownEditor bind:value={summary} bind:layout={summaryLayout} label={t("meet.draft.summary")} {fontSize} imageUpload={uploadImage} /></div>
+      </div>
+      <div class="flex flex-col gap-1.5">
+        <span class="text-[13px] font-medium text-ink-2">{t("meet.draft.feedback")}</span>
+        <div class="min-h-40"><MarkdownEditor bind:value={feedback} bind:layout={feedbackLayout} label={t("meet.draft.feedback")} {fontSize} imageUpload={uploadImage} /></div>
+      </div>
       <div class="flex flex-col gap-2">
         <span class="text-[13px] font-medium text-ink-2">{t("meet.draft.tasks")}</span>
         {#each tasks as task, i (task.id)}

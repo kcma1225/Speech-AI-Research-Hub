@@ -17,10 +17,13 @@ export default defineConfig({
       "/api": {
         target: process.env.API_PROXY ?? "http://127.0.0.1:3000",
         changeOrigin: false,
+        // WebSockets too (`/api/collab` live documents, meeting captions).
+        ws: true,
         configure: proxy => {
           const origin = process.env.API_ORIGIN;
           // Sandboxed deck iframes send `Origin: null` (opaque); leave those alone.
           if (origin) proxy.on("proxyReq", req => { const o = req.getHeader("origin"); if (o && o !== "null") req.setHeader("origin", origin); });
+          if (origin) proxy.on("proxyReqWs", req => req.setHeader("origin", origin));
         },
       },
     },

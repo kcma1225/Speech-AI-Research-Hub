@@ -19,6 +19,7 @@
   import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import MarkdownEditor from "#lib/components/markdown/MarkdownEditor.svelte";
+  import StudyWorkflows from "#lib/components/workflows/StudyWorkflows.svelte";
   import MarkdownView from "#lib/components/markdown/MarkdownView.svelte";
   import DocImportSheet from "#lib/components/doc-import/DocImportSheet.svelte";
   import SummaryReview from "#lib/components/doc-import/SummaryReview.svelte";
@@ -168,6 +169,7 @@
 
 <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
   <div class="flex min-w-0 flex-col gap-4 sm:gap-5">
+    <StudyWorkflows study={detail.study.slug} />
     <!-- Summary -->
     <Card>
       <CardHeader title={t("studies.summary")}>

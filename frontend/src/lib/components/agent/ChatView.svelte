@@ -16,10 +16,13 @@
   import AttachButton from "./attach/AttachButton.svelte";
   import AttachmentTray from "./attach/AttachmentTray.svelte";
   import { AttachDraft } from "./attach/state.svelte.ts";
+  import { namePasted } from "./attach/api.ts";
   import type { ChatSession } from "#lib/agent/chat.svelte.ts";
   import { contextLabel } from "#lib/agent/context.ts";
   import { answersByCall, askArgs } from "#lib/agent/ask.ts";
   import type { AgentSettings, Answer, Message, PageContext, StudyPlan, ToolCall } from "#lib/agent/types.ts";
+  import { workflowsApi } from "#lib/workflows/api.ts";
+  import { parseAgentCommand } from "#lib/workflows/reduce.ts";
 
   /**
    * The chat: transcript (messages, tool timeline per step, consent cards), streaming answer, banners and composer.
@@ -253,7 +256,33 @@
     seenCards = n;
   });
 
+  /** Pasted / dropped files: same path (validation, limits, progress chips) as the picker's upload. */
+  async function attachFiles(files: File[]) {
+    const r = await attachments.upload(files.map((f) => namePasted(f)));
+    if ("error" in r && r.error) toasts.show(r.error, "error");
+    if (r.skipped) toasts.show(t("attach.skipped", { n: r.skipped }), "error");
+  }
+
+  // 「交給 Agent」 / `/agent <task>`: a workflow (plan card → sub-agents → verification) instead of a one-shot reply.
+  async function handToAgent(request: string) {
+    if (!request.trim()) return void toasts.show(t("wf.handOffEmpty"), "error");
+    const was = session.id;
+    try {
+      if (!session.id) await session.create({ context: ctx, ...(draftAutopilot ? { autopilot: true } : {}) });
+      await workflowsApi.create({ request: request.trim(), conversation_id: session.id!, ...(ctx ? { context: ctx } : {}) });
+      text = "";
+      await session.reload();
+      atBottom = true;
+      toBottom();
+      if (!was && session.id) onCreated?.(session.id);
+    } catch (e) {
+      toasts.show(`${t("wf.handOffFailed")}：${(e as Error).message}`, "error");
+    }
+  }
+
   async function send(value: string, intent?: "make_note") {
+    const agentRequest = intent || interview ? null : parseAgentCommand(value);
+    if (agentRequest !== null) return handToAgent(agentRequest);
     const was = session.id;
     if (!intent && attachments.busy) return void toasts.show(t("attach.waitUploads"), "error");
     if (!intent && attachments.items.some((i) => i.error)) return void toasts.show(t("attach.uploadErrors"), "error");
@@ -500,10 +529,13 @@
         onMemory={(v) => void setMemory(v)}
         onClearContext={() => (dropContext = true)}
         onMakeNote={interview ? undefined : makeNote}
+        onAgent={interview ? undefined : (v) => void handToAgent(v)}
+        agentCompact={compact}
         makeNoteDisabled={!canMakeNote}
         attach={interview ? undefined : attachBar}
         tray={interview ? undefined : attachTray}
         onAt={interview ? undefined : () => (attachOpen = true)}
+        onFiles={interview ? undefined : (files) => void attachFiles(files)}
       />
       {#snippet fallback()}
         <div class="flex items-start gap-3 rounded-[24px] border border-dashed border-line-2 bg-surface-2 p-4 text-[13px] text-ink-2" role="status">

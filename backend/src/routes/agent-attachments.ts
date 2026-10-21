@@ -73,6 +73,16 @@ export default async function agentAttachments(app: FastifyInstance) {
       .send(object.body);
   });
 
+  /** The text the server extracted from an upload (what the assistant reads), for the chat's document viewer. */
+  app.get("/agent/uploads/:id/text", async (request, reply) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params, "找不到這個檔案。");
+    const up = await ownUpload(app.db, user.id, id);
+    if (!up) throw notFound("找不到這個檔案。");
+    reply.header("Cache-Control", "no-store");
+    return { upload: uploadView(up), text_md: up.text_md ?? "" };
+  });
+
   /** Removes an upload that no message references yet (chip removed before sending). */
   app.delete("/agent/uploads/:id", async (request) => {
     const user = await requireUser(request);

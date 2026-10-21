@@ -7,6 +7,9 @@
   import { assistantPanel } from "#lib/agent/panel.svelte.ts";
   import { pageContextFrom } from "#lib/agent/context.ts";
   import ChatView from "./ChatView.svelte";
+  import ViewerSplit from "./viewer/ViewerSplit.svelte";
+  import DocsMenu from "./viewer/DocsMenu.svelte";
+  import { viewer } from "#lib/agent/viewer.ts";
 
   /**
    * Topbar 「問 AI」 button + the global slide-over assistant (a full-screen sheet on phones). The chat knows the
@@ -78,16 +81,18 @@
         e.preventDefault();
         queueMicrotask(() => document.getElementById("agent-composer")?.focus());
       }}
-      class="panel fixed inset-0 z-50 flex flex-col overflow-hidden bg-canvas outline-none sm:inset-y-3 sm:right-3 sm:left-auto sm:w-[460px] sm:rounded-[26px] sm:border sm:border-line sm:shadow-pop"
+      class="panel fixed inset-0 z-50 flex flex-col overflow-hidden bg-canvas outline-none sm:inset-y-3 sm:right-3 sm:left-auto sm:w-[460px] sm:rounded-[26px] sm:border sm:border-line sm:shadow-pop {viewer.open && viewer.current ? 'with-viewer' : ''}"
     >
       <header class="flex shrink-0 items-center gap-1 border-b border-line bg-surface px-2 pt-[max(8px,env(safe-area-inset-top))] pb-2 sm:pt-2">
         <span class="ml-2 grid size-8 place-items-center rounded-full hero-gradient text-hero-ink"><Sparkles class="size-4" /></span>
         <Dialog.Title class="ml-1 min-w-0 flex-1 truncate text-[14.5px] font-semibold text-ink">{session.conversation?.title || t("agent.title")}</Dialog.Title>
+        <DocsMenu {session} compact />
         <button type="button" class="grid size-10 place-items-center rounded-full text-ink-2 hover:bg-surface-3" aria-label={t("agent.newChat")} title={t("agent.newChat")} onclick={() => assistantPanel.newChat()}><MessageSquarePlus class="size-4.5" /></button>
         <button type="button" class="grid size-10 place-items-center rounded-full text-ink-2 hover:bg-surface-3" aria-label={t("agent.openPage")} title={t("agent.openPage")} onclick={openPage}><Maximize2 class="size-4" /></button>
         <Dialog.Close class="grid size-10 place-items-center rounded-full text-ink-2 hover:bg-surface-3" aria-label={t("agent.close")}><X class="size-4.5" /></Dialog.Close>
       </header>
       <div class="min-h-0 flex-1">
+        <ViewerSplit {session} variant="panel">
         <ChatView {session} compact {context} onCreated={(id) => assistantPanel.remember(id)}>
           {#snippet empty(send)}
             <div class="flex flex-col items-center px-2 pt-8 text-center">
@@ -101,6 +106,7 @@
             </div>
           {/snippet}
         </ChatView>
+        </ViewerSplit>
       </div>
     </Dialog.Content>
   </Dialog.Portal>
@@ -124,6 +130,12 @@
     from {
       transform: translateY(24px);
       opacity: 0;
+    }
+  }
+  /* The document viewer widens the panel into chat | document from `lg`. */
+  @media (min-width: 1024px) {
+    :global(.panel.with-viewer) {
+      width: min(1320px, calc(100vw - 24px));
     }
   }
   .count {

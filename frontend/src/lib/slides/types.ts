@@ -165,7 +165,21 @@ export type AiDraftJob = {
   stage: string;
   progress: number;
   error: string | null;
-  result: { revision: number; previewId: string | null; valid: boolean | null; fixed: boolean; pages: number } | null;
+  result: {
+    revision: number;
+    previewId: string | null;
+    valid: boolean | null;
+    fixed: boolean;
+    pages: number;
+    /** Pages the user's plan asked for. */
+    expectedPages?: number;
+    continued?: number;
+    /** Fewer pages than planned (or cut off): `warning` explains it (繁中). */
+    partial?: boolean;
+    warning?: string;
+    /** Published automatically as this version (deck had none). */
+    publishedVersion?: number;
+  } | null;
   created_at: string;
   finished_at: string | null;
 };
