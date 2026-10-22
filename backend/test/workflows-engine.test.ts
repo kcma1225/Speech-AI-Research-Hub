@@ -384,6 +384,25 @@ run("workflow engine", () => {
     expect(r.question).toBeNull();
   });
 
+  it("verifier prompts never fix a conflicting output format in the system prompt (final asks for results)", async () => {
+    m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
+    m.set("w:b", "B 段落的完整內容，依據資料撰寫。");
+    const seen: { sys: string; user: string }[] = [];
+    m.set("verify_final", (req) => {
+      const sys = req.messages.filter((x) => x.role === "system").map((x) => String(x.content)).join("\n");
+      seen.push({ sys, user: userText(req) });
+      return allPass(req);
+    });
+    const id = await newRun();
+    await runWorkflow(deps(), id);
+    await approveWorkflow(t.app, await asUser(alice.id), id, {});
+    expect((await runWorkflow(deps(), id)).status).toBe("done");
+    expect(seen.length).toBeGreaterThan(0);
+    // Production bug: the shared verifier system prompt demanded {"verdict","issues"}, so strong models never returned results.
+    expect(seen[0]!.sys).not.toContain('"verdict"');
+    expect(seen[0]!.user).toContain('"results"');
+  });
+
   it("a criterion the final verifier left out is asked again on its own (ids matched loosely)", async () => {
     m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
     m.set("w:b", "B 段落的完整內容，依據資料撰寫。");
