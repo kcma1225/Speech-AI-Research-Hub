@@ -390,12 +390,17 @@ type QaIssue = string | { text?: string; issue?: string; severity?: string };
 type QaJson = { pages: { page: number; scores?: Record<string, number>; pass?: boolean; issues?: QaIssue[]; fix?: string }[] };
 const isQa = (v: unknown): v is QaJson => !!v && typeof v === "object" && Array.isArray((v as QaJson).pages);
 
-/** Scores pages with the vision model in batches (≤ `batch` images per call). Pages it does not return are not scored. */
+/**
+ * Scores pages with the vision model in batches (≤ `batch` images per call), the batches sent concurrently (≤
+ * VISION_PARALLEL at a time). Pages a batch does not return — or a batch whose call failed — are not scored; when every
+ * batch fails the first error is rethrown.
+ */
 export async function visionScores(env: WorkflowEnv, images: ReviewImage[], pages: ShotPage[], opts: { batch?: number; stepId?: string; allowed: (title: string) => boolean }): Promise<PageScore[]> {
-  const out: PageScore[] = [];
   const size = opts.batch ?? 6;
-  for (let i = 0; i < images.length; i += size) {
-    const batch = images.slice(i, i + size);
+  const batches: ReviewImage[][] = [];
+  for (let i = 0; i < images.length; i += size) batches.push(images.slice(i, i + size));
+  const scoreBatch = async (batch: ReviewImage[]): Promise<PageScore[]> => {
+    const out: PageScore[] = [];
     const content: Array<TextBlock | ImageBlock> = [{ type: "text", text: `逐頁評分。只輸出 JSON：{"pages":[{"page":頁碼,"scores":{${RUBRIC.map((r) => `"${r}":1-5`).join(",")}},"pass":true,"issues":[{"text":"…","severity":"high|medium|low"}],"fix":"…"}]}，每張截圖一筆。` }];
     for (const img of batch) {
       const p = pages.find((x) => x.index === img.page);
@@ -420,9 +425,17 @@ export async function visionScores(env: WorkflowEnv, images: ReviewImage[], page
       const p = pages.find((x) => x.index === r.page);
       out.push({ page: r.page, title: p?.title ?? "", scores, score: Math.round(avg * 10) / 10, pass: r.pass === false ? false : pass, issues: issues.map((x) => `${x.high ? "［嚴重］" : ""}${x.text.slice(0, 300)}`).slice(0, 5), fix: typeof r.fix === "string" ? r.fix.slice(0, 600) : "", source: "vision" });
     }
-  }
-  return out;
+    return out;
+  };
+  const results: PromiseSettledResult<PageScore[]>[] = [];
+  for (let i = 0; i < batches.length; i += VISION_PARALLEL) results.push(...(await Promise.allSettled(batches.slice(i, i + VISION_PARALLEL).map(scoreBatch))));
+  const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (results.length && failed.length === results.length) throw failed[0]!.reason;
+  return results.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).sort((a, b) => a.page - b.page);
 }
+
+/** Vision batches in flight at once (a 40-page deck = 7 batches → two waves). */
+export const VISION_PARALLEL = 4;
 
 export const DEFECT_RE = /裁切|被切|硬切|截斷|切掉|被截|原始碼|未渲染|未編譯|Syntax error|語法錯誤|超出(投影片|版面|範圍|方框|框)|cut off|overflow|正文段落|重複呈現/i;
 

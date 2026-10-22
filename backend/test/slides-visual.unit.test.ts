@@ -251,3 +251,31 @@ describe("assembly repair", () => {
     expect(runChecks([{ id: "not_truncated" }], fixed, null)[0]!.ok).toBe(true);
   });
 });
+
+describe("visionScores concurrency", () => {
+  it("sends the batches concurrently, keeps page order, and scores the other batches when one fails", async () => {
+    const { visionScores } = await import("../src/workflows/playbooks/slides-visual.js");
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let call = 0;
+    const env = {
+      async callJson(req: { messages: { content: unknown }[] }) {
+        const n = call++;
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 30));
+        inFlight--;
+        if (n === 1) throw new Error("vision call failed");
+        const text = JSON.stringify(req.messages[1]!.content);
+        const pages = [...text.matchAll(/第 (\d+) 頁/g)].map((m) => Number(m[1]));
+        return { value: { pages: pages.map((page) => ({ page, scores: { readability: 5 }, pass: true, issues: [] })) }, text: "" };
+      },
+    };
+    const images = Array.from({ length: 13 }, (_, i) => ({ page: i + 1, mediaType: "image/webp", data: "x" }));
+    const pages = images.map((img) => ({ index: img.page, title: `P${img.page}` }));
+    const out = await visionScores(env as never, images as never, pages as never, { batch: 6, allowed: () => false });
+    expect(maxInFlight).toBeGreaterThanOrEqual(2);
+    // Batch 2 (pages 7–12) failed: pages 1–6 and 13 are scored, in order.
+    expect(out.map((s) => s.page)).toEqual([1, 2, 3, 4, 5, 6, 13]);
+  });
+});
