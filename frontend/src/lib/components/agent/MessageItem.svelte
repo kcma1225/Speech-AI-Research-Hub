@@ -122,7 +122,7 @@
 {#if message.role === "user" && message.answers && ask}
   {@const answers = message.answers.answers}
   <div class="group flex justify-end">
-    <div class="flex w-full max-w-[min(92%,560px)] flex-col items-end gap-1">
+    <div class="flex w-full max-w-[min(92%,720px)] flex-col items-end gap-1">
       {#if editing}
         <div class="w-full"><AskCard args={ask} initial={answers} editing disabled={busy} onCancel={() => (editing = false)} onSubmit={async (a) => { if (onEditAnswers && (await onEditAnswers(a))) editing = false; }} /></div>
       {:else}
@@ -144,7 +144,7 @@
   </div>
 {:else if message.role === "user"}
   <div class="group flex justify-end">
-    <div class="flex max-w-[min(85%,640px)] flex-col items-end gap-1 {editing ? 'w-full' : ''}">
+    <div class="flex max-w-[min(80%,820px)] flex-col items-end gap-1 {editing ? 'w-full' : ''}">
       {#if editing}
         <div class="w-full rounded-[20px] border border-line-2 bg-popover p-2.5 shadow-pop">
           <Textarea bind:value={draft} bind:ref={editor} rows={3} maxlength={20000} aria-label={t("agent.editMessage")} onkeydown={editKeys} class="[&_textarea]:border-0 [&_textarea]:bg-transparent" />

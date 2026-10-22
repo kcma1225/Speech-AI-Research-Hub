@@ -358,6 +358,8 @@
   // ---------------------------------------------------------------- question navigator
   let root = $state<HTMLElement | null>(null);
   let width = $state(0);
+  // The conversation column follows the space it has (wide screens use most of it; the side panel stays narrow).
+  const columnMax = $derived(compact ? 760 : Math.round(Math.max(760, Math.min(1200, width * 0.88))));
   const questions = $derived(session.messages.filter((m) => m.role === "user" && !m.answers && m.text.trim()).map((m) => ({ id: m.id, text: m.text })));
   const questionKey = $derived(questions.map((q) => q.id).join(","));
   let currentQ = $state(-1);
@@ -465,7 +467,7 @@
   <div class="relative flex min-h-0 flex-1">
   <div bind:this={scroller} {onscroll} class="relative min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain [scroll-behavior:auto]" role="log" aria-live="off" aria-label={t("agent.title")}>
     <!-- The floating 「n / N」 question button sits over the bottom of the list: room so the last card's buttons can scroll above it. -->
-    <div class="mx-auto flex w-full max-w-[760px] flex-col gap-4 {compact ? 'px-3 py-4' : 'px-4 py-6 sm:px-6'} {navVariant === 'sheet' || (!compact && width < 680) ? 'pb-16!' : ''}">
+    <div class="mx-auto flex w-full flex-col gap-4 {compact ? 'px-3 py-4' : 'px-4 py-6 sm:px-6'} {navVariant === 'sheet' || (!compact && width < 680) ? 'pb-16!' : ''}" style:max-width="{columnMax}px">
       {#if session.loading && !session.messages.length}
         <div class="flex flex-col gap-3" aria-busy="true">
           <div class="ml-auto h-10 w-2/3 animate-pulse rounded-[20px] bg-surface-3"></div>
@@ -547,7 +549,7 @@
     </div>
   {/if}
 
-  <div data-chat-bottom class="relative mx-auto w-full max-w-[760px] {compact ? 'px-3 pb-3' : 'px-4 pb-4 sm:px-6'} pb-[max(12px,env(safe-area-inset-bottom))]">
+  <div data-chat-bottom style:max-width="{columnMax}px" class="relative mx-auto w-full {compact ? 'px-3 pb-3' : 'px-4 pb-4 sm:px-6'} pb-[max(12px,env(safe-area-inset-bottom))]">
     {#if session.id && !session.live && !session.loading}
       <p class="mb-1.5 text-center text-[12px] text-ink-3" role="status">{t("agent.offline")}</p>
     {/if}
