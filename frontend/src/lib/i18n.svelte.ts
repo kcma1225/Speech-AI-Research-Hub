@@ -52,6 +52,9 @@ export const i18n = {
 };
 
 /** Translates a key; `{name}` placeholders are filled from `vars`. Reactive on the current locale. */
+/** Whether a (possibly computed) key has a translation. */
+export const hasMessage = (key: string) => key in messages["zh-TW"];
+
 export function t(key: MessageKey, vars?: Record<string, string | number>): string {
   let text: string = messages[current][key] ?? messages["zh-TW"][key] ?? key;
   if (vars) for (const [name, value] of Object.entries(vars)) text = text.replaceAll(`{${name}}`, String(value));

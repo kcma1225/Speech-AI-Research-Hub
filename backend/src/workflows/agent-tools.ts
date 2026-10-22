@@ -29,7 +29,10 @@ registerAgentTool({
     "One deck / reading note per paper (「把每一篇文獻都做成簡報」): call it ONCE — pass the study (or all paper_ids) and the request; it creates one run per paper as a batch " +
     "(runs over the limit of 3 working runs queue and start automatically). Papers without a PDF are handled by the workflow (open-access lookup, the record's URL, then it asks or skips) — do not drop them yourself. " +
     "The study and paper default to the conversation's page context. " +
-    "playbook ids: slides, latex_section, lit_review, reading_note, experiment_report, meeting_prep, generic (auto-detected when omitted).",
+    "playbook ids: slides, latex_section, lit_review, reading_note, experiment_report, meeting_prep, generic (auto-detected when omitted). " +
+    "reading_note = notes on ONE specific paper already in the library (pass paper_id); lit_review = compare papers already in the study's library; " +
+    "a topic / survey note (「研究有哪些做法」, find methods or papers on a subject, anything without a specific paper) = generic — it can search papers online itself. " +
+    "When unsure, omit playbook.",
   input: z.object({
     request: z.string().trim().min(4).max(4000).describe("The task in the user's words plus the details agreed in the chat"),
     playbook: z.string().max(40).optional(),

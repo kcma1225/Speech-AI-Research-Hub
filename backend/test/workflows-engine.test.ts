@@ -337,6 +337,19 @@ run("workflow engine", () => {
     expect(qaRound).toBe(2);
   });
 
+  it("a playbook that would ask the same planning question again after the user answered falls back to generic", async () => {
+    m.set("plan_generic", JSON.stringify({ title: "熱詞做法", objective: "整理做法", criteria: ["涵蓋主要做法"], steps: [{ key: "s1", title: "撰寫", role: "writer", instructions: "寫" }] }));
+    const id = (await createWorkflow(t.app, await asUser(alice.id), { request: "建立研究筆記：Zipformer 架構下有哪些 dynamic hotwording 做法", playbook: "reading_note", context: { studyId: study.id } })).id;
+    expect((await runWorkflow(deps(), id)).status).toBe("awaiting_input");
+    expect((await getRun(t.db, id))!.question).toContain("要讀哪一篇論文");
+    const { addGuidance } = await import("../src/workflows/service.js");
+    await addGuidance(t.app, await asUser(alice.id), id, "你自己去搜尋");
+    expect((await runWorkflow(deps(), id)).status).toBe("awaiting_plan_approval");
+    const r = (await getRun(t.db, id))!;
+    expect(r.playbook).toBe("generic");
+    expect(r.question).toBeNull();
+  });
+
   it("a criterion the final verifier left out is asked again on its own (ids matched loosely)", async () => {
     m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
     m.set("w:b", "B 段落的完整內容，依據資料撰寫。");

@@ -60,7 +60,7 @@ export async function runWorkflow(deps: EnvDeps, workflowId: string, opts: { las
     await setStatus(env, "failed", { error: { error: "帳號已停用，工作流程無法繼續。", code: "forbidden" }, finished_at: new Date().toISOString() });
     return { status: "failed" };
   }
-  const pb = getWorkflowPlaybook(initial.playbook);
+  let pb = getWorkflowPlaybook(initial.playbook);
   if (!pb) {
     await setStatus(env, "failed", { error: { error: "找不到這個工作流程類型。", code: "invalid_input" }, finished_at: new Date().toISOString() });
     return { status: "failed" };
@@ -73,7 +73,7 @@ export async function runWorkflow(deps: EnvDeps, workflowId: string, opts: { las
       const run = await env.refresh();
       try {
         if (run.status === "planning") {
-          await planPhase(env, pb);
+          pb = await planPhase(env, pb);
           continue;
         }
         if (run.status === "running" || run.status === "verifying") {
@@ -126,27 +126,42 @@ export async function runWorkflow(deps: EnvDeps, workflowId: string, opts: { las
 
 // ---------------------------------------------------------------- planning
 
-async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook) {
+/** Plans the run; returns the playbook it ended up with (a specialised one that keeps asking falls back to `generic`). */
+async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<WorkflowPlaybook> {
   await env.deps.progress?.("planning", 5).catch(() => undefined);
   await env.note("理解目標並蒐集資料，準備工作計畫。");
-  const res = await pb.plan(env);
+  let res = await pb.plan(env);
+  // The user answered, yet the playbook would ask the very same question again (e.g. a reading note picked for a topic
+  // survey keeps asking which paper): don't loop — the general workflow gathers what it needs (incl. online search).
+  const asked = env.state<string>("plan_question");
+  if (res.kind === "question" && pb.id !== "generic" && env.run.guidance.length > 0 && (asked === res.question || asked === undefined)) {
+    const fallback = getWorkflowPlaybook("generic");
+    if (fallback) {
+      await env.db.query("UPDATE workflow_runs SET playbook='generic', updated_at=now() WHERE id=$1", [env.run.id]);
+      env.run.playbook = "generic";
+      await env.note(`「${pb.title}」需要的資料還是不足（${res.question.slice(0, 60)}），改用一般流程：由 Agent 自己蒐集資料（包括線上搜尋論文）再規劃。`);
+      pb = fallback;
+      res = await pb.plan(env);
+    }
+  }
   await env.refresh();
   if (env.run.status === "cancelled") throw new WorkflowStop("cancelled", "已停止。");
   if (res.kind === "question") {
+    await env.setState({ plan_question: res.question });
     await setStatus(env, "awaiting_input", { question: res.question });
     await finishNotice(env, "awaiting_input");
-    return;
+    return pb;
   }
   if (res.kind === "needs_pdf") {
     await setStatus(env, "needs_pdf", { question: res.message });
     await env.note(res.message, "warn");
     await finishNotice(env, "needs_pdf");
-    return;
+    return pb;
   }
   if (res.kind === "skip") {
     await setStatus(env, "cancelled", { stop_reason: "skipped", question: null, report: { summary_md: res.message, done: [], issues: [res.message] }, finished_at: new Date().toISOString() });
     await env.note(res.message, "warn");
-    return;
+    return pb;
   }
   await env.db.query("DELETE FROM workflow_steps WHERE run_id=$1", [env.run.id]);
   await insertSteps(env.db, env.run.id, res.steps);
@@ -163,13 +178,14 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook) {
     await env.setState({ auto_approved: { at: new Date().toISOString(), tainted: env.run.tainted } });
     await env.note(autoApprovalNote(decision, env.run.taint_sources));
     await setStatus(env, "running");
-    return;
+    return pb;
   }
   const why = autoApprovalNote(decision);
   if (why) await env.note(why);
   await env.setState({ auto_approved: null });
   await setStatus(env, "awaiting_plan_approval");
   await finishNotice(env, "awaiting_plan_approval");
+  return pb;
 }
 
 // ---------------------------------------------------------------- execution

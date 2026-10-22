@@ -3,7 +3,7 @@
   import { DropdownMenu } from "bits-ui";
   import { Brain, ChevronLeft, ChevronRight, Copy, Ellipsis, Info, ListChecks, Pencil, RotateCcw, Sparkles } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
-  import { t } from "#lib/i18n.svelte.ts";
+  import { hasMessage, t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
@@ -229,10 +229,15 @@
     </div>
   {/if}
 {:else if message.role === "notice"}
+  {#if message.kind?.startsWith("workflow_")}
+    <!-- Workflow status: the card above carries the details; one quiet line. -->
+    <p class="flex items-center justify-center gap-1.5 text-center text-[12px] text-ink-3" role="note"><Info class="size-3.5" />{message.text}</p>
+  {:else}
   <div class="flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-dashed border-line-2 px-4 py-3 text-center text-[13px] text-ink-2" role="note">
-    <Info class="size-4 text-ink-3" /><span>{noticeKey ? t(noticeKey) : message.text}</span>
+    <Info class="size-4 text-ink-3" /><span>{noticeKey && hasMessage(noticeKey) ? t(noticeKey) : message.text}</span>
     {#if onContinue && message.kind?.startsWith("limit_")}<button type="button" class="inline-flex min-h-8 items-center rounded-full bg-ink px-3 text-[12.5px] font-medium text-primary-ink" onclick={onContinue}>{t("agent.continue")}</button>{/if}
   </div>
+  {/if}
 {:else if message.role === "compaction"}
   <p class="flex items-center justify-center gap-2 text-center text-[12px] text-ink-3"><span class="h-px w-8 bg-line-2"></span>{t("agent.compacted")}<span class="h-px w-8 bg-line-2"></span></p>
 {/if}

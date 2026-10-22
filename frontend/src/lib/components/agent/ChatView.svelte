@@ -140,7 +140,10 @@
   const answered = $derived(answersByCall(session.messages));
   const callById = $derived(new Map(session.toolCalls.map((c) => [c.id, c])));
   const replying = $derived(running || run?.status === "awaiting_llm" || session.sending);
-  const items = $derived(buildTranscript(session.messages, session.toolCalls, { answered: new Set(answered.keys()), live: replying }));
+  const allItems = $derived(buildTranscript(session.messages, session.toolCalls, { answered: new Set(answered.keys()), live: replying }));
+  // Workflow status notices (「…需要你補充資訊」) duplicate the workflow card: only the latest one, and only while it is the
+  // last thing in the chat, stays visible (the bell keeps the notification).
+  const items = $derived(allItems.filter((e, i) => !(e.kind === "message" && e.message.role === "notice" && e.message.kind?.startsWith("workflow_") && i !== allItems.length - 1)));
   const lastUserSeq = $derived(session.messages.findLast((m) => m.role === "user")?.seq ?? -1);
   // 「重新產生」 on the latest assistant reply (after the last user message, nothing running).
   const regenerateId = $derived.by(() => {
