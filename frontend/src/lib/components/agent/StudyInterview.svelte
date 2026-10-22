@@ -25,10 +25,13 @@
    * at any time (the interview re-runs from there); the draft always comes from the current branch. The user edits
    * the draft, then fills the form or creates the study here (stages, tasks via the normal study API).
    */
-  let { members = () => [], onFill }: { members?: () => { userId: string; role: "member" | "advisor" }[]; onFill: (plan: StudyPlan) => void } = $props();
+  let { members = () => [], onFill, active = $bindable(false) }: { members?: () => { userId: string; role: "member" | "advisor" }[]; onFill: (plan: StudyPlan) => void; /** true while the interview is open (the page widens it) */ active?: boolean } = $props();
 
   const session = new ChatSession("interview");
   let started = $state(false);
+  $effect(() => {
+    active = started;
+  });
   let plan = $state<StudyPlan | null>(null);
   let reviewOpen = $state(false);
   let creating = $state(false);
@@ -141,7 +144,7 @@
     </AiGate>
   </div>
 {:else}
-  <div bind:this={box} class="mt-5 flex h-[min(560px,70dvh)] flex-col overflow-hidden rounded-[22px] border border-line bg-canvas text-ink">
+  <div bind:this={box} class="mt-5 flex h-[min(820px,78dvh)] min-h-[440px] flex-col overflow-hidden rounded-[22px] border border-line bg-canvas text-ink">
     <ChatView {session} compact placeholder={t("agent.interview.placeholder")} {onPlan} />
   </div>
   <div class="mt-3 flex flex-wrap gap-2">

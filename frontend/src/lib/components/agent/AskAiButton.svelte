@@ -21,6 +21,8 @@
   const onAssistantPage = $derived(page.url.pathname.startsWith("/assistant"));
   // Full-screen editors (LaTeX, deck source) keep their own toolbars at the bottom on phones; no floating button there.
   const fullScreenEditor = $derived(/^\/studies\/[^/]+\/(latex\/[^/]+|decks\/[^/]+\/edit)\/?$/.test(page.url.pathname));
+  // /studies/new has its own AI chat (the interview); the floating button would sit on its composer.
+  const noFab = $derived(fullScreenEditor || /^\/studies\/new\/?$/.test(page.url.pathname));
   const badge = $derived(assistantPanel.pending + session.pendingCalls.length > 0 ? Math.max(assistantPanel.pending, session.pendingCalls.length) : 0);
   $effect(() => {
     // Keep the badge fresh when the panel's own run asks for approval or finishes.
@@ -53,7 +55,7 @@
     {/key}
   </button>
   <!-- Portalled: the sticky topbar uses backdrop-filter, which would anchor `fixed` children to the header. -->
-  {#if !fullScreenEditor}
+  {#if !noFab}
   <Portal>
   <button
       type="button"

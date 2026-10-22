@@ -40,6 +40,7 @@
   let pickAdvisor = $state("");
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let interviewing = $state(false);
 
   $effect(() => {
     api.get<{ users: DirectoryUser[] }>("/users/directory").then(r => (directory = r.users), () => {});
@@ -93,7 +94,8 @@
 <a href="/studies" class="-ml-2 mb-3 inline-flex h-10 items-center gap-1.5 rounded-full px-2 text-[13px] font-medium text-ink-3 hover:text-ink"><ArrowLeft class="size-4" />{t("studies.back")}</a>
 <PageHeader title={t("studies.new.title")} subtitle={t("studies.new.subtitle")} />
 
-<div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+<!-- While the AI interview runs it takes the full width above the form (the side column is too narrow for a chat). -->
+<div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 {interviewing ? '' : 'lg:grid-cols-[minmax(0,1fr)_340px]'}">
   <Card>
     <form id="study-form" class="flex flex-col gap-5" onsubmit={submit}>
       <TextField label={t("studies.field.title")} bind:value={title} maxlength={200} placeholder={t("studies.field.titlePlaceholder")} required />
@@ -162,11 +164,12 @@
 
   <!-- AI interview slot: the agent module replaces the placeholder button with the interview flow. -->
   <!-- Phones and tablets: the interview comes first (one tap instead of scrolling past the whole form). -->
-  <section class="relative overflow-hidden rounded-[var(--radius-card)] hero-gradient p-5 text-hero-ink max-lg:order-first sm:p-6" aria-labelledby="ai-interview">
+  <section class="relative overflow-hidden rounded-[var(--radius-card)] hero-gradient p-5 text-hero-ink sm:p-6 {interviewing ? 'order-first max-sm:-mx-1 max-sm:p-3' : 'max-lg:order-first'}" aria-labelledby="ai-interview">
     <span class="inline-flex items-center gap-1.5 rounded-full bg-white/55 px-3 py-1 text-xs font-medium backdrop-blur dark:bg-black/25"><Sparkles class="size-3.5" />{t("studies.ai.interview")}</span>
     <h2 id="ai-interview" class="mt-4 font-display text-[28px] leading-tight">{t("studies.ai.interview")}</h2>
     <p class="mt-2 text-[13.5px] leading-relaxed opacity-80">{t("studies.ai.interviewHint")}</p>
     <StudyInterview
+      bind:active={interviewing}
       members={() => [...members.map(userId => ({ userId, role: "member" as const })), ...advisors.map(userId => ({ userId, role: "advisor" as const }))]}
       onFill={plan => {
         title = plan.title;
