@@ -243,6 +243,22 @@ run("workflow engine", () => {
     expect((await getRun(t.db, id))!.guidance[0]!.text).toBe("語氣再正式一點");
   });
 
+  it("繼續改 gives re-run dependents a fresh attempt count (repeated rounds never hit the cap on arrival)", async () => {
+    m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
+    m.set("w:b", "B 段落的完整內容，依據資料撰寫。");
+    const id = await newRun();
+    await runWorkflow(deps(), id);
+    await approveWorkflow(t.app, await asUser(alice.id), id, {});
+    expect((await runWorkflow(deps(), id)).status).toBe("done");
+    // Earlier rounds left a failed writer and a dependent whose attempts piled up.
+    await t.db.query("UPDATE workflow_steps SET status='failed' WHERE run_id=$1 AND key='a'", [id]);
+    await t.db.query("UPDATE workflow_steps SET attempts=9 WHERE run_id=$1 AND key IN ('c','final')", [id]);
+    await t.db.query("UPDATE workflow_runs SET status='partial' WHERE id=$1", [id]);
+    await resumeWorkflow(t.app, await asUser(alice.id), id, { more: true });
+    expect((await runWorkflow(deps(), id)).status).toBe("done");
+    expect((await getSteps(t.db, id)).find((s) => s.key === "c")!.status).toBe("passed");
+  });
+
   it("a worker shutdown on the job's last attempt hands the run back instead of failing it", async () => {
     m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
     m.set("w:b", "B 段落的完整內容，依據資料撰寫。");

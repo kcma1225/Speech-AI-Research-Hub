@@ -268,9 +268,10 @@ async function reopenForMore(client: Queryable, id: string) {
     grew = false;
     for (const s of steps) if (!keys.has(s.key) && s.depends_on.some((d) => keys.has(d))) (keys.add(s.key), (grew = true));
   }
-  for (const s of steps) if (keys.has(s.key) && !failed.includes(s)) await client.query("UPDATE workflow_steps SET status='pending', error=NULL WHERE id=$1", [s.id]);
+  // Re-run steps get a fresh attempt count too (the per-step cap counts attempts within one 繼續改, not across them).
+  for (const s of steps) if (keys.has(s.key) && !failed.includes(s)) await client.query("UPDATE workflow_steps SET status='pending', error=NULL, attempts=round WHERE id=$1", [s.id]);
   const final = steps.find((s) => s.kind === "final");
-  if (final && final.status !== "pending") await client.query("UPDATE workflow_steps SET status='pending', error=NULL WHERE id=$1", [final.id]);
+  if (final && final.status !== "pending") await client.query("UPDATE workflow_steps SET status='pending', error=NULL, attempts=round WHERE id=$1", [final.id]);
   return steps.length;
 }
 
