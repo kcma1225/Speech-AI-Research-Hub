@@ -9,6 +9,7 @@ import { requireUser } from "../lib/auth.js";
 import { parse } from "../lib/http.js";
 import { pageContextSchema } from "./agent.js";
 import { runView } from "../workflows/store.js";
+import { recordChatStart, startResult } from "../workflows/service.js";
 import { approveGoal, cancelGoal, createGoal, deleteGoal, editStages, goalDetail, goalsOf, resumeGoal, updateGoal } from "../workflows/goals/service.js";
 import { goalView } from "../workflows/goals/store.js";
 import { DELIVERABLE_KINDS } from "../workflows/goals/capabilities.js";
@@ -39,6 +40,11 @@ export default async function goals(app: FastifyInstance) {
     const user = await requireUser(request);
     const input = parse(createInput, request.body);
     const out = await createGoal(app, user, { request: input.request, deliverable: input.deliverable, playbook: input.playbook, conversationId: input.conversation_id ?? null, context: (input.context ?? null) as Record<string, unknown> | null, inputs: input.inputs, autopilot: input.autopilot });
+    // Started outside the assistant: show its card in that chat too.
+    if (input.conversation_id) {
+      const data = out.kind === "goal" ? { goal_id: out.goal.id, status: out.goal.status } : startResult({ runs: out.runs, batchId: out.batchId });
+      await recordChatStart(app, user, input.conversation_id, input.request, out.kind === "goal" ? "start_goal" : "start_workflow", data, out.kind === "goal" ? "好的，我把這件事排成一條目標路線，確認後會自動一階段一階段完成。" : "好的，我把這件事交給工作流程，計畫準備好後請確認。").catch((e) => request.log.warn({ err: e }, "goal chat record failed"));
+    }
     reply.code(201);
     if (out.kind === "goal") return { goal: await goalView(app.db, out.goal), workflow: null };
     return { goal: null, workflow: await runView(app.db, out.runs[0]!) };

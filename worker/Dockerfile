@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libgbm1 libxss1 libxtst6 fonts-noto-cjk \
       poppler-utils webp libreoffice-impress fonts-liberation2 fonts-crosextra-carlito fonts-crosextra-caladea \
     && rm -rf /var/lib/apt/lists/*
+# CJK font aliases (fonts/60-cjk-aliases.conf): missing Windows/macOS CJK fonts map to Noto CJK instead of Liberation Mono.
+COPY fonts/60-cjk-aliases.conf /etc/fonts/conf.d/60-cjk-aliases.conf
+RUN fc-cache -f >/dev/null
 # Noto CJK: decks are mostly Traditional Chinese; without it PDFs/thumbnails render missing glyphs.
 # Liberation/Carlito/Caladea are metric-compatible with Arial/Times, Calibri and Cambria, so converted PPTX keep their layout.
 # Pinned, checksum-verified browser + offline math/fonts (downloaded at build time only).

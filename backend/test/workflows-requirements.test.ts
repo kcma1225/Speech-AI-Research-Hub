@@ -253,7 +253,7 @@ run("workflow requirements (probe suite)", () => {
 
   it("3. remove a page and include a topic the model extracted: the page is dropped at planning, the topic is checked", async () => {
     const id = await newDeck("熱詞週報", ORIGINAL);
-    m.set("requirements", JSON.stringify({ requirements: [{ type: "include_topics", text: "一定要提到 shallow fusion", params: { topics: [{ name: "shallow fusion", aliases: ["淺層融合"] }] } }] }));
+    m.set("requirements", JSON.stringify({ requirements: [{ type: "include_topics", text: "一定要提到 shallow fusion", quote: "一定要提到 shallow fusion", params: { topics: [{ name: "shallow fusion", aliases: ["淺層融合"] }] } }] }));
     m.set("outline", JSON.stringify({ pages: [{ title: "問題定義", points: ["罕見詞"] }, { title: "方法", points: ["淺層融合"] }, { title: "卡住", points: ["資料"] }] }));
     m.set("write_slides", (req) => askedPages(req).map((p) => page(p.title, false, p.title === "方法" ? "\n- 淺層融合（shallow fusion）" : "")).join("\n\n"));
     const { planned, status, run: r } = await planAndRun("刪掉「卡住」這頁，一定要提到 shallow fusion", { inputs: { deck_id: id } });
@@ -274,7 +274,7 @@ run("workflow requirements (probe suite)", () => {
 
   it("5. an English note: a Chinese draft fails the language criterion, only that writer is repaired; title + headings in English", async () => {
     m.set("plan_generic", JSON.stringify({ title: "熱詞方法比較", objective: "比較熱詞方法", criteria: ["涵蓋 WFST"], steps: [{ key: "s1", title: "背景", role: "writer", instructions: "寫背景" }, { key: "s2", title: "方法比較", role: "writer", instructions: "寫方法", depends_on: ["s1"] }] }));
-    m.set("requirements", JSON.stringify({ requirements: [{ type: "include_topics", text: "要提到 WFST", params: { topics: [{ name: "WFST" }] } }] }));
+    m.set("requirements", JSON.stringify({ requirements: [{ type: "include_topics", text: "要提到 WFST", quote: "要提到 WFST", params: { topics: [{ name: "WFST" }] } }] }));
     let s2 = 0;
     m.set("write:generic", (req) => {
       const u = textOf(req, "user");

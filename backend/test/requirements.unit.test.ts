@@ -222,3 +222,19 @@ describe("slides: edit kinds and page replacement", () => {
     expect(replacePages(body, [2], "## A\n\nx\n\n## B\n\ny")).toBeNull();
   });
 });
+
+describe("model-extracted requirements stay grounded in the user's words", () => {
+  it("drops requirements without a verbatim quote and demotes invented fields to judged ones", async () => {
+    const { groundedInWords, anchorTerms } = await import("../src/workflows/requirements.js");
+    const words = "我覺得這個簡報還不夠細，每一頁的重點要寫得更具體，並加上一頁整理目前的限制與下一步";
+    expect(groundedInWords({ quote: "每一頁的重點要寫得更具體" }, words)).toBe(true);
+    expect(groundedInWords({ quote: "Research question 要標出來" }, words)).toBe(false);
+    expect(groundedInWords({}, words)).toBe(false);
+    // Production: the model broke "more specific" into labels the user never asked for.
+    const invented = anchorTerms({ type: "per_item_fields", text: "第 3 頁要標出 Research question、Analysis units", source: "request", params: { fields: [{ name: "Research question" }, { name: "Analysis units" }] } }, words);
+    expect(invented.type).toBe("other");
+    const said = anchorTerms({ type: "include_topics", text: "加上限制與下一步", source: "request", params: { topics: [{ name: "限制" }, { name: "Zipformer" }] } }, words);
+    expect(said.type).toBe("include_topics");
+    expect(said.params!.topics!.map((t) => t.name)).toEqual(["限制"]);
+  });
+});

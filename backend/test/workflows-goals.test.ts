@@ -235,6 +235,18 @@ run("workflow goals", () => {
     expect(await getRun(t.db, runId)).toBeNull();
   });
 
+  it("API: a goal created with a conversation shows its card in that chat (synthetic start_goal call)", async () => {
+    const conv = (await req(alice, "POST", "/api/agent/conversations", { title: "論文" })).json().conversation.id as string;
+    const created = await req(alice, "POST", "/api/goals", { request: "從零寫一篇關於台灣語音語料蒐集現況的論文", context: { studyId: study.id }, conversation_id: conv });
+    expect(created.statusCode).toBe(201);
+    const goal = created.json().goal;
+    const chat = (await req(alice, "GET", `/api/agent/conversations/${conv}`)).json();
+    const call = chat.toolCalls.find((c: { tool: string }) => c.tool === "start_goal");
+    expect(call?.status).toBe("done");
+    expect(call.result.data.goal_id).toBe(goal.id);
+    await req(alice, "POST", `/api/goals/${goal.id}/cancel`, {});
+  });
+
   it("API: create, owner-only detail, roadmap edits, approve", async () => {
     const created = await req(alice, "POST", "/api/goals", { request: "從零寫一篇關於台灣語音語料蒐集現況的論文", context: { studyId: study.id } });
     expect(created.statusCode).toBe(201);

@@ -275,7 +275,7 @@
   </div>
 
   <!-- Tablets: milestones and settings side by side under the main column; desktop: the side column. -->
-  <div class="grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 md:grid-cols-2 lg:flex lg:flex-col">
+  <div class="grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 md:grid-cols-2 lg:flex lg:flex-col lg:items-stretch">
     <!-- Milestones -->
     <Card>
       <CardHeader title={t("studies.milestones")}>

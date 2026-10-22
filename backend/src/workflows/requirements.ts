@@ -510,8 +510,8 @@ const EXTRACT_SYSTEM = [
   "你從使用者的話裡整理出他對這次成果的「明確要求」，讓後續每一步都遵守、最後逐條驗收。只輸出 JSON。",
   "只收使用者明確說出的要求（這次的要求、補充指示、最近幾輪對話中關於這份成果的要求）；不要加入一般性的品質期望，也不要替使用者決定研究方向或時程。",
   "type：language（成果語言；只在明確要求時）、page_count（明確的頁數或範圍）、include_topics（一定要涵蓋的主題，topics 每個附 aliases：中英文說法與縮寫）、exclude（要刪掉的頁面或內容，terms 附 aliases；刪頁面 scope=page）、per_item_fields（每個方法／模型要有的欄位，fields 附 aliases；使用者有列出項目時填 items）、audience（對象）、tone（語氣）、length（篇幅）、format（成果形式，例如 LaTeX、表格）、other。",
-  "text 用繁體中文寫一句可以驗收的要求。沒有要求就回 {\"requirements\":[]}。",
-  '格式：{"requirements":[{"type":"include_topics","text":"聚焦在動態熱詞（dynamic hotwording）","params":{"topics":[{"name":"dynamic hotwording","aliases":["動態熱詞","contextual biasing"]}]}}]}',
+  "text 用繁體中文寫一句可以驗收的要求。quote 逐字複製使用者說出這個要求的原話（找不到原話就不要列）。主題、欄位、要刪的內容只能用使用者自己提到的詞（可以補上同義的中英文 aliases），不要自己細分出使用者沒說的欄位或主題。沒有要求就回 {\"requirements\":[]}。",
+  '格式：{"requirements":[{"type":"include_topics","text":"聚焦在動態熱詞（dynamic hotwording）","quote":"我想要 focus 在動態熱詞","params":{"topics":[{"name":"dynamic hotwording","aliases":["動態熱詞","contextual biasing"]}]}}]}',
 ].join("\n");
 
 /** Recent user turns of the conversation that started the run (before it was created), newest last. */
@@ -598,8 +598,46 @@ async function extractWithModel(env: WorkflowEnv, ctx: Ctx): Promise<Omit<Requir
   const res = await env.call({ purpose: "requirements", role: "planner", messages: [{ role: "system", content: EXTRACT_SYSTEM }, { role: "user", content: user }], maxTokens: 2500 });
   const v = parseJson<{ requirements?: unknown[] }>(res.text);
   const list = Array.isArray(v?.requirements) ? v!.requirements : [];
+  const words = [ctx.request, ...ctx.guidance, ...ctx.recent].join("\n");
   // The model may not change what the user's words settle deterministically (language / page count come from the text).
-  return list.map((r) => cleanRequirement(r, "request", ctx.kind)).filter((r): r is Omit<Requirement, "id"> => !!r && r.type !== "language" && r.type !== "page_count");
+  return list
+    .filter((r) => groundedInWords(r, words))
+    .map((r) => cleanRequirement(r, "request", ctx.kind))
+    .filter((r): r is Omit<Requirement, "id"> => !!r && r.type !== "language" && r.type !== "page_count")
+    .map((r) => anchorTerms(r, words));
+}
+
+const squash = (t: string) => t.toLowerCase().replace(/[\s，,。.、；;：:「」『』（）()"'`*]/g, "");
+
+/** A model-extracted requirement must quote the user's own words (production: it invented per-page field labels). */
+export function groundedInWords(raw: unknown, words: string): boolean {
+  const q = raw && typeof raw === "object" ? (raw as { quote?: unknown }).quote : undefined;
+  if (typeof q !== "string" || !q.trim()) return false;
+  const quote = squash(q);
+  return quote.length >= 2 && squash(words).includes(quote.slice(0, 60));
+}
+
+/**
+ * Hard (deterministic) types keep only the terms the user actually said (name or an alias in their words); when none
+ * remain the requirement becomes a judged one (`other`), so an over-specific breakdown can never fail a run on its own.
+ */
+export function anchorTerms(r: Omit<Requirement, "id">, words: string): Omit<Requirement, "id"> {
+  const said = (t: RequirementTerm) => [t.name, ...(t.aliases ?? [])].some((x) => x && squash(words).includes(squash(x)));
+  const keep = (list?: RequirementTerm[]) => (list ?? []).filter(said);
+  const p = r.params ?? {};
+  if (r.type === "include_topics") {
+    const topics = keep(p.topics);
+    return topics.length ? { ...r, params: { ...p, topics } } : { type: "other", text: r.text, source: r.source };
+  }
+  if (r.type === "per_item_fields") {
+    const fields = keep(p.fields);
+    return fields.length ? { ...r, params: { ...p, fields } } : { type: "other", text: r.text, source: r.source };
+  }
+  if (r.type === "exclude" && !p.pages?.length) {
+    const t = keep(p.terms);
+    return t.length ? { ...r, params: { ...p, terms: t } } : { type: "other", text: r.text, source: r.source };
+  }
+  return r;
 }
 
 /** Requirements edited on the plan card: typed from their text when the type is unknown or the text changed. */

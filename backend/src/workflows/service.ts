@@ -118,6 +118,41 @@ export function startResult(out: { runs: RunRow[]; batchId: string | null }) {
  * 「交給 Agent」 / `/agent`: appends the user message and a synthetic `start_workflow` call (assistant tool_use + its
  * result + the tool message: a valid transcript, no model call) to the conversation, then creates the workflow.
  */
+/**
+ * Records a start made outside the assistant (e.g. POST /goals with a conversation) in that chat as a finished synthetic
+ * tool call — user message, assistant tool_use, the call with its result, the tool message — so the chat shows the card
+ * (the transcript finds cards through start tools' results: workflow_id / batch_id / goal_id).
+ */
+export async function recordChatStart(app: FastifyInstance, user: CurrentUser, conversationId: string, request: string, tool: "start_goal" | "start_workflow", data: Record<string, unknown>, note: string) {
+  const out = await transaction(app.db, async (client) => {
+    const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, user.id])).rows[0];
+    if (!conv || conv.mode !== "chat") return null;
+    const msg = (await client.query<MessageRow>("INSERT INTO agent_messages(conversation_id,role,content,text) VALUES($1,'user',$2,$3) RETURNING *", [conv.id, JSON.stringify([{ type: "text", text: `（交給 Agent）${request}` }]), request])).rows[0]!;
+    const agentRun = (await client.query<AgentRunRow>("INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,stop_reason,finished_at) VALUES($1,$2,'done',250,'workflow',now()) RETURNING *", [conv.id, user.id])).rows[0]!;
+    await client.query("UPDATE agent_messages SET run_id=$2 WHERE id=$1", [msg.id, agentRun.id]);
+    const callId = `wf_${agentRun.id.slice(0, 8)}`;
+    const args = { request };
+    const am = (await client.query<MessageRow>("INSERT INTO agent_messages(conversation_id,run_id,role,content,text) VALUES($1,$2,'assistant',$3,$4) RETURNING *", [conv.id, agentRun.id, JSON.stringify([{ type: "text", text: note }, { type: "tool_use", id: callId, name: tool, input: args }]), note])).rows[0]!;
+    const text = envelope(tool, JSON.stringify({ ...data, message: "已開始；卡片已顯示給使用者。不要描述結果，等它回報。" }), { untrusted: false });
+    const tc = (await client.query<ToolCallRow>(
+      `INSERT INTO tool_calls(run_id,conversation_id,message_id,step,position,provider_call_id,tool,args,risk,status,summary,result,result_text,finished_at)
+       VALUES($1,$2,$3,0,0,$4,$5,$6,'read','done',$7,$8,$9,now()) RETURNING *`,
+      [agentRun.id, conv.id, am.id, callId, tool, JSON.stringify(args), `交給 Agent：${titleFrom(request)}`, JSON.stringify({ data, links: [], source: null, untrusted: false }), text],
+    )).rows[0]!;
+    await client.query("INSERT INTO agent_messages(conversation_id,run_id,role,content) VALUES($1,$2,'tool',$3)", [conv.id, agentRun.id, JSON.stringify([{ type: "tool_result", tool_use_id: callId, content: text }])]);
+    const conversation = (await client.query<ConversationRow>("UPDATE conversations SET updated_at=now(), title=CASE WHEN title='' THEN $2 ELSE title END WHERE id=$1 RETURNING *", [conv.id, titleFrom(request).slice(0, 40)])).rows[0]!;
+    return { msg, am, call: tc, agentRun, conversation };
+  });
+  if (!out) return;
+  for (const [type, d] of [
+    ["message", { message: messageView(out.msg) }],
+    ["message", { message: messageView(out.am) }],
+    ["tool_call", { toolCall: toolCallView(out.call, { provenance: [] }) }],
+    ["run", { run: agentRunView(out.agentRun) }],
+    ["conversation", { conversation: conversationView(out.conversation) }],
+  ] as const) await insertEvent(app.db, conversationId, out.agentRun.id, type, d as Record<string, unknown>);
+}
+
 export async function startFromChat(app: FastifyInstance, user: CurrentUser, input: CreateInput & { conversationId: string }) {
   const out = await transaction(app.db, async (client) => {
     const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [input.conversationId, user.id])).rows[0];
