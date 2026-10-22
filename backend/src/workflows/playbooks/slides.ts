@@ -372,7 +372,10 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
   const outline = ((outlineStep.output.data as { outline?: SlideOutline[] } | undefined)?.outline ?? []);
   if (!outline.length) throw new WorkflowInputError("無法規劃修改後的簡報，請稍後再試。");
   const vision = await env.vision("slides");
-  const steps = [research, outlineStep.spec, ...laterSteps(outline, vision)];
+  // Pages whose original speaker notes were already short (e.g. the student's own pages) are not required to grow notes.
+  const shortNotes = outline.filter((o, i) => (parseSlides(src.slides[i]?.raw ?? "")[0]?.notes ?? "").length < 30).map((o) => o.title);
+  const steps = [research, outlineStep.spec, ...laterSteps(outline, vision)].map((st) =>
+    st.key === "notes" && shortNotes.length ? { ...st, verify: { ...st.verify!, checks: (st.verify?.checks ?? []).map((c) => (c.id === "speaker_notes" ? { ...c, params: { ...(c.params ?? {}), allow_titles: shortNotes } } : c)) } } : st);
   const write = await plannedDeckWrite(env, access.study.id, src.deck.title);
   return {
     kind: "plan",
@@ -380,7 +383,7 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
     studyId: access.study.id,
     objective: `依使用者的要求修改簡報〈${clipText(src.deck.title, 80)}〉：${clipText(env.run.request, 200)}。保留原本的頁面結構、圖、圖表、公式與出處，只改要求的部分，編譯成可預覽的草稿。`,
     criteria: [
-      ...criteriaFor(outline.length, mode, [], false),
+      ...criteriaFor(outline.length, mode, [], false).map((c) => (c.id === "notes" && shortNotes.length ? { ...c, text: `${c.text}（原本講稿就很短的頁面除外：${shortNotes.map((t) => `「${t}」`).join("、")}）`, check: { id: "speaker_notes", params: { min_chars: 30, allow_titles: shortNotes } } } : c)),
       { id: "revised", kind: "judge", text: `每一頁都照使用者的要求修改（${clipText(env.run.request, 120)}），沒有遺漏頁面或講稿，也沒有改掉原本的數字、圖與出處` },
     ],
     plan: {

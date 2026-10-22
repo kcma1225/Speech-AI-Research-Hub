@@ -706,6 +706,8 @@ run("workflow engine", () => {
     expect(r.plan!.writes![0]!.effect).toBe("overwrite");
     expect(outlinePrompt).toContain("CER 12.3 → 10.1");
     expect(r.criteria.some((c) => c.id === "revised")).toBe(true);
+    // The originals' notes were short: the revision is not required to grow them.
+    expect(r.criteria.find((c) => c.id === "notes")!.text).toContain("原本講稿就很短");
     expect((await getSteps(t.db, id)).map((s) => s.key)).toEqual(expect.arrayContaining(["write_1", "assemble", "visual_qa", "final"]));
     await cancelWorkflow(t.app, await asUser(alice.id), id);
   });
