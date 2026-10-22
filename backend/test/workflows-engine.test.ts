@@ -100,6 +100,32 @@ registerWorkflowPlaybook({
   },
 });
 
+// Check-only step whose text never changes but whose data (screenshot QA) passes on the second round.
+let qaRound = 0;
+registerWorkflowPlaybook({
+  id: "test_qa_same",
+  title: "版面檢查", titleEn: "QA", description: "", descriptionEn: "",
+  detect: () => 0,
+  async plan() {
+    return {
+      kind: "plan", title: "QA", objective: "版面", plan: { summary: "x", writes: [] },
+      criteria: [{ id: "qa", kind: "check", text: "版面", check: { id: "visual_qa" } }],
+      steps: [
+        { key: "qa", role: "designer", title: "版面檢查", instructions: "看圖", verify: { checks: [{ id: "visual_qa" }], judge: false } },
+        { key: "final", role: "verifier", kind: "final", title: "最終驗收", instructions: "", depends_on: ["qa"] },
+      ],
+    };
+  },
+  async execute() {
+    qaRound++;
+    return { summary: "版面", text: "同一份投影片原始碼", data: { visualQa: qaRound === 1 ? { failed: [2], scored: 3, vision: true } : { failed: [], scored: 3, vision: true } } };
+  },
+  async finalText(env) {
+    const s = (await getSteps(env.db, env.run.id)).find((x) => x.key === "qa");
+    return { text: s?.output?.text ?? "", data: s?.output?.data ?? null };
+  },
+});
+
 run("workflow engine", () => {
   let t: TestContext;
   let alice: { id: string; cookie: string };
@@ -282,6 +308,17 @@ run("workflow engine", () => {
     await addGuidance(t.app, await asUser(alice.id), id, "數據是 CER 12.3 → 10.1");
     expect((await getRun(t.db, id))!.status).toBe("running");
     expect((await runWorkflow(deps(), id)).status).toBe("done");
+  });
+
+  it("an unchanged fix round of a check-only step passes when its checks now pass (re-scored screenshots)", async () => {
+    qaRound = 0;
+    const id = await newRun("test_qa_same");
+    await runWorkflow(deps(), id);
+    await approveWorkflow(t.app, await asUser(alice.id), id, {});
+    expect((await runWorkflow(deps(), id)).status).toBe("done");
+    const qa = (await getSteps(t.db, id)).find((s) => s.key === "qa")!;
+    expect(qa.status).toBe("passed");
+    expect(qaRound).toBe(2);
   });
 
   it("a criterion the final verifier left out is asked again on its own (ids matched loosely)", async () => {

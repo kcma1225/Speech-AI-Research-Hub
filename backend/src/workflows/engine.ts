@@ -16,6 +16,7 @@ import { finishNotice } from "./notify.js";
 import { asksOf, blockedQuestion, pendingAsk } from "./questions.js";
 import { autoApproval, autoApprovalNote } from "./autopilot.js";
 import { promoteQueued } from "./queue.js";
+import { runChecks } from "./checks.js";
 import { WorkflowStop, type Criterion, type RunRow, type StepOutput, type StepRow, type WorkflowStatus } from "./types.js";
 
 export class WorkflowInputError extends Error {}
@@ -281,6 +282,15 @@ async function executeStep(env: WorkflowEnv, pb: WorkflowPlaybook, initial: Step
     }
     // No progress: a fix round that returns the same output as before stops fixing this step.
     if (fix && (out.text ?? "") === (fix.previous.text ?? "") && out.text) {
+      // Same text, but a check-only step can still pass now (the screenshot QA re-scored the pages: `out.data`).
+      const checks = step.verify?.judge ? null : runChecks(step.verify?.checks ?? [], out.text, out.data ?? null);
+      if (checks?.length && checks.every((c) => c.ok)) {
+        const verdict = { verdict: "pass" as const, issues: [], checks };
+        const history = [...step.history, { round: step.round, verdict, summary: out.summary.slice(0, 300) }].slice(-8);
+        await insertWorkflowEvent(env.db, run.id, "verdict", { step_key: step.key, round: step.round, verdict });
+        await updateStep(env, step.id, { status: "passed", output: out, verdict, history, finished_at: new Date().toISOString(), ms: step.ms + (Date.now() - t0), inputs: { ...step.inputs, fix_issues: [] } });
+        return;
+      }
       await updateStep(env, step.id, { status: "failed", output: out, ms: step.ms + (Date.now() - t0), finished_at: new Date().toISOString(), error: "修正後內容沒有任何改變，停止修正。" });
       await env.note(`「${step.title}」的修正沒有進展，停止修正。`, "warn");
       return;
