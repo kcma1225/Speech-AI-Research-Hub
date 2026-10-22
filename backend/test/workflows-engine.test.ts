@@ -284,6 +284,18 @@ run("workflow engine", () => {
     expect((await runWorkflow(deps(), id)).status).toBe("done");
   });
 
+  it("a criterion the final verifier left out is asked again on its own (ids matched loosely)", async () => {
+    m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
+    m.set("w:b", "B 段落的完整內容，依據資料撰寫。");
+    m.queue("verify_final", '{"results":[]}', '{"results":[{"id":"[Quality]","pass":true,"evidence":"A 段落的完整內容","reason":"ok"}]}');
+    const id = await newRun();
+    await runWorkflow(deps(), id);
+    await approveWorkflow(t.app, await asUser(alice.id), id, {});
+    expect((await runWorkflow(deps(), id)).status).toBe("done");
+    expect(m.count("verify_final")).toBe(2);
+    expect((await getRun(t.db, id))!.criteria.find((c) => c.id === "quality")!.status).toBe("pass");
+  });
+
   it("a final criterion without quoted evidence or that cannot be judged does not pass", async () => {
     m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
     m.set("w:b", "B 段落的完整內容，依據資料撰寫。");

@@ -113,13 +113,26 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
       research ? "<sources> 是研究員從原始資料（論文全文、頁面）整理出的內容與數字，用它核對成果中的數字與主張。" : "",
       dataBlock("final", text.slice(0, 40_000)),
     ].filter(Boolean).join("\n\n");
-    const { value } = await env.callJson<CriteriaJudgement>({ purpose: "verify_final", role: "verifier", messages: [{ role: "system", content: VERIFIER_SYSTEM }, { role: "user", content: user }], maxTokens: 3000 }, isCriteriaJudgement);
+    const ask = async (list: Criterion[], prompt: string) =>
+      (await env.callJson<CriteriaJudgement>({ purpose: "verify_final", role: "verifier", messages: [{ role: "system", content: VERIFIER_SYSTEM }, { role: "user", content: prompt }], maxTokens: 6000 }, isCriteriaJudgement)).value?.results ?? null;
+    // Ids are matched loosely (「[grounded]」, case, spaces); criteria the verifier left out are asked once more on their own.
+    const norm = (id: unknown) => String(id ?? "").replace(/[[\]\s`'"]/g, "").toLowerCase();
+    // An unparsable answer (cut off, prose around the JSON) is asked once more before the criteria count as unjudged.
+    let results = (await ask(judgeList, user)) ?? (await ask(judgeList, user));
+    const find = (c: Criterion) => results?.find((x) => norm(x.id) === norm(c.id));
+    const missing = results ? judgeList.filter((c) => !find(c)) : [];
+    if (missing.length) {
+      const again = await ask(missing, user.replace(/請逐條判斷下列驗收標準是否達成（只根據 <data> 中的最終成果）：\n[\s\S]*?\n\n/, `請逐條判斷下列驗收標準是否達成（只根據 <data> 中的最終成果；每一條都要回答）：\n${missing.map((c) => `- [${c.id}] ${c.text}`).join("\n")}\n\n`));
+      if (again) results = [...results!, ...again];
+    }
+    const value = results ? { results } : null;
     for (const c of judgeList) {
-      const r = value?.results.find((x) => x.id === c.id);
+      const r = find(c);
       // A criterion passes only with positive evidence; one that could not be judged is skipped, never passed.
       const status = !r || r.pass === null ? "skipped" : r.pass && (r.evidence ?? "").trim().length > 0 ? "pass" : r.pass ? "fail" : "fail";
       const reason = !r ? (value ? "驗收者沒有判斷這一條。" : "驗收者沒有給出可解析的判定。") : r.pass === null ? (r.reason ?? "無法判斷") : r.pass && !(r.evidence ?? "").trim() ? "驗收者沒有引用證據，不算通過。" : r.reason;
-      out.push({ ...c, status, reason: reason?.slice(0, 400), ...(r?.evidence ? { evidence: String(r.evidence).slice(0, 200) } : {}) });
+      const { evidence: _stale, ...rest } = c;
+      out.push({ ...rest, status, reason: reason?.slice(0, 400), ...(r?.evidence ? { evidence: String(r.evidence).slice(0, 200) } : {}) });
     }
   }
   // Keep the original order.
