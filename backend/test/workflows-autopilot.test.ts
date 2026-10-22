@@ -1,6 +1,7 @@
 /**
  * Autopilot rules of workflows (autopilot.ts, student-input.ts, context.ts, queue.ts, paper-pdf.ts):
- * - plan auto-approval matrix: tainted + draft-only → auto; overwrite / publish / undeclared → asks; not autopilot → asks;
+ * - plan auto-approval matrix (完全自動): autopilot approves every effect, also tainted; only outbound after taint and
+ *   no autopilot ask;
  *   「修改計畫」 on an auto-approved plan → the next plan waits for the user;
  * - student-owned pages under autopilot are AI-filled (marked, notified, listed in the report) and stay editable;
  * - context inheritance (conversation / study named in the request);
@@ -37,19 +38,29 @@ describe("autopilot plan approval (pure)", () => {
     [true, true, ["draft_own"], true],
     [true, true, ["new", "suggestion"], true],
     [true, false, [], true],
-    [true, true, ["overwrite"], false],
-    [true, false, ["publish"], false],
-    [true, true, ["new", "delete"], false],
+    // 完全自動: overwrites (versions kept), publishing, imports without a declared effect are approved too.
+    [true, true, ["overwrite"], true],
+    [true, false, ["publish"], true],
+    [true, true, ["new", "delete"], true],
+    [true, false, ["outbound"], true],
+    // Exfiltration protection: sending data out after reading untrusted content still waits.
     [true, true, ["outbound"], false],
-    [true, true, [undefined], false],
+    [true, true, [undefined], true],
     [false, false, ["new"], false],
+    [false, false, ["overwrite"], false],
   ] as [boolean, boolean, (WriteEffect | undefined)[], boolean][])("autopilot=%s tainted=%s writes=%j → auto=%s", (autopilot, tainted, effects, expected) => {
     expect(autoApproval({ autopilot, tainted, autoApprovable: true, writes: w(...effects) }).auto).toBe(expected);
   });
   it("never auto-approves a non-auto-approvable playbook or after a manual revise", () => {
     expect(autoApproval({ autopilot: true, tainted: false, autoApprovable: false, writes: w("new") })).toMatchObject({ auto: false, reason: "playbook" });
     expect(autoApproval({ autopilot: true, tainted: false, autoApprovable: true, manual: true, writes: w("new") })).toMatchObject({ auto: false, reason: "manual" });
-    expect(autoApproval({ autopilot: true, tainted: true, autoApprovable: true, writes: w("new", "publish") })).toMatchObject({ auto: false, reason: "write_effect", blocking: [expect.objectContaining({ effect: "publish" })] });
+    expect(autoApproval({ autopilot: true, tainted: true, autoApprovable: true, writes: w("new", "publish") })).toMatchObject({ auto: true, reason: "autopilot", effects: [expect.objectContaining({ effect: "publish" })] });
+    expect(autoApproval({ autopilot: true, tainted: true, autoApprovable: true, writes: w("new", "outbound") })).toMatchObject({ auto: false, reason: "write_effect", blocking: [expect.objectContaining({ effect: "outbound" })] });
+  });
+  it("autopilot approves a goal stage whatever its write effects; without autopilot the goal rule applies", () => {
+    const writes = [{ kind: "deck", label: "覆蓋簡報", effect: "overwrite" as const }, { kind: "paper", label: "匯入論文" }];
+    expect(autoApproval({ autopilot: true, tainted: true, autoApprovable: true, goal: true, writes })).toMatchObject({ auto: true, reason: "autopilot" });
+    expect(autoApproval({ autopilot: false, tainted: true, autoApprovable: true, goal: true, writes })).toMatchObject({ auto: false, reason: "write_effect" });
   });
   it("picks the AI's own options for student pages", () => {
     const opts = [{ value: "o1", label: "A" }, { value: "o2", label: "B" }, { value: "o3", label: "C" }, { value: "o4", label: "D" }, { value: "__skip", label: "先跳過" }];
@@ -222,7 +233,7 @@ run("workflow autopilot", () => {
   const newRun = async (request: string, playbook: string, autopilot: boolean) => (await createWorkflow(t.app, await asUser(alice.id), { request, playbook, autopilot, context: { studyId: study.id } })).id;
   const clearRuns = () => t.db.query("UPDATE workflow_runs SET status='done' WHERE user_id=$1 AND status NOT IN ('done','partial','failed','cancelled')", [alice.id]);
 
-  it("auto-approves a tainted draft-only plan under autopilot; overwrite / publish / no autopilot ask", async () => {
+  it("auto-approves tainted plans under autopilot, also with overwrite / publish; outbound after taint / no autopilot ask", async () => {
     const id = await newRun("tainted effect=new", "test_autopilot", true);
     expect((await runWorkflow(deps(), id)).status).toBe("done");
     const r = (await getRun(t.db, id))!;
@@ -235,9 +246,12 @@ run("workflow autopilot", () => {
 
     for (const req of ["tainted effect=overwrite", "effect=publish"]) {
       const id2 = await newRun(req, "test_autopilot", true);
-      expect((await runWorkflow(deps(), id2)).status).toBe("awaiting_plan_approval");
-      expect((await logs(id2)).some((x) => x.includes("需要你確認"))).toBe(true);
+      expect((await runWorkflow(deps(), id2)).status).toBe("done");
+      expect((await logs(id2)).some((x) => x.startsWith(`${AUTO_APPROVED_NOTE}（完全自動）`) && x.includes("版本"))).toBe(true);
     }
+    const out = await newRun("tainted effect=outbound", "test_autopilot", true);
+    expect((await runWorkflow(deps(), out)).status).toBe("awaiting_plan_approval");
+    expect((await logs(out)).some((x) => x.includes("需要你確認"))).toBe(true);
     const id3 = await newRun("tainted effect=new", "test_autopilot", false);
     expect((await runWorkflow(deps(), id3)).status).toBe("awaiting_plan_approval");
     await clearRuns();

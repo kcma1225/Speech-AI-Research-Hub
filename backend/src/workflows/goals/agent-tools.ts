@@ -37,7 +37,7 @@ function startedResult(out: GoalStart, autopilot: boolean) {
   }
   const data = startResult({ runs: out.runs, batchId: out.batchId });
   const message = autopilot
-    ? "這件事一個工作流程就能完成，已開始規劃；自動駕駛下只寫草稿的計畫會自動核准並執行。用一句話說明，不要描述或預告結果。"
+    ? "這件事一個工作流程就能完成，已開始規劃；自動駕駛下計畫會自動核准並執行。用一句話說明，不要描述或預告結果。"
     : "這件事一個工作流程就能完成，已開始規劃；計畫卡片會顯示給使用者，確認後才會執行與寫入。用一句話說明，不要描述或預告結果。";
   return { data, text: JSON.stringify({ ...data, message }) };
 }

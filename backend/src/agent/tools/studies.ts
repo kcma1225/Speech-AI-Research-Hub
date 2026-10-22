@@ -360,7 +360,7 @@ registerAgentTool({
   title: "刪除待辦",
   titleEn: "Delete task",
   risk: "destructive",
-  description: "Permanently delete a task. Always asks the user.",
+  description: "Permanently delete a task. Always asks the user; under autopilot the call returns at once and the deletion waits for their confirmation (do not repeat it).",
   input: z.object({ study: studyRef, task_id: uuidArg("Task") }),
   summarize: () => "刪除待辦",
   target: async (a, ctx) => {

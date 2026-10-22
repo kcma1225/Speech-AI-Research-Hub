@@ -239,7 +239,7 @@ registerAgentTool({
   title: "從研究移除文獻",
   titleEn: "Remove paper from study",
   risk: "destructive",
-  description: "Remove a paper from a study's reading list (the lab library copy stays; the study's reading notes for it are lost). Always asks the user.",
+  description: "Remove a paper from a study's reading list (the lab library copy stays; the study's reading notes for it are lost). Always asks the user; under autopilot the call returns at once and the deletion waits for their confirmation (do not repeat it).",
   input: z.object({ study: studyRef, paper_id: uuidArg("Paper") }),
   summarize: () => "從研究文獻庫移除文獻",
   async target(a, ctx) {

@@ -142,7 +142,7 @@ registerAgentTool({
   titleEn: "Update study paper",
   risk: "write",
   description:
-    "Update a paper in a study's reading list (study members only): reading_status unread|reading|read, tags (replaces the list), and the reading notes — either the full new Markdown (notes_md) or exact replacements (edits: [{before, after}], before must occur once). Reading notes are the user's own text: changing them always shows the user a consent card with the change, even under autopilot. Read the current notes with get_paper first.",
+    "Update a paper in a study's reading list (study members only): reading_status unread|reading|read, tags (replaces the list), and the reading notes — either the full new Markdown (notes_md) or exact replacements (edits: [{before, after}], before must occur once). Reading notes are the user's own text: changing them shows the user a consent card with the change (under autopilot it is applied and can be undone). Read the current notes with get_paper first.",
   input: z.object({
     study: studyRef,
     paper_id: uuidArg("Paper"),
@@ -190,9 +190,11 @@ registerAgentTool({
       if (a.reading_status === "read" && current.reading_status !== "read") {
         await recordActivity(client, { studyId: access.study.id, actorId: ctx.user.id, kind: "paper_read", title: current.title, url: studyUrl(access.study.slug, "papers"), targetType: "paper", targetId: a.paper_id });
       }
-      return { title: current.title, slug: access.study.slug, notesDiff: notes === null ? null : lineDiffSummary(current.notes_md, notes).label };
+      return { title: current.title, slug: access.study.slug, studyId: access.study.id, before: current.notes_md, notes, notesDiff: notes === null ? null : lineDiffSummary(current.notes_md, notes).label };
     });
     return {
+      // Autopilot ran it without a card: 「復原」 puts the previous reading notes back (only while unchanged).
+      ...(r.notes !== null && r.notes !== r.before ? { undo: { kind: "paper_notes" as const, studyId: r.studyId, paperId: a.paper_id, before: r.before, after: r.notes } } : {}),
       data: { paper: { id: a.paper_id, title: r.title }, reading_status: a.reading_status, reading_status_label: a.reading_status ? READING_ZH[a.reading_status] : undefined, tags: a.tags, notes: r.notesDiff },
       links: [{ label: r.title, url: studyUrl(r.slug, "papers"), kind: "paper" }],
     };
@@ -369,7 +371,7 @@ registerAgentTool({
   grantable: false,
   requireCard: () => true,
   description:
-    "Confirm the pending draft of one study in a meeting (members of that study only; advisors/professors cannot): writes the 會議筆記 note and creates the proposed tasks in the study, exactly like 「確認」 on the meeting page. Always asks the user, also under autopilot. Edit the draft first with suggest_meeting_draft_edit if needed; never create the same tasks by hand.",
+    "Confirm the pending draft of one study in a meeting (members of that study only; advisors/professors cannot): writes the 會議筆記 note and creates the proposed tasks in the study, exactly like 「確認」 on the meeting page. Asks the user (autopilot confirms it directly). Edit the draft first with suggest_meeting_draft_edit if needed; never create the same tasks by hand.",
   input: z.object({ meeting_id: meetingArg, study: studyRef, note_title: z.string().trim().min(1).max(200).optional() }),
   summarize: () => "確認會議草稿：寫入會議筆記並建立草稿中的待辦",
   async target(a, ctx) {

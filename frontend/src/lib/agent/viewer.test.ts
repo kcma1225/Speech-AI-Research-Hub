@@ -4,6 +4,7 @@ import {
   refFromArtifact, refreshArtifact, viewer,
 } from "./viewer.ts";
 import type { ToolCall } from "./types.ts";
+import { ViewerStore } from "./viewer-state.svelte.ts";
 
 const O = "http://hub.test";
 const N = "11111111-1111-4111-8111-111111111111";
@@ -153,5 +154,71 @@ describe("viewer store", () => {
     viewer.follow = false;
     refreshArtifact({ kind: "note", id: N }, { focus: { line: 9 } });
     expect(viewer.current!.focus).toEqual({ suggestionId: S });
+  });
+});
+
+describe("viewer state per conversation", () => {
+  const A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const fresh = () => {
+    const v = new ViewerStore();
+    v.layout = "split";
+    return v;
+  };
+
+  it("restores each conversation's own documents and starts a new chat empty", () => {
+    const v = fresh();
+    v.bindConversation(A);
+    v.openArtifact({ kind: "deck", id: D }, { focus: { page: 3 } });
+    expect(v.current?.key).toBe(`deck:${D}`);
+    // A new chat: nothing from A.
+    v.bindConversation(null);
+    expect(v.current).toBeNull();
+    expect(v.open).toBe(false);
+    expect(v.recent).toEqual([]);
+    // Another conversation never shown here: empty too.
+    v.bindConversation(B);
+    expect(v.current).toBeNull();
+    v.openArtifact({ kind: "note", id: N });
+    v.closeViewer();
+    // Back to A: its deck, open, same focus.
+    v.bindConversation(A);
+    expect(v.current).toMatchObject({ key: `deck:${D}`, focus: { page: 3 } });
+    expect(v.open).toBe(true);
+    expect(v.recent.map((r) => r.id)).toEqual([D]);
+    // B kept its note (closed, as it was left).
+    v.bindConversation(B);
+    expect(v.current?.key).toBe(`note:${N}`);
+    expect(v.open).toBe(false);
+  });
+
+  it("keeps what a new chat opened when that chat becomes a conversation", () => {
+    const v = fresh();
+    v.bindConversation(A);
+    v.bindConversation(null);
+    v.openArtifact({ kind: "paper", id: P });
+    v.bindConversation(C, { adopt: true });
+    expect(v.current?.key).toBe(`paper:${P}`);
+    expect(v.open).toBe(true);
+    // Choosing an existing conversation from a new chat does not carry the new chat's document over.
+    v.bindConversation(null);
+    v.openArtifact({ kind: "paper", id: P });
+    v.bindConversation(B);
+    expect(v.current).toBeNull();
+  });
+
+  it("restores closed on phones (the chat tab stays) and binding the same id is a no-op", () => {
+    const v = fresh();
+    v.bindConversation(A);
+    v.openArtifact({ kind: "note", id: N });
+    const nonce = v.current!.nonce;
+    v.bindConversation(A);
+    expect(v.current!.nonce).toBe(nonce);
+    v.bindConversation(B);
+    v.layout = "tabs";
+    v.bindConversation(A);
+    expect(v.current?.key).toBe(`note:${N}`);
+    expect(v.open).toBe(false);
   });
 });

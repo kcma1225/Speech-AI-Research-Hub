@@ -63,6 +63,15 @@ async function apply(client: pg.PoolClient, user: CurrentUser, undo: AgentUndo):
     await client.query("DELETE FROM notes WHERE id=$1", [undo.id]);
     return [undo.id];
   }
+  if (undo.kind === "paper_notes") {
+    const row = (await client.query<{ notes_md: string }>("SELECT notes_md FROM study_papers WHERE study_id=$1 AND paper_id=$2 FOR UPDATE", [undo.studyId, undo.paperId])).rows[0];
+    if (!row) throw conflict("這篇文獻已經不在研究的文獻清單中。");
+    const access = await loadStudyAccess(client, undo.studyId, user);
+    if (!access.canEdit) throw forbidden("你已不是這個研究的成員。");
+    if (row.notes_md !== undo.after) throw conflict(CHANGED);
+    await client.query("UPDATE study_papers SET notes_md=$3, notes_updated_by=$4, notes_updated_at=now(), updated_at=now() WHERE study_id=$1 AND paper_id=$2", [undo.studyId, undo.paperId, undo.before, user.id]);
+    return [];
+  }
   const target = suggestionTarget(undo.targetType);
   if (!target?.readText || !target.writeText) throw conflict("這個操作不能復原。");
   const resolved = await target.resolve(client, undo.targetId);

@@ -149,3 +149,12 @@ describe("asset serving helpers", () => {
   });
 
 });
+
+describe("revise outline", () => {
+  it("keeps template titles as normal pages when revising an existing deck", async () => {
+    const { _test } = await import("../src/workflows/playbooks/slides.js");
+    const pages = [{ title: "Results", points: ["x"] }, { title: "Takeaways for my work", points: ["y"] }];
+    expect(_test.toOutline(pages).find((p) => p.title === "Takeaways for my work")!.student_owned).toBe(true);
+    expect(_test.toOutline(pages, true).some((p) => p.student_owned)).toBe(false);
+  });
+});

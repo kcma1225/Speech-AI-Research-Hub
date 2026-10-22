@@ -188,7 +188,7 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   );
   for (const s of await getSteps(env.db, env.run.id)) await insertWorkflowEvent(env.db, env.run.id, "step", { step: stepView(s) });
   await env.refresh();
-  // Autopilot: draft-only plans are approved automatically, also when the run read others' content (autopilot.ts).
+  // Autopilot (完全自動): plans are approved automatically, also with overwrites or after reading others' content (autopilot.ts).
   const decision = autoApproval({ autopilot: env.run.autopilot, autoApprovable: pb.autoApprovable, writes: res.plan.writes ?? [], tainted: env.run.tainted, manual: !!env.state<boolean>("manual_approval"), goal: !!env.run.goal_id });
   if (decision.auto) {
     await env.setState({ auto_approved: { at: new Date().toISOString(), tainted: env.run.tainted } });

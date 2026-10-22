@@ -214,6 +214,8 @@ export async function replanAfter(model: ModelPort | null, goal: GoalRow, idx: n
     return { stages: [...goal.stages.slice(0, idx + 1), extra, ...next], note: `「${stage.title}」之後有全文的論文只有 ${r.papers_with_pdf} 篇，加一輪調研。` };
   }
   if (goal.state.planner !== "llm" || !model || !pendingOf(rest).length) return null;
+  // Re-planning is bounded: a few times per goal (production: a partial research stage kept adding research stages).
+  if ((goal.state.replans ?? 0) >= MAX_REPLANS) return null;
   try {
     const done = goal.stages.slice(0, idx + 1).map((s, i) => `${i}. ${s.playbook}「${s.title}」→ ${s.status}${s.summary ? `：${clip(s.summary, 200)}` : ""}${s.artifacts.length ? `（成果：${s.artifacts.map((a) => a.title).join("、")}）` : ""}`).join("\n");
     const { value } = await llmJson(plannerHooks(model, goal.user_id), {
@@ -229,6 +231,9 @@ export async function replanAfter(model: ModelPort | null, goal: GoalRow, idx: n
     const same = drafts.length === rest.length && drafts.every((d, i) => d.playbook === rest[i]!.playbook);
     if (same) return null;
     const finishedIds = goal.stages.slice(0, idx + 1).map((s) => s.id);
+    const kept = boundedDrafts(goal.stages.slice(0, idx + 1), drafts);
+    if (!kept.length || (kept.length === rest.length && kept.every((d, i) => d.playbook === rest[i]!.playbook))) return null;
+    drafts.splice(0, drafts.length, ...kept);
     const ids = drafts.map(() => newId());
     const stages: Stage[] = drafts.map((d, i) => ({
       id: ids[i]!, playbook: d.playbook, title: d.title, why: d.why, request: d.request, inputs: {}, status: "pending", run_id: null, artifacts: [], added_by: "replan",
@@ -240,6 +245,30 @@ export async function replanAfter(model: ModelPort | null, goal: GoalRow, idx: n
     if (isLlmUnavailable(e)) return null;
     throw e;
   }
+}
+
+export const MAX_REPLANS = 3;
+/** Gathering playbooks: at most this many stages each per goal, and never again once a later stage has finished. */
+const GATHERING = new Set(["topic_research", "lit_review", "reading_note"]);
+export const MAX_GATHERING_ROUNDS = 2;
+
+/**
+ * Caps on re-planned stages: a gathering playbook (research, lit review) runs at most MAX_GATHERING_ROUNDS times per goal
+ * and is not added after a building stage (outline, draft, deck…) has finished — partial research results are carried on,
+ * not re-researched forever.
+ */
+export function boundedDrafts<T extends { playbook: string }>(finished: { playbook: string; status: string }[], drafts: T[]): T[] {
+  const built = finished.some((s) => !GATHERING.has(s.playbook) && ["done", "partial"].includes(s.status));
+  const count = new Map<string, number>();
+  for (const s of finished) count.set(s.playbook, (count.get(s.playbook) ?? 0) + 1);
+  return drafts.filter((d) => {
+    if (!GATHERING.has(d.playbook)) return true;
+    if (built) return false;
+    const n = (count.get(d.playbook) ?? 0) + 1;
+    if (n > MAX_GATHERING_ROUNDS) return false;
+    count.set(d.playbook, n);
+    return true;
+  });
 }
 
 /** Gaps of a stage's playbook against the snapshot (shown under the stage on the roadmap). */

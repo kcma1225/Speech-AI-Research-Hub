@@ -124,6 +124,8 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
+    // Handled by an autocomplete on the textarea (「#」 references).
+    if (e.defaultPrevented) return;
     if (e.key === "Escape" && busy) {
       e.preventDefault();
       onStop();

@@ -1,4 +1,7 @@
-/** `remember`: the only way the agent writes a memory. Always asks (even in autopilot), never granted, never via MCP. */
+/**
+ * `remember`: the only way the agent writes a memory. Asks without autopilot; autopilot (完全自動) saves it directly
+ * (visible and deletable in 設定 → 記憶). Never granted, never via MCP; text from tool results is refused (precheck).
+ */
 import { z } from "zod";
 import { badRequest, conflict } from "../../lib/http.js";
 import { getAgentSettings } from "../settings.js";

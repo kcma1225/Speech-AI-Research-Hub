@@ -32,6 +32,7 @@ export const pageContextSchema = z
     page: z.number().int().min(1).max(9999).optional(),
     meetingId: uuidLike.optional(),
     paperId: uuidLike.optional(),
+    taskId: uuidLike.optional(),
   })
   .nullable()
   .optional();
@@ -90,7 +91,7 @@ export default async function agent(app: FastifyInstance) {
     const user = await requireUser(request);
     const rows = (await app.db.query<{ id: string; title: string; mode: string; n: number }>(
       `SELECT c.id,c.title,c.mode,count(*)::int AS n FROM tool_calls tc JOIN conversations c ON c.id=tc.conversation_id
-        WHERE c.user_id=$1 AND tc.status='pending_approval' GROUP BY c.id ORDER BY max(tc.created_at) DESC LIMIT 20`,
+        WHERE c.user_id=$1 AND tc.status IN ('pending_approval','deferred') GROUP BY c.id ORDER BY max(tc.created_at) DESC LIMIT 20`,
       [user.id],
     )).rows;
     reply.header("Cache-Control", "no-store");
@@ -107,7 +108,7 @@ export default async function agent(app: FastifyInstance) {
       `SELECT c.*,
               (SELECT m.text FROM agent_messages m WHERE m.conversation_id=c.id AND m.hidden_by IS NULL AND m.role IN ('user','assistant') AND m.text<>'' ORDER BY m.seq DESC LIMIT 1) AS last_text,
               (SELECT r.status FROM agent_runs r WHERE r.conversation_id=c.id ORDER BY r.started_at DESC LIMIT 1) AS run_status,
-              (SELECT count(*)::int FROM tool_calls tc WHERE tc.conversation_id=c.id AND tc.status='pending_approval') AS pending
+              (SELECT count(*)::int FROM tool_calls tc WHERE tc.conversation_id=c.id AND tc.status IN ('pending_approval','deferred')) AS pending
          FROM conversations c
         WHERE c.user_id=$1 AND c.mode=$2 AND ($3::text IS NULL OR c.title ILIKE $3 OR EXISTS (SELECT 1 FROM agent_messages m WHERE m.conversation_id=c.id AND m.text ILIKE $3))
         ORDER BY c.updated_at DESC LIMIT $4`,
@@ -192,6 +193,8 @@ export default async function agent(app: FastifyInstance) {
     )).rows[0]!;
     const view = conversationView(row);
     await insertEvent(app.db, id, null, "conversation", { conversation: view });
+    // Autopilot = 完全自動: cards still open in the current step are settled as autopilot decides them.
+    if (input.autopilot && row.autopilot) await runtime.applyAutopilot(user, id);
     return { conversation: view };
   });
 

@@ -18,7 +18,10 @@ export type ActiveAgentRun = {
   id: string;
   title: string;
   objective: string | null;
-  /** Workflow status, or the assistant run's status (`awaiting_input` = an unanswered question card). */
+  /**
+   * Workflow status, or the assistant run's status (`awaiting_input` = an unanswered question card; `pending_delete` =
+   * deletions autopilot deferred to the user, id `deferred:<conversationId>`).
+   */
   status: string;
   needs_you: boolean;
   conversation_id: string | null;
@@ -231,6 +234,45 @@ export async function activeAgentRuns(db: Queryable, userId: string): Promise<Ac
       href: focusHref(r.conversation_id, focus),
       started_at: iso(r.started_at),
       updated_at: iso(r.updated_at),
+    });
+  }
+  // ---------------------------------------------------------------- deferred deletions (autopilot)
+  // Deletions autopilot did not run: one entry per conversation, deep-linked to the oldest card (the run itself may be
+  // long finished; nothing waits on them).
+  const deferred = (await db.query<{ conversation_id: string; title: string; n: number; first_id: string; first_summary: string; started: Date; updated: Date }>(
+    `SELECT tc.conversation_id, CASE WHEN c.title <> '' THEN c.title ELSE coalesce((SELECT left(regexp_replace(m.text, '[[:space:]]+', ' ', 'g'), 40) FROM agent_messages m
+              WHERE m.conversation_id = c.id AND m.role = 'user' AND m.hidden_by IS NULL ORDER BY m.seq LIMIT 1), '') END AS title, count(*)::int AS n,
+            (array_agg(tc.id ORDER BY tc.created_at))[1]::text AS first_id,
+            (array_agg(coalesce(nullif(tc.target->>'label',''), tc.summary) ORDER BY tc.created_at))[1] AS first_summary,
+            min(tc.created_at) AS started, max(tc.created_at) AS updated
+       FROM tool_calls tc JOIN conversations c ON c.id = tc.conversation_id
+      WHERE c.user_id = $1 AND tc.status = 'deferred'
+      GROUP BY tc.conversation_id, c.id, c.title ORDER BY max(tc.created_at) DESC LIMIT 10`,
+    [userId],
+  )).rows;
+  for (const d of deferred) {
+    const focus = `toolcall:${d.first_id}`;
+    out.push({
+      kind: "assistant",
+      id: `deferred:${d.conversation_id}`,
+      title: d.title || "AI 助理對話",
+      objective: null,
+      status: "pending_delete",
+      needs_you: true,
+      conversation_id: d.conversation_id,
+      study: null,
+      current: { role: null, text: (d.n > 1 ? `${d.n} 個刪除等待確認：${d.first_summary}…` : `刪除等待確認：${d.first_summary}`).slice(0, 200) },
+      progress: null,
+      plan: null,
+      step: null,
+      budget_pct: null,
+      tokens: 0,
+      artifacts: [],
+      action: "review",
+      focus,
+      href: focusHref(d.conversation_id, focus),
+      started_at: iso(d.started),
+      updated_at: iso(d.updated),
     });
   }
   // "Needs you" first, then the most recently updated.

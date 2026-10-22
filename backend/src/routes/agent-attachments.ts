@@ -8,11 +8,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireUser } from "../lib/auth.js";
 import { badRequest, HttpError, notFound, parse } from "../lib/http.js";
-import { loadStudyAccess } from "../lib/studies/access.js";
+import { findStudy, loadStudyAccess } from "../lib/studies/access.js";
 import { sectionTitle } from "../lib/latex-projects/store.js";
 import {
   attachmentsInput, describeRef, ownUpload, storeUpload, uploadView, UPLOAD_ACCEPT, UPLOAD_IMAGE_MAX_BYTES, UPLOAD_MAX_BYTES,
 } from "../agent/attachments/index.js";
+import { lookupRefs, REF_KINDS } from "../agent/attachments/lookup.js";
 
 const idParams = z.object({ id: z.uuid() });
 const studiesQuery = z.object({ q: z.string().trim().max(100).optional(), limit: z.coerce.number().int().min(1).max(200).optional() });
@@ -21,6 +22,13 @@ const itemsQuery = z.object({
   kind: z.enum(["note", "paper", "deck", "meeting", "latex_project"]),
   q: z.string().trim().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+const lookupQuery = z.object({
+  kind: z.enum(REF_KINDS).optional(),
+  q: z.string().max(100).optional(),
+  /** Current study (id or slug): its items come first. */
+  study: z.string().trim().min(1).max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(30).optional(),
 });
 const resolveInput = z.object({ conversation_id: z.uuid().nullable().optional(), attachments: attachmentsInput });
 
@@ -165,6 +173,16 @@ export default async function agentAttachments(app: FastifyInstance) {
     }
     reply.header("Cache-Control", "no-store");
     return { study: { id: sid, slug: access.study.slug, title: access.study.title }, kind: q.kind, items };
+  });
+
+  /** 「#」 references: fuzzy title lookup of one kind (or all) across the lab, the current study first. */
+  app.get("/agent/attach/lookup", async (request, reply) => {
+    const user = await requireUser(request);
+    const q = parse(lookupQuery, request.query);
+    const study = q.study ? await findStudy(app.db, q.study) : null;
+    const items = await lookupRefs(app.db, { userId: user.id, kinds: q.kind ? [q.kind] : REF_KINDS, q: q.q ?? "", studyId: study?.id ?? null, limit: q.limit ?? 12 });
+    reply.header("Cache-Control", "no-store");
+    return { items };
   });
 
   /** Text files of a LaTeX project (main first, then sections in \input order) for picking specific sections. */

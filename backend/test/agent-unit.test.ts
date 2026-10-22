@@ -9,24 +9,35 @@ import { getAgentTool, isGrantable, isMcpTool, listAgentTools, mcpAnnotations, t
 const base = { autopilot: false, tainted: false, granted: false, autopilotWrites: 0, autopilotWriteLimit: 20 };
 
 describe("approval policy", () => {
-  it("runs reads, asks for writes, honours grants and autopilot", () => {
+  it("without autopilot: runs reads, asks for writes, honours grants", () => {
     expect(decide({ ...base, risk: "read" })).toEqual({ run: true, via: null });
     expect(decide({ ...base, risk: "write" })).toEqual({ run: false, reason: "write" });
     expect(decide({ ...base, risk: "write", granted: true })).toEqual({ run: true, via: "conversation_grant" });
-    expect(decide({ ...base, risk: "write", autopilot: true })).toEqual({ run: true, via: "autopilot" });
+    expect(decide({ ...base, risk: "write", granted: true, requireCard: true })).toEqual({ run: false, reason: "write" });
   });
-  it("hard rules beat grants and autopilot", () => {
-    for (const p of [{ autopilot: true }, { granted: true }, { autopilot: true, granted: true }]) {
-      expect(decide({ ...base, ...p, risk: "destructive" })).toEqual({ run: false, reason: "destructive" });
-      expect(decide({ ...base, ...p, risk: "write", alwaysAsk: true })).toEqual({ run: false, reason: "memory" });
-    }
-  });
-  it("taint: autopilot writes ask again, outbound calls ask, the autopilot cap applies", () => {
-    expect(decide({ ...base, risk: "write", autopilot: true, tainted: true })).toEqual({ run: false, reason: "tainted" });
+  it("without autopilot, hard rules beat grants", () => {
+    expect(decide({ ...base, granted: true, risk: "destructive" })).toEqual({ run: false, reason: "destructive" });
+    expect(decide({ ...base, granted: true, risk: "write", alwaysAsk: true })).toEqual({ run: false, reason: "memory" });
     expect(decide({ ...base, risk: "read", openWorld: true, tainted: true })).toEqual({ run: false, reason: "outbound" });
     expect(decide({ ...base, risk: "read", openWorld: true })).toEqual({ run: true, via: null });
     expect(decide({ ...base, risk: "write", openWorld: true, tainted: true, granted: true })).toEqual({ run: false, reason: "outbound" });
-    expect(decide({ ...base, risk: "write", autopilot: true, autopilotWrites: 20 })).toEqual({ run: false, reason: "autopilot_limit" });
+  });
+  it("autopilot (完全自動) never asks: writes, memory, tainted runs and requireCard tools run", () => {
+    const on = { ...base, autopilot: true };
+    expect(decide({ ...on, risk: "write" })).toEqual({ run: true, via: "autopilot" });
+    expect(decide({ ...on, risk: "write", tainted: true })).toEqual({ run: true, via: "autopilot" });
+    expect(decide({ ...on, risk: "write", alwaysAsk: true })).toEqual({ run: true, via: "autopilot" });
+    expect(decide({ ...on, risk: "write", requireCard: true })).toEqual({ run: true, via: "autopilot" });
+    expect(decide({ ...on, risk: "read", tainted: true })).toEqual({ run: true, via: null });
+    expect(decide({ ...on, risk: "read", openWorld: true })).toEqual({ run: true, via: null });
+  });
+  it("autopilot: deletions are deferred, outbound after taint is skipped, the safety cap pauses", () => {
+    const on = { ...base, autopilot: true };
+    for (const p of [{}, { granted: true }, { tainted: true }]) expect(decide({ ...on, ...p, risk: "destructive" })).toEqual({ run: false, defer: true });
+    expect(decide({ ...on, risk: "read", openWorld: true, tainted: true })).toEqual({ run: false, skip: "outbound" });
+    expect(decide({ ...on, risk: "write", openWorld: true, tainted: true, granted: true })).toEqual({ run: false, skip: "outbound" });
+    expect(decide({ ...on, risk: "write", autopilotWrites: 20 })).toEqual({ run: false, pause: "autopilot_limit" });
+    expect(decide({ ...on, risk: "read", autopilotWrites: 20 })).toEqual({ run: true, via: null });
   });
 });
 

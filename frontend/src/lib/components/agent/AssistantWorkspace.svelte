@@ -22,8 +22,8 @@
   import { focusFromUrl, withoutFocus } from "#lib/agent/focus.ts";
 
   /**
-   * /assistant and /assistant/:id — conversation list (collapsible sidebar from `lg`, remembered, Ctrl/⌘+Shift+B;
-   * a sheet below) + chat.
+   * /assistant and /assistant/:id — conversation list (collapsible column from `lg`, remembered, Ctrl/⌘+Shift+B;
+   * a sheet below) + chat. No card around it: list and chat sit on the page like the app's own sidebar and content.
    */
   let { conversationId = null }: { conversationId?: string | null } = $props();
   const session = new ChatSession("chat");
@@ -70,8 +70,8 @@
   $effect(() => {
     const side = viewer.open && !!viewer.current && viewer.layout === "split";
     untrack(() => {
-      // Chat (≥ 420) + viewer (≥ 560) need ~1000 px next to the 288 px list.
-      if (side && !collapsed && workspaceWidth - 288 < 1000) {
+      // Chat (≥ 420) + viewer (≥ 560) need ~1000 px next to the 264 px list.
+      if (side && !collapsed && workspaceWidth - 264 < 1000) {
         collapsed = true;
         autoCollapsed = true;
       } else if (!side && autoCollapsed) {
@@ -143,24 +143,24 @@
 
 <svelte:window onkeydown={onWindowKey} />
 
-<div bind:clientWidth={workspaceWidth} class="workspace grid min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden rounded-[var(--radius-card)] border border-line bg-surface shadow-card" data-collapsed={collapsed || undefined}>
-  <aside class="side hidden min-h-0 overflow-hidden bg-surface-2/60 lg:block" aria-hidden={collapsed || undefined} inert={collapsed || undefined}>
-    <div class="h-full w-[288px] border-r border-line">
+<div bind:clientWidth={workspaceWidth} class="workspace grid min-h-0 grid-cols-[minmax(0,1fr)]" data-collapsed={collapsed || undefined}>
+  <aside class="side hidden min-h-0 overflow-hidden lg:block" aria-hidden={collapsed || undefined} inert={collapsed || undefined}>
+    <div class="h-full w-[var(--list-w)] pr-3">
       <ConversationList activeId={session.id} version={listVersion} onSelect={select} onNew={newChat} onRenamed={onRenamed} onDeleted={onDeleted} />
     </div>
   </aside>
-  <section class="flex min-h-0 flex-col">
-    <header class="flex h-14 shrink-0 items-center gap-2 border-b border-line px-3 sm:px-4">
-      <Button variant="ghost" size="icon" class="lg:hidden" aria-label={t("agent.conversations")} onclick={() => (listOpen = true)}><MessagesSquare /></Button>
-      <span class="hidden lg:contents"><Button variant="ghost" size="icon" aria-label={collapsed ? t("agent.list.expand") : t("agent.list.collapse")} aria-expanded={!collapsed} aria-keyshortcuts="Control+Shift+B Meta+Shift+B" title={`${collapsed ? t("agent.list.expand") : t("agent.list.collapse")} (Ctrl/⌘+Shift+B)`} onclick={toggleSidebar}>
+  <section class="flex min-h-0 min-w-0 flex-col">
+    <header class="flex h-11 shrink-0 items-center gap-0.5 sm:gap-1">
+      <Button variant="ghost" size="icon" class="-ml-2 lg:hidden" aria-label={t("agent.conversations")} onclick={() => (listOpen = true)}><MessagesSquare /></Button>
+      <span class="hidden lg:contents"><Button variant="ghost" size="icon" class="-ml-1.5" aria-label={collapsed ? t("agent.list.expand") : t("agent.list.collapse")} aria-expanded={!collapsed} aria-keyshortcuts="Control+Shift+B Meta+Shift+B" title={`${collapsed ? t("agent.list.expand") : t("agent.list.collapse")} (Ctrl/⌘+Shift+B)`} onclick={toggleSidebar}>
         {#if collapsed}<PanelLeftOpen />{:else}<PanelLeftClose />{/if}
       </Button></span>
-      <h1 class="min-w-0 flex-1 truncate text-[15px] font-semibold text-ink">{session.id ? title : t("agent.newChat")}</h1>
+      <h1 class="min-w-0 flex-1 truncate px-1 text-[15px] font-semibold text-ink">{session.id ? title : t("agent.newChat")}</h1>
       <Button variant="ghost" size="icon" class={collapsed ? "" : "lg:hidden"} aria-label={t("agent.newChat")} title={t("agent.newChat")} onclick={newChat}><MessageSquarePlus /></Button>
       <DocsMenu {session} />
       {#if session.id}
         <DropdownMenu.Root>
-          <DropdownMenu.Trigger class="grid size-10 place-items-center rounded-full text-ink-2 hover:bg-surface-3" aria-label={t("agent.conversations")}><MoreHorizontal class="size-4.5" /></DropdownMenu.Trigger>
+          <DropdownMenu.Trigger class="-mr-2 grid size-10 place-items-center rounded-full text-ink-2 hover:bg-surface-3 lg:mr-0" aria-label={t("agent.conversations")}><MoreHorizontal class="size-4.5" /></DropdownMenu.Trigger>
           <DropdownMenu.Portal>
             <DropdownMenu.Content align="end" sideOffset={6} class="z-50 min-w-[180px] rounded-2xl border border-line bg-popover p-1.5 shadow-pop data-[state=open]:animate-[pop-in_140ms_ease-out]">
               <DropdownMenu.Item class={menuItem} onSelect={() => ((renameValue = session.conversation?.title ?? ""), (renameOpen = true))}><Pencil class="size-4" />{t("agent.rename")}</DropdownMenu.Item>
@@ -192,7 +192,7 @@
 </div>
 
 <Sheet bind:open={listOpen} title={t("agent.conversations")}>
-  <div class="-mx-5 -mb-5 h-[70dvh] sm:-mx-6"><ConversationList activeId={session.id} version={listVersion} onSelect={select} onNew={newChat} onRenamed={onRenamed} onDeleted={onDeleted} /></div>
+  <div class="-mx-3 -mb-5 h-[70dvh] [--list-bg:var(--popover)] sm:-mx-4"><ConversationList activeId={session.id} version={listVersion} onSelect={select} onNew={newChat} onRenamed={onRenamed} onDeleted={onDeleted} /></div>
 </Sheet>
 
 <Sheet bind:open={renameOpen} title={t("agent.renameTitle")} side="center">
@@ -213,15 +213,19 @@
 <ConfirmDialog bind:open={deleteOpen} title={session.conversation?.title ? t("crud.conversation.deleteTitle", { title: session.conversation.title }) : t("agent.deleteConfirm")} description={deleteDescription(deleteActivity)} confirmLabel={t("agent.delete")} onConfirm={remove} />
 
 <style>
-  /* Fill the viewport below the top bar (and above the phone tab bar). */
+  /* Fill the viewport below the top bar (and above the phone tab bar); no frame: the page itself is the workspace. */
   .workspace {
-    height: calc(100dvh - 72px - 104px - env(safe-area-inset-bottom));
+    --list-w: 264px;
+    /* Down to 8 px above the tab bar (the negative margin takes back part of main's bottom padding). */
+    height: calc(100dvh - 146px - env(safe-area-inset-bottom));
+    margin-bottom: -26px;
     min-height: 420px;
   }
   @media (min-width: 1024px) {
     .workspace {
-      height: calc(100dvh - 140px);
-      grid-template-columns: 288px minmax(0, 1fr);
+      height: calc(100dvh - 96px);
+      margin-bottom: 0;
+      grid-template-columns: var(--list-w) minmax(0, 1fr);
       transition: grid-template-columns 220ms cubic-bezier(0.2, 0, 0, 1);
     }
     .workspace[data-collapsed] {

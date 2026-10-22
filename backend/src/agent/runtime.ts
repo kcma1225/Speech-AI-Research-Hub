@@ -24,7 +24,7 @@ import { conflict, HttpError, notFound } from "../lib/http.js";
 import { answersText, askUserInput, validateAnswers, type AnswersInput, type StoredAnswers } from "./ask.js";
 import { EventWriter, insertEvent } from "./events.js";
 import { memoriesForContext, stripMemoryMarkers, usedMemories } from "./memory.js";
-import { decide, grantScope } from "./policy.js";
+import { autopilotLimitNotice, decide, DEFERRED_TEXT, grantScope, OUTBOUND_SKIPPED_TEXT } from "./policy.js";
 import {
   capResult, compactionCut, envelope, estimateTokens, intentText, pageContextText, SUMMARY_SYSTEM, systemPrompt, toModelMessages, transcriptText,
   type PageContext, type StoredMessage,
@@ -60,7 +60,7 @@ export type AgentLimits = {
   approvalTtlMs: number;
   llmRetries: number;
 };
-export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 250, maxActiveMs: 60 * 60_000, maxTokens: 4_000_000, autopilotWrites: 200, repeat: 3, approvalTtlMs: 24 * 3600_000, llmRetries: 5 };
+export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 250, maxActiveMs: 60 * 60_000, maxTokens: 4_000_000, autopilotWrites: 2000, repeat: 3, approvalTtlMs: 24 * 3600_000, llmRetries: 5 };
 
 export type AgentOptions = {
   model?: ModelCall;
@@ -174,6 +174,11 @@ export class AgentRuntime {
       await this.emitAll(e.conversation_id, e.run_id, events);
       await this.emitRun(e.run_id);
     }
+    // Deferred deletions (autopilot) nobody decided within a week are dropped (nothing is deleted).
+    const stale = (await this.db.query<{ id: string; conversation_id: string; run_id: string }>(
+      "UPDATE tool_calls SET status='expired', finished_at=now() WHERE status='deferred' AND created_at < now() - interval '7 days' RETURNING id, conversation_id, run_id",
+    )).rows;
+    for (const c of stale) await this.emitAll(c.conversation_id, c.run_id, [await this.toolCallEvent(this.db, c.id)]);
     await this.db.query(
       `DELETE FROM agent_events e WHERE e.created_at < now() - interval '1 day'
           AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.conversation_id=e.conversation_id AND r.status IN ('running','awaiting_approval','awaiting_llm'))`,
@@ -257,7 +262,8 @@ export class AgentRuntime {
     if (!step) return events;
     const calls = (await client.query<ToolCallRow>("SELECT * FROM tool_calls WHERE message_id=$1 ORDER BY position FOR UPDATE", [step.id])).rows;
     for (const c of calls) {
-      if (!UNRESOLVED.includes(c.status)) continue;
+      // A deferred deletion never holds the step: its result (「已排入待確認的刪除」) was recorded when it was proposed.
+      if (c.deferred || !UNRESOLVED.includes(c.status)) continue;
       if (mode === "execute") return events; // still waiting
       const [status, text] =
         mode === "expire" && c.status === "pending_approval"
@@ -277,7 +283,7 @@ export class AgentRuntime {
       const c = byProvider.get(u.id);
       if (!c) return { type: "tool_result", tool_use_id: u.id, content: "這個工具呼叫沒有被執行。", is_error: true };
       const images = c.status === "done" ? (c.result as { images?: StoredToolImage[] } | null)?.images : undefined;
-      return { type: "tool_result", tool_use_id: u.id, content: toolResultContent(c.result_text ?? "（沒有結果）", images), ...(c.status === "done" ? {} : { is_error: true }) };
+      return { type: "tool_result", tool_use_id: u.id, content: toolResultContent(c.result_text ?? "（沒有結果）", images), ...(c.status === "done" || c.deferred ? {} : { is_error: true }) };
     });
     await client.query("INSERT INTO agent_messages(conversation_id,run_id,role,content) VALUES($1,$2,'tool',$3)", [conversationId, step.run_id, JSON.stringify(results)]);
     return events;
@@ -330,7 +336,7 @@ export class AgentRuntime {
       const s = (await this.db.query<{ id: string; slug: string; title: string }>("SELECT id,slug,title FROM studies WHERE id::text=$1 OR slug=$1 LIMIT 1", [ref])).rows[0];
       if (s) Object.assign(out, { studyId: s.id, studySlug: s.slug, studyTitle: s.title });
     }
-    for (const k of ["noteId", "deckId", "meetingId", "paperId"] as const) if (ctx[k] && /^[0-9a-f-]{36}$/i.test(ctx[k]!)) out[k] = ctx[k];
+    for (const k of ["noteId", "deckId", "meetingId", "paperId", "taskId"] as const) if (ctx[k] && /^[0-9a-f-]{36}$/i.test(ctx[k]!)) out[k] = ctx[k];
     if (ctx.page && Number.isInteger(ctx.page) && ctx.page > 0 && ctx.page < 10000) out.page = ctx.page;
     return out;
   }
@@ -519,6 +525,12 @@ export class AgentRuntime {
   /** Hides the current branch from `seq` on under `by`; a compaction summary covering it is dropped (rebuilt on demand). */
   private async hideFrom(client: Queryable, conversationId: string, seq: number, by: string) {
     await client.query("UPDATE agent_messages SET hidden_by=$3 WHERE conversation_id=$1 AND hidden_by IS NULL AND seq>=$2", [conversationId, seq, by]);
+    // Deferred deletions proposed in the discarded tail are dropped with it (nothing is deleted).
+    await client.query(
+      `UPDATE tool_calls tc SET status='cancelled', finished_at=now() FROM agent_messages m
+        WHERE m.id=tc.message_id AND m.conversation_id=$1 AND m.hidden_by=$2 AND tc.status='deferred'`,
+      [conversationId, by],
+    );
     await client.query("UPDATE conversations SET summary=NULL, summary_until=NULL WHERE id=$1 AND summary_until>=$2", [conversationId, seq]);
   }
 
@@ -580,6 +592,15 @@ export class AgentRuntime {
       )).rows[0];
       if (!call || call.user_id !== user.id) throw notFound("找不到這個操作。");
       await this.lockConversation(client, call.conversation_id);
+      if (call.status === "deferred") {
+        // A deferred deletion (autopilot): its run went on long ago; approve executes it now, deny drops it.
+        if (input.decision === "deny") {
+          await client.query("UPDATE tool_calls SET status='denied', deny_reason=$2, decided_by=$3, decided_at=now(), finished_at=now() WHERE id=$1", [call.id, input.reason?.trim().slice(0, 500) || null, user.id]);
+        } else {
+          await client.query("UPDATE tool_calls SET status='running', approved_via='user', decided_by=$2, decided_at=now() WHERE id=$1", [call.id, user.id]);
+        }
+        return { call, events: [await this.toolCallEvent(client, call.id)], resumed: false, deferred: input.decision !== "deny" };
+      }
       if (call.status !== "pending_approval") throw conflict("這個操作已經處理過了。");
       const def = getAgentTool(call.tool);
       const touched = [call.id];
@@ -617,14 +638,75 @@ export class AgentRuntime {
       if (!pending) {
         resumed = ((await client.query("UPDATE agent_runs SET status='running', updated_at=now() WHERE id=$1 AND status='awaiting_approval'", [call.run_id])).rowCount ?? 0) > 0;
       }
-      return { call, events, resumed };
+      return { call, events, resumed, deferred: false };
     });
     await this.emitAll(out.call.conversation_id, out.call.run_id, out.events);
+    if (out.deferred) return { toolCall: await this.executeDeferred(out.call, user), resumed: false };
     if (out.resumed) {
       await this.emitRun(out.call.run_id);
       this.kick(out.call.run_id);
     }
     return { toolCall: (out.events[0]!.data as { toolCall: unknown }).toolCall, resumed: out.resumed };
+  }
+
+  /**
+   * Turning autopilot on (完全自動) settles the cards of the open step the way autopilot would have decided them:
+   * writes and memory run, deletions become deferred cards, an outbound call after taint is skipped; the run resumes.
+   */
+  async applyAutopilot(user: CurrentUser, conversationId: string) {
+    const out = await transaction(this.db, async (client) => {
+      await this.lockConversation(client, conversationId);
+      const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2", [conversationId, user.id])).rows[0];
+      if (!conv?.autopilot || conv.mode !== "chat") return null;
+      const step = await this.openStep(client, conversationId);
+      if (!step) return null;
+      const calls = (await client.query<ToolCallRow>("SELECT * FROM tool_calls WHERE message_id=$1 AND status='pending_approval' ORDER BY position FOR UPDATE", [step.id])).rows;
+      if (!calls.length) return null;
+      const events = [];
+      for (const c of calls) {
+        if (c.risk === "destructive") {
+          await client.query("UPDATE tool_calls SET status='deferred', deferred=true, result_text=$2 WHERE id=$1", [c.id, envelope(c.tool, DEFERRED_TEXT, { untrusted: false })]);
+        } else if (c.approval_reason === "outbound") {
+          await client.query("UPDATE tool_calls SET status='failed', error=$2, result_text=$3, finished_at=now() WHERE id=$1", [c.id, OUTBOUND_SKIPPED_TEXT, envelope(c.tool, `錯誤：${OUTBOUND_SKIPPED_TEXT}`, { untrusted: false, error: true })]);
+        } else {
+          await client.query("UPDATE tool_calls SET status='approved', approved_via='autopilot', decided_by=$2, decided_at=now() WHERE id=$1", [c.id, user.id]);
+        }
+        events.push(await this.toolCallEvent(client, c.id));
+      }
+      const resumed = ((await client.query("UPDATE agent_runs SET status='running', updated_at=now() WHERE id=$1 AND status='awaiting_approval'", [step.run_id])).rowCount ?? 0) > 0;
+      return { events, runId: step.run_id as string, resumed };
+    });
+    if (!out) return;
+    await this.emitAll(conversationId, out.runId, out.events);
+    if (out.resumed) {
+      await this.emitRun(out.runId);
+      this.kick(out.runId);
+    }
+  }
+
+  /**
+   * Runs an approved deferred deletion outside its (long finished) step. The target is resolved again first, so a
+   * deletion of something that is gone or no longer accessible fails instead of acting on stale data. The result goes
+   * to `result` / `error` only: `result_text` keeps what the model saw when it was proposed.
+   */
+  private async executeDeferred(call: ToolCallRow, user: CurrentUser) {
+    const def = getAgentTool(call.tool);
+    const conv = (await this.db.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1", [call.conversation_id])).rows[0]!;
+    const run = (await this.getRun(this.db, call.run_id))!;
+    const ctx = this.toolCtx(conv, user, run, new AbortController().signal, false);
+    try {
+      if (!def) throw new HttpError(400, "這個工具已不存在。");
+      const args = def.input.parse(call.edited_args ?? call.args) as never;
+      if (def.target) await def.target(args, ctx);
+      const res = await def.execute(args, ctx);
+      await this.db.query("UPDATE tool_calls SET status='done', result=$2, error=NULL, finished_at=now() WHERE id=$1", [call.id, JSON.stringify({ data: res.data, links: res.links ?? [] })]);
+    } catch (e) {
+      if (!(e instanceof HttpError) && !isPlatformError(e)) this.app.log.warn({ err: e, tool: call.tool }, "deferred agent tool failed");
+      await this.db.query("UPDATE tool_calls SET status='failed', error=$2, finished_at=now() WHERE id=$1", [call.id, errorText(e)]);
+    }
+    const ev = await this.toolCallEvent(this.db, call.id);
+    await this.emitAll(call.conversation_id, call.run_id, [ev]);
+    return (ev.data as { toolCall: unknown }).toolCall;
   }
 
   // ---------------------------------------------------------------- executor
@@ -1060,10 +1142,10 @@ export class AgentRuntime {
     });
     const insert = async (p: Planned, fields: Partial<ToolCallRow>) => {
       const row = (await this.db.query<ToolCallRow>(
-        `INSERT INTO tool_calls(run_id,conversation_id,message_id,step,position,provider_call_id,tool,args,risk,status,approved_via,approval_reason,summary,target,result_text,error,finished_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,CASE WHEN $10 IN ('failed','denied') THEN now() END) RETURNING *`,
+        `INSERT INTO tool_calls(run_id,conversation_id,message_id,step,position,provider_call_id,tool,args,risk,status,approved_via,approval_reason,summary,target,result_text,error,deferred,finished_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,CASE WHEN $10 IN ('failed','denied','cancelled') THEN now() END) RETURNING *`,
         [run.id, conv.id, messageId, run.step, p.pos, p.use.id, p.use.name, JSON.stringify(p.args ?? (p.use.input && typeof p.use.input === "object" ? p.use.input : {})), p.def?.risk ?? "read",
-          fields.status, fields.approved_via ?? null, fields.approval_reason ?? null, fields.summary ?? "", fields.target ? JSON.stringify(fields.target) : null, fields.result_text ?? null, fields.error ?? null],
+          fields.status, fields.approved_via ?? null, fields.approval_reason ?? null, fields.summary ?? "", fields.target ? JSON.stringify(fields.target) : null, fields.result_text ?? null, fields.error ?? null, !!fields.deferred],
       )).rows[0]!;
       await writer.emit("tool_call", (await this.toolCallEvent(this.db, row.id)).data);
       return row;
@@ -1112,13 +1194,17 @@ export class AgentRuntime {
       if (signal.aborted) return null;
       await Promise.all(rows.slice(i, i + width).map((x) => this.executeCall(x.row, conv, user, run, writer, signal, x.note)));
     }
+    // Autopilot is read at decision time (turning it off applies at once); interviews never run on autopilot.
+    const autopilotNow = async () => conv.mode === "chat" && !!(await this.db.query<{ autopilot: boolean }>("SELECT autopilot FROM conversations WHERE id=$1", [conv.id])).rows[0]?.autopilot;
     for (const r of reads.filter((x) => x.p.def!.openWorld)) {
       if (signal.aborted) return null;
-      const decision = decide({ risk: "read", openWorld: true, autopilot: false, tainted: await this.isTainted(run.id), granted: false, autopilotWrites: 0, autopilotWriteLimit: 0 });
+      const decision = decide({ risk: "read", openWorld: true, autopilot: await autopilotNow(), tainted: await this.isTainted(run.id), granted: false, autopilotWrites: 0, autopilotWriteLimit: 1 });
       if (decision.run) {
         const row = await insert(r.p, { status: "approved", summary: r.summary });
         await this.executeCall(row, conv, user, run, writer, signal, r.note);
-      } else {
+      } else if ("skip" in decision) {
+        await fail(r.p, OUTBOUND_SKIPPED_TEXT, r.summary);
+      } else if ("reason" in decision) {
         await insert(r.p, { status: "pending_approval", approval_reason: decision.reason, summary: r.summary });
       }
     }
@@ -1147,14 +1233,22 @@ export class AgentRuntime {
         await fail(p, errorText(e), summary);
         continue;
       }
-      const fresh = (await this.db.query<{ autopilot: boolean }>("SELECT autopilot FROM conversations WHERE id=$1", [conv.id])).rows[0];
       const counts = (await this.db.query<{ autopilot_writes: number }>("SELECT autopilot_writes FROM agent_runs WHERE id=$1", [run.id])).rows[0]!;
       const granted = ((await this.db.query("SELECT 1 FROM conversation_grants WHERE conversation_id=$1 AND tool=$2 AND scope=$3", [conv.id, def.name, grantScope(target)])).rowCount ?? 0) > 0;
-      const decision = def.requireCard?.(p.args as never) ? ({ run: false, reason: def.risk === "destructive" ? "destructive" : "write" } as const) : decide({ risk: def.risk, alwaysAsk: def.alwaysAsk, openWorld: def.openWorld, autopilot: !!fresh?.autopilot && conv.mode === "chat", tainted, granted, autopilotWrites: counts.autopilot_writes, autopilotWriteLimit: this.limits.autopilotWrites });
+      const decision = decide({ risk: def.risk, alwaysAsk: def.alwaysAsk, openWorld: def.openWorld, requireCard: !!def.requireCard?.(p.args as never), autopilot: await autopilotNow(), tainted, granted, autopilotWrites: counts.autopilot_writes, autopilotWriteLimit: this.limits.autopilotWrites });
       if (decision.run) {
         if (decision.via === "autopilot") await this.db.query("UPDATE agent_runs SET autopilot_writes=autopilot_writes+1 WHERE id=$1", [run.id]);
         const row = await insert(p, { status: "approved", approved_via: decision.via ?? undefined, summary, target: target ?? undefined });
         await this.executeCall(row, conv, user, run, writer, signal);
+      } else if ("defer" in decision) {
+        // Autopilot deletion: a card the user decides later; the run goes on with the 「已排入待確認」 result.
+        await insert(p, { status: "deferred", deferred: true, approval_reason: "destructive", summary, target: target ?? undefined, result_text: envelope(p.use.name, DEFERRED_TEXT, { untrusted: false }) });
+      } else if ("skip" in decision) {
+        await fail(p, OUTBOUND_SKIPPED_TEXT, summary);
+      } else if ("pause" in decision) {
+        const notice = autopilotLimitNotice(counts.autopilot_writes);
+        await insert(p, { status: "cancelled", summary, target: target ?? undefined, result_text: envelope(p.use.name, `沒有執行：${notice}`, { untrusted: false, error: true }) });
+        stop = ["autopilot_limit", notice];
       } else {
         await insert(p, { status: "pending_approval", approval_reason: decision.reason, summary, target: target ?? undefined });
       }

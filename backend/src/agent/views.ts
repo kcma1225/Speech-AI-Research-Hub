@@ -129,7 +129,9 @@ export type ToolCallRow = {
   args: Record<string, unknown>;
   edited_args: Record<string, unknown> | null;
   risk: "read" | "write" | "destructive";
-  status: "pending_approval" | "approved" | "denied" | "running" | "done" | "failed" | "cancelled" | "expired";
+  status: "pending_approval" | "deferred" | "approved" | "denied" | "running" | "done" | "failed" | "cancelled" | "expired";
+  /** An autopilot deletion that never held its step (a card decided later; approve executes it). */
+  deferred: boolean;
   approved_via: "user" | "conversation_grant" | "autopilot" | null;
   approval_reason: string | null;
   decided_by: string | null;
@@ -162,6 +164,7 @@ export const toolCallView = (t: ToolCallRow, extra: { provenance?: string[] } = 
     status: t.status,
     approved_via: t.approved_via,
     approval_reason: t.approval_reason,
+    deferred: !!t.deferred,
     decided_at: t.decided_at,
     deny_reason: t.deny_reason,
     summary: t.summary,

@@ -8,6 +8,11 @@ export type ViewerLayout = "split" | "drawer" | "tabs" | "none";
 const AUTO_KEY = "hub.viewer.autoOpen";
 const FOLLOW_KEY = "hub.viewer.follow";
 const MAX_RECENT = 20;
+/** Conversations whose viewer state is kept for switching back (this page session only). */
+const MAX_SAVED = 30;
+
+/** What one conversation had open in the viewer. */
+type Snapshot = { current: ViewerEntry | null; recent: ArtifactRef[]; open: boolean };
 
 function readBool(key: string, fallback: boolean) {
   try {
@@ -27,7 +32,8 @@ function writeBool(key: string, v: boolean) {
 
 /**
  * Reactive state of the assistant's document viewer (one per tab; the /assistant page and the Ask-AI panel share it).
- * Use the functions exported by `viewer.ts`.
+ * The state belongs to one conversation at a time (`bindConversation`): switching saves it and restores the other
+ * conversation's own documents; a new chat starts empty. Use the functions exported by `viewer.ts`.
  */
 export class ViewerStore {
   /** The panel is visible (on phones: the 「文件」 tab is active). */
@@ -46,6 +52,9 @@ export class ViewerStore {
   private autoOpenValue = $state(readBool(AUTO_KEY, true));
   private followValue = $state(readBool(FOLLOW_KEY, true));
   private nonce = 0;
+  /** Conversation the state belongs to (undefined = not bound yet, null = a new chat). */
+  private owner: string | null | undefined = undefined;
+  private saved = new Map<string, Snapshot>();
 
   /** Open documents automatically when an AI write touches them. */
   get autoOpen() {
@@ -124,9 +133,28 @@ export class ViewerStore {
     this.recent = [n, ...this.recent.filter((r) => !sameArtifact(r, n))].slice(0, MAX_RECENT);
   }
 
-  /** A different conversation: forget the session list (the shown document stays). */
-  resetRecent() {
-    this.recent = this.current ? [this.current.ref] : [];
+  /**
+   * The chat now shows conversation `id` (null = a new, unsent chat). The previous conversation's documents are
+   * saved and `id`'s own are restored (none yet: empty and closed). `adopt` = `id` was just created from the new chat
+   * shown so far, so what that chat opened stays.
+   */
+  bindConversation(id: string | null, opts: { adopt?: boolean } = {}) {
+    if (this.owner === id) return;
+    const prev = this.owner;
+    this.owner = id;
+    if (prev === undefined) return; // first chat of the page: keeps the (empty) start state
+    if (prev) {
+      this.saved.delete(prev);
+      this.saved.set(prev, { current: this.current, recent: this.recent, open: this.open });
+      if (this.saved.size > MAX_SAVED) this.saved.delete(this.saved.keys().next().value!);
+    }
+    if (prev === null && id && opts.adopt) return;
+    const s = id ? this.saved.get(id) : undefined;
+    this.current = s?.current ? { ...s.current, nonce: ++this.nonce, auto: false } : null;
+    this.recent = s?.recent ?? [];
+    this.open = !!s?.open && !!s.current && this.layout !== "tabs";
+    this.unseen = 0;
+    this.updated = null;
   }
 
   closeViewer() {

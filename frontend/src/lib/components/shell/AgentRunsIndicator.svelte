@@ -37,7 +37,7 @@
   let stopTarget = $state<ActiveAgentRun | null>(null);
   let stopOpen = $state(false);
 
-  const ASSISTANT_TONE: Record<string, Tone> = { running: "sky", awaiting_approval: "butter", awaiting_llm: "stone", awaiting_input: "butter" };
+  const ASSISTANT_TONE: Record<string, Tone> = { running: "sky", awaiting_approval: "butter", awaiting_llm: "stone", awaiting_input: "butter", pending_delete: "butter" };
   const GOAL_TONE: Record<string, Tone> = { planning: "sky", awaiting_approval: "butter", running: "sky", awaiting_input: "butter" };
   const statusLabel = (r: ActiveAgentRun) => t((r.kind === "workflow" ? `wf.status.${r.status}` : r.kind === "goal" ? `goal.status.${r.status}` : `agentRuns.status.${r.status}`) as MessageKey);
   const tone = (r: ActiveAgentRun): Tone => (r.kind === "workflow" ? (STATUS_TONE[r.status as keyof typeof STATUS_TONE] ?? "stone") : r.kind === "goal" ? (GOAL_TONE[r.status] ?? "stone") : (ASSISTANT_TONE[r.status] ?? "stone"));
@@ -177,7 +177,8 @@
             {:else if r.kind === "workflow" && r.status === "paused"}
               <Button size="sm" variant="ghost" class="min-h-10" loading={busy === `${r.id}:resume`} onclick={() => act(r, "resume", () => workflowsApi.resume(r.id))}><Play />{t("wf.resume")}</Button>
             {/if}
-            {#if r.kind === "workflow" || r.status !== "awaiting_input"}
+            <!-- Deferred deletions (pending_delete) have no run to stop: their card is the only action. -->
+            {#if r.kind === "workflow" || (r.status !== "awaiting_input" && r.status !== "pending_delete")}
               <Button size="sm" variant="ghost" class="min-h-10 text-danger" loading={busy === `${r.id}:stop`} onclick={() => stop(r)}><Square />{t("agentRuns.stop")}</Button>
             {/if}
           </div>

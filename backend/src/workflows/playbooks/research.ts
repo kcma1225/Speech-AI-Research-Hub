@@ -9,7 +9,7 @@
  * tainted, so no step searches again. A planner picks 8–12 papers (seminal + recent, relevance, venue, open access)
  * incl. the study papers that are relevant and says why others were left out. The plan card shows the sub-questions
  * (outline, editable) and one step per paper (「匯入並精讀〈…〉」, can be switched off); `plan.writes` lists the library
- * imports, which are not a draft-only effect, so autopilot waits for the user.
+ * imports, which are not a draft-only effect: without autopilot the plan waits for the user (autopilot approves it).
  *
  * Execution: per paper, import into the lab library + link to the study (open-access PDF via the library services),
  * then a structured extraction from the FULL text (a deterministic results-weighted digest + read tools): 一句話 /
@@ -618,7 +618,7 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
       outline: outlineOf(d.subqs),
       writes: [
         { kind: "note", label: `新筆記「${clipText(title, 60)}」`, effect: "new" },
-        // Not a draft: shared lab library rows + the study's reading list → under autopilot the plan waits for the user.
+        // Not a draft: shared lab library rows + the study's reading list → waits for the user unless autopilot is on.
         ...(online.length ? [{ kind: "paper", label: `匯入 ${online.length} 篇論文到實驗室文獻庫並加入〈${clipText(access.study.title, 40)}〉（下載開放取用 PDF）` }] : []),
       ],
       notes: st.searched ? `線上搜尋只送出關鍵字：${st.queries.join("；")}${st.seeds.length ? `；引用追蹤只送出論文的 DOI／arXiv 編號` : ""}` : "這次沒有重新線上搜尋（沿用先前的結果）。",

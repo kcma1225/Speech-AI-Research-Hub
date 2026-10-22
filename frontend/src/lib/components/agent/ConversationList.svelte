@@ -1,22 +1,24 @@
 <script lang="ts">
   import { DropdownMenu } from "bits-ui";
-  import { Ellipsis, MessageSquarePlus, MessagesSquare, Pencil, Rocket, Search, Workflow, X } from "@lucide/svelte";
+  import { ChevronDown, Ellipsis, MessageSquarePlus, MessagesSquare, Pencil, Rocket, Search, Workflow, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
-  import { relativeTime, t } from "#lib/i18n.svelte.ts";
+  import { i18n, t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
-  import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
   import DeleteMenuItem from "#lib/components/ui/DeleteMenuItem.svelte";
   import type { ConversationListItem } from "#lib/agent/types.ts";
+  import { agentActivity } from "#lib/agent/activity.svelte.ts";
   import { deleteConversation, deleteDescription, loadActivity, type ConversationActivity } from "#lib/agent/delete.ts";
 
   /**
-   * Conversation list for /assistant: search on top, conversations grouped by day (今天 / 昨天 / 本週 / 更早), rename and
-   * delete from each row's ⋯ menu, and 「新對話」 in a sticky footer. `version` bumps force a reload.
+   * Conversation list for /assistant: 「新對話」 and search on top, then one line per conversation (title, status
+   * marks, time; ⋯ for rename / delete) grouped by day (今天 / 昨天 / 本週 / 更早, each collapsible and remembered).
+   * Status marks: replying (pulsing dot), approvals waiting (count), autopilot, agents / goals running for it (the
+   * shell's `agentActivity`). `version` bumps force a reload.
    */
   let { activeId = null, version = 0, onSelect, onNew, onRenamed, onDeleted }: {
     activeId?: string | null;
@@ -46,7 +48,8 @@
     return () => clearTimeout(id);
   });
 
-  type Group = { key: "today" | "yesterday" | "week" | "earlier"; items: ConversationListItem[] };
+  type GroupKey = "today" | "yesterday" | "week" | "earlier";
+  type Group = { key: GroupKey; items: ConversationListItem[] };
   const groups = $derived.by((): Group[] => {
     if (!items) return [];
     const now = new Date();
@@ -65,6 +68,48 @@
     }
     return out.filter((g) => g.items.length);
   });
+
+  // Collapsed day groups (remembered; a search shows every group).
+  const FOLD_KEY = "hub.assistant.foldedGroups";
+  let folded = $state<GroupKey[]>(readFolded());
+  function readFolded(): GroupKey[] {
+    try {
+      const v = JSON.parse(localStorage.getItem(FOLD_KEY) ?? "[]");
+      return Array.isArray(v) ? v.filter((x): x is GroupKey => ["today", "yesterday", "week", "earlier"].includes(x)) : [];
+    } catch {
+      return [];
+    }
+  }
+  function toggleGroup(key: GroupKey) {
+    folded = folded.includes(key) ? folded.filter((k) => k !== key) : [...folded, key];
+    try {
+      localStorage.setItem(FOLD_KEY, JSON.stringify(folded));
+    } catch {
+      // storage unavailable: the choice lasts for this page only
+    }
+  }
+  const isFolded = (g: Group) => !q.trim() && folded.includes(g.key) && !g.items.some((c) => c.id === activeId);
+
+  // Agents / goals running for a conversation (workflows started from it).
+  const agentsByConv = $derived.by(() => {
+    const m = new Map<string, { n: number; needsYou: boolean }>();
+    for (const r of agentActivity.runs) {
+      if (!r.conversation_id || r.kind === "assistant") continue;
+      const prev = m.get(r.conversation_id) ?? { n: 0, needsYou: false };
+      m.set(r.conversation_id, { n: prev.n + 1, needsYou: prev.needsYou || r.needs_you });
+    }
+    return m;
+  });
+
+  /** Today → 14:05, this week → 週二, older → 10/3 (the group heading says which day range). */
+  function when(iso: string) {
+    const d = new Date(iso);
+    const now = new Date();
+    const locale = i18n.locale === "en" ? "en-US" : "zh-TW";
+    if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", hour12: false });
+    if (now.getTime() - d.getTime() < 6 * 86_400_000) return d.toLocaleDateString(locale, { weekday: "short" });
+    return d.toLocaleDateString(locale, { month: "numeric", day: "numeric", ...(d.getFullYear() !== now.getFullYear() ? { year: "2-digit" } : {}) });
+  }
 
   let renameId = $state<string | null>(null);
   let renameOpen = $state(false);
@@ -112,75 +157,92 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
-  <div class="p-3 pb-2">
+  <div class="flex flex-col gap-1.5 px-2 pt-1 pb-2">
+    <button type="button" class="new inline-flex h-9 w-full items-center gap-2 rounded-full border border-line bg-surface px-3.5 text-[13px] font-medium text-ink shadow-card transition-colors hover:border-line-2" onclick={onNew}><MessageSquarePlus class="size-4" />{t("agent.newChat")}</button>
     <label class="relative block">
       <span class="sr-only">{t("agent.searchConversations")}</span>
-      <Search class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-3" />
-      <input bind:value={q} type="text" inputmode="search" placeholder={t("agent.searchConversations")} class="h-10 w-full rounded-full border border-line bg-surface pr-9 pl-10 text-[14px] text-ink outline-none placeholder:text-ink-3 focus:border-ink" />
-      {#if q}<button type="button" class="absolute top-1/2 right-1 grid size-8 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:text-ink" aria-label={t("common.close")} onclick={() => (q = "")}><X class="size-3.5" /></button>{/if}
+      <Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-ink-3" />
+      <input bind:value={q} type="text" inputmode="search" placeholder={t("agent.searchConversations")} class="h-9 w-full rounded-full border border-transparent bg-[var(--soft)] pr-8 pl-8.5 text-[13px] text-ink outline-none placeholder:text-ink-3 focus:border-line-2 focus:bg-surface" />
+      {#if q}<button type="button" class="absolute top-1/2 right-0.5 grid size-8 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:text-ink" aria-label={t("common.close")} onclick={() => (q = "")}><X class="size-3.5" /></button>{/if}
     </label>
   </div>
-  <nav class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3" aria-label={t("agent.conversations")}>
+  <nav class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2" aria-label={t("agent.conversations")}>
     {#if error}
-      <p class="px-3 py-2 text-[13px] text-danger">{error}</p>
+      <p class="px-2.5 py-2 text-[13px] text-danger">{error}</p>
     {:else if !items}
-      <div class="flex flex-col gap-2 px-1" aria-busy="true">{#each [0, 1, 2, 3] as i (i)}<div class="h-14 animate-pulse rounded-2xl bg-surface-2"></div>{/each}</div>
+      <div class="flex flex-col gap-1 pt-1" aria-busy="true">{#each [0, 1, 2, 3, 4] as i (i)}<div class="h-8 animate-pulse rounded-full bg-[var(--soft)]"></div>{/each}</div>
     {:else if !items.length}
-      <div class="flex flex-col items-center px-4 py-10 text-center">
-        <span class="grid size-12 place-items-center rounded-full bg-surface-3 text-ink-3"><MessagesSquare class="size-5" /></span>
+      <div class="flex flex-col items-center px-3 py-8 text-center">
+        <span class="grid size-10 place-items-center rounded-full bg-[var(--soft)] text-ink-3"><MessagesSquare class="size-4.5" /></span>
         {#if q.trim()}
-          <p class="mt-3 text-[13.5px] font-medium text-ink-2">{t("agent.list.noMatch")}</p>
+          <p class="mt-3 text-[13px] font-medium text-ink-2">{t("agent.list.noMatch")}</p>
         {:else}
-          <p class="mt-3 text-[13.5px] font-medium text-ink-2">{t("agent.noConversations")}</p>
-          <p class="mt-1 text-[12.5px] leading-relaxed text-ink-3">{t("agent.noConversationsHint")}</p>
+          <p class="mt-3 text-[13px] font-medium text-ink-2">{t("agent.noConversations")}</p>
+          <p class="mt-1 text-[12px] leading-relaxed text-ink-3">{t("agent.noConversationsHint")}</p>
         {/if}
       </div>
     {:else}
       {#each groups as g (g.key)}
-        <section class="mb-2" aria-labelledby="conv-group-{g.key}">
-          <h3 id="conv-group-{g.key}" class="sticky top-0 z-[1] bg-[color-mix(in_srgb,var(--surface-2)_92%,transparent)] px-3 pt-2 pb-1 text-[11.5px] font-semibold tracking-wide text-ink-3 backdrop-blur-sm">{t(`agent.list.${g.key}`)}</h3>
-          <ul class="flex flex-col gap-0.5">
-            {#each g.items as c (c.id)}
-              <li class="row group relative">
-                <a
-                  href="/assistant/{c.id}"
-                  onclick={(e) => {
-                    if (onSelect) {
-                      e.preventDefault();
-                      onSelect(c.id);
-                    }
-                  }}
-                  aria-current={c.id === activeId ? "page" : undefined}
-                  class="flex min-h-14 flex-col justify-center gap-0.5 rounded-2xl py-2 pr-20 pl-3 transition-colors hover:bg-surface-3/70 aria-[current=page]:bg-surface-3"
-                >
-                  <span class="flex items-center gap-1.5">
-                    <span class="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{c.title || t("agent.untitled")}</span>
-                    {#if c.autopilot}<Rocket class="size-3.5 shrink-0 text-[var(--pill-butter-ink)]" aria-label={t("agent.autopilotOn")} />{/if}
-                    {#if c.pending}<span class="grid h-5 min-w-5 shrink-0 place-items-center rounded-full bg-ink px-1.5 text-[11px] font-semibold text-primary-ink" title={t("agent.list.waiting")} aria-label={t("agent.consent.several", { n: c.pending })}>{c.pending}</span>
-                    {:else if c.run_status === "running"}<span class="dot size-2 shrink-0 rounded-full bg-[var(--pill-mint-ink)]" title={t("agent.list.running")} aria-label={t("agent.list.running")}></span>{/if}
-                  </span>
-                  <span class="flex items-center gap-2 text-[12px] text-ink-3"><span class="min-w-0 flex-1 truncate">{c.last_text ?? ""}</span><span class="shrink-0 tabular-nums">{relativeTime(c.updated_at)}</span></span>
-                </a>
-                <div class="absolute top-1/2 right-11 -translate-y-1/2"><DeleteButton reveal label={t("agent.delete")} onclick={() => askDelete(c.id)} /></div>
-                <DropdownMenu.Root>
-                  <DropdownMenu.Trigger class="more absolute top-1/2 right-1.5 grid size-9 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-surface hover:text-ink data-[state=open]:bg-surface data-[state=open]:opacity-100" aria-label={t("agent.list.actions")}><Ellipsis class="size-4" /></DropdownMenu.Trigger>
-                  <DropdownMenu.Portal>
-                    <DropdownMenu.Content align="end" sideOffset={4} class="{menuContent} w-44">
-                      <DropdownMenu.Item class={menuItem} onSelect={() => ((renameId = c.id), (renameValue = c.title ?? ""), (renameOpen = true))}><Pencil />{t("agent.rename")}</DropdownMenu.Item>
-                      <DeleteMenuItem label={t("agent.delete")} onSelect={() => askDelete(c.id)} />
-                    </DropdownMenu.Content>
-                  </DropdownMenu.Portal>
-                </DropdownMenu.Root>
-              </li>
-            {/each}
-          </ul>
+        {@const shut = isFolded(g)}
+        <section class="mb-1" aria-labelledby="conv-group-{g.key}">
+          <h3 class="sticky top-0 z-[1] bg-[color-mix(in_srgb,var(--list-bg,var(--canvas))_94%,transparent)] backdrop-blur-sm">
+            <button
+              type="button"
+              id="conv-group-{g.key}"
+              class="group/h flex h-8 w-full items-center gap-1 rounded-lg px-2.5 text-[11.5px] font-medium tracking-wide text-ink-3 hover:text-ink-2"
+              aria-expanded={!shut}
+              onclick={() => toggleGroup(g.key)}
+            >
+              <span>{t(`agent.list.${g.key}`)}</span>
+              {#if shut}<span class="tabular-nums opacity-80">· {t("agent.list.groupCount", { n: g.items.length })}</span>{/if}
+              <ChevronDown class="ml-auto size-3.5 opacity-0 transition-[transform,opacity] group-hover/h:opacity-100 group-focus-visible/h:opacity-100 {shut ? '-rotate-90 opacity-100' : ''}" aria-hidden="true" />
+            </button>
+          </h3>
+          {#if !shut}
+            <ul class="flex flex-col gap-px">
+              {#each g.items as c (c.id)}
+                {@const agents = agentsByConv.get(c.id)}
+                <li class="row group relative">
+                  <a
+                    href="/assistant/{c.id}"
+                    onclick={(e) => {
+                      if (onSelect) {
+                        e.preventDefault();
+                        onSelect(c.id);
+                      }
+                    }}
+                    aria-current={c.id === activeId ? "page" : undefined}
+                    title={c.last_text ? `${c.title || t("agent.untitled")}\n${c.last_text}` : undefined}
+                    class="link flex h-9 items-center gap-2 rounded-full pr-2.5 pl-3 text-[13px] text-ink-2 transition-colors hover:bg-surface/70 hover:text-ink aria-[current=page]:bg-surface aria-[current=page]:font-medium aria-[current=page]:text-ink aria-[current=page]:shadow-card"
+                  >
+                    <span class="min-w-0 flex-1 truncate">{c.title || t("agent.untitled")}</span>
+                    <span class="marks flex shrink-0 items-center gap-1.5">
+                      {#if c.autopilot}<Rocket class="size-3.5 text-[var(--pill-butter-ink)]" aria-label={t("agent.autopilotOn")} />{/if}
+                      {#if agents}<span class="inline-flex items-center gap-0.5 text-[11px] font-medium tabular-nums {agents.needsYou ? 'text-[var(--pill-peach-ink)]' : 'pulsing text-[var(--pill-sky-ink)]'}" title={agents.needsYou ? t("agent.list.needsYou") : t("agent.list.agents", { n: agents.n })} aria-label={agents.needsYou ? t("agent.list.needsYou") : t("agent.list.agents", { n: agents.n })}><Workflow class="size-3.5" />{#if agents.n > 1}{agents.n}{/if}</span>{/if}
+                      {#if c.pending}<span class="grid h-[18px] min-w-[18px] place-items-center rounded-full bg-ink px-1 text-[10.5px] font-semibold text-primary-ink tabular-nums" title={t("agent.list.waiting")} aria-label={t("agent.consent.several", { n: c.pending })}>{c.pending}</span>
+                      {:else if c.run_status === "running"}<span class="dot size-2 rounded-full bg-[var(--pill-mint-ink)]" title={t("agent.list.running")} aria-label={t("agent.list.running")}></span>{/if}
+                      <span class="time text-[11.5px] text-ink-3 tabular-nums">{when(c.updated_at)}</span>
+                    </span>
+                  </a>
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger class="more absolute top-1/2 right-1 grid size-7 -translate-y-1/2 place-items-center rounded-full bg-surface text-ink-3 hover:text-ink data-[state=open]:text-ink" aria-label={t("agent.list.actions")}><Ellipsis class="size-4" /></DropdownMenu.Trigger>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content align="end" sideOffset={4} class="{menuContent} w-44">
+                        <DropdownMenu.Item class={menuItem} onSelect={() => ((renameId = c.id), (renameValue = c.title ?? ""), (renameOpen = true))}><Pencil />{t("agent.rename")}</DropdownMenu.Item>
+                        <DeleteMenuItem label={t("agent.delete")} onSelect={() => askDelete(c.id)} />
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         </section>
       {/each}
     {/if}
   </nav>
-  <div class="sticky bottom-0 shrink-0 border-t border-line bg-[color-mix(in_srgb,var(--surface-2)_94%,transparent)] p-3 pb-[max(12px,env(safe-area-inset-bottom))] backdrop-blur-sm">
-    <button type="button" class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-ink px-4 text-sm font-medium text-primary-ink transition-opacity hover:opacity-90" onclick={onNew}><MessageSquarePlus class="size-4" />{t("agent.newChat")}</button>
-    <a href="/assistant/workflows" class="mt-1.5 inline-flex h-10 w-full items-center justify-center gap-2 rounded-full px-4 text-[13px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink"><Workflow class="size-4" />{t("wf.title")}</a>
+  <div class="shrink-0 px-2 pt-1 pb-[max(8px,env(safe-area-inset-bottom))]">
+    <a href="/assistant/workflows" class="flex h-9 items-center gap-2 rounded-full px-3 text-[13px] text-ink-3 transition-colors hover:bg-surface/70 hover:text-ink"><Workflow class="size-4" />{t("wf.title")}</a>
   </div>
 </div>
 
@@ -202,18 +264,49 @@
 <ConfirmDialog bind:open={deleteOpen} title={deleteTitle ? t("crud.conversation.deleteTitle", { title: deleteTitle }) : t("agent.deleteConfirm")} description={deleteDescription(deleteActivity)} confirmLabel={t("agent.delete")} onConfirm={remove} />
 
 <style>
-  /* Fine pointers: the ⋯ button appears on hover / focus; touch keeps it visible. */
-  @media (pointer: fine) {
-    .row :global(.more) {
-      opacity: 0;
-      transition: opacity 120ms;
+  /* The ⋯ button covers the time: on hover / focus (fine pointers); touch keeps it visible and the time hidden. */
+  .row :global(.more) {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms;
+  }
+  .row:hover :global(.more),
+  .row:focus-within :global(.more),
+  .row :global(.more[data-state="open"]) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .row:hover .time,
+  .row:focus-within .time {
+    visibility: hidden;
+  }
+  @media (pointer: coarse) {
+    .link {
+      min-height: 44px;
+      padding-right: 44px;
     }
-    .row:hover :global(.more),
-    .row:focus-within :global(.more) {
+    .row :global(.more) {
       opacity: 1;
+      pointer-events: auto;
+      width: 36px;
+      height: 36px;
+      background: transparent;
+    }
+    .row .time,
+    .row:hover .time,
+    .row:focus-within .time {
+      visibility: visible;
     }
   }
-  .dot {
+  /* The ⋯ button keeps the active row's surface. */
+  .row:has(.link[aria-current="page"]) :global(.more) {
+    background: var(--surface);
+  }
+  .row:not(:has(.link[aria-current="page"])):hover :global(.more) {
+    background: color-mix(in srgb, var(--surface) 70%, var(--canvas));
+  }
+  .dot,
+  .pulsing {
     animation: pulse 1.6s ease-in-out infinite;
   }
   @keyframes pulse {
@@ -222,7 +315,8 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .dot {
+    .dot,
+    .pulsing {
       animation: none;
     }
     .row :global(.more) {

@@ -66,7 +66,9 @@ export type AgentToolResult = {
 export type AgentUndo =
   | { kind: "task"; id: string; studyId: string; stamp: string }
   | { kind: "note"; id: string; stamp: string }
-  | { kind: "text"; targetType: string; targetId: string; before: string; after: string };
+  | { kind: "text"; targetType: string; targetId: string; before: string; after: string }
+  /** Reading notes of a study paper rewritten by autopilot (they have no version history of their own). */
+  | { kind: "paper_notes"; studyId: string; paperId: string; before: string; after: string };
 
 /** What a call touches: authorization chip on the card and the scope of 「本對話都允許」. */
 export type AgentTarget = { studyId: string | null; studySlug?: string; label: string; url?: string };
@@ -81,11 +83,12 @@ export interface AgentToolDef<I extends z.ZodType = z.ZodType> {
   description: string;
   input: I;
   risk: AgentRisk;
-  /** Never auto-approved, never granted (memory). */
+  /** Always asks without autopilot, never granted (memory); autopilot (完全自動) runs it. */
   alwaysAsk?: boolean;
   /**
-   * Shows a normal consent card for this call even under autopilot or a conversation grant (e.g. confirming a meeting
-   * draft, rewriting the user's own reading notes). Return true to ask. Set `grantable: false` with it.
+   * Shows a normal consent card for this call even under a conversation grant (e.g. confirming a meeting draft,
+   * rewriting the user's own reading notes). Return true to ask. Set `grantable: false` with it. Autopilot (完全自動)
+   * runs it without a card; give such calls an `undo` when they overwrite content.
    */
   requireCard?(args: z.infer<I>): boolean;
   /** 「本對話都允許」 offered. Default: risk === "write" && !alwaysAsk. */

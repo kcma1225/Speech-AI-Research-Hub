@@ -1,9 +1,9 @@
 import { t } from "#lib/i18n.svelte.ts";
-import { keyOf, MAX_ATTACHMENTS, refOf, type Attachment } from "./types.ts";
+import { isContextChip, keyOf, MAX_ATTACHMENTS, refOf, type Attachment, type ChipItem } from "./types.ts";
 import { attachFormats, checkFile, removeUpload, uploadFile, type Formats } from "./api.ts";
 
 /** `progress` 0–1 while a pending upload sends bytes (null = waiting in line / size unknown). */
-export type DraftItem = Attachment & { key: string; pending?: boolean; error?: string; progress?: number | null };
+export type DraftItem = ChipItem & { key: string; pending?: boolean; error?: string; progress?: number | null };
 
 /**
  * Attachments of the message being written: chips above the composer. Uploads need a conversation (created on
@@ -27,7 +27,11 @@ export class AttachDraft {
   }
   /** Refs of the ready items (sent with the message). */
   get refs() {
-    return this.items.filter((i) => !i.pending && !i.error).map(refOf);
+    return this.items.filter((i) => !i.pending && !i.error && !isContextChip(i.kind)).map((i) => refOf(i as Attachment));
+  }
+  /** 「#」 study / task chips (sent as page context, see `contextWithRefs`). */
+  get contextRefs() {
+    return this.items.flatMap((i) => (isContextChip(i.kind) ? [{ kind: i.kind, id: i.id, studyId: i.study?.id ?? null }] : []));
   }
   has(kind: string, id: string) {
     return this.items.some((i) => i.key === keyOf({ kind, id }));
@@ -37,7 +41,7 @@ export class AttachDraft {
   }
 
   /** Adds (or replaces, e.g. another deck version) one item; false when the message is full. */
-  add(a: Attachment): boolean {
+  add(a: ChipItem): boolean {
     const key = keyOf(a);
     const at = this.items.findIndex((i) => i.key === key);
     if (at >= 0) {

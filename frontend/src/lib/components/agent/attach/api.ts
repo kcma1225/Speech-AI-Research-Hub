@@ -1,6 +1,7 @@
 import { api, ApiError } from "#lib/api.ts";
 import { t } from "#lib/i18n.svelte.ts";
 import type { Attachment, AttachmentRef, LatexFile, PickerCategory, PickerItem, PickerStudy, UploadView } from "./types.ts";
+import type { RefKind } from "#lib/agent/hashref.ts";
 
 /** Picker + upload calls (`/api/agent/attach/*`, `/api/agent/conversations/:id/uploads`). */
 export type Formats = { accept: string; maxBytes: number; maxImageBytes: number; maxPerMessage: number };
@@ -60,3 +61,17 @@ export function checkFile(file: File, f: Formats): { key: "attach.badType" | "at
   return null;
 }
 export const removeUpload = (id: string) => api.del<{ ok: true }>(`/agent/uploads/${id}`);
+
+/** 「#」 references (`GET /api/agent/attach/lookup`): items of one kind (or all kinds), the current study first. */
+export type RefItem = {
+  kind: RefKind;
+  id: string;
+  title: string;
+  study: { id: string; slug: string; title: string } | null;
+  url: string;
+  date: string | null;
+  sub: string | null;
+  here: boolean;
+};
+export const lookupRefs = (opts: { kind?: RefKind | null; q?: string; study?: string | null; limit?: number }) =>
+  api.get<{ items: RefItem[] }>(`/agent/attach/lookup?${qs({ kind: opts.kind ?? undefined, q: opts.q?.trim() || undefined, study: opts.study ?? undefined, limit: opts.limit ? String(opts.limit) : undefined })}`);

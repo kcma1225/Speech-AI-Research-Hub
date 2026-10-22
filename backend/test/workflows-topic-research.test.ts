@@ -303,12 +303,16 @@ integration("topic research workflow", () => {
     expect(searches.length).toBe(n);
   });
 
-  it("autopilot waits for the import write; sub-question edits on the plan card re-derive the steps", async () => {
+  it("autopilot (完全自動) approves the import plan; without it the plan waits and sub-question edits re-derive the steps", async () => {
     const m = defaultModel();
-    const run = await createWorkflow(t.app, await asUser(alice.id), { request: "研究現況：streaming ASR 的 hotword 方法", playbook: "topic_research", context: { studyId: study.id }, autopilot: true });
+    const auto = await createWorkflow(t.app, await asUser(alice.id), { request: "研究現況：streaming ASR 的 hotword 方法", playbook: "topic_research", context: { studyId: study.id }, autopilot: true });
+    expect((await runWorkflow(deps(m.port), auto.id)).status).not.toBe("awaiting_plan_approval");
+    const autoLogs = (await t.db.query<{ data: { text?: string } }>("SELECT data FROM workflow_events WHERE run_id=$1 AND type='log'", [auto.id])).rows.map((e) => e.data.text ?? "");
+    expect(autoLogs.some((e) => e.includes("（完全自動）") && e.includes("匯入"))).toBe(true);
+    await t.db.query("UPDATE workflow_runs SET status='cancelled' WHERE id=$1 AND status NOT IN ('done','partial','failed','cancelled')", [auto.id]);
+    imports.length = 0;
+    const run = await createWorkflow(t.app, await asUser(alice.id), { request: "研究現況：streaming ASR 的 hotword 方法", playbook: "topic_research", context: { studyId: study.id } });
     expect((await runWorkflow(deps(m.port), run.id)).status).toBe("awaiting_plan_approval");
-    const events = (await t.db.query<{ data: { text?: string } }>("SELECT data FROM workflow_events WHERE run_id=$1 AND type='log'", [run.id])).rows.map((e) => e.data.text ?? "");
-    expect(events.some((e) => e.includes("自動駕駛：這個計畫會「匯入"))).toBe(true);
     expect(imports).toEqual([]);
     await approveWorkflow(t.app, await asUser(alice.id), run.id, { outline: [{ title: "有哪幾類做法？", points: ["deep biasing"] }, { title: "延遲與準確率的取捨？", points: [] }] });
     const r = (await getRun(t.db, run.id))!;

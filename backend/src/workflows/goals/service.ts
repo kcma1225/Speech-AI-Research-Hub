@@ -41,15 +41,15 @@ const toStages = (plan: GoalPlan): Stage[] => {
   }));
 };
 
-/** Under autopilot the roadmap starts at once when every stage only drafts (no library import that waits anyway). */
-const autoRoadmap = (autopilot: boolean, stages: Stage[]) => autopilot && stages.every((s) => getWorkflowPlaybook(s.playbook)?.autoApprovable && s.playbook !== "topic_research");
+/** Under autopilot (完全自動) the roadmap starts at once; each stage's plan is then auto-approved too (autopilot.ts). */
+export const autoRoadmap = (autopilot: boolean, stages: Stage[]) => autopilot && stages.every((s) => getWorkflowPlaybook(s.playbook)?.autoApprovable);
 
 export type GoalInput = CreateInput & { deliverable?: DeliverableKind | null };
 export type GoalStart = { kind: "workflow"; runs: RunRow[]; batchId: string | null } | { kind: "goal"; goal: GoalRow };
 
 /**
  * Plans the request. One stage → creates that workflow exactly as `start_workflow` does (no roadmap card). More →
- * a goal (status `awaiting_approval`, or `running` under autopilot when every stage only drafts).
+ * a goal (status `awaiting_approval`, or `running` under autopilot).
  */
 export async function createGoal(app: FastifyInstance, user: CurrentUser, input: GoalInput): Promise<GoalStart> {
   if (user.role === "admin") throw forbidden("管理員帳號只能管理系統設定與使用者。");

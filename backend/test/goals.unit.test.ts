@@ -7,6 +7,7 @@ import { stageInputs } from "../src/workflows/goals/advance.js";
 import { paperMain, parseOutline, sectionFile, withHeading } from "../src/workflows/playbooks/paper.js";
 import { CHECKS } from "../src/workflows/checks.js";
 import { autoApproval } from "../src/workflows/autopilot.js";
+import { autoRoadmap } from "../src/workflows/goals/service.js";
 import { listInputs } from "../src/lib/latex/inputs.js";
 import type { GoalRow, Stage } from "../src/workflows/goals/types.js";
 import type { ModelPort } from "../src/workflows/types.js";
@@ -162,11 +163,30 @@ describe("goal approval of stage plans", () => {
     expect(autoApproval({ autopilot: false, autoApprovable: true, writes: [{ kind: "deck", label: "覆蓋", effect: "overwrite" }], tainted: false, goal: true }).auto).toBe(false);
     expect(autoApproval({ autopilot: false, autoApprovable: true, writes: [], tainted: false, goal: true, manual: true }).auto).toBe(false);
   });
+  it("under autopilot (完全自動) a stage plan is approved whatever it writes, and the roadmap starts at once", () => {
+    const writes = [{ kind: "deck", label: "覆蓋", effect: "overwrite" as const }, { kind: "paper", label: "匯入論文" }];
+    expect(autoApproval({ autopilot: true, autoApprovable: true, writes, tainted: true, goal: true })).toMatchObject({ auto: true, reason: "autopilot" });
+    const stages = [stage("a", "topic_research"), stage("b", "paper_outline", { uses: ["a"] })];
+    expect(autoRoadmap(true, stages)).toBe(true);
+    expect(autoRoadmap(false, stages)).toBe(false);
+  });
 });
 
 describe("deliverable edge cases", () => {
   it("asking for papers to read is not a paper to write", () => {
     expect(deliverableOf("給我幾篇台灣語料相關的論文")).not.toBe("paper");
     expect(deliverableOf("幫我寫這篇論文的閱讀筆記")).toBe("reading_note");
+  });
+});
+
+describe("re-plan bounds", () => {
+  it("caps gathering stages per goal and adds none after a building stage finished", async () => {
+    const { boundedDrafts } = await import("../src/workflows/goals/planner.js");
+    const research = { playbook: "topic_research" };
+    const draft = { playbook: "paper_draft" };
+    // One research round done: one more is allowed, a third is not.
+    expect(boundedDrafts([{ playbook: "topic_research", status: "partial" }], [research, research, draft]).map((d) => d.playbook)).toEqual(["topic_research", "paper_draft"]);
+    // The outline is done: no more research, the draft stays.
+    expect(boundedDrafts([{ playbook: "topic_research", status: "partial" }, { playbook: "paper_outline", status: "done" }], [research, draft]).map((d) => d.playbook)).toEqual(["paper_draft"]);
   });
 });

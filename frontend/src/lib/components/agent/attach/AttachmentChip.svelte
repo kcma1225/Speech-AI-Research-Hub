@@ -5,14 +5,14 @@
   import type { MessageKey } from "#lib/messages.ts";
   import Spinner from "#lib/components/ui/Spinner.svelte";
   import KindIcon from "./KindIcon.svelte";
-  import type { Attachment } from "./types.ts";
+  import type { ChipItem } from "./types.ts";
 
   /**
    * One attachment: type icon, title, study (or version), optional remove ×. Clicking opens the item (uploads open
    * the file in a new tab). `tone="dark"` for chips inside the user's (ink) bubble.
    */
   let { item, pending = false, progress = null, error = null, onRemove, tone = "light", onOpen }: {
-    item: Attachment;
+    item: ChipItem;
     pending?: boolean;
     /** 0–1 while uploading (null = queued / unknown): a bar along the chip's bottom edge. */
     progress?: number | null;

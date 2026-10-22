@@ -13,6 +13,7 @@ export type PageContext = {
   page?: number;
   meetingId?: string;
   paperId?: string;
+  taskId?: string;
 };
 
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date());
@@ -122,6 +123,7 @@ export function pageContextText(ctx: PageContext | null | undefined): string {
   if (ctx.deckId) bits.push(`簡報（deck id ${ctx.deckId}${ctx.page ? `，第 ${ctx.page} 頁` : ""}）`);
   if (ctx.meetingId) bits.push(`會議（meeting id ${ctx.meetingId}）`);
   if (ctx.paperId) bits.push(`文獻（paper id ${ctx.paperId}）`);
+  if (ctx.taskId) bits.push(`待辦（task id ${ctx.taskId}）`);
   if (!bits.length && !ctx.path) return "";
   return `<page_context trust="hint">使用者目前在 ${ctx.path ?? ""} ${bits.join("、")}。這只是提示；需要內容時請用工具讀取。</page_context>`;
 }

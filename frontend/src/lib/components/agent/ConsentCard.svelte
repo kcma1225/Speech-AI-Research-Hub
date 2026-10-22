@@ -44,7 +44,7 @@
   const BadgeIcon = $derived(badge.icon);
   const why = $derived(typeof call.args.reason === "string" && call.args.reason ? call.args.reason : null);
   const reasonText = $derived(
-    call.approval_reason === "tainted" ? t("agent.consent.reason.tainted") : call.approval_reason === "outbound" ? t("agent.consent.reason.outbound") : call.approval_reason === "autopilot_limit" ? t("agent.consent.reason.autopilot_limit") : null,
+    call.status === "deferred" ? t("agent.consent.reason.deferred") : call.approval_reason === "tainted" ? t("agent.consent.reason.tainted") : call.approval_reason === "outbound" ? t("agent.consent.reason.outbound") : call.approval_reason === "autopilot_limit" ? t("agent.consent.reason.autopilot_limit") : null,
   );
   const scopedLabel = $derived(call.target?.studyId ? t("agent.consent.allowConversationScoped", { target: call.target.label.split(" · ")[0]!, tool: toolTitle(call) }) : t("agent.consent.allowConversation"));
   const edits = $derived(Array.isArray(call.args.edits) ? (call.args.edits as { before: string; after: string }[]) : []);

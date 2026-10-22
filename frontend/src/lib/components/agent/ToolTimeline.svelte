@@ -3,6 +3,7 @@
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
+  import { ApiError } from "#lib/api.ts";
   import ConsentCard from "./ConsentCard.svelte";
   import ToolRow from "./ToolRow.svelte";
   import { latestPlan } from "#lib/agent/transcript.ts";
@@ -33,7 +34,7 @@
       reads = [];
     };
     for (const c of calls) {
-      if (c.status === "pending_approval") continue;
+      if (c.status === "pending_approval" || c.status === "deferred") continue;
       // update_plan: a history row (「更新計畫（2/5）」).
       if (c.tool === "update_plan" && c.status === "done") {
         flush();
@@ -50,7 +51,7 @@
     flush();
     return out;
   });
-  const pending = $derived(calls.filter((c) => c.status === "pending_approval"));
+  const pending = $derived(calls.filter((c) => c.status === "pending_approval" || c.status === "deferred"));
   const bulk = $derived(pending.filter((c) => cardKind(c) === "write" || cardKind(c) === "outbound"));
   let openGroups = $state<Record<string, boolean>>({});
   let bulkBusy = $state(false);
@@ -58,7 +59,15 @@
   async function all(decision: "approve" | "deny") {
     bulkBusy = true;
     try {
-      for (const c of decision === "approve" ? bulk : pending) await onDecide(c, decision);
+      // 「全部允許」 also covers the rest of the conversation for each tool + study (grantable writes), so the same kinds
+      // of writes do not ask again; a call the grant already approved answers 409 and is skipped.
+      for (const c of decision === "approve" ? bulk : pending) {
+        try {
+          await onDecide(c, decision === "approve" && c.grantable ? "approve_conversation" : decision);
+        } catch (e) {
+          if (!(e instanceof ApiError && e.status === 409)) throw e;
+        }
+      }
     } catch (e) {
       toasts.show(`${t("agent.consent.failed")}：${(e as Error).message}`, "error");
     } finally {

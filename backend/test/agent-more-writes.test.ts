@@ -2,7 +2,7 @@
  * Agent tools added by the AI-capability audit: update_milestone, update_study_paper, latex_add_section,
  * latex_update_project, suggest_meeting_draft_edit, confirm_meeting_draft, add_meeting_feedback, get_note_history —
  * schema, consent-card target, permissions (non-member / professor-advisor / admin refused), effects; plus the
- * runtime rule that confirm_meeting_draft and reading-note rewrites ask even under autopilot.
+ * runtime rule that autopilot (完全自動) also runs confirm_meeting_draft and reading-note rewrites (the latter undoable).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { ChatEvent } from "../src/ai/types.js";
@@ -211,8 +211,9 @@ describe.skipIf(!hasTestDb || !hasTestS3)("audit tools", () => {
       script = [];
     });
 
-    it("under autopilot, update_milestone runs but confirm_meeting_draft and reading-note rewrites ask with a write card", async () => {
+    it("under autopilot (完全自動) confirm_meeting_draft and reading-note rewrites run too; the rewrite can be undone", async () => {
       await freshDraft();
+      const before = (await t.db.query("SELECT notes_md FROM study_papers WHERE paper_id=$1", [paperId])).rows[0].notes_md;
       const conv = (await post(alice, "/api/agent/conversations", {})).json().conversation.id;
       expect((await patch(alice, `/api/agent/conversations/${conv}`, { autopilot: true })).statusCode).toBe(200);
       script = [
@@ -222,25 +223,23 @@ describe.skipIf(!hasTestDb || !hasTestS3)("audit tools", () => {
           ["update_study_paper", { study: study.slug, paper_id: paperId, notes_md: "全部改寫\n" }],
           ["update_study_paper", { study: study.slug, paper_id: paperId, reading_status: "reading" }],
         ),
+        say("好"),
       ];
       expect((await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "里程碑改名、確認會議草稿、改閱讀筆記" })).statusCode).toBe(202);
       await agentFor(t.app).settle();
       const s = (await get(alice, `/api/agent/conversations/${conv}`)).json();
       const byTool = (name: string, i = 0) => s.toolCalls.filter((c: { tool: string }) => c.tool === name)[i];
+      expect(s.run.status).toBe("done");
       expect(byTool("update_milestone")).toMatchObject({ status: "done", approved_via: "autopilot" });
-      expect(byTool("confirm_meeting_draft")).toMatchObject({ status: "pending_approval", approval_reason: "write", grantable: false, always_ask: false });
-      expect(byTool("update_study_paper", 0)).toMatchObject({ status: "pending_approval", approval_reason: "write" });
-      expect(byTool("update_study_paper", 1)).toMatchObject({ status: "done", approved_via: "autopilot" });
-      // A conversation grant is never stored for the confirm tool.
-      script = [say("好")];
-      await post(alice, `/api/agent/tool-calls/${byTool("confirm_meeting_draft").id}/decision`, { decision: "approve_conversation" });
-      await post(alice, `/api/agent/tool-calls/${byTool("update_study_paper", 0).id}/decision`, { decision: "deny" });
-      await agentFor(t.app).settle();
-      const after = (await get(alice, `/api/agent/conversations/${conv}`)).json();
-      expect(after.grants).toEqual([]);
-      expect(after.toolCalls.find((c: { tool: string }) => c.tool === "confirm_meeting_draft")).toMatchObject({ status: "done" });
+      expect(byTool("confirm_meeting_draft")).toMatchObject({ status: "done", approved_via: "autopilot" });
+      expect(byTool("update_study_paper", 0)).toMatchObject({ status: "done", approved_via: "autopilot", undo: "available" });
+      expect(byTool("update_study_paper", 1)).toMatchObject({ status: "done", approved_via: "autopilot", undo: null });
       expect((await t.db.query("SELECT status FROM meeting_study_drafts WHERE meeting_id=$1", [meetingId])).rows[0].status).toBe("confirmed");
-      expect((await t.db.query("SELECT notes_md FROM study_papers WHERE paper_id=$1", [paperId])).rows[0].notes_md).not.toBe("全部改寫\n");
+      expect((await t.db.query("SELECT notes_md FROM study_papers WHERE paper_id=$1", [paperId])).rows[0].notes_md).toBe("全部改寫\n");
+      // 「復原」 puts the previous reading notes back.
+      const undo = await post(alice, `/api/agent/tool-calls/${byTool("update_study_paper", 0).id}/undo`);
+      expect(undo.statusCode, undo.body).toBe(200);
+      expect((await t.db.query("SELECT notes_md FROM study_papers WHERE paper_id=$1", [paperId])).rows[0].notes_md).toBe(before);
     });
   });
 });

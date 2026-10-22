@@ -8,6 +8,8 @@ export type PageContext = {
   page?: number;
   meetingId?: string;
   paperId?: string;
+  /** A task chosen with 「#任務」 (comes with its study). */
+  taskId?: string;
 };
 
 export type ConversationMode = "chat" | "interview";
@@ -85,7 +87,8 @@ export type Answer = { id: string; value?: AnswerValue; other?: string; skipped?
 export type StoredAnswers = { toolCallId: string; answers: Answer[] };
 
 export type Risk = "read" | "write" | "destructive";
-export type ToolStatus = "pending_approval" | "approved" | "denied" | "running" | "done" | "failed" | "cancelled" | "expired";
+/** `deferred` = a deletion autopilot queued for the user (a card that never holds the turn; approve executes it). */
+export type ToolStatus = "pending_approval" | "deferred" | "approved" | "denied" | "running" | "done" | "failed" | "cancelled" | "expired";
 export type ApprovalReason = "write" | "destructive" | "memory" | "tainted" | "outbound" | "autopilot_limit";
 
 export type ToolLink = { label: string; url: string; kind?: string };
@@ -106,6 +109,8 @@ export type ToolCall = {
   status: ToolStatus;
   approved_via: "user" | "conversation_grant" | "autopilot" | null;
   approval_reason: ApprovalReason | null;
+  /** An autopilot deletion decided outside its turn (stays true after the decision). */
+  deferred?: boolean;
   decided_at: string | null;
   deny_reason: string | null;
   summary: string;

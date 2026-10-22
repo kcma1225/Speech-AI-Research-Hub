@@ -186,7 +186,7 @@ registerAgentTool({
   title: "刪除筆記",
   titleEn: "Delete note",
   risk: "destructive",
-  description: "Permanently delete a note (its versions and suggestions too). Always asks the user.",
+  description: "Permanently delete a note (its versions and suggestions too). Always asks the user; under autopilot the call returns at once and the deletion waits for their confirmation (do not repeat it).",
   input: z.object({ note_id: uuidArg("Note") }),
   summarize: () => "刪除筆記",
   async target(a, ctx) {

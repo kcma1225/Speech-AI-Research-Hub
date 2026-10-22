@@ -69,6 +69,20 @@ describe("transcript grouping", () => {
     expect(open[0]!.asks.map((c) => c.id)).toEqual([ask.id]);
   });
 
+  it("a deletion autopilot deferred stays an open card of a finished turn until decided", () => {
+    const u = msg("user", "刪掉舊待辦並新增一個");
+    const a1 = msg("assistant", "");
+    const a2 = msg("assistant", "完成；刪除等待你確認。");
+    const created = call(a1, "create_task", { risk: "write", approved_via: "autopilot" });
+    const del = call(a1, "delete_task", { risk: "destructive", status: "deferred", deferred: true, approval_reason: "destructive" });
+    const [t] = turns(buildTranscript([u, a1, a2], [created, del]));
+    expect(t!.final?.id).toBe(a2.id);
+    expect(t!.pending.map((c) => c.id)).toEqual([del.id]);
+    expect(t!.activity.map((c) => c.id)).toEqual([created.id]);
+    const [after] = turns(buildTranscript([u, a1, a2], [created, { ...del, status: "done" }]));
+    expect(after!.pending).toHaveLength(0);
+  });
+
   it("start_goal / a start_workflow routed to a goal carry the goal card", () => {
     const u = msg("user", "幫我寫一篇論文");
     const a = msg("assistant", "我先排路線圖。");

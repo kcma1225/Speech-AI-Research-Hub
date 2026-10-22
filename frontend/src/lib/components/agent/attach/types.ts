@@ -1,6 +1,10 @@
 /** Assistant attachments (docs/architecture.md "Agent → Attachments"). */
 export type AttachmentKind = "upload" | "note" | "paper" | "deck" | "meeting" | "latex_project" | "latex_file";
 export type PickerCategory = "note" | "paper" | "deck" | "meeting" | "latex_project";
+/** Chips that are not attachments: a study or a task chosen with 「#」 travels as page context (`lib/agent/hashref.ts`). */
+export type ContextChipKind = "study" | "task";
+export type ChipKind = AttachmentKind | ContextChipKind;
+export const isContextChip = (kind: string): kind is ContextChipKind => kind === "study" || kind === "task";
 
 export const MAX_ATTACHMENTS = 10;
 
@@ -17,6 +21,9 @@ export type Attachment = {
   mime?: string;
   upload_kind?: "document" | "image";
 };
+
+/** What a composer chip shows (an attachment, or a 「#」 study / task). */
+export type ChipItem = Omit<Attachment, "kind"> & { kind: ChipKind };
 
 export type AttachmentRef = { kind: AttachmentKind; id: string; project_id?: string; version?: string };
 

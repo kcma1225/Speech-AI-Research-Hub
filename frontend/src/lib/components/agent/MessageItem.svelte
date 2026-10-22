@@ -229,7 +229,7 @@
     </div>
   {/if}
 {:else if message.role === "notice"}
-  {#if message.kind?.startsWith("workflow_")}
+  {#if message.kind?.startsWith("workflow_") || message.kind?.startsWith("goal_")}
     <!-- Workflow status: the card above carries the details; one quiet line. -->
     <p class="flex items-center justify-center gap-1.5 text-center text-[12px] text-ink-3" role="note"><Info class="size-3.5" />{message.text}</p>
   {:else}

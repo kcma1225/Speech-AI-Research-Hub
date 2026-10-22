@@ -17,6 +17,7 @@
   let { children } = $props();
 
   // Admin accounts are system-only: workspace pages send them to the admin home.
+  const assistant = $derived(page.url.pathname === "/assistant" || page.url.pathname.startsWith("/assistant/") && !page.url.pathname.startsWith("/assistant/workflows"));
   const adminElsewhere = $derived(session.user?.role === "admin" && !adminMayOpen(page.url.pathname));
   $effect(() => {
     if (!session.user) void goto(`/login?next=${encodeURIComponent(page.url.pathname + page.url.search)}`, { replace: true });
@@ -35,9 +36,10 @@
     <Sidebar />
     <div class="flex min-w-0 flex-1 flex-col lg:pr-6">
       <Topbar />
-      <main id="main" tabindex="-1" class="flex-1 outline-none px-4 pt-2 pb-[calc(96px+env(safe-area-inset-bottom))] sm:px-6 lg:px-0 lg:pt-7 lg:pb-10">
-        <!-- A collapsed sidebar frees ~190px; wide screens give it to the content (max-width eases with the rail). -->
-        <div class="mx-auto w-full max-w-[1280px] transition-[max-width] duration-[220ms] ease-[cubic-bezier(.2,.8,.2,1)] {sidebar.collapsed ? 'lg:max-w-[1600px]' : ''}">
+      <main id="main" tabindex="-1" class="flex-1 outline-none px-4 pt-2 pb-[calc(96px+env(safe-area-inset-bottom))] sm:px-6 lg:px-0 {assistant ? 'lg:pt-4 lg:pb-3' : 'lg:pt-7 lg:pb-10'}">
+        <!-- A collapsed sidebar frees ~190px; wide screens give it to the content (max-width eases with the rail).
+             The assistant is a full-height workspace: it takes the whole width. -->
+        <div class="mx-auto w-full transition-[max-width] duration-[220ms] ease-[cubic-bezier(.2,.8,.2,1)] {assistant ? 'max-w-none' : sidebar.collapsed ? 'max-w-[1280px] lg:max-w-[1600px]' : 'max-w-[1280px]'}">
           <!-- Not on /assistant: its workspace fills the viewport, a banner above it would push the composer off screen. -->
           {#if !page.url.pathname.startsWith("/settings") && !page.url.pathname.startsWith("/assistant")}<NamesConfirmBanner />{/if}
           {@render children()}

@@ -156,8 +156,9 @@ function criteriaFor(n: number, mode: DeckMode, owned: string[], abstractOnly = 
 type OutlineJson = { pages: { title: string; points?: string[]; student_owned?: boolean }[] };
 const isOutline = (v: unknown): v is OutlineJson => !!v && typeof v === "object" && Array.isArray((v as OutlineJson).pages) && (v as OutlineJson).pages.every((p) => p && typeof p.title === "string");
 
-const toOutline = (pages: OutlineJson["pages"]): SlideOutline[] =>
-  pages.map((p, i) => ({ n: i + 1, title: p.title.trim().slice(0, 120), points: (p.points ?? []).filter((x) => typeof x === "string").map((x) => x.slice(0, 200)).slice(0, 6), ...(p.student_owned || STUDENT_TITLE_RE.test(p.title) ? { student_owned: true } : {}) }));
+/** `revise`: an existing deck's pages already carry the student's content — none is student-owned. */
+const toOutline = (pages: OutlineJson["pages"], revise = false): SlideOutline[] =>
+  pages.map((p, i) => ({ n: i + 1, title: p.title.trim().slice(0, 120), points: (p.points ?? []).filter((x) => typeof x === "string").map((x) => x.slice(0, 200)).slice(0, 6), ...(!revise && (p.student_owned || STUDENT_TITLE_RE.test(p.title)) ? { student_owned: true } : {}) }));
 
 /** Lab-Hub pages that are always the student's own (even when the planner forgot to mark them). */
 const STUDENT_TITLE_RE = /^\s*(?:Trace one example|My assessment|Takeaways for my work)\s*$/i;
@@ -401,9 +402,9 @@ async function reviseOutline(env: WorkflowEnv, src: ReviseSource, fix: { previou
     '只輸出 JSON：{"pages":[{"title":"頁面標題","points":["重點"],"student_owned":false}]}',
   ].filter(Boolean).join("\n\n");
   const { value, text } = await env.callJson<OutlineJson>({ purpose: "outline", role: "planner", messages: [{ role: "system", content: systemFor("planner") }, { role: "user", content: user }], maxTokens: 10_000 }, isOutline);
-  const pagesJson = (value?.pages ?? outlineFromText(text)).map((p) => ({ ...p, student_owned: false }));
+  const pagesJson = value?.pages ?? outlineFromText(text);
   if (!pagesJson.length) return { summary: "大綱不是有效的 JSON", text: "", data: { outline: [], raw: text.slice(0, 2000) } };
-  const outline = toOutline(pagesJson);
+  const outline = toOutline(pagesJson, true);
   return { summary: `${outline.length} 頁`, text: outline.map((p) => `## ${p.title}\n${p.points.map((x) => `- ${x}`).join("\n")}`).join("\n\n"), data: { outline } };
 }
 
@@ -803,7 +804,8 @@ async function applyEdits(env: WorkflowEnv, edits: import("./registry.js").Appro
   const prev = (current ?? []) as SlideOutline[];
   const outline: SlideOutline[] = edits.outline.slice(0, 40).map((p, i) => {
     const old = prev.find((o) => o.title === p.title);
-    return { n: i + 1, title: p.title.trim().slice(0, 120) || `第 ${i + 1} 頁`, points: (p.points ?? []).map((x) => String(x).slice(0, 200)).filter(Boolean).slice(0, 6), ...(old?.student_owned || STUDENT_TITLE_RE.test(p.title) ? { student_owned: true } : {}) };
+    const owned = old?.student_owned || (!env.state<boolean>("revise") && STUDENT_TITLE_RE.test(p.title));
+    return { n: i + 1, title: p.title.trim().slice(0, 120) || `第 ${i + 1} 頁`, points: (p.points ?? []).map((x) => String(x).slice(0, 200)).filter(Boolean).slice(0, 6), ...(owned ? { student_owned: true } : {}) };
   });
   await env.setState({ pages: outline.length });
   const vision = await env.vision("slides");

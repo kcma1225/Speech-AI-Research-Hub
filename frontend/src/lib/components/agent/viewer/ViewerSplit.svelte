@@ -25,14 +25,11 @@
   });
   const showing = $derived(viewer.open && !!viewer.current);
 
-  // A different conversation keeps the shown document but starts a new 「文件」 list.
-  let convId: string | null | undefined = undefined;
+  // The viewer shows this conversation's own documents: switching restores them, a new chat starts empty, and the
+  // conversation a new chat turns into keeps what it opened.
   $effect(() => {
     const id = session.id;
-    untrack(() => {
-      if (convId !== undefined && id !== convId && id) viewer.resetRecent();
-      convId = id;
-    });
+    untrack(() => viewer.bindConversation(id, { adopt: !!id && session.createdId === id }));
   });
 
   // ---------------------------------------------------------------- AI writes → open / refresh
@@ -251,7 +248,7 @@
         onkeydown={dividerKey}
         ondblclick={resetWidth}
       ></div>
-      <aside class="viewer-side min-h-0 shrink-0 border-l border-line" style="width:{viewerWidth}px">
+      <aside class="viewer-side min-h-0 shrink-0 {variant === 'page' ? 'mb-3 ml-3 overflow-hidden rounded-[var(--radius-card)] border border-line shadow-card' : 'border-l border-line'}" style="width:{viewerWidth}px">
         <ViewerPanel {session} />
       </aside>
     {:else if showing && layout === "drawer"}

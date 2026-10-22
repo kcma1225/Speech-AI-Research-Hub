@@ -191,6 +191,38 @@ describe.skipIf(!hasTestDb || !hasTestS3)("attachments (routes + runtime)", () =
     expect((await get(admin, "/api/agent/attach/studies")).statusCode).toBe(403);
   });
 
+  it("# lookup: one kind or all, current study first, every term or a near-miss spelling matches", async () => {
+    const deckHere = (await t.db.query<{ id: string }>("INSERT INTO decks(study_id,title,slug,share_key,created_by,updated_by) VALUES($1,'Zipformer 熱詞週報','hash-deck-a','hk-a',$2,$2) RETURNING id", [study.id, alice.id])).rows[0]!.id;
+    const deckThere = (await t.db.query<{ id: string }>("INSERT INTO decks(study_id,title,slug,share_key,created_by,updated_by) VALUES($1,'Zipformer 熱詞實驗','hash-deck-b','hk-b',$2,$2) RETURNING id", [other.id, bob.id])).rows[0]!.id;
+    const task = (await t.db.query<{ id: string }>("INSERT INTO tasks(study_id,title,created_by) VALUES($1,'整理錯誤分析',$2) RETURNING id", [study.id, alice.id])).rows[0]!.id;
+    const look = async (qs: string, who = alice) => {
+      const r = await get(who, `/api/agent/attach/lookup?${qs}`);
+      expect(r.statusCode, r.body).toBe(200);
+      return json(r).items as any[];
+    };
+    // Same query, different current study: that study's deck comes first; deck chips carry the study and link.
+    const a = await look(`kind=deck&q=${encodeURIComponent("zipformer 熱詞")}&study=${study.slug}`);
+    expect(a.map((x) => x.id)).toEqual([deckHere, deckThere]);
+    expect(a[0]).toMatchObject({ kind: "deck", here: true, study: { id: study.id }, url: `/studies/${study.slug}/decks/${deckHere}` });
+    const b = await look(`kind=deck&q=${encodeURIComponent("zipformer 熱詞")}&study=${other.id}`);
+    expect(b.map((x) => x.id)).toEqual([deckThere, deckHere]);
+    // Every term must match; a misspelling still finds it by similarity.
+    expect(await look(`kind=deck&q=${encodeURIComponent("zipformer 會議")}`)).toEqual([]);
+    expect((await look("kind=deck&q=zipfromer")).map((x) => x.id)).toEqual(expect.arrayContaining([deckHere, deckThere]));
+    // No study given: my studies first (Bob is a member of both, Alice only of hers).
+    expect((await look(`kind=deck&q=zipformer`))[0].id).toBe(deckHere);
+    // Empty query = most recent of that kind; other kinds.
+    expect((await look(`kind=note&study=${study.slug}`))[0].id).toBe(noteId);
+    expect((await look(`kind=task&q=${encodeURIComponent("錯誤")}`))[0]).toMatchObject({ id: task, kind: "task", study: { id: study.id }, url: `/studies/${study.slug}?tab=tasks&task=${task}` });
+    expect((await look(`kind=study&q=${encodeURIComponent("語音情緒")}`))[0]).toMatchObject({ id: study.id, kind: "study" });
+    // All kinds at once.
+    const all = await look(`q=${encodeURIComponent("十月")}`);
+    expect(all.map((x) => x.kind)).toContain("meeting");
+    expect((await get(alice, "/api/agent/attach/lookup?kind=video")).statusCode).toBe(400);
+    const admin = await t.login("admin", "Admin2");
+    expect((await get(admin, "/api/agent/attach/lookup?kind=deck")).statusCode).toBe(403);
+  });
+
   it("send: the model gets the manifest + inline content; the message keeps the chips; others' content taints", async () => {
     const conv = await newConversation();
     const up = json(await upload(alice, conv, { filename: "報告.docx", data: fixture("sample.docx") })).attachment;

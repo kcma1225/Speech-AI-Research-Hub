@@ -1078,11 +1078,12 @@ Tables (`0070_agent.sql`):
   The transcript is always valid: every assistant `tool_use` gets one `tool` message with a result per call.
 - `agent_runs` (`status running|awaiting_approval|awaiting_llm|done|cancelled|failed`, `step`/`max_steps` 250, `tainted` +
   `taint_sources` (provenance labels), `autopilot_writes`, tokens, `active_ms`, `stop_reason
-  limit_steps|limit_time|limit_tokens|limit_output|repeat|stuck|expired|cancelled|superseded`, `error {error,code,hint}`, `llm_waits`,
+  limit_steps|limit_time|limit_tokens|limit_output|repeat|stuck|autopilot_limit|expired|cancelled|superseded`, `error {error,code,hint}`, `llm_waits`,
   `next_retry_at`, lease `lease_owner/lease_expires_at`; also `awaiting_input` = ended after an `ask_user` card, `superseded` =
   cancelled by an edit / a new message).
 - `tool_calls` (`message_id`+`position`, `provider_call_id`, `tool`, `args`, `edited_args`, `risk read|write|destructive`,
-  `status pending_approval|approved|denied|running|done|failed|cancelled|expired`, `approved_via user|conversation_grant|autopilot`,
+  `status pending_approval|deferred|approved|denied|running|done|failed|cancelled|expired`, `deferred` bool (an autopilot
+  deletion that never held its step, `0118_agent_deferred_deletes.sql`), `approved_via user|conversation_grant|autopilot`,
   `approval_reason write|destructive|memory|tainted|outbound|autopilot_limit`, `summary` (from the args; after a successful read the ids / slugs its result names are replaced by 〈title〉, `summary-labels.ts`), `target {studyId,label,url}`,
   `result {data,links,source,untrusted}`, `result_text` (what the model saw), `error`, `deny_reason`).
 - `conversation_grants (conversation_id, tool, scope = study id | '*')`, `memories` (`scope global|study`, `content` ≤ 300,
@@ -1091,10 +1092,12 @@ Tables (`0070_agent.sql`):
   `mcp_tokens` (sha256 `token_hash`, `prefix`, `scopes read|suggest`, `expires_at`, `revoked_at`).
 
 **Loop** (`execute(runId)`, claimed with a lease renewed every ≈10 s; the 5 s ticker resumes orphaned `running` runs, due
-`awaiting_llm` runs, expires 24 h-old approvals (`expired`, run `done`) and prunes events):
+`awaiting_llm` runs, expires 24 h-old approvals (`expired`, run `done`) and 7-day-old deferred deletions (`expired`, nothing
+deleted), and prunes events):
 1. Open step (last assistant message with `tool_use` and no tool message): run its `approved` calls in order; if any call is
    `pending_approval` → run `awaiting_approval` and the executor ends (no open model request); otherwise append the tool message.
-2. Limits: 250 steps, 60 min active time, 4 M tokens per run, 200 autopilot writes, the same tool + args 3× → stop with a
+2. Limits: 250 steps, 60 min active time, 4 M tokens per run, 2000 autopilot writes (safety cap: the write over it is
+   `cancelled` and the run stops after the step, `autopilot_limit`, no card), the same tool + args 3× → stop with a
    `notice` message (`kind` = stop reason; the UI offers 「繼續」 = `POST …/continue`). At the step / time limit the model
    first gets one **wrap-up** call (`toolChoice: "none"`, hidden prompt: what is done, what is left, 「繼續」; tool calls in
    it are dropped). Loop guards (`src/agent/guards.ts`): an identical read repeated once gets a 「完全相同」 note appended to
@@ -1110,11 +1113,17 @@ Tables (`0070_agent.sql`):
    writes of the same step) — local reads concurrently (≤ 4, `readConcurrency`), then open-world reads one by one (their
    policy sees the taint of the local reads) — then each write: `precheck` → `target()` (403/404 here fail the call without
    asking) → policy.
-5. Policy (`src/agent/policy.ts`, deny-first): `alwaysAsk` (memory) and `destructive` always ask in every mode; open-world
-   tools ask once the run is tainted (`outbound`); reads run; a grant for (tool, target study) runs (`conversation_grant`);
-   autopilot runs writes unless tainted (`tainted`) or over the cap (`autopilot_limit`); otherwise ask (`write`).
-   (Workflow plans follow their own autopilot rule: draft-only plans are auto-approved even when tainted — see
-   Workflows → Engine 1.)
+5. Policy (`src/agent/policy.ts`, pure). **Autopilot = 完全自動** (chat conversations; read at decision time): nothing
+   asks. Writes run (`autopilot`) — also memory (`remember`), `requireCard` tools, overwrites (versions / undo recipes are
+   kept) and writes in a **tainted** run; **deletions** (`destructive`) are **deferred**: recorded as `status deferred`
+   with the model result 「已排入待確認的刪除（不影響其他工作）…」 (not an error), the run goes on and may finish; the
+   card is decided later (below). An open-world call after taint is **skipped** with a tool error (「…為了避免外洩，不會再送出
+   對外查詢…」) — prompt-injection exfiltration protection without asking; over the safety cap → pause (above).
+   **Without autopilot**: `alwaysAsk` (memory) and `destructive` ask; open-world tools ask once the run is tainted
+   (`outbound`); `requireCard` asks; reads run; a grant for (tool, target study) runs (`conversation_grant`); otherwise ask
+   (`write`). Turning autopilot on (`PATCH …{autopilot:true}`) settles the open step's cards the same way
+   (`applyAutopilot`: writes approved via `autopilot`, deletions deferred, outbound-after-taint skipped) and resumes the
+   run. (Workflow plans: see Workflows → Engine 1.)
 6. Taint: a result with `untrusted: true` (content the caller did not author: other members' notes/tasks/summaries, papers,
    search hits, web) or any open-world call sets `agent_runs.tainted` and appends its `source` label (shown on later cards as
    「依據：〈…〉」). Study reads (`get_study`, `list_studies`) are untrusted only when a listed study was created by someone
@@ -1163,7 +1172,11 @@ gave dates and asked)}`. The SPA shows the latest proposal **of the current bran
 interview from there. `studies.maturity` (`0105_study_maturity.sql`, same six values or NULL) is set on create, shown and
 editable on the overview (「研究成熟度」), and returned by `get_study` (`maturity`, `maturity_label`) for later AI features.
 
-Decisions (`POST /agent/tool-calls/:id/decision`): row lock, must be `pending_approval` (else 409). `approve` (+ optional
+Decisions (`POST /agent/tool-calls/:id/decision`): row lock, must be `pending_approval` or `deferred` (else 409). A
+**deferred deletion**: `deny` → `denied` (nothing happens); `approve` / `approve_conversation` (no grant) → `running`, then
+executed at once outside its step (`executeDeferred`: `target()` re-resolves the object with the caller's permissions, so a
+target that is gone or no longer editable → `failed`), result in `result` / `error` (`result_text` keeps what the model
+saw); the run is not touched. Deferred cards in a discarded branch tail are `cancelled`. Otherwise: `approve` (+ optional
 `edited_args`, re-validated with zod — the memory card's edited text) → `approved`; `approve_conversation` also inserts the
 grant (write tools only; never destructive/memory) and approves other pending calls of the step covered by it; `deny` →
 result 「使用者拒絕了這個操作…」. When no call of the step is pending, the run flips to `running` and resumes. Approvals do not
@@ -1177,7 +1190,8 @@ Suggestions: `suggest_*` tools call `createSuggestion({source:"ai", conversation
 suggestion the user reviews in the editor (link 「在筆記中檢視建議」).
 
 Memory: injected only when the user setting **and** the conversation toggle are on (global + the conversation's study, newest
-50). `remember` is `alwaysAsk`: never auto-approved, never granted, not on MCP; its `precheck` refuses secrets and, in a
+50). `remember` is `alwaysAsk`: asks without autopilot, runs under autopilot (visible / deletable in 設定 → 記憶), never
+granted, not on MCP; its `precheck` refuses secrets and, in a
 tainted run, text that is not substantially in the user's own messages (bigram overlap < 0.5). The model cites memories as
 〔記憶 N〕; cited or strongly overlapping (≥ 0.6) ones are stored in `memory_uses` and shown as 「用到 N 則記憶」 (markers are
 stripped from the text).
@@ -1186,11 +1200,11 @@ stripped from the text).
 |---|---|---|
 | GET / PATCH `/agent/settings` `{memory_enabled?, autopilot_default?, autopilot_explained?}` | user | → `{settings}` |
 | GET `/agent/tools` | user | `{tools:[{name,title,titleEn,risk,alwaysAsk,grantable,openWorld,suggests}]}` |
-| GET `/agent/pending` | user | pending approvals across my conversations → `{count, conversations:[{id,title,mode,n}]}` (badges) |
+| GET `/agent/pending` | user | pending approvals + deferred deletions across my conversations → `{count, conversations:[{id,title,mode,n}]}` (badges) |
 | GET `/agent/conversations?mode=chat\|interview&q=&limit=` | user (own) | `{conversations: (Conversation & {last_text, run_status, pending})[]}` newest first |
 | POST `/agent/conversations` `{mode?, context?, autopilot?, title?}` | user | autopilot / memory default from settings (interview: both off) → 201 `{conversation}` |
 | GET `/agent/conversations/:id` | owner | current branch only: `{conversation, messages (user/assistant/notice/compaction, each with memories, answers, versions: ids \| null), toolCalls, run (latest of the branch), grants, settings, resumeFrom}` |
-| PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?}` | owner | memory needs the user setting (409); emits `conversation` |
+| PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?}` | owner | memory needs the user setting (409); emits `conversation`; `autopilot:true` settles the open step's cards (`applyAutopilot`) |
 | GET `/agent/conversations/:id/activity` | owner | what still runs: `{assistant: bool (an active agent run), workflows: [{id, title, status}] (unfinished runs of the conversation), goals: [{id, title, status}] (unfinished goals)}` — the delete dialog's warning (`frontend/src/lib/agent/delete.ts`) |
 | DELETE `/agent/conversations/:id` `?stop_agents=1` | owner | with an active run or unfinished workflows and no `stop_agents` → 409 `{code:"active_agents"}`; otherwise cancels the active run, stops (`cancelWorkflow`) and **deletes every workflow run of the conversation** (`deleteConversationWorkflows`; drafts they wrote — decks, notes — stay; a still-running job sees the cancel on its heartbeat and a retry finds the run `missing`); memories stay |
 | POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext, intent?: "make_note", attachments?: AttachmentRef[] ≤ 10}` | owner | text and/or `ask_user` answers; `intent` = toolbar quick action (see Paper reading); `attachments` see Attachments (a ref the caller cannot read → 403/404 「附件 N：…」, nothing is sent); 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; 409 while running → 202 `{message, run}` |
@@ -1199,7 +1213,7 @@ stripped from the text).
 | POST `/agent/conversations/:id/messages/:messageId/activate` | owner | ‹ 1/2 ›: make that version current (cancels the active run) → `{ok, changed}`; 409 when it cannot be switched |
 | POST `/agent/conversations/:id/cancel` · `/continue` | owner | stop the active run · retry now (`awaiting_llm`) or start a new run on the same transcript → `{run}` |
 | POST `/agent/tool-calls/:id/decision` `{decision: approve\|approve_conversation\|deny, reason?, edited_args?}` | conversation owner | 409 when already decided → `{toolCall, resumed}` |
-| POST `/agent/tool-calls/:id/undo` | conversation owner | 「復原」 a `done` call that ran **without a card** (`approved_via` autopilot / conversation_grant) and carries an undo recipe (`tool_calls.result.undo`, never sent to the model): `create_task` / `create_note` → delete the object, only if the caller created it and its `updated_at` (+ note `version`) is unchanged since the call; `suggest_study_summary` under autopilot → put back the previous summary, only if the text is still what the AI wrote. Sets `result.undone_at`, emits `tool_call`; refused → 409 `內容在那之後已被修改…` / `這個操作已經復原過了。` → `{toolCall}` |
+| POST `/agent/tool-calls/:id/undo` | conversation owner | 「復原」 a `done` call that ran **without a card** (`approved_via` autopilot / conversation_grant) and carries an undo recipe (`tool_calls.result.undo`, never sent to the model): `create_task` / `create_note` → delete the object, only if the caller created it and its `updated_at` (+ note `version`) is unchanged since the call; `suggest_study_summary` under autopilot → put back the previous summary, only if the text is still what the AI wrote; `update_study_paper` reading-notes rewrite under autopilot → put back the previous notes, only while unchanged. Sets `result.undone_at`, emits `tool_call`; refused → 409 `內容在那之後已被修改…` / `這個操作已經復原過了。` → `{toolCall}` |
 | GET `/agent/conversations/:id/events` | owner | **SSE**; replays rows after `Last-Event-ID` (or `?after=`), then live (`LISTEN agent_events`, 5 s poll fallback, `: ping` 15 s); `?once=1` replays and closes |
 | GET `/memories?scope=&study=&q=` · GET `/memories/export` | user (own) | `{memories: Memory[], enabled}` · JSON attachment |
 | POST `/memories` `{content, scope?, study?, conversation_id?}` · PATCH `/memories/:id` · DELETE `/memories/:id` · DELETE `/memories` | user (own) | a user action is consent (no card); secrets refused (400); ≤ 500 per user |
@@ -1212,7 +1226,7 @@ SSE event types (data = JSON): `run {run}`, `conversation {conversation}`, `mess
 `branch {messageId}` (the current branch changed: reload).
 
 ```ts
-type PageContext = { path?, studyId?, studySlug?, noteId?, deckId?, page?, meetingId?, paperId? }; // server resolves studyTitle
+type PageContext = { path?, studyId?, studySlug?, noteId?, deckId?, page?, meetingId?, paperId?, taskId? }; // server resolves studyTitle; taskId from a 「#任務」 chip
 type ToolCallView = { id, run_id, message_id, step, position, tool, title, title_en, risk, always_ask, grantable, open_world, status,
   approved_via, approval_reason, decided_at, deny_reason, summary, target, args /* edited if edited */, edited,
   result: {data, links: {label,url,kind?}[], source} | null, error, undo: "available" | "done" | null, undone_at,
@@ -1230,7 +1244,7 @@ registerAgentTool({
   description: "…for the model (English, stable)…",
   input: z.object({ meeting_id: z.string().describe("Meeting id (uuid)") }),   // must be z.object; → JSON Schema (cached)
   risk: "read" | "write" | "destructive",   // static; split tools instead of a delete flag
-  alwaysAsk?, requireCard? /* (args) => true: card even under autopilot/grant */, grantable? /* default write && !alwaysAsk */, openWorld? /* sends data out: asks when tainted */,
+  alwaysAsk?, requireCard? /* (args) => true: card even under a grant (autopilot runs it) */, grantable? /* default write && !alwaysAsk */, openWorld? /* sends data out: asks when tainted */,
   idempotent?, suggests? /* produces a suggestion → MCP may expose it */, mcp? /* override exposure */,
   modes?: ["chat"] /* or "interview" */,
   target?: async (args, ctx) => ({ studyId, studySlug?, label, url? }) | null,   // throw 403/404 to fail without asking
@@ -1265,8 +1279,9 @@ the identifier online, reuses a same/likely lab copy, then fetches the open-acce
   `updateMilestone`, also used by PATCH `/studies/:ref/milestones/:id`: `done:true` records `milestone_done` once).
 - `update_study_paper {study, paper_id, reading_status?, tags?, notes_md? | edits?: [{before, after}]}` (write, study editors;
   same columns as PATCH `/studies/:ref/papers/:id`, `paper_read` activity). Reading notes are the user's own field: a call that
-  changes them is a **direct** update that always shows a card (`requireCard`, also under autopilot / grants); the card's
-  target label carries the line diff (「閱讀筆記 +N 行／−M 行」). Status/tag-only calls follow the normal policy.
+  changes them is a **direct** update that shows a card (`requireCard`, also under grants; autopilot runs it with an undo
+  recipe `paper_notes` that puts the previous notes back while unchanged); the card's target label carries the line diff
+  (「閱讀筆記 +N 行／−M 行」). `confirm_meeting_draft` is `requireCard` too (autopilot confirms directly). Status/tag-only calls follow the normal policy.
 - `latex_add_section {project_id, title, name?, after? (file id or path)}` (write; `addSectionFile`, collab path) ·
   `latex_update_project {project_id, compiler?, title?, bib_mode?}` (write; as PATCH `/latex/:id`: bib editors reconnect,
   `latex_meta` broadcast). Study editors only.
@@ -1339,6 +1354,7 @@ codes as there), images must be PNG/JPEG/WebP by Magika (≤ 10 MB); ≤ 50 uplo
 | GET `/agent/uploads/:id/text` | conversation owner | the extracted Markdown the assistant reads (document viewer) → `{upload (as POST), text_md}`, `no-store` |
 | GET `/agent/attach/studies?q=&limit=` | user | `{studies:[{id,slug,title,status,activity_at,mine,my_role,owner}]}` — mine first, archived last |
 | GET `/agent/attach/items?study=&kind=note\|paper\|deck\|meeting\|latex_project&q=&limit=` | user (study read) | `{study, kind, items}` most recent first (decks carry `versions` + `active_version_id`, LaTeX projects `text_files`) |
+| GET `/agent/attach/lookup?kind=deck\|paper\|note\|meeting\|latex_project\|study\|task&q=&study=&limit=` | user | 「#」 references (`agent/attachments/lookup.ts`): `{items:[{kind,id,title,study,url,date,sub,here}]}` across the lab; every whitespace term must be in the title (papers: also authors / cite keys) or close to a word of it (pg_trgm `word_similarity` ≥ 0.4); order: current study (`study` = id or slug; papers / meetings by membership) → studies I belong to → title prefix → similarity → newest; no `kind` = all kinds merged; empty `q` = newest; `limit` ≤ 30 (default 12) |
 | GET `/agent/attach/latex/:projectId/files` | user (study read) | text files, main first then sections in `\input` order, with section `heading` |
 | POST `/agent/attach/resolve` `{conversation_id?, attachments}` | user | display data of refs (same checks as sending) → `{attachments}` |
 
@@ -1348,7 +1364,15 @@ Frontend (`components/agent/attach/`): `AttachButton` (composer toolbar, icon-on
 「選擇章節」 step) with breadcrumb + back; 「上傳檔案」 (multiple, drag & drop); 「目前頁面」 shortcut from the page context and
 「瀏覽目前的研究」), `AttachmentTray` (chips above the input), `MessageAttachments` (chips above a sent user bubble; click opens
 the item, uploads open the file), `AttachDraft` state (uploads create the conversation on demand; send waits for uploads).
-Typing `@` at a word start opens the picker. The composer also takes **pasted clipboard images** (renamed
+Typing `@` at a word start opens the picker. **「#」 references** (`lib/agent/hashref.ts`, unit-tested; `attach/HashMenu.svelte`):
+`#` at a word start (not `C#`, `a#b`, `&#`, URLs) opens a listbox above the composer — kinds first (簡報 deck, 文獻/論文 paper,
+筆記 note, 會議 meeting, LaTeX/論文專案 latex_project, 研究 study, 任務/待辦 task; English keywords `slides`, `paper`, `note`,
+`meeting`, `latex`, `study`, `task`… too), then items: `#簡報 週報` / `#slides weekly` / `#簡報週報` search that kind, `#text`
+naming no kind searches all kinds (`GET /agent/attach/lookup`, the page's or conversation's study first). ↑↓ / Enter / Tab /
+Esc on the textarea (`aria-activedescendant`, a polite live region announces picks; Enter waits while results load). Picking
+a kind rewrites the token to `#簡報 `; picking an item replaces the token with `〈title〉` and adds a chip to the draft: attachable
+kinds are sent as attachment refs (so 「#簡報 … 改成英文」 hands the agent that `deck_id`); a study / task chip goes into the
+message's page context (`contextWithRefs`: `studyId`, `taskId` + the task's study; the last study chip wins). The composer also takes **pasted clipboard images** (renamed
 `pasted-<yyyymmdd-hhmmss>.<ext>`; text on the same clipboard still pastes) and **files dropped on it** (dashed overlay
 「放開以附加檔案」); both go through `AttachDraft.upload`, which checks type/size against `GET /agent/attach/formats` first
 (red chip 「不支援的檔案格式」/「檔案超過 N MB」), uploads one at a time over XHR (`attach/api.ts uploadFile`) and shows a
@@ -1387,7 +1411,14 @@ risk class (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`
 `{content:[{type:"text", text: <tool_result envelope>}], structuredContent, isError}`; 120 calls/min per token. OAuth for MCP
 (the kept OIDC provider) is not wired yet.
 
-Frontend: `/assistant[/<id>]` (`components/agent/AssistantWorkspace`), the global slide-over (`AskAiButton` in the topbar from
+Frontend: `/assistant[/<id>]` (`components/agent/AssistantWorkspace`: no card frame — the page takes the full content width
+(the shell drops its max-width there) and the viewport height; a conversation column (264 px, collapsible from `lg`,
+Ctrl/⌘+Shift+B; a sheet below `lg`) with 新對話 + search on top and `ConversationList` rows of one line each — title, status
+marks (pulsing dot = replying, count = approvals waiting, rocket = autopilot, workflow icon = agents/goals of the conversation
+from `agentActivity`, peach when one needs the user), time (today HH:mm, this week weekday, else M/D; ⋯ menu over it on hover,
+both visible on touch) — grouped 今天／昨天／本週／更早 with collapsible headings (localStorage `hub.assistant.foldedGroups`;
+the active conversation's group and searches stay open); a slim header row; the page's document viewer is a card beside the
+chat), the global slide-over (`AskAiButton` in the topbar from
 `sm`, a floating button above the tab bar on phones; full-screen sheet on phones; page context from the URL via
 `lib/agent/context.ts`, the paper reader `/library/<id>[?study=<slug>]` gives `paperId` + the study), `ChatView` (shared by page, panel and interview), `ConsentCard`, `ToolTimeline`/`ToolRow`,
 `Composer`, `MemorySettings` + `McpTokens` (settings tab 「AI 助理」), `StudyInterview` (`/studies/new` 「AI 訪談」:
@@ -1431,7 +1462,11 @@ in the chat (attachment chips, tool-result links, answer links — modifier/midd
 answer about a paper (`p. 5`, `pp. 4–6`, `第 5 頁` → chips that open the last paper attached/read up to that answer at that
 page), the 「文件」 menu (documents the conversation attached or touched, AI-edited ones marked; setting 「AI 修改時自動開啟」,
 localStorage), and automatically when a write tool call of the open conversation finishes (`notifyArtifactChanged`; calls
-present at load never open anything). Viewers (lazy) use only the routes the pages use, so they show only what the user may
+present at load never open anything). The viewer state is **per conversation** (`viewer.bindConversation(id, {adopt})`,
+called by `ViewerSplit` whenever the chat's conversation changes): switching saves the shown document, its open/closed state and
+the 「文件」 session list and restores the other conversation's own (none yet: empty and closed; phones restore it closed); a new
+chat starts empty; the conversation a new chat turns into (`ChatSession.createdId`) keeps what it opened. Kept in memory for
+the 30 most recent conversations of the tab. Viewers (lazy) use only the routes the pages use, so they show only what the user may
 read: deck = 「草稿預覽」 (newest ready `slide_preview` in `PreviewPane`'s sandboxed iframe; editors queue a preview when the
 source revision is newer; polls while a preview/AI draft runs; pending `deck_source` suggestions with 接受／拒絕) or
 「已發布版本」 (`SlidePlayer`); note / LaTeX file = live read-only Yjs view (`LiveText`: 閱讀 rendered / 標記 source with inline
@@ -1514,13 +1549,13 @@ the budget):
    objective + criteria + plan (steps with dependencies, role, inputs, expected output, how it is verified). Playbooks
    produce a deterministic skeleton that the orchestrator adapts to the request; slides also produce the **page-by-page
    outline** (title + key points), which the plan card always shows in full. → `awaiting_plan_approval` (notification
-   「工作計畫待確認」). **Autopilot** (`src/workflows/autopilot.ts`, pure, unit-tested): the plan is approved
-   automatically when the playbook is `autoApprovable` and **every** `plan.writes[].effect` is draft-only (`new` object,
-   `draft_own` = a new revision of the run's own draft deck or an untouched template, `suggestion`) — **also when the
-   run is tainted** (it read papers, others' notes, study content): taint guards exfiltration and overwrites, and a
-   draft-only plan does neither. `overwrite` (e.g. writing into an existing edited deck), `publish`, `delete`,
-   `outbound` or a write without an effect → the plan card waits (log 「自動駕駛：這個計畫會…，需要你確認」). The
-   timeline logs 「自動駕駛已自動核准計畫…」, the card keeps the plan visible (「查看計畫」) with 暫停 / 「修改計畫」:
+   「工作計畫待確認」). **Autopilot = 完全自動** (`src/workflows/autopilot.ts`, pure, unit-tested): the plan of an
+   `autoApprovable` playbook is approved automatically **whatever its writes** — draft-only (`new`, `draft_own`,
+   `suggestion`; log 「…只會寫入新的草稿或建議…」) or not (`overwrite` of an edited deck — a new revision, the old one is
+   kept —, `publish`, library imports without a draft effect; log 「自動駕駛已自動核准計畫（完全自動）：計畫包含「…」；覆蓋前的
+   內容都留有版本…」), also when the run is tainted. Only an `outbound` write in a tainted run (exfiltration) and a
+   manual revise wait (log 「自動駕駛：這個計畫會…，需要你確認」). No playbook deletes (a deletion would go through the
+   assistant's deferred card). The card keeps the plan visible (「查看計畫」) with 暫停 / 「修改計畫」:
    `POST …/revise` on an auto-approved run that is running sets `pause_requested` + `revise_requested` (the engine stops
    between sub-agent calls and re-plans), on a paused one re-plans at once; the new plan then always waits for the user
    (`manual_approval`). Drafts already written are reused (`draft_own`).
@@ -1659,8 +1694,8 @@ abstract-only run, title 「論文報告（僅依摘要）」, subtitle and plan
 `failed`). Tool results and sub-agent outputs are untrusted data for the orchestrator (wrapped in `<data>` blocks with
 the injection notice; never instructions). Content the owner did not author (papers, others' notes, meetings, web) sets
 `tainted` (+ `taint_sources`, shown on the card): its plan card says which sources it read, open-world search stops,
-and autopilot approves it only when every planned write is draft-only (above). Write targets are chosen by the playbook code, never by model output, and are listed on the plan card
-(`plan.writes`). Publishing a deck version (`POST …/publish`) always needs the user's click. Nothing is sent outside
+and an `outbound` write waits for the user even under autopilot (above). Write targets are chosen by the playbook code, never by model output, and are listed on the plan card
+(`plan.writes`). No tool or playbook publishes today; a plan declaring `publish` (a new deck version, older versions stay) is approved under autopilot and waits otherwise. Nothing is sent outside
 the hub except the open-world search query rules of the assistant.
 
 **Playbooks** (`registerWorkflowPlaybook(def)`, `src/workflows/playbooks/`; `def = {id, title, titleEn, description,
@@ -1675,7 +1710,7 @@ plans with it.
 | `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection → integrate → compile-verify (new file) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
 | `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis; a study with < 2 papers gets card `lit_too_few` (改做主題調研 → `redirect` to `topic_research` / 我先加入論文 → the old question), autopilot redirects directly | new note | `table_rows` ≥ papers, `citations`, judge |
 | `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate; no resolvable paper + a topic-like request (`isTopicRequest`) → `redirect` to `topic_research` | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
-| `topic_research` | 主題調研 (detect 0.9: `TOPIC_RE` — 有哪些…做法/方法, 調研, 研究現況, survey, state of the art, related approaches, 找…論文 — and no `paper_id` / arXiv id / DOI) | planning: sub-questions (outline, editable) with expanded keyword queries → **one search batch** + citation snowballing, then tainted → planner picks 8–12 papers (seminal + recent) incl. relevant study papers (step `research`, passed); per paper `paper_i` (parallel): import + structured full-text extraction (數字表), 「僅依摘要」 without a PDF → `taxonomy` → `approaches` ∥ `results` ∥ `practice` (stack named) ∥ `discussion` → `polish` (consistency + concision) → assemble (+ 參考文獻, 搜尋紀錄) | new note; `paper` write 「匯入 N 篇論文到實驗室文獻庫…」 (no draft effect → autopilot waits) | `sections_present`, `topic_taxonomy`, `topic_approaches`, `topic_cites`, `topic_numbers`, `topic_results_coverage`, `topic_consistency`, `topic_concise`, `topic_reading`, judge |
+| `topic_research` | 主題調研 (detect 0.9: `TOPIC_RE` — 有哪些…做法/方法, 調研, 研究現況, survey, state of the art, related approaches, 找…論文 — and no `paper_id` / arXiv id / DOI) | planning: sub-questions (outline, editable) with expanded keyword queries → **one search batch** + citation snowballing, then tainted → planner picks 8–12 papers (seminal + recent) incl. relevant study papers (step `research`, passed); per paper `paper_i` (parallel): import + structured full-text extraction (數字表), 「僅依摘要」 without a PDF → `taxonomy` → `approaches` ∥ `results` ∥ `practice` (stack named) ∥ `discussion` → `polish` (consistency + concision) → assemble (+ 參考文獻, 搜尋紀錄) | new note; `paper` write 「匯入 N 篇論文到實驗室文獻庫…」 (no draft effect → waits for the user unless autopilot) | `sections_present`, `topic_taxonomy`, `topic_approaches`, `topic_cites`, `topic_numbers`, `topic_results_coverage`, `topic_consistency`, `topic_concise`, `topic_reading`, judge |
 | `experiment_report` | 實驗報告筆記 | researcher (notes / pasted results) → writer (tables, ```chart) | new note | `table_rows`, `chart_blocks`, `numbers_from_source` |
 | `meeting_prep` | 會議準備 | researcher (open tasks, last feedback, deck changes, recent activity) → writer agenda | new note | `sections_present`, judge |
 | `paper_outline` | 論文大綱 (`playbooks/paper.ts`) | sources = the handed-over notes (`note_ids`) else the newest research / reading notes + the study library with cite keys (step `research`, passed) → writer: fixed Markdown (`# 論文大綱：…`, `## 論文題目`, `## 主要貢獻`, `## 章節規劃` with `### n. 節名` + bullets + 「引用：[@key]」, `## 參考文獻`) → assemble; empty library and no notes → question | new note (kind research) | `sections_present` (三段), `outline_sections` (≥ 4 sections, each with points), `citations`, judge |
@@ -1840,11 +1875,11 @@ silently substituted: when no playbook produces it, `deliverable.direct = false`
   plan|replan|user}]`, `current`, `autopilot`, `context`, `readiness`, `state {template, planner, replans, rounds}`, `history`
   (≤ 60 lines), `question`, `report {summary_md, done[], issues[]}`.
 - **Run** (`advance.ts`): the user confirms the roadmap once (「開始」; under autopilot it starts at once when every stage is
-  auto-approvable and none imports papers (`topic_research`)). A stage starts as an ordinary run (per-user queue applies) with
+  auto-approvable, `autoRoadmap`). A stage starts as an ordinary run (per-user queue applies) with
   `goal_id`, the request + 「（目標「…」的第 i/n 個階段：why；最終成果：…）」 and `stageInputs`: its inputs + the artifacts of the
   stages it `uses` (notes → `note_ids` ≤ 6, LaTeX project → `project_id`, deck → `deck_id`). Its plan is approved by the goal
   (`autoApproval({goal: true})`: also writes without a draft effect such as a library import; `overwrite` / `publish` /
-  `delete` / `outbound` still wait). When the run's job stops (`runWorkflow`'s `finally` → `goalAfterRun`; also
+  `delete` / `outbound` still wait — except under autopilot, where the stage plan is approved like any autopilot plan). When the run's job stops (`runWorkflow`'s `finally` → `goalAfterRun`; also
   `cancelWorkflow`): waiting (plan card / question / needs PDF / paused) → stage `waiting` (the card opens that stage);
   done / partial → stage records artifacts, summary and issues, **re-plan** (`replanAfter`: a `topic_research` stage that left
   < 4 PDFs before an outline / paper / review gets one more round, ≤ 2 rounds per goal; LLM-planned goals ask `goal_replan`
@@ -1907,7 +1942,7 @@ planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
 |---|---|---|
 | GET `/workflows/playbooks` | user | `{playbooks: [{id, title, title_en, description, description_en, auto_approvable}]}` |
 | POST `/workflows` `{request ≤ 4000, playbook?, conversation_id?, context?, inputs?: {study?, paper_id?, deck_id?, project_id?, note_ids?, paper_ids? ≤ 10, pages?}, autopilot?}` | user (study read; writes are re-checked at run time) | admins 403; 503 `llm_unavailable` when `assistant` is down; playbook auto-detected when missing; context inherited / batch split / over 3 working runs → `queued` (never 409) → 201 `{workflow (first), workflows (the batch, or [workflow]), batch_id, conversation_id}` |
-| GET `/workflows/active` | user (own; admins → empty) | shell indicator 「N 個 Agent 執行中」: `{runs: ActiveAgentRun[], count, needs_you}` (`src/workflows/active.ts`) — my active workflow runs + the newest assistant run of each conversation when `running`/`awaiting_approval`/`awaiting_llm`, or ended on an unanswered `ask_user` card in the last 24 h (chat mode; status `awaiting_input`). `ActiveAgentRun = {kind: workflow\|assistant\|goal, id, title, objective, status, needs_you (awaiting_plan_approval/awaiting_input/needs_pdf/awaiting_approval; `queued` runs are listed too), conversation_id, study, current: {role (step role \| tool), text} \| null (latest `activity` event / running step / running tool call), progress: {done,total} (steps passed+skipped), plan: {done,total,current} (assistant: newest update_plan of the current turn), step: {step,max}, budget_pct, tokens, artifacts[≤4], action, focus, href, started_at, updated_at}`, needs-you first; `no-store`; polled (no SSE). Deep link to what waits: `action` = `approve_plan` (workflow plan card) \| `answer` (workflow question card / `needs_pdf` / `ask_user` card) \| `review` (consent card) \| null; `focus` = `workflow:<runId>`, `goal:<goalId>` (a goal and its stage runs; also the jobs tray and notifications of goal stages) or `toolcall:<toolCallId>` (the first `pending_approval` call / the last `ask_user` call of the current turn); `href` = `/assistant/<conversationId>?focus=<focus>` or, for a run without a conversation, `/assistant/workflows?run=<id>` (`focusHref`, also used by workflow notifications and the jobs tray) |
+| GET `/workflows/active` | user (own; admins → empty) | shell indicator 「N 個 Agent 執行中」: `{runs: ActiveAgentRun[], count, needs_you}` (`src/workflows/active.ts`) — my active workflow runs + the newest assistant run of each conversation when `running`/`awaiting_approval`/`awaiting_llm`, or ended on an unanswered `ask_user` card in the last 24 h (chat mode; status `awaiting_input`), plus one entry per conversation with deferred deletions (`kind assistant`, `id deferred:<conversationId>`, status `pending_delete`, `action review`, focus = the oldest deferred card; no stop button). `ActiveAgentRun = {kind: workflow\|assistant\|goal, id, title, objective, status, needs_you (awaiting_plan_approval/awaiting_input/needs_pdf/awaiting_approval; `queued` runs are listed too), conversation_id, study, current: {role (step role \| tool), text} \| null (latest `activity` event / running step / running tool call), progress: {done,total} (steps passed+skipped), plan: {done,total,current} (assistant: newest update_plan of the current turn), step: {step,max}, budget_pct, tokens, artifacts[≤4], action, focus, href, started_at, updated_at}`, needs-you first; `no-store`; polled (no SSE). Deep link to what waits: `action` = `approve_plan` (workflow plan card) \| `answer` (workflow question card / `needs_pdf` / `ask_user` card) \| `review` (consent card) \| null; `focus` = `workflow:<runId>`, `goal:<goalId>` (a goal and its stage runs; also the jobs tray and notifications of goal stages) or `toolcall:<toolCallId>` (the first `pending_approval` call / the last `ask_user` call of the current turn); `href` = `/assistant/<conversationId>?focus=<focus>` or, for a run without a conversation, `/assistant/workflows?run=<id>` (`focusHref`, also used by workflow notifications and the jobs tray) |
 | GET `/workflows?active=1&study=&status=&conversation=&batch=&limit=` | user (own) | `{workflows: WorkflowView[]}` newest first (`batch`: in batch order; no steps); `active` includes `queued` / `needs_pdf` |
 | GET `/workflows/:id` | owner | `{workflow, steps: StepView[], resumeFrom}` |
 | GET `/workflows/:id/events` | owner | SSE (as the agent's: `Last-Event-ID` / `?after=`, `?once=1`, 15 s ping, 5 s poll fallback) |

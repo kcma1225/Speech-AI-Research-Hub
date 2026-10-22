@@ -13,10 +13,12 @@
   import QuestionNav from "./QuestionNav.svelte";
   import AttachButton from "./attach/AttachButton.svelte";
   import AttachmentTray from "./attach/AttachmentTray.svelte";
+  import HashMenu from "./attach/HashMenu.svelte";
   import { AttachDraft } from "./attach/state.svelte.ts";
   import { namePasted } from "./attach/api.ts";
   import type { ChatSession } from "#lib/agent/chat.svelte.ts";
   import { contextLabel } from "#lib/agent/context.ts";
+  import { contextWithRefs } from "#lib/agent/hashref.ts";
   import { answersByCall, askArgs } from "#lib/agent/ask.ts";
   import { buildTranscript } from "#lib/agent/transcript.ts";
   import { agentActivity } from "#lib/agent/activity.svelte.ts";
@@ -108,6 +110,8 @@
   const running = $derived(run?.status === "running");
   const acting = $derived(session.toolCalls.some((c) => c.status === "running" && c.approved_via === "autopilot"));
   const ctx = $derived(dropContext ? null : context);
+  // 「#」 references rank the current study first: the page's, else the conversation's.
+  const refStudy = $derived(ctx?.studySlug ?? ctx?.studyId ?? session.conversation?.context?.studyId ?? session.conversation?.study_id ?? null);
   const ctxLabel = $derived(contextLabel(ctx));
   // When an answer finishes, give the composer its focus back (desktop only: on phones it would pop the keyboard),
   // unless the user has moved on to something else on the page.
@@ -143,7 +147,7 @@
   const allItems = $derived(buildTranscript(session.messages, session.toolCalls, { answered: new Set(answered.keys()), live: replying }));
   // Workflow status notices (「…需要你補充資訊」) duplicate the workflow card: only the latest one, and only while it is the
   // last thing in the chat, stays visible (the bell keeps the notification).
-  const items = $derived(allItems.filter((e, i) => !(e.kind === "message" && e.message.role === "notice" && e.message.kind?.startsWith("workflow_") && i !== allItems.length - 1)));
+  const items = $derived(allItems.filter((e, i) => !(e.kind === "message" && e.message.role === "notice" && (e.message.kind?.startsWith("workflow_") || e.message.kind?.startsWith("goal_")) && i !== allItems.length - 1)));
   const lastUserSeq = $derived(session.messages.findLast((m) => m.role === "user")?.seq ?? -1);
   // 「重新產生」 on the latest assistant reply (after the last user message, nothing running).
   const regenerateId = $derived.by(() => {
@@ -298,9 +302,10 @@
   async function handToAgent(request: string) {
     if (!request.trim()) return void toasts.show(t("wf.handOffEmpty"), "error");
     const was = session.id;
+    const sendCtx = contextWithRefs(ctx, attachments.contextRefs);
     try {
-      if (!session.id) await session.create({ context: ctx, ...(draftAutopilot ? { autopilot: true } : {}) });
-      await workflowsApi.create({ request: request.trim(), conversation_id: session.id!, ...(ctx ? { context: ctx } : {}) });
+      if (!session.id) await session.create({ context: sendCtx, ...(draftAutopilot ? { autopilot: true } : {}) });
+      await workflowsApi.create({ request: request.trim(), conversation_id: session.id!, ...(sendCtx ? { context: sendCtx } : {}) });
       void agentActivity.refresh();
       text = "";
       await session.reload();
@@ -319,14 +324,17 @@
     if (!intent && attachments.busy) return void toasts.show(t("attach.waitUploads"), "error");
     if (!intent && attachments.items.some((i) => i.error)) return void toasts.show(t("attach.uploadErrors"), "error");
     const refs = intent ? [] : attachments.refs;
+    // 「#」 study / task chips travel as page context.
+    const sendCtx = intent ? ctx : contextWithRefs(ctx, attachments.contextRefs);
+    const chips = !intent && attachments.items.length > 0;
     // The quick action keeps whatever the user is typing.
     if (!intent) text = "";
     try {
-      if (!session.id && draftAutopilot) await session.create({ context: ctx, autopilot: true });
-      await session.send(value, ctx, intent, refs);
+      if (!session.id && draftAutopilot) await session.create({ context: sendCtx, autopilot: true });
+      await session.send(value, sendCtx, intent, refs);
       // The shell's 「N 個 Agent 執行中」 picks the new run up now, not at its next idle poll.
       setTimeout(() => void agentActivity.refresh(), 800);
-      if (refs.length) attachments.clear();
+      if (chips) attachments.clear();
       atBottom = true;
       toBottom();
       if ((!was || createdForUpload) && session.id) {
@@ -539,11 +547,12 @@
     </div>
   {/if}
 
-  <div data-chat-bottom class="mx-auto w-full max-w-[760px] {compact ? 'px-3 pb-3' : 'px-4 pb-4 sm:px-6'} pb-[max(12px,env(safe-area-inset-bottom))]">
+  <div data-chat-bottom class="relative mx-auto w-full max-w-[760px] {compact ? 'px-3 pb-3' : 'px-4 pb-4 sm:px-6'} pb-[max(12px,env(safe-area-inset-bottom))]">
     {#if session.id && !session.live && !session.loading}
       <p class="mb-1.5 text-center text-[12px] text-ink-3" role="status">{t("agent.offline")}</p>
     {/if}
     <AiGate role="assistant">
+      {#if !interview}<HashMenu textarea={input} bind:value={text} draft={attachments} study={refStudy} disabled={!input} />{/if}
       <Composer
         bind:value={text}
         bind:ref={input}

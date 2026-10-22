@@ -165,10 +165,11 @@ function makeTurn(group: Message[], byMessage: Map<string, ToolCall[]>, answered
   const notices = group.filter((m) => m.role === "notice");
   const calls = assistant.flatMap((m) => byMessage.get(m.id) ?? []);
   const isAsk = (c: ToolCall) => c.tool === "ask_user" && c.status === "done" && !!askArgs(c);
-  const pending = calls.filter((c) => c.status === "pending_approval");
+  // Open cards: consent cards of the step, and deletions autopilot deferred (they never hold the turn).
+  const pending = calls.filter((c) => c.status === "pending_approval" || c.status === "deferred");
   const asks = calls.filter((c) => isAsk(c) && !answered.has(c.id));
   const workflows = calls.filter((c) => !!workflowIdOf(c));
-  const activity = calls.filter((c) => c.status !== "pending_approval" && c.tool !== "update_plan" && !isAsk(c) && !workflowIdOf(c));
+  const activity = calls.filter((c) => c.status !== "pending_approval" && c.status !== "deferred" && c.tool !== "update_plan" && !isAsk(c) && !workflowIdOf(c));
   const withText = assistant.filter((m) => m.text.trim());
   // While the turn works, a message with text is the answer only when it is the newest one and called no tools (a
   // preamble before tool calls is part of the process); once it ended, the newest text is the answer.

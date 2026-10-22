@@ -23,6 +23,8 @@ export class ChatSession {
   sending = $state(false);
   /** SSE connection state: lost connections reconnect by themselves. */
   live = $state(false);
+  /** The conversation this session created itself (from a new chat); the viewer keeps that chat's documents. */
+  createdId: string | null = null;
 
   private source: EventSource | null = null;
   private pending = { text: "", reasoning: "" };
@@ -78,6 +80,7 @@ export class ChatSession {
 
   async create(opts: { context?: PageContext | null; autopilot?: boolean; title?: string } = {}) {
     const r = await api.post<{ conversation: Conversation }>("/agent/conversations", { mode: this.mode, ...(opts.context ? { context: opts.context } : {}), ...(opts.autopilot !== undefined ? { autopilot: opts.autopilot } : {}), ...(opts.title ? { title: opts.title } : {}) });
+    this.createdId = r.conversation.id;
     await this.open(r.conversation.id);
     return r.conversation;
   }
