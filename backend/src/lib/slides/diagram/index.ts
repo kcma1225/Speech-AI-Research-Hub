@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { GlyphSink } from "./fonts.js";
-import { architecture, comparison, cycle, encoderDecoder, graph, pipeline, timeline, tree, type Fit } from "./layouts.js";
+import { architecture, comparison, cycle, encoderDecoder, graph, grid, pipeline, timeline, tree, type Fit } from "./layouts.js";
 import { renderScene } from "./render.js";
 import { COMPACT, KIND_STYLE, LARGE, NORMAL, sceneBox, sceneMinFont, type Box, type Scale, type Scene, type SNode } from "./scene.js";
 import { parseDiagram, type DiagramSpec, type DLegend } from "./spec.js";
@@ -42,6 +42,8 @@ function layoutScene(spec: DiagramSpec, sc: Scale, fit: Fit): Scene {
       return tree(ctx);
     case "graph":
       return graph(ctx);
+    case "grid":
+      return grid(ctx);
   }
 }
 
@@ -198,7 +200,7 @@ export function renderDiagram(spec: DiagramSpec, fit: Fit = { w: 1120, h: 470 })
   const pad = PAD;
   const view = { x: best.box.x - pad, y: best.box.y - pad, w: best.box.w + 2 * pad, h: best.box.h + 2 * pad };
   const sink = new GlyphSink();
-  const title = spec.title ?? [...spec.nodes.values()].map((n) => plainLabel(n.label)).slice(0, 8).join(" → ");
+  const title = spec.title ?? [...spec.nodes.values()].map((n) => plainLabel(n.label)).slice(0, 8).join(spec.type === "grid" ? " · " : " → ");
   const svg = renderScene(best.scene, sink, { width: view.w * s, height: view.h * s, view, title, minFont: minFont0 * s, badges: badgesOf(best.scene, NORMAL) });
   return { svg, width: Math.round(view.w * s), height: Math.round(view.h * s), minFont: Math.round(minFont0 * s * 10) / 10, problems };
 }

@@ -23,6 +23,7 @@ import { budgetFor, DEFAULT_BUDGET, FINISHED_STATUSES, type Criterion, type RunR
 import { randomUUID } from "node:crypto";
 import { batchPapers, batchRequest, conversationContext, studyFromText } from "./context.js";
 import { lockUserSlots, MAX_ACTIVE_PER_USER, promoteAllQueued, promoteQueued, slotUsage } from "./queue.js";
+import { fixLine, loadLedger } from "./ledger.js";
 
 export { MAX_ACTIVE_PER_USER } from "./queue.js";
 
@@ -259,8 +260,11 @@ async function reopenForMore(client: Queryable, id: string) {
   const failed = steps.filter((s) => s.status === "failed" || s.status === "skipped" || s.status === "cancelled");
   const keys = new Set(failed.map((s) => s.key));
   for (const s of failed) {
-    const issues = (s.verdict?.issues ?? []).filter((i) => i.severity !== "low").map((i) => i.text);
-    await client.query("UPDATE workflow_steps SET status='pending', error=NULL, round=CASE WHEN $3 THEN round+1 ELSE round END, max_rounds=round+2, attempts=round, inputs = inputs || jsonb_build_object('fix_issues', $2::jsonb) WHERE id=$1", [s.id, JSON.stringify(issues), issues.length > 0 && !!s.output]);
+    // The user asks for more: issues the convergence guard set aside (unresolved / stuck) are open again with a fresh count.
+    const ledger = loadLedger(s.inputs?.ledger);
+    for (const i of ledger.items) if (i.status === "unresolved" || i.status === "open") Object.assign(i, { status: "open", rounds: 0 });
+    const issues = [...new Set([...(s.verdict?.issues ?? []).filter((i) => i.severity !== "low" && !i.id).map((i) => i.text), ...ledger.items.filter((i) => i.status === "open").map(fixLine)])];
+    await client.query("UPDATE workflow_steps SET status='pending', error=NULL, round=CASE WHEN $3 THEN round+1 ELSE round END, max_rounds=round+2, attempts=round, inputs = inputs || jsonb_build_object('fix_issues', $2::jsonb, 'ledger', $4::jsonb) WHERE id=$1", [s.id, JSON.stringify(issues), issues.length > 0 && !!s.output, JSON.stringify(ledger)]);
   }
   // Dependents (integrate/final) run again after the fixes.
   let grew = true;
@@ -327,6 +331,8 @@ export async function cancelWorkflow(app: FastifyInstance, user: CurrentUser, id
   await insertWorkflowEvent(app.db, id, "log", { level: "warn", text: "已停止；已經寫入的草稿會保留。" });
   const out = await emitRun(app.db, id);
   await promoteQueued(app.db, user.id).catch(() => undefined);
+  // A goal stage stopped by the user: the goal asks whether to retry, skip or stop (a running job reports too; idempotent).
+  if (out?.goal_id) await (await import("./goals/advance.js")).goalAfterRun({ db: app.db }, id).catch((e) => app.log.warn({ err: e, workflowId: id }, "goal advance failed"));
   return out;
 }
 
@@ -361,14 +367,18 @@ export async function deleteWorkflow(app: FastifyInstance, user: CurrentUser, id
   await app.db.query("DELETE FROM workflow_runs WHERE id=$1", [id]);
 }
 
-/** What still runs for a conversation: its assistant turn and its unfinished workflows (the delete warning). */
+/** What still runs for a conversation: its assistant turn, its unfinished workflows and goals (the delete warning). */
 export async function conversationActivity(db: Queryable, conversationId: string) {
+  const goals = (await db.query<{ id: string; title: string; status: string }>(
+    "SELECT id, title, status FROM workflow_goals WHERE conversation_id=$1 AND status IN ('planning','awaiting_approval','running','awaiting_input') ORDER BY created_at",
+    [conversationId],
+  )).rows;
   const assistant = Boolean((await db.query("SELECT 1 FROM agent_runs WHERE conversation_id=$1 AND status IN ('running','awaiting_approval','awaiting_llm') LIMIT 1", [conversationId])).rowCount);
   const workflows = (await db.query<{ id: string; title: string; status: string }>(
     "SELECT id, title, status FROM workflow_runs WHERE conversation_id=$1 AND status <> ALL($2::text[]) ORDER BY created_at",
     [conversationId, FINISHED_STATUSES],
   )).rows;
-  return { assistant, workflows };
+  return { assistant, workflows, goals };
 }
 
 /**
@@ -376,6 +386,8 @@ export async function conversationActivity(db: Queryable, conversationId: string
  * on its next heartbeat), then every run of the conversation is deleted. Drafts they already wrote (decks, notes) stay.
  */
 export async function deleteConversationWorkflows(app: FastifyInstance, user: CurrentUser, conversationId: string) {
+  // Goals first, so stopping their stage runs below does not advance them to the next stage.
+  await app.db.query("DELETE FROM workflow_goals WHERE conversation_id=$1 AND user_id=$2", [conversationId, user.id]);
   const rows = (await app.db.query<{ id: string; status: RunRow["status"] }>("SELECT id, status FROM workflow_runs WHERE conversation_id=$1 AND user_id=$2", [conversationId, user.id])).rows;
   for (const r of rows) if (!FINISHED_STATUSES.includes(r.status)) await cancelWorkflow(app, user, r.id).catch(() => undefined);
   if (rows.length) await app.db.query("DELETE FROM workflow_runs WHERE id = ANY($1::uuid[])", [rows.map((r) => r.id)]);

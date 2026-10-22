@@ -55,7 +55,7 @@ run("conversation delete with running agents", () => {
 
   it("a conversation with nothing running deletes without confirmation", async () => {
     const conv = (await req("POST", "/api/agent/conversations", { title: "閒聊" })).json().conversation.id as string;
-    expect((await req("GET", `/api/agent/conversations/${conv}/activity`)).json()).toEqual({ assistant: false, workflows: [] });
+    expect((await req("GET", `/api/agent/conversations/${conv}/activity`)).json()).toEqual({ assistant: false, workflows: [], goals: [] });
     expect((await req("DELETE", `/api/agent/conversations/${conv}`)).statusCode).toBe(200);
   });
 });

@@ -120,6 +120,7 @@ registerAgentTool({
         title: scrub(h.record.title), authors: authorsOf(h.record), year: h.record.year ?? null, venue: h.record.venue ?? h.record.containerTitle ?? null,
         doi: h.record.doi ?? null, arxiv_id: h.record.arxivId ?? null, abstract: clip(scrub(h.record.abstract ?? ""), 600),
         in_library: m && (m.level === "same" || m.level === "likely") ? m.paper.id : null,
+        open_access: !!(h.record.oaPdfUrl || h.record.arxivId),
       });
     }
     return { data: { query, hits: hitsOut, errors: result.errors, skipped: result.skipped }, untrusted: true, source: "線上搜尋結果" };
@@ -135,6 +136,58 @@ async function linkIntoStudy(ctx: AgentToolContext, client: import("pg").PoolCli
   return r;
 }
 
+/**
+ * Imports a paper by identifier into the lab library (an existing lab copy is reused) and links it to the study, then
+ * fetches its open-access PDF (identifiers only leave the hub). Used by `import_paper` and the topic-research workflow
+ * (after the user approved the plan that lists the imports). Edit access is re-checked inside the transaction.
+ */
+export async function importIntoStudy(ctx: AgentToolContext, studyId: string, identifier: string, pdfOpts: { budgetMs?: number; queueOnFailure?: boolean } = {}) {
+  if (!parseIdentifier(identifier)) throw badRequest("看不懂這個識別碼，請提供 DOI、arXiv 編號或論文網址。");
+  throttle(ctx.user.id);
+  const { service } = await libraryService(ctx.db);
+  const resolved = await service.resolveIdentifier(identifier).catch((e) => {
+    throw sourceError(e);
+  });
+  if (!resolved) throw notFound("找不到這個識別碼對應的文獻。");
+  const record = resolved.record;
+  const out = await withEditableStudy(ctx, studyId, async (client, locked) => {
+    const matches = await findPaperMatches(client, record, 3);
+    const best = matches.find((m) => m.level === "same") ?? matches.find((m) => m.level === "likely");
+    let paper: PaperRow;
+    let created = false;
+    if (best) paper = best.level === "same" ? await mergeIntoPaper(client, (await getPaper(client, best.paper.id, true))!, record, ctx.user.id) : best.paper;
+    else {
+      try {
+        await client.query("SAVEPOINT agent_add_paper");
+        paper = await insertPaper(client, record, ctx.user.id);
+        created = true;
+      } catch (e) {
+        if (!isUniqueViolation(e)) throw e;
+        await client.query("ROLLBACK TO SAVEPOINT agent_add_paper");
+        throw conflict("文獻庫已有相同識別碼的文獻。");
+      }
+    }
+    const r = await linkIntoStudy(ctx, client, locked, paper);
+    return { paper, created, ...r };
+  });
+  // Full text right away when it is open access (≤ ~20 s, else a background job): the assistant should read the paper.
+  const pdf = await autoFetchPdf(ctx.db, ctx.app.storage, out.paper, ctx.user.id, { signal: ctx.signal, ...pdfOpts }).catch((e): AutoPdfOutcome => {
+    ctx.app.log.warn({ err: e, paperId: out.paper.id }, "auto pdf fetch failed");
+    return { status: "failed" };
+  });
+  return { ...out, pdf, hasPdf: pdf.status === "stored" || pdf.status === "exists" };
+}
+
+/** Links a paper already in the lab library to the study (the topic-research workflow's in-library candidates). */
+export async function linkPaperToStudy(ctx: AgentToolContext, studyId: string, paperId: string) {
+  if (!isUuid(paperId)) throw notFound(PAPER_MISSING);
+  return withEditableStudy(ctx, studyId, async (client, access) => {
+    const paper = await getPaper(client, paperId);
+    if (!paper) throw notFound(PAPER_MISSING);
+    return { paper, ...(await linkIntoStudy(ctx, client, access, paper)) };
+  });
+}
+
 registerAgentTool({
   name: "import_paper",
   title: "匯入論文",
@@ -147,40 +200,7 @@ registerAgentTool({
   target: async (a, ctx) => ({ ...studyTarget(await editStudy(ctx, a.study)), url: undefined }),
   async execute(a, ctx) {
     const access = await editStudy(ctx, a.study);
-    if (!parseIdentifier(a.identifier)) throw badRequest("看不懂這個識別碼，請提供 DOI、arXiv 編號或論文網址。");
-    throttle(ctx.user.id);
-    const { service } = await libraryService(ctx.db);
-    const resolved = await service.resolveIdentifier(a.identifier).catch((e) => {
-      throw sourceError(e);
-    });
-    if (!resolved) throw notFound("找不到這個識別碼對應的文獻。");
-    const record = resolved.record;
-    const out = await withEditableStudy(ctx, access.study.id, async (client, locked) => {
-      const matches = await findPaperMatches(client, record, 3);
-      const best = matches.find((m) => m.level === "same") ?? matches.find((m) => m.level === "likely");
-      let paper: PaperRow;
-      let created = false;
-      if (best) paper = best.level === "same" ? await mergeIntoPaper(client, (await getPaper(client, best.paper.id, true))!, record, ctx.user.id) : best.paper;
-      else {
-        try {
-          await client.query("SAVEPOINT agent_add_paper");
-          paper = await insertPaper(client, record, ctx.user.id);
-          created = true;
-        } catch (e) {
-          if (!isUniqueViolation(e)) throw e;
-          await client.query("ROLLBACK TO SAVEPOINT agent_add_paper");
-          throw conflict("文獻庫已有相同識別碼的文獻。");
-        }
-      }
-      const r = await linkIntoStudy(ctx, client, locked, paper);
-      return { paper, created, ...r };
-    });
-    // Full text right away when it is open access (≤ ~20 s, else a background job): the assistant should read the paper.
-    const pdf = await autoFetchPdf(ctx.db, ctx.app.storage, out.paper, ctx.user.id, { signal: ctx.signal }).catch((e): AutoPdfOutcome => {
-      ctx.app.log.warn({ err: e, paperId: out.paper.id }, "auto pdf fetch failed");
-      return { status: "failed" };
-    });
-    const hasPdf = pdf.status === "stored" || pdf.status === "exists";
+    const { pdf, hasPdf, ...out } = await importIntoStudy(ctx, access.study.id, a.identifier);
     return {
       data: {
         paper: { ...compactPaper(out.paper), has_pdf: hasPdf },

@@ -210,8 +210,8 @@ export default async function agent(app: FastifyInstance) {
     await ownConversation(app, user.id, id);
     // Agents still running: refuse unless the caller confirmed stopping them (the dialog showed the warning).
     const activity = await conversationActivity(app.db, id);
-    if (!stop_agents && (activity.assistant || activity.workflows.length)) {
-      throw new HttpError(409, `這個對話還有 ${activity.workflows.length ? `${activity.workflows.length} 個 Agent 工作流程` : "AI 回覆"}正在進行；刪除對話會一併停止並刪除它們。`, { code: "active_agents" });
+    if (!stop_agents && (activity.assistant || activity.workflows.length || activity.goals.length)) {
+      throw new HttpError(409, `這個對話還有 ${activity.goals.length ? `${activity.goals.length} 個目標` : activity.workflows.length ? `${activity.workflows.length} 個 Agent 工作流程` : "AI 回覆"}正在進行；刪除對話會一併停止並刪除它們。`, { code: "active_agents" });
     }
     await runtime.cancel(user, id).catch(() => undefined);
     await deleteConversationWorkflows(app, user, id);

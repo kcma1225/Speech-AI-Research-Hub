@@ -47,10 +47,13 @@ const SECTION = new Set(["read_paper", "latex_read_file", "read_attachment"]);
 const PAGE = new Set(["view_paper_pages", "get_deck_pages", "review_deck_layout", "review_latex_layout"]);
 const SEARCH = new Set(["search", "search_papers_online"]);
 
+/** Tools whose result carries a live workflow / batch / goal card. */
+export const START_TOOLS = new Set(["start_workflow", "start_goal", "update_goal"]);
+
 /** Category of a tool for the summary line (`null` = not counted: plan, questions, workflows). */
 export function categoryOf(c: Pick<ToolCall, "tool" | "risk">): ActivityCategory | null {
   const t = c.tool;
-  if (t === "update_plan" || t === "ask_user" || t === "start_workflow" || t === "get_workflow" || t === "propose_study_plan") return null;
+  if (t === "update_plan" || t === "ask_user" || START_TOOLS.has(t) || t === "get_workflow" || t === "get_goal" || t === "propose_study_plan") return null;
   if (SECTION.has(t)) return "section";
   if (PAGE.has(t)) return "page";
   if (SEARCH.has(t)) return "search";
@@ -105,16 +108,20 @@ export function latestPlan(calls: ToolCall[]): PlanState | null {
   return { items, explanation, done, total: items.length, current, callId: last.id, updates: plans.length };
 }
 
-/** start_workflow → its run id, or `batch:<id>` for a batch (one run per paper). */
+/**
+ * start_workflow / start_goal / update_goal → its run id, `batch:<id>` for a batch (one run per paper), or
+ * `goal:<id>` for a goal (a roadmap of workflow runs: the GoalCard).
+ */
 const workflowIdOf = (c: ToolCall) => {
-  const d = c.result?.data as { workflow_id?: unknown; batch_id?: unknown } | null | undefined;
-  if (c.tool !== "start_workflow") return null;
+  const d = c.result?.data as { workflow_id?: unknown; batch_id?: unknown; goal_id?: unknown } | null | undefined;
+  if (!START_TOOLS.has(c.tool)) return null;
+  if (typeof d?.goal_id === "string") return `goal:${d.goal_id}`;
   if (typeof d?.batch_id === "string") return `batch:${d.batch_id}`;
   return typeof d?.workflow_id === "string" ? d.workflow_id : null;
 };
 export { workflowIdOf };
 
-const isResult = (c: ToolCall) => c.status === "done" && c.risk !== "read" && c.tool !== "remember" && c.tool !== "start_workflow";
+const isResult = (c: ToolCall) => c.status === "done" && c.risk !== "read" && c.tool !== "remember" && !START_TOOLS.has(c.tool);
 
 /**
  * Builds the transcript items. `answered` = ask_user call ids that already have an answer message; `live` = a run of

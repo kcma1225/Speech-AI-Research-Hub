@@ -34,12 +34,36 @@ export type Plan = { summary: string; outline?: OutlineItem[]; writes: PlannedWr
 export type Budget = { max_steps: number; max_calls: number; max_tokens: number; max_minutes: number; max_fix_rounds: number; concurrency: number };
 export const DEFAULT_BUDGET: Budget = { max_steps: 300, max_calls: 600, max_tokens: 8_000_000, max_minutes: 240, max_fix_rounds: 3, concurrency: 3 };
 /** Decks render, screenshot and re-write pages (visual QA ≤ 3 rounds): a cheap model needs more time and calls. */
-export const budgetFor = (playbook: string): Budget => (playbook === "slides" ? { ...DEFAULT_BUDGET, max_calls: 1000, max_tokens: 20_000_000, max_minutes: 360 } : DEFAULT_BUDGET);
+/** Topic research reads 8–12 papers in full (plus extraction, writers and a consistency pass): more calls and time. */
+export const budgetFor = (playbook: string): Budget =>
+  playbook === "slides" ? { ...DEFAULT_BUDGET, max_calls: 1000, max_tokens: 20_000_000, max_minutes: 360 }
+  : playbook === "topic_research" ? { ...DEFAULT_BUDGET, max_calls: 900, max_tokens: 16_000_000, max_minutes: 360 }
+  : DEFAULT_BUDGET;
 export type Usage = { steps: number; calls: number; tokens_in: number; tokens_out: number; active_ms: number; fix_rounds: number };
 
 export type Artifact = { kind: "deck" | "note" | "latex_project" | "latex_file" | "paper"; id: string; url: string; title: string; role: "draft" | "suggestion" | "primary"; preview_url?: string; revision?: number };
 
-export type Issue = { severity: "high" | "medium" | "low"; text: string; where?: string; /** 0–1; only high/medium issues with confidence ≥ 0.6 trigger a fix round */ confidence?: number };
+/**
+ * A verifier issue. `kind`: `error` = something in the output is wrong (needs `quote`, copied verbatim from the output),
+ * `missing` = required content is absent, `unclear`. `source_quote` = the source passage a faithfulness claim rests on.
+ * `id` = its issue-ledger id once recorded (ledger.ts).
+ */
+export type Issue = {
+  severity: "high" | "medium" | "low"; text: string; where?: string; /** 0–1; only high/medium issues with confidence ≥ 0.6 trigger a fix round */ confidence?: number;
+  kind?: "error" | "missing" | "unclear"; quote?: string; source_quote?: string; id?: string;
+};
+/**
+ * Issue ledger of one step (`workflow_steps.inputs.ledger`): the first judged round records the actionable issues; later
+ * rounds re-check those (fixed / still open, with evidence) and add only new high-severity ones. `open` blocks the step;
+ * `unresolved` = a medium/low issue that survived `CONVERGENCE_ROUNDS` fix rounds (a report item, no longer fixed);
+ * `invalid` = dropped by the false-positive filter (「驗收者判斷無效」). `rounds` = fix rounds the issue survived.
+ */
+export type LedgerStatus = "open" | "fixed" | "unresolved" | "invalid";
+export type LedgerItem = Issue & { id: string; status: LedgerStatus; rounds: number; opened: number; closed?: number; evidence?: string; note?: string };
+export type Ledger = { reviewed: boolean; next: number; items: LedgerItem[] };
+/** Final-verification ledger (`workflow_runs.state.final_ledger`): per criterion its last result and fail count, and the section hashes of the last judged artifact. */
+export type FinalLedgerItem = { status: Criterion["status"]; evidence?: string; reason?: string; fails: number; invalid?: string };
+export type FinalLedger = { sections: string[]; items: Record<string, FinalLedgerItem> };
 export type CheckResult = { id: string; ok: boolean; detail: string };
 export type Verdict = { verdict: "pass" | "revise"; issues: Issue[]; checks: CheckResult[]; judged?: boolean };
 
@@ -51,9 +75,11 @@ export type RunRow = {
   inputs: Record<string, unknown>; context: Record<string, unknown>; state: Record<string, unknown>; status: WorkflowStatus;
   question: string | null; autopilot: boolean; tainted: boolean; taint_sources: string[]; budget: Budget; usage: Usage;
   artifacts: Artifact[]; guidance: { at: string; text: string; applied: boolean }[];
-  report: { summary_md: string; done: string[]; issues: string[]; confirm?: string[] } | null; stop_reason: string | null;
+  report: { summary_md: string; done: string[]; issues: string[]; confirm?: string[]; /** issue ledgers: 已修正 / 仍未解決 / 判定無效 */ ledger?: { fixed: string[]; unresolved: string[]; invalid: string[] } } | null; stop_reason: string | null;
   error: { error: string; code?: string; hint?: string } | null; job_id: string | null; pause_requested: boolean; final_rounds: number;
   batch_id: string | null; batch_index: number | null;
+  /** A stage of a goal (goals/): the goal advances when this run ends. */
+  goal_id?: string | null; goal_stage?: string | null;
   created_at: string; updated_at: string; started_at: string | null; finished_at: string | null;
 };
 

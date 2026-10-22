@@ -567,6 +567,47 @@ export function boundsOf(s: Scene): Box {
   return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
 }
 
+// ---------------------------------------------------------------- grid (parallel items, no arrows)
+
+/** Columns of a grid of `n` items: one row up to 4, then 3 / 4 per row (8 → 4 × 2). */
+export const gridCols = (n: number, want?: number) => Math.max(1, Math.min(6, want ?? (n <= 4 ? n : n === 8 || n > 9 ? 4 : 3), n));
+
+/**
+ * Cards of equal size in rows (partial last row centred); `groups` become labelled sections stacked top to bottom
+ * (ungrouped items last). Parallel items — applications, datasets, compared systems — without implying an order.
+ */
+export function grid(ctx: Ctx): Scene {
+  const { spec, sc, fit } = ctx;
+  const scene = emptyScene();
+  const grouped = new Set(spec.groups.flatMap((g) => g.nodes));
+  const sections = [...spec.groups.map((g) => ({ ids: g.nodes.filter((id) => spec.nodes.has(id)), titled: !!g.label })), { ids: [...spec.nodes.keys()].filter((id) => !grouped.has(id)), titled: false }].filter((x) => x.ids.length);
+  const widest = Math.max(...sections.map((x) => x.ids.length));
+  const cols = gridCols(widest, spec.cols);
+  const gapX = 36 * sc.gap;
+  const gapY = 30 * sc.gap;
+  const inset = spec.groups.length ? 2 * 16 : 0;
+  const cellMax = Math.max(150, Math.min(320, (fit.w - inset - (cols - 1) * gapX) / cols));
+  const all = sections.flatMap((x) => x.ids);
+  const measured = new Map(all.map((id) => [id, measureNode(node(ctx, id), sc, cellMax, { iconPos: "top" })]));
+  const W = Math.min(cellMax, Math.max(...[...measured.values()].map((m) => m.w)));
+  const sized = new Map([...measured].map(([id, m]) => [id, resize(m, sc, W)]));
+  const rowW = cols * W + (cols - 1) * gapX;
+  let y = 0;
+  for (const sec of sections) {
+    if (sec.titled) y += 16 + 30 * sc.gap;
+    for (let i = 0; i < sec.ids.length; i += cols) {
+      const row = sec.ids.slice(i, i + cols).map((id) => sized.get(id)!);
+      const h = Math.max(...row.map((m) => m.h));
+      const x0 = (rowW - (row.length * W + (row.length - 1) * gapX)) / 2;
+      row.forEach((m, k) => scene.nodes.push({ ...m, x: x0 + k * (W + gapX), y, w: W, h }));
+      y += h + gapY;
+    }
+    y += spec.groups.length ? 26 : 0;
+  }
+  addGroups(ctx, scene);
+  return scene;
+}
+
 // ---------------------------------------------------------------- cycle
 
 export function cycle(ctx: Ctx, ids: string[]): Scene {

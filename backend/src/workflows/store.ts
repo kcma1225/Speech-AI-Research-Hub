@@ -7,6 +7,7 @@ import type { Db, Queryable } from "../db.js";
 import type { Artifact, RunRow, StepRow, StepSpec, Usage } from "./types.js";
 import { getWorkflowPlaybook } from "./playbooks/registry.js";
 import { asksOf } from "./questions.js";
+import { loadLedger } from "./ledger.js";
 
 export type WorkflowEventType = "workflow" | "step" | "activity" | "verdict" | "artifact" | "log";
 
@@ -102,6 +103,11 @@ export async function runView(db: Queryable, r: RunRow) {
   };
 }
 
+const ledgerView = (v: unknown) => {
+  const items = loadLedger(v).items;
+  return items.length ? items.map((i) => ({ id: i.id, status: i.status, severity: i.severity, text: i.text.slice(0, 300), ...(i.where ? { where: i.where } : {}), ...(i.quote ? { quote: i.quote.slice(0, 160) } : {}), ...(i.evidence ? { evidence: i.evidence.slice(0, 160) } : {}), ...(i.note ? { note: i.note } : {}), rounds: i.rounds })) : null;
+};
+
 export function stepView(s: StepRow, steps?: StepRow[]) {
   const parent = s.parent_id && steps ? steps.find((x) => x.id === s.parent_id)?.key ?? null : null;
   const text = s.output?.text ?? "";
@@ -123,6 +129,8 @@ export function stepView(s: StepRow, steps?: StepRow[]) {
     output: s.output ? { summary: s.output.summary, excerpt: text ? text.slice(0, 600) : undefined } : null,
     verdict: s.verdict,
     history: s.history,
+    // The issue ledger (ledger.ts), compact: what the card lists as 已修正 / 仍未解決 / 判定無效.
+    ledger: ledgerView(s.inputs?.ledger),
     tokens: { in: s.tokens_in, out: s.tokens_out },
     ms: s.ms,
     error: s.error,

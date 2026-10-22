@@ -17,6 +17,8 @@
     {@const live = activity[step.key]}
     {@const issues = (step.verdict?.issues ?? []).filter((i) => i.severity !== "low")}
     {@const working = step.status === "running" || step.status === "verifying"}
+    {@const fixedCount = (step.ledger ?? []).filter((i) => i.status === "fixed").length}
+    {@const unresolvedCount = (step.ledger ?? []).filter((i) => i.status === "unresolved").length}
     <li class="step rounded-2xl {working ? 'bg-surface-2' : ''}" data-status={step.status}>
       <button
         type="button"
@@ -43,6 +45,8 @@
             {#if step.verdict && !working}
               <span class="chip {step.verdict.verdict === 'pass' ? 'chip-mint' : 'chip-rose'}">{t(step.verdict.verdict === "pass" ? "wf.verdict.pass" : "wf.verdict.revise")}{#if issues.length} · {t("wf.issues", { n: issues.length })}{/if}</span>
             {/if}
+            {#if fixedCount && !working}<span class="chip led-fixed">{t("wf.ledger.fixed")} {fixedCount}</span>{/if}
+            {#if unresolvedCount && !working}<span class="chip led-unresolved">{t("wf.ledger.unresolved")} {unresolvedCount}</span>{/if}
           </span>
           {#if working && live}
             <span class="live mt-0.5 block truncate text-[12px] text-ink-2" aria-live="polite">{t("wf.activity", { text: live.text })}</span>
@@ -79,6 +83,20 @@
                 </ul>
               </div>
             {/if}
+          {/if}
+          {#if step.ledger?.length}
+            <div>
+              <p class="mb-1 font-medium text-ink-2">{t("wf.ledger")}</p>
+              <ul class="flex flex-col gap-1">
+                {#each step.ledger as item (item.id)}
+                  <li class="flex flex-wrap items-baseline gap-x-1.5" data-ledger={item.status}>
+                    <span class="chip led-{item.status}">{t(`wf.ledger.${item.status}` as MessageKey)}</span>
+                    <span class="min-w-0 flex-1 break-words {item.status === 'invalid' ? 'text-ink-3 line-through decoration-ink-3/50' : ''}">{#if item.where}<span class="text-ink-3">{item.where}：</span>{/if}{item.text}</span>
+                    {#if item.note || item.evidence}<span class="w-full pl-1 text-[11.5px] text-ink-3 break-words">{item.note ?? `「${item.evidence}」`}</span>{/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
           {/if}
           {#if step.history.length > 1}
             <p class="text-ink-3">{t("wf.rounds", { n: step.history.length - 1 })}：{step.history.map((h) => (h.verdict.verdict === "pass" ? "✓" : "✗")).join(" → ")}</p>
@@ -144,6 +162,19 @@
   .chip-rose {
     background: var(--pill-rose);
     color: var(--pill-rose-ink);
+  }
+  .led-open,
+  .led-unresolved {
+    background: var(--pill-peach);
+    color: var(--pill-peach-ink);
+  }
+  .led-fixed {
+    background: var(--pill-mint);
+    color: var(--pill-mint-ink);
+  }
+  .led-invalid {
+    background: var(--surface-3);
+    color: var(--ink-3);
   }
   .sev {
     margin-top: 6px;

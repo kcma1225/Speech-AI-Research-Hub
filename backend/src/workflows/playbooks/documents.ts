@@ -14,9 +14,11 @@ import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { STEP_ROLES, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRole, type StepRow, type StepSpec } from "../types.js";
-import { clipText, depOutputs, paperOf, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { clipText, depOutputs, isTopicRequest, paperOf, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { askUser } from "../questions.js";
 import { AI_FILLED_MARK, askStudentView, isAiFilled } from "../student-input.js";
 import { ensurePaperPdf } from "../paper-pdf.js";
+import { buildContentRefs, contentRefsOf } from "../content-refs.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
@@ -30,7 +32,7 @@ export const RESEARCH_TOOLS = [
 
 const PART_CHECKS: CheckSpec[] = [{ id: "min_length", params: { chars: 150 } }, { id: "no_placeholder" }, { id: "not_truncated" }];
 
-async function studyOrQuestion(env: WorkflowEnv): Promise<StudyAccess | { question: string }> {
+export async function studyOrQuestion(env: WorkflowEnv): Promise<StudyAccess | { question: string }> {
   const access = await resolveStudy(env);
   if (!access) return { question: await whichStudyQuestion(env, "這份成果") };
   if (!access.canEdit) return { question: `你不是〈${access.study.title}〉的成員，工作流程不能在這裡建立筆記。請指定你參與的研究。` };
@@ -45,7 +47,7 @@ function assembleSpec(partKeys: string[], sections: string[]): StepSpec {
     verify: { checks: [{ id: "sections_present", params: { sections } }, { id: "no_placeholder" }, { id: "not_truncated" }], judge: false },
   };
 }
-const finalSpec = (dep = "assemble"): StepSpec => ({ key: "final", role: "verifier", kind: "final", title: "最終驗收", instructions: "依目標逐條驗收。", depends_on: [dep], expected: "每一條驗收標準都通過" });
+export const finalSpec = (dep = "assemble"): StepSpec => ({ key: "final", role: "verifier", kind: "final", title: "最終驗收", instructions: "依目標逐條驗收。", depends_on: [dep], expected: "每一條驗收標準都通過" });
 
 async function assembleDoc(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
   const steps = await getSteps(env.db, env.run.id);
@@ -56,14 +58,14 @@ async function assembleDoc(env: WorkflowEnv, step: StepRow): Promise<StepOutput>
   return { summary: `整合 ${parts.length} 段，共 ${text.length} 字`, text };
 }
 
-async function writePart(env: WorkflowEnv, step: StepRow, fix: Fix, context: Record<string, string>, format: string, aiRole?: "writing" | "assistant") {
+export async function writePart(env: WorkflowEnv, step: StepRow, fix: Fix, context: Record<string, string>, format: string, aiRole?: "writing" | "assistant") {
   const user = taskPrompt(env, step, { context, format }, fix);
   const res = await env.call({ purpose: `write:${env.run.playbook}`, role: step.role === "researcher" ? "researcher" : "writer", aiRole: aiRole ?? (step.role === "writer" ? "writing" : undefined), messages: [{ role: "system", content: systemFor(step.role) }, { role: "user", content: user }], maxTokens: 8000 }, step.id);
   return { summary: `${res.text.length} 字${res.stopReason === "max_tokens" ? "（輸出被截斷）" : ""}`, text: res.text };
 }
 
 /** Commit: the assembled note, once. A partial run says so at the top. */
-async function commitNote(env: WorkflowEnv, outcome: "done" | "partial", kind: NoteKind) {
+export async function commitNote(env: WorkflowEnv, outcome: "done" | "partial", kind: NoteKind) {
   const doc = env.state<string>("doc");
   if (!doc) return outcome === "partial" ? "筆記沒有寫入（流程在整合前就停止了）。" : null;
   if (!env.run.study_id) return null;
@@ -94,9 +96,11 @@ async function commitNote(env: WorkflowEnv, outcome: "done" | "partial", kind: N
   return `已建立新筆記〈${title}〉。`;
 }
 
-const outlineFrom = (sections: { title: string; points?: string[] }[]): OutlineItem[] => sections.map((s, i) => ({ n: i + 1, title: s.title, points: s.points ?? [] }));
+export const outlineFrom = (sections: { title: string; points?: string[] }[]): OutlineItem[] => sections.map((s, i) => ({ n: i + 1, title: s.title, points: s.points ?? [] }));
 
 // ---------------------------------------------------------------- 閱讀筆記
+
+export const TOPIC_REDIRECT = "這個要求是主題調研（沒有指定論文），改用「主題調研」流程：先線上找相關論文，確認後匯入、精讀，再寫成研究筆記。";
 
 const mainSections = (secs: PaperSection[]) => secs.filter((s) => s.level === 1 && s.kind === "body" && !/^(?:references?|bibliography|acknowledge?ments?|參考文獻|致謝)$/i.test(s.title.trim()));
 
@@ -112,7 +116,11 @@ const readingNote: WorkflowPlaybook = {
     const access = await studyOrQuestion(env);
     if ("question" in access) return { kind: "question", question: access.question };
     let paper = await paperOf(env);
-    if (!paper) return { kind: "question", question: "要讀哪一篇論文？請先把論文加入文獻庫（或附加它），再在補充指示寫出論文標題。" };
+    if (!paper) {
+      // A topic survey (「研究有哪些做法」) without a paper is not a reading note: hand over to topic research.
+      if (isTopicRequest(`${env.run.request}\n${env.run.guidance.map((g) => g.text).join("\n")}`, env.run.inputs)) return { kind: "redirect", playbook: "topic_research", message: TOPIC_REDIRECT };
+      return { kind: "question", question: "要讀哪一篇論文？請先把論文加入文獻庫（或附加它），再在補充指示寫出論文標題。" };
+    }
     if (!paper.pdf_key) {
       // Open access + the record's URLs first; autopilot skips (needs_pdf), otherwise the user chooses (paper-pdf.ts).
       const d = await ensurePaperPdf(env, paper, { allowAbstract: false });
@@ -121,6 +129,8 @@ const readingNote: WorkflowPlaybook = {
       if (!paper.pdf_key) return { kind: "needs_pdf", paperId: paper.id, message: `〈${paper.title}〉還沒有 PDF，無法讀全文。` };
     }
     const ft = await paperFullText(env.storage, paper.pdf_key).catch(() => null);
+    // Names + figure list the parts are checked against (grounded_names / figure_refs, content-refs.ts).
+    await buildContentRefs(env, { brief: "", pdfKey: paper.pdf_key, extra: [paper.title] });
     const main = ft ? mainSections(ft.sections) : [];
     const hasMath = !!ft?.sections.some((s) => /[=∑∫√]|\\frac|argmax|log\s*p/.test(s.text));
     // Parts: overview, then the paper's main sections in groups of ≤ 2, then my questions / relation to my study.
@@ -147,7 +157,7 @@ const readingNote: WorkflowPlaybook = {
               : "寫「## 限制、我的疑問與待追問」：論文自述與明顯的限制、讀的時候不清楚的地方（標出處），以及值得追問的問題。",
         inputs: { paper_id: paper.id, sections: g?.map((s) => s.number ?? s.title) ?? [] },
         expected: `「## ${title}」一段（Markdown）`,
-        verify: { checks: [...PART_CHECKS, { id: "sections_present", params: { sections: [title] } }, ...(isGroup ? [{ id: "source_refs", params: { min: 1 } }] : []), ...(isMethod && hasMath ? [{ id: "equations", params: { min: 1 } }] : [])], judge: isGroup },
+        verify: { checks: [...PART_CHECKS, { id: "sections_present", params: { sections: [title] } }, ...(isGroup ? [{ id: "source_refs", params: { min: 1 } }, { id: "grounded_names", params: { doc: true } }, { id: "figure_refs", params: { doc: true } }] : []), ...(isMethod && hasMath ? [{ id: "equations", params: { min: 1 } }] : [])], judge: isGroup },
       };
     });
     // 「我的想法」 is the user's own judgement: ask with grounded options (student-input.ts) instead of inventing it.
@@ -190,7 +200,7 @@ const readingNote: WorkflowPlaybook = {
     const paperId = String(step.inputs.paper_id ?? env.run.inputs.paper_id ?? "");
     const user = taskPrompt(env, step, { context: { paper: `論文：〈${env.state<string>("paper_title") ?? ""}〉，paper_id ${paperId}（呼叫 read_paper / view_paper_pages 時用這個 paper_id）${env.run.study_id ? `；研究 study id ${env.run.study_id}` : ""}` }, format: `只輸出「## ${title}」這一段的 Markdown（可以有 ### 小標），不要其他段落。` }, fix);
     const r = await env.researcher(step, { system: systemFor("researcher", "你讀完需要的內容後，直接寫出筆記的這一段。"), user, tools: ["read_paper", "view_paper_pages", "get_paper", "get_study"], maxToolSteps: 50, maxTokens: 10_000, purpose: "reading_part" });
-    return { summary: `讀了 ${r.toolCalls} 次，寫了 ${r.text.length} 字`, text: r.text };
+    return { summary: `讀了 ${r.toolCalls} 次，寫了 ${r.text.length} 字`, text: r.text, data: { refs: contentRefsOf(env) } };
   },
   async finalText(env) {
     return { text: env.state<string>("doc") ?? "", data: null };
@@ -236,7 +246,26 @@ const litReview: WorkflowPlaybook = {
     const access = await studyOrQuestion(env);
     if ("question" in access) return { kind: "question", question: access.question };
     const papers = await studyPapers(env, access.study.id);
-    if (papers.length < 2) return { kind: "question", question: `〈${access.study.title}〉的文獻庫只有 ${papers.length} 篇論文；文獻回顧至少需要 2 篇。請先加入論文後按「繼續」。` };
+    if (papers.length < 2) {
+      // Too few papers: offer topic research (search online, import, read) instead of refusing. Autopilot switches
+      // directly — the topic plan still waits for the user when it imports papers.
+      const too = `〈${access.study.title}〉的文獻庫只有 ${papers.length} 篇論文`;
+      if (env.run.autopilot) return { kind: "redirect", playbook: "topic_research", message: `${too}，文獻回顧至少需要 2 篇；自動駕駛改用「主題調研」：先線上找論文，匯入前會請你確認。` };
+      const answers = await askUser(env, {
+        id: "lit_too_few",
+        title: `${too}，文獻回顧至少需要 2 篇`,
+        intro: "可以改做主題調研：依這個主題線上搜尋論文（只送出關鍵字），列出候選讓你在計畫中確認後匯入文獻庫並精讀，再寫成研究筆記。",
+        questions: [{ id: "how", prompt: "接下來要怎麼做？", type: "single_choice", required: true, options: [
+          { value: "topic", label: "改做主題調研", description: "線上找相關論文，確認後匯入、精讀，整理成做法分類與比較。" },
+          { value: "add", label: "我先加入論文", description: "我到文獻庫加入論文後按「繼續」，再做文獻回顧。" },
+        ] }],
+        step_key: null,
+        purpose: "input",
+        ai_suggested: false,
+      });
+      if (answers.find((a) => a.id === "how")?.value === "topic") return { kind: "redirect", playbook: "topic_research", message: "依你的選擇改用「主題調研」：先線上找論文，匯入前會請你確認。" };
+      return { kind: "question", question: `${too}；文獻回顧至少需要 2 篇。請先加入論文後按「繼續」。` };
+    }
     const keys = papers.map((p) => p.cite_key);
     await env.setState({ note_title: `文獻回顧：${clipText(access.study.title, 80)}`, papers, keys, sections: LIT_SECTIONS });
     const reads: StepSpec[] = papers.map((p, i) => ({

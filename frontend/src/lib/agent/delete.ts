@@ -5,9 +5,9 @@
 import { api, ApiError } from "#lib/api.ts";
 import { t } from "#lib/i18n.svelte.ts";
 
-export type ConversationActivity = { assistant: boolean; workflows: { id: string; title: string; status: string }[] };
+export type ConversationActivity = { assistant: boolean; workflows: { id: string; title: string; status: string }[]; goals?: { id: string; title: string; status: string }[] };
 
-export const hasActivity = (a: ConversationActivity | null) => !!a && (a.assistant || a.workflows.length > 0);
+export const hasActivity = (a: ConversationActivity | null) => !!a && (a.assistant || a.workflows.length > 0 || (a.goals?.length ?? 0) > 0);
 
 export async function loadActivity(id: string): Promise<ConversationActivity | null> {
   try {
@@ -21,6 +21,7 @@ export async function loadActivity(id: string): Promise<ConversationActivity | n
 export function deleteDescription(a: ConversationActivity | null): string {
   if (!hasActivity(a)) return t("agent.deleteHint");
   const parts: string[] = [];
+  if (a!.goals?.length) parts.push(t("goal.deleteActive", { n: a!.goals.length, titles: a!.goals.slice(0, 3).map((g) => `〈${g.title}〉`).join(t("agent.listSep")) }));
   if (a!.workflows.length) parts.push(t("agent.deleteActiveWorkflows", { n: a!.workflows.length, titles: a!.workflows.slice(0, 3).map((w) => `〈${w.title}〉`).join(t("agent.listSep")) }));
   if (a!.assistant) parts.push(t("agent.deleteActiveAssistant"));
   return `${parts.join(" ")} ${t("agent.deleteActiveHint")}`;

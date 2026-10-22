@@ -47,6 +47,8 @@ const listQuery = z.object({
   yearTo: z.coerce.number().int().min(1000).max(3000).optional(),
   study: z.string().trim().min(1).max(80).optional(),
   has_pdf: z.enum(["true", "false", "1", "0"]).optional(),
+  /** `mine` = papers linked to a study the caller owns; `all` (default) = the whole lab library. */
+  scope: z.enum(["mine", "all"]).default("all"),
   sort: z.enum(["recent", "year", "title"]).default("recent"),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).max(100000).default(0),
@@ -191,6 +193,17 @@ export default async function papers(app: FastifyInstance) {
       if (!study) throw notFound("研究不存在。");
       where.push(`EXISTS (SELECT 1 FROM study_papers x WHERE x.paper_id=p.id AND x.study_id=${p(study.id)})`);
     }
+    // Both scopes share the other filters, so the switch counts always match what each tab would list.
+    const mineClause = `EXISTS (SELECT 1 FROM study_papers x JOIN study_members m ON m.study_id=x.study_id AND m.role='owner' WHERE x.paper_id=p.id AND m.user_id=$${params.length + 1})`;
+    const bw = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const countRow = (await app.db.query<{ mine: number; all: number }>(
+      `SELECT count(*) FILTER (WHERE ${mineClause})::int AS mine, count(*)::int AS "all" FROM papers p ${bw}`,
+      [...params, user.id],
+    )).rows[0]!;
+    if (q.scope === "mine") {
+      params.push(user.id);
+      where.push(mineClause);
+    }
     const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const order = q.sort === "year" ? "p.year DESC NULLS LAST, p.title" : q.sort === "title" ? "p.title_norm" : "p.created_at DESC";
     const base = params.length;
@@ -207,9 +220,9 @@ export default async function papers(app: FastifyInstance) {
        SELECT 'year', year::text, count(*)::int FROM papers p ${w ? `${w} AND` : "WHERE"} year IS NOT NULL GROUP BY year`,
       params,
     );
-    void user;
     return reply.header("Cache-Control", "no-store").send({
       papers: rows.rows.map((r) => ({ ...summarize(r), studies: r.studies })),
+      counts: { mine: countRow.mine, all: countRow.all },
       total: rows.rows[0]?.total ?? (q.offset ? (await app.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM papers p ${w}`, params)).rows[0]!.n : 0),
       facets: {
         venues: facets.rows.filter((f) => f.kind === "venue").sort((a, b) => b.count - a.count).slice(0, 40).map((f) => ({ value: f.value, count: f.count })),

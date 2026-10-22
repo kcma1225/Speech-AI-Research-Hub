@@ -12,7 +12,9 @@ export type PlanResult =
   /** The paper has no PDF (open access + the record's URL tried): status `needs_pdf` with 「從網址下載 PDF」 / upload. */
   | { kind: "needs_pdf"; message: string; paperId: string }
   /** The user chose to skip this item (e.g. 「跳過」 on the missing-PDF card): the run ends `cancelled` / `skipped`. */
-  | { kind: "skip"; message: string };
+  | { kind: "skip"; message: string }
+  /** Another playbook fits the request better (a topic survey asked as a reading note): the engine switches and re-plans. */
+  | { kind: "redirect"; playbook: string; message: string };
 
 export type ApprovalEdits = { outline?: { title: string; points: string[] }[]; steps?: { key: string; title?: string; instructions?: string; skip?: boolean }[] };
 
@@ -24,6 +26,8 @@ export interface WorkflowPlaybook {
   descriptionEn: string;
   /** 0–1: how well a free-text request matches (the highest wins; generic is the fallback). */
   detect(request: string, inputs: Record<string, unknown>): number;
+  /** What it produces / requires (goal planner, goals/capabilities.ts); built-ins without it use the capability table there. */
+  capability?: import("../goals/capabilities.js").Capability;
   /** Plans may be auto-approved under autopilot (writes only new drafts; never destructive). */
   autoApprovable: boolean;
   /** Gathers context and writes objective + criteria + plan + steps. */

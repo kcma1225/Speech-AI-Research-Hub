@@ -9,6 +9,7 @@
   import { session } from "#lib/stores/session.svelte.ts";
   import { agentActivity, type ActiveAgentRun } from "#lib/agent/activity.svelte.ts";
   import { workflowsApi } from "#lib/workflows/api.ts";
+  import { goalsApi } from "#lib/goals/api.ts";
   import { ACTION_LABEL } from "#lib/agent/focus.ts";
   import { STATUS_TONE } from "#lib/components/workflows/meta.ts";
   import Button from "#lib/components/ui/Button.svelte";
@@ -37,8 +38,9 @@
   let stopOpen = $state(false);
 
   const ASSISTANT_TONE: Record<string, Tone> = { running: "sky", awaiting_approval: "butter", awaiting_llm: "stone", awaiting_input: "butter" };
-  const statusLabel = (r: ActiveAgentRun) => t((r.kind === "workflow" ? `wf.status.${r.status}` : `agentRuns.status.${r.status}`) as MessageKey);
-  const tone = (r: ActiveAgentRun): Tone => (r.kind === "workflow" ? (STATUS_TONE[r.status as keyof typeof STATUS_TONE] ?? "stone") : (ASSISTANT_TONE[r.status] ?? "stone"));
+  const GOAL_TONE: Record<string, Tone> = { planning: "sky", awaiting_approval: "butter", running: "sky", awaiting_input: "butter" };
+  const statusLabel = (r: ActiveAgentRun) => t((r.kind === "workflow" ? `wf.status.${r.status}` : r.kind === "goal" ? `goal.status.${r.status}` : `agentRuns.status.${r.status}`) as MessageKey);
+  const tone = (r: ActiveAgentRun): Tone => (r.kind === "workflow" ? (STATUS_TONE[r.status as keyof typeof STATUS_TONE] ?? "stone") : r.kind === "goal" ? (GOAL_TONE[r.status] ?? "stone") : (ASSISTANT_TONE[r.status] ?? "stone"));
   const roleLabel = (r: ActiveAgentRun) => {
     const role = r.current?.role;
     if (!role) return "";
@@ -158,7 +160,9 @@
             <!-- Deep link to the card that waits (plan / question / consent card), scrolled to and pulsed there. -->
             {#if r.action}
               <Button size="sm" variant="primary" class="min-h-10" href={r.href} data-agent-go={r.action} onclick={() => (open = false)}><ArrowRight />{t(ACTION_LABEL[r.action])}</Button>
-              {#if r.kind === "workflow" && r.action === "approve_plan"}
+              {#if r.kind === "goal" && r.action === "approve_plan"}
+                <Button size="sm" variant="ghost" class="min-h-10" title={t("agentRuns.quickApproveHint")} loading={busy === `${r.id}:approve`} onclick={() => act(r, "approve", async () => { await goalsApi.approve(r.id); toasts.show(t("agentRuns.quickApproved"), "success"); })}><Play />{t("goal.start")}</Button>
+              {:else if r.kind === "workflow" && r.action === "approve_plan"}
                 <Button size="sm" variant="ghost" class="min-h-10" title={t("agentRuns.quickApproveHint")} loading={busy === `${r.id}:approve`} onclick={() => act(r, "approve", async () => { await workflowsApi.approve(r.id, {}); toasts.show(t("agentRuns.quickApproved"), "success"); })}><Play />{t("agentRuns.quickApprove")}</Button>
               {/if}
             {:else}
@@ -221,7 +225,7 @@
   confirmLabel={t("wf.stop")}
   onConfirm={() => {
     const r = stopTarget;
-    if (r) void act(r, "stop", () => workflowsApi.cancel(r.id));
+    if (r) void act(r, "stop", () => (r.kind === "goal" ? goalsApi.cancel(r.id) : workflowsApi.cancel(r.id)));
   }}
 />
 

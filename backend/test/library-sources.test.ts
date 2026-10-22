@@ -29,6 +29,11 @@ beforeAll(async () => {
     }
     // Semantic Scholar
     if (p === "/s2/paper/search") return sendJson(res, fixture("s2-search.json"));
+    if (/^\/s2\/paper\/[^/]+\/(references|citations)$/.test(p)) {
+      const data = JSON.parse(fixture("s2-search.json")).data as Record<string, unknown>[];
+      const k = p.endsWith("/references") ? "citedPaper" : "citingPaper";
+      return sendJson(res, { data: [{ [k]: { ...data[0], citationCount: 4321 } }, { [k]: { paperId: null } }] });
+    }
     if (p.startsWith("/s2/paper/")) {
       const id = decodeURIComponent(p.slice("/s2/paper/".length));
       const data = JSON.parse(fixture("s2-search.json")).data as { paperId: string; externalIds: Record<string, string> }[];
@@ -145,6 +150,18 @@ describe("source clients (mock HTTP)", () => {
     expect(rs[1]!.oaPdfUrl).toBeUndefined(); // empty openAccessPdf.url
     expect(rs[1]!.venue).toBe("NeurIPS");
     expect(await c.getPaper("DOI:10.9999/none")).toBeNull();
+  });
+
+  it("Semantic Scholar: citation snowballing (references / citations with counts, by id only)", async () => {
+    const c = new SemanticScholarClient({ baseUrl: `${srv.url}/s2`, limiter: fast() });
+    const refs = await c.related("ARXIV:2005.08100", "references", { limit: 5 });
+    const req = srv.requests.findLast((r) => r.url.pathname.endsWith("/references"))!;
+    expect(req.url.pathname).toBe("/s2/paper/ARXIV:2005.08100/references");
+    expect(req.url.searchParams.get("fields")).toContain("citationCount");
+    expect(req.url.searchParams.get("limit")).toBe("5");
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ citations: 4321, record: { arxivId: "2005.08100" } });
+    expect(await c.related("ARXIV:2005.08100", "citations")).toHaveLength(1);
   });
 
   it("arXiv: Atom parsing, query building, API errors", async () => {

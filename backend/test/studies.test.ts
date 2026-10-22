@@ -105,20 +105,37 @@ describe.skipIf(!hasTestDb)("studies API", () => {
     expect((await get(alice, "/api/studies/no-such-study")).statusCode).toBe(404);
   });
 
-  it("renames a study (members only), keeps the slug and records study_renamed", async () => {
+  it("renames a study (owner only), keeps the slug and records study_renamed", async () => {
     const created = json(await send(alice, "POST", "/api/studies", { title: "Rename me", members: [{ userId: bob.id, role: "member" }, { userId: prof.id, role: "advisor" }] }));
     const id = created.study.id;
     const slugBefore = created.study.slug;
     for (const who of [carol, prof]) expect((await send(who, "PATCH", `/api/studies/${id}`, { title: "Hijacked" })).statusCode).toBe(403);
-    expect((await send(bob, "PATCH", `/api/studies/${id}`, { title: "   " })).statusCode).toBe(400);
-    expect((await send(bob, "PATCH", `/api/studies/${id}`, { title: "x".repeat(201) })).statusCode).toBe(400);
-    const renamed = json(await send(bob, "PATCH", `/api/studies/${id}`, { title: "  Renamed study  ", summary_format: "prose" }));
+    // Members edit content but not the study's identity (title, address).
+    const memberRename = await send(bob, "PATCH", `/api/studies/${id}`, { title: "Bob's title" });
+    expect(memberRename.statusCode).toBe(403);
+    expect(json(memberRename).error).toBe("只有研究擁有者可以修改研究名稱與網址代稱。");
+    expect((await send(bob, "PATCH", `/api/studies/${id}`, { slug: "bobs-slug" })).statusCode).toBe(403);
+    // Re-sending the unchanged title (e.g. a whole settings form) is not a rename.
+    expect((await send(bob, "PATCH", `/api/studies/${id}`, { title: "Rename me", summary_md: "Bob's summary" })).statusCode).toBe(200);
+    expect((await send(alice, "PATCH", `/api/studies/${id}`, { title: "   " })).statusCode).toBe(400);
+    expect((await send(alice, "PATCH", `/api/studies/${id}`, { title: "x".repeat(201) })).statusCode).toBe(400);
+    const renamed = json(await send(alice, "PATCH", `/api/studies/${id}`, { title: "  Renamed study  ", summary_format: "prose" }));
     expect(renamed.study).toMatchObject({ title: "Renamed study", slug: slugBefore });
     expect(json(await get(carol, `/api/studies/${slugBefore}`)).study.title).toBe("Renamed study");
     // Same title again: no new timeline entry.
-    await send(bob, "PATCH", `/api/studies/${id}`, { title: "Renamed study" });
+    await send(alice, "PATCH", `/api/studies/${id}`, { title: "Renamed study" });
     const rows = (await t.db.query("SELECT actor_id,title,url,metadata FROM study_activity WHERE study_id=$1 AND kind='study_renamed'", [id])).rows;
-    expect(rows).toEqual([{ actor_id: bob.id, title: "Renamed study", url: `/studies/${slugBefore}`, metadata: { from: "Rename me" } }]);
+    expect(rows).toEqual([{ actor_id: alice.id, title: "Renamed study", url: `/studies/${slugBefore}`, metadata: { from: "Rename me" } }]);
+    // Members cannot delete, archive, manage members or transfer; content edits still work.
+    expect((await send(bob, "DELETE", `/api/studies/${id}`)).statusCode).toBe(403);
+    expect((await send(bob, "PATCH", `/api/studies/${id}`, { status: "archived" })).statusCode).toBe(403);
+    expect((await send(bob, "POST", `/api/studies/${id}/members`, { userId: carol.id, role: "member" })).statusCode).toBe(403);
+    expect((await send(bob, "PATCH", `/api/studies/${id}/members/${prof.id}`, { role: "member" })).statusCode).toBe(403);
+    expect((await send(bob, "DELETE", `/api/studies/${id}/members/${prof.id}`)).statusCode).toBe(403);
+    expect((await send(bob, "POST", `/api/studies/${id}/transfer`, { userId: bob.id })).statusCode).toBe(403);
+    expect((await send(bob, "PATCH", `/api/studies/${id}`, { maturity: "exploring", status: "paused" })).statusCode).toBe(200);
+    expect((await send(bob, "POST", `/api/studies/${id}/milestones`, { title: "Bob's milestone" })).statusCode).toBe(201);
+    expect((await send(bob, "POST", `/api/studies/${id}/stages`, { name: "Bob's stage" })).statusCode).toBe(201);
     expect((await send(alice, "DELETE", `/api/studies/${id}`)).statusCode).toBe(200);
   });
 

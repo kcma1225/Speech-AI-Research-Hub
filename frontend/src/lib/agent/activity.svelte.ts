@@ -2,7 +2,7 @@ import { api } from "#lib/api.ts";
 
 /** One entry of `GET /api/workflows/active` (backend/src/workflows/active.ts). */
 export type ActiveAgentRun = {
-  kind: "workflow" | "assistant";
+  kind: "workflow" | "assistant" | "goal";
   id: string;
   title: string;
   objective: string | null;
@@ -17,7 +17,7 @@ export type ActiveAgentRun = {
   budget_pct: number | null;
   tokens: number;
   artifacts: { kind: string; id: string; url: string; title: string }[];
-  /** What waits for the user, the card (`workflow:<id>` | `toolcall:<id>`) and the deep link to it (lib/agent/focus.ts). */
+  /** What waits for the user, the card (`workflow:<id>` | `toolcall:<id>` | `goal:<id>`) and the deep link to it (lib/agent/focus.ts). */
   action: "approve_plan" | "answer" | "review" | null;
   focus: string | null;
   href: string;

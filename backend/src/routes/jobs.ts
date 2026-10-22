@@ -19,7 +19,7 @@ const HIDDEN_KINDS = ["slide_preview", "latex_compile", "ai_search_index"];
 type ActiveJobRow = {
   id: string; kind: JobKind; status: JobStatus; stage: string; progress: number; updated_at: string;
   payload: Record<string, unknown>; deck_id: string | null; deck_title: string | null; version: number | null;
-  meeting_id: string | null; study_slug: string | null; wf_status: string | null; wf_conversation: string | null; wf_id: string | null;
+  meeting_id: string | null; study_slug: string | null; wf_status: string | null; wf_conversation: string | null; wf_id: string | null; wf_goal?: string | null;
 };
 
 /** Workflow runs outlive their job (the job ends while the run waits for the user): show the run's own state. */
@@ -47,7 +47,7 @@ function present(row: ActiveJobRow): { label: string; url: string | null } {
       return { label: "下載開放全文", url: row.study_slug ? `/studies/${row.study_slug}?tab=papers` : "/library" };
     case "ai_workflow":
       // Deep link to the run's card (plan / question card when it waits for the user): see workflows/active.ts.
-      return { label: fileName ?? "Agent 工作流程", url: row.wf_id ? focusHref(row.wf_conversation, `workflow:${row.wf_id}`, row.wf_id) : "/assistant/workflows" };
+      return { label: fileName ?? "Agent 工作流程", url: row.wf_id ? focusHref(row.wf_conversation, row.wf_goal ? `goal:${row.wf_goal}` : `workflow:${row.wf_id}`, row.wf_id) : "/assistant/workflows" };
     case "ai_embedding_reindex":
       return { label: "重建語意索引", url: "/admin/models" };
     default:
@@ -63,7 +63,7 @@ const jobs: FastifyPluginAsync = async app => {
       `SELECT j.id,j.kind,j.status,j.stage,j.progress,j.payload,
               GREATEST(j.created_at,j.started_at,j.heartbeat_at,j.finished_at) AS updated_at,
               COALESCE(p.id::text,j.payload->>'projectId') AS deck_id,p.title AS deck_title,v.version,
-              mm.meeting_id::text AS meeting_id,s.slug AS study_slug,wr.status AS wf_status,wr.conversation_id::text AS wf_conversation,wr.id::text AS wf_id
+              mm.meeting_id::text AS meeting_id,s.slug AS study_slug,wr.status AS wf_status,wr.conversation_id::text AS wf_conversation,wr.id::text AS wf_id,wr.goal_id::text AS wf_goal
          FROM jobs j
          LEFT JOIN slide_versions v ON j.kind='slide_render' AND v.id::text=j.payload->>'versionId'
          LEFT JOIN decks p ON p.id=v.deck_id

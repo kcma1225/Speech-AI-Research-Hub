@@ -9,6 +9,8 @@
   import DraftJobChip from "./DraftJobChip.svelte";
   import WorkflowCard from "#lib/components/workflows/WorkflowCard.svelte";
   import WorkflowBatchCard from "#lib/components/workflows/WorkflowBatchCard.svelte";
+  import GoalCard from "#lib/components/workflows/GoalCard.svelte";
+  import { START_TOOLS } from "#lib/agent/transcript.ts";
 
   /** One tool call in the timeline: icon, verb + object, status, duration; expands to arguments and result. */
   let { call, nested = false, bare = false }: { call: ToolCall; nested?: boolean; /** Job chip, workflow card and 復原 live in the turn's result chips. */ bare?: boolean } = $props();
@@ -30,12 +32,17 @@
   // start_workflow: the live workflow card (plan approval, steps, verification) under the row.
   const workflowId = $derived.by(() => {
     const data = call.result?.data as { workflow_id?: unknown } | null | undefined;
-    return call.tool === "start_workflow" && typeof data?.workflow_id === "string" ? data.workflow_id : null;
+    return START_TOOLS.has(call.tool) && typeof data?.workflow_id === "string" ? data.workflow_id : null;
   });
   // A batch (one run per paper): the batch card.
   const batchId = $derived.by(() => {
     const data = call.result?.data as { batch_id?: unknown } | null | undefined;
-    return call.tool === "start_workflow" && typeof data?.batch_id === "string" ? data.batch_id : null;
+    return START_TOOLS.has(call.tool) && typeof data?.batch_id === "string" ? data.batch_id : null;
+  });
+  // start_goal (or a start_workflow routed to a goal): the goal's roadmap card.
+  const goalId = $derived.by(() => {
+    const data = call.result?.data as { goal_id?: unknown } | null | undefined;
+    return START_TOOLS.has(call.tool) && typeof data?.goal_id === "string" ? data.goal_id : null;
   });
   const muted = $derived(call.status === "denied" || call.status === "cancelled" || call.status === "expired");
   const uid = $props.id();
@@ -99,7 +106,9 @@
   {#if draftJob && !bare}
     <DraftJobChip deckId={draftJob.deckId} jobId={draftJob.jobId} />
   {/if}
-  {#if batchId && !bare}
+  {#if goalId && !bare}
+    <div class="sm:ml-[38px]">{#key goalId}<GoalCard id={goalId} compact={nested} />{/key}</div>
+  {:else if batchId && !bare}
     <div class="sm:ml-[38px]">{#key batchId}<WorkflowBatchCard {batchId} compact={nested} />{/key}</div>
   {:else if workflowId && !bare}
     <div class="sm:ml-[38px]">{#key workflowId}<WorkflowCard id={workflowId} compact={nested} />{/key}</div>

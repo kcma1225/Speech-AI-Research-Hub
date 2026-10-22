@@ -226,6 +226,25 @@ run("library routes", () => {
     expect((await get(null, "/api/library/papers")).statusCode).toBe(401);
   });
 
+  it("scopes the lab library to papers of studies I own (scope=mine), with counts for both", async () => {
+    const inStudy = (await ctx.db.query<{ paper_id: string }>("SELECT paper_id FROM study_papers WHERE study_id=$1", [study.id])).rows.map((r) => r.paper_id).sort();
+    const inOther = (await ctx.db.query<{ paper_id: string }>("SELECT paper_id FROM study_papers WHERE study_id=$1", [other.id])).rows.map((r) => r.paper_id).sort();
+    const all = json(await get(owner, "/api/library/papers?limit=100"));
+    const mine = json(await get(owner, "/api/library/papers?scope=mine&limit=100"));
+    expect(all.papers.length).toBe(all.counts.all); // default stays the whole library
+    expect(mine.papers.map((p: any) => p.id).sort()).toEqual(inStudy);
+    expect(mine.total).toBe(inStudy.length);
+    expect(mine.counts).toEqual({ mine: inStudy.length, all: all.counts.all });
+    // A member (not owner) of `study` owns nothing; the other study's owner sees only its papers.
+    expect(json(await get(member, "/api/library/papers?scope=mine")).papers).toHaveLength(0);
+    expect(json(await get(outsider, "/api/library/papers?scope=mine&limit=100")).papers.map((p: any) => p.id).sort()).toEqual(inOther);
+    // Other filters apply to both counts.
+    const searched = json(await get(owner, "/api/library/papers?scope=mine&q=conformer"));
+    expect(searched.counts.mine).toBe(searched.total);
+    expect(searched.counts.all).toBeGreaterThanOrEqual(searched.counts.mine);
+    expect((await get(owner, "/api/library/papers?scope=bogus")).statusCode).toBe(400);
+  });
+
   it("adds by identifier and asks about likely duplicates", async () => {
     const res = await send(member, "POST", "/api/library/resolve", { identifier: "https://doi.org/10.21437/Interspeech.2020-3015" });
     expect(res.statusCode).toBe(200);

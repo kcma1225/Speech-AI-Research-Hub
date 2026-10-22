@@ -10,6 +10,8 @@ const LONG = "Self-supervised speech representation encoder with twelve frozen t
 const CJK = "自監督語音表徵模型的逐層線性探測與分析流程";
 
 const SPECS: Record<string, unknown> = {
+  grid: { type: "grid", nodes: [{ label: "Speech recognition", sub: "LibriSpeech", icon: "text" }, { label: "Speaker ID", icon: "speaker" }, { label: "Spoken understanding" }, { label: LONG }, { label: "情緒辨識" }] },
+  grid_groups: { type: "grid", nodes: ["Whisper", "WhisperX", "MFA", "LibriSpeech", "TIMIT"], groups: [{ label: "Aligners", nodes: ["Whisper", "WhisperX", "MFA"] }, { label: "Datasets", nodes: ["LibriSpeech", "TIMIT"] }] },
   pipeline: { type: "pipeline", stages: [{ id: "a", label: "Raw audio", kind: "input", icon: "waveform" }, { id: "b", label: LONG, sub: "wav2vec 2.0 / HuBERT", kind: "model", frozen: true, icon: "transformer" }, [{ id: "c", label: "Phone probe" }, { id: "d", label: CJK, kind: "highlight" }], { id: "e", label: "Accuracy", kind: "output", icon: "chart" }], groups: [{ label: "Frozen", nodes: ["b"], style: "frozen" }] },
   long_pipeline: { type: "pipeline", stages: ["Audio", "Feature extractor", "Encoder", "Pooling", "Projection", "Classifier", "Score"] },
   architecture: { type: "architecture", layers: [{ id: "x", label: "Log-Mel input", kind: "input", icon: "spectrogram" }, { repeat: 12, label: "Transformer block", layers: [{ id: "att", label: "Multi-head self-attention $\\mathrm{softmax}(QK^\\top/\\sqrt{d})V$" }, { id: "ffn", label: CJK }] }, { id: "out", label: "Hidden states $h^{(\\ell)}_t$", kind: "output" }], nodes: [{ id: "probe", label: "Layer-wise probe", kind: "highlight" }], edges: [{ from: "att", to: "probe", label: "every layer" }, { from: "x", to: "ffn", kind: "residual" }] },

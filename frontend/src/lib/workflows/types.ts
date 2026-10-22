@@ -11,7 +11,10 @@ export type Plan = { summary: string; outline?: OutlineItem[]; writes: { kind: s
 export type Budget = { max_steps: number; max_calls: number; max_tokens: number; max_minutes: number; max_fix_rounds: number; concurrency: number };
 export type Usage = { steps: number; calls: number; tokens_in: number; tokens_out: number; active_ms: number; fix_rounds: number };
 export type Artifact = { kind: "deck" | "note" | "latex_project" | "latex_file" | "paper"; id: string; url: string; title: string; role: "draft" | "suggestion" | "primary"; preview_url?: string; revision?: number };
-export type Issue = { severity: "high" | "medium" | "low"; text: string; where?: string };
+export type Issue = { severity: "high" | "medium" | "low"; text: string; where?: string; quote?: string; id?: string };
+/** One issue of a step's verification ledger (backend ledger.ts): open → fixed / unresolved (survived 3 fix rounds) / invalid (「驗收者判斷無效」). */
+export type LedgerItem = { id: string; status: "open" | "fixed" | "unresolved" | "invalid"; severity: Issue["severity"]; text: string; where?: string; quote?: string; evidence?: string; note?: string; rounds: number };
+export type ReportLedger = { fixed: string[]; unresolved: string[]; invalid: string[] };
 export type Verdict = { verdict: "pass" | "revise"; issues: Issue[]; checks: { id: string; ok: boolean; detail: string }[]; judged?: boolean };
 
 export type Workflow = {
@@ -34,7 +37,7 @@ export type Workflow = {
   usage: Usage;
   artifacts: Artifact[];
   guidance: { at: string; text: string; applied: boolean }[];
-  report: { summary_md: string; done: string[]; issues: string[]; confirm?: string[] } | null;
+  report: { summary_md: string; done: string[]; issues: string[]; confirm?: string[]; ledger?: ReportLedger } | null;
   stop_reason: string | null;
   error: { error: string; code?: string; hint?: string } | null;
   question: string | null;
@@ -70,6 +73,7 @@ export type Step = {
   output: { summary: string; excerpt?: string } | null;
   verdict: Verdict | null;
   history: { round: number; verdict: Verdict; summary: string }[];
+  ledger?: LedgerItem[] | null;
   tokens: { in: number; out: number };
   ms: number;
   error: string | null;

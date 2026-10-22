@@ -115,12 +115,12 @@ professor account; a professor can also be owner/member of their own study). Eve
 | Edit content (summary, stages, milestones, tasks; later notes, decks, papers, thesis) | — | ✅ | — | — |
 | Comment / review / feedback | ✅ (slide reviews: professors only) | ✅ | ✅ | — |
 | Reply to slide reviews | — | ✅ | ✅ | — |
-| Manage members, transfer, archive, delete | — | owner only | — | — |
+| Rename (title / slug), manage members, transfer, archive, delete | — | owner only | — | — |
 | System settings, accounts, invitations | — | — | — | ✅ |
 
 Helpers (`backend/src/lib/studies/access.ts`):
 - `loadStudyAccess(db, idOrSlug, user, {forUpdate?})` → `StudyAccess {study, membership: {role}|null, canEdit, canManage,
-  canComment, isOwner, isAdvisor}` (404 `研究不存在。` when missing). `canEdit` = owner/member; `canManage` = study owner.
+  canComment, isOwner, isAdvisor}` (404 `研究不存在。` when missing). `canEdit` = owner/member; `canManage` = study owner (title/slug, members, transfer, archive, delete; there is no viewer role, so a study is never stuck: the owner hands it over with 「轉移擁有者」).
 - `requireStudyEditor(request, ref)` (403 `只有研究成員可以修改。`), `requireStudyManager(request, ref)`,
   `requireStudyReader(request, ref)` → `{user, access}`; `permissionsOf(access)` → `{edit, manage, comment, role}` (sent
   to the SPA); `studyUrl(slug, tab?)` → `/studies/<slug>?tab=<tab>`.
@@ -378,7 +378,7 @@ secrets must be encrypted by the owning module; helpers `getSetting` / `setSetti
 | GET `/studies?scope=mine\|lab&member=<uuid>\|me&status=&stage=&q=` | user | `{studies: StudyCard[], counts: {mine, lab}}` newest `activity_at` first. `scope=mine` = studies I belong to (any role; same as legacy `member=me`), default `lab` = all; `counts` apply the other filters to both scopes (the /studies 「我的研究 / 全實驗室」 switch, URL `?scope=`; default 我的研究 when I'm in any listed study). `status` omitted = all but archived, `all` = everything; `stage` = current stage name (exact); `q` = title/slug/summary substring (LIKE-escaped) |
 | POST `/studies` `{title, slug?, summary_md?, maturity?, templateId?, members?: [{userId, role: member\|advisor}]}` | user | creator becomes owner; stages copied from the template (default), the first one current and started; slug from the title when omitted (ASCII words; titles with CJK get `-YYYY-MM-DD`, CJK-only → `study-YYYY-MM-DD`; `-2`, `-3`… when taken; a given slug that is taken → 409); advisors must be professors (400); activity `study_created` → 201 `StudyDetail` |
 | GET `/studies/:ref` | user | `StudyDetail` |
-| PATCH `/studies/:ref` `{title?, slug?, summary_md?, maturity? (exploring|problem_defined|method_first|continuation|assigned|well_defined|null), status?}` | editor; `status` to/from `archived`: manager | rename keeps the slug (links stay stable) unless `slug` is given; a changed title records activity `study_renamed`. A legacy `summary_format` (POST/PATCH) is accepted and ignored → `StudyDetail` |
+| PATCH `/studies/:ref` `{title?, slug?, summary_md?, maturity? (exploring|problem_defined|method_first|continuation|assigned|well_defined|null), status?}` | editor; a changed `title`/`slug` and `status` to/from `archived`: manager (403 「只有研究擁有者可以修改研究名稱與網址代稱。」; re-sending the unchanged title is not a rename) | rename keeps the slug (links stay stable) unless `slug` is given; a changed title records activity `study_renamed`. A legacy `summary_format` (POST/PATCH) is accepted and ignored → `StudyDetail` |
 | DELETE `/studies/:ref` | manager | runs study cleanup hooks (decks: cancel jobs, delete S3 prefixes after commit), cascades everything |
 | GET `/studies/:ref/members` | user | `{members, permissions}` |
 | POST `/studies/:ref/members` `{userId, role: member\|advisor}` | manager | enabled accounts only; advisor must be professor (400); already a member → 409; notifies the added user (`kind:'study'`); activity `member_added` → 201 `{members}` |
@@ -700,7 +700,7 @@ the only address sent to external APIs; never a user's email), `library.unpaywal
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET `/library/papers?q=&venue=&year=&yearFrom=&yearTo=&study=<ref>&has_pdf=true\|false&sort=recent\|year\|title&limit≤100&offset=` | user | → `{papers: (PaperSummary & {studies:[{id,slug,title}]})[], total, facets: {venues:[{value,count}], years:[{value,count}]}}`. `q` matches normalized title (substring or trigram), authors, exact DOI/arXiv, venue |
+| GET `/library/papers?q=&venue=&year=&yearFrom=&yearTo=&study=<ref>&has_pdf=true\|false&scope=all\|mine&sort=recent\|year\|title&limit≤100&offset=` | user | → `{papers: (PaperSummary & {studies:[{id,slug,title}]})[], total, counts: {mine, all}, facets: {venues:[{value,count}], years:[{value,count}]}}`. `scope=mine` = papers linked to a study the caller **owns** (default `all`; the /library page defaults to `mine` and remembers the switch per browser); `counts` apply the other filters to both scopes. `q` matches normalized title (substring or trigram), authors, exact DOI/arXiv, venue |
 | GET `/library/papers/:id` | user | → `{paper: PaperDetail}` |
 | POST `/library/resolve` `{identifier}` | user | DOI / arXiv / ACL / OpenAlex / S2 / ISCA id or URL → `{record, sources, identifier, matches:[{level, reason, paper}]}`; writes nothing. 400 unknown format, 404 not found |
 | POST `/library/papers` `{identifier? \| record?, study?, citeKey?, tags?, onDuplicate: ask\|link\|add, paperId?}` | user; `study` needs study editor | resolves `identifier` online; a `same` match is merged into the existing paper (200, `created:false`); with `ask` (default) a likely/possible match → **409** `{error, code:"duplicate", record, duplicates:[{level, reason, paper}]}`; `link` + `paperId` merges into that paper; `add` creates. New → 201. Adds to `study` (activity `paper_added`). Added **by identifier** without a PDF: `autoFetchPdf` (≤ 15 s, else queues `ai_library_import`) → `{paper, created, study: {id, cite_key, added} \| null, pdf: {status: exists\|stored\|queued\|not_found\|failed\|none, source, jobId}}` |
@@ -1191,7 +1191,7 @@ stripped from the text).
 | POST `/agent/conversations` `{mode?, context?, autopilot?, title?}` | user | autopilot / memory default from settings (interview: both off) → 201 `{conversation}` |
 | GET `/agent/conversations/:id` | owner | current branch only: `{conversation, messages (user/assistant/notice/compaction, each with memories, answers, versions: ids \| null), toolCalls, run (latest of the branch), grants, settings, resumeFrom}` |
 | PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?}` | owner | memory needs the user setting (409); emits `conversation` |
-| GET `/agent/conversations/:id/activity` | owner | what still runs: `{assistant: bool (an active agent run), workflows: [{id, title, status}] (unfinished runs of the conversation)}` — the delete dialog's warning (`frontend/src/lib/agent/delete.ts`) |
+| GET `/agent/conversations/:id/activity` | owner | what still runs: `{assistant: bool (an active agent run), workflows: [{id, title, status}] (unfinished runs of the conversation), goals: [{id, title, status}] (unfinished goals)}` — the delete dialog's warning (`frontend/src/lib/agent/delete.ts`) |
 | DELETE `/agent/conversations/:id` `?stop_agents=1` | owner | with an active run or unfinished workflows and no `stop_agents` → 409 `{code:"active_agents"}`; otherwise cancels the active run, stops (`cancelWorkflow`) and **deletes every workflow run of the conversation** (`deleteConversationWorkflows`; drafts they wrote — decks, notes — stay; a still-running job sees the cancel on its heartbeat and a retry finds the run `missing`); memories stay |
 | POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext, intent?: "make_note", attachments?: AttachmentRef[] ≤ 10}` | owner | text and/or `ask_user` answers; `intent` = toolbar quick action (see Paper reading); `attachments` see Attachments (a ref the caller cannot read → 403/404 「附件 N：…」, nothing is sent); 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; 409 while running → 202 `{message, run}` |
 | POST `/agent/conversations/:id/messages/:messageId/edit` `{text?, answers?, context?, attachments?}` | owner | current-branch user message → new version (cancels the active run first; empty body = resubmit unchanged; the message's attachments are kept and re-resolved unless `attachments` is given); an answer message takes only `answers` (400) → 202 `{message, run}` |
@@ -1475,7 +1475,7 @@ Approve / resume / guidance / 繼續改 enqueue a new job when none is queued or
 steps get their step attempt back so an outage never reaches the per-step attempt cap; the card shows
 「等待模型恢復」 from the job stage). Sub-agent roles that are unconfigured/unavailable fall back to `assistant`.
 
-Tables (`0109_workflows.sql`, `0116_workflow_batches.sql`):
+Tables (`0109_workflows.sql`, `0116_workflow_batches.sql`, `0117_workflow_goals.sql` → Goals below):
 - `workflow_runs` — `user_id` (owner; the run acts with exactly their permissions, re-checked before every write),
   `batch_id` + `batch_index` (one run of a batch, below),
   `study_id`, `conversation_id` + `tool_call_id` (the chat that started it; SET NULL), `playbook`, `title`, `request` (the
@@ -1535,10 +1535,27 @@ the budget):
    (`[@key]` / `\cite{}` keys ∈ the study BibTeX), `equations`, `table_rows`, `chart_blocks` (valid ```chart JSON),
    `numbers_from_source`, `source_refs`, `render_ok`, `compile_ok`) then, when `verify.judge` and the checks passed, the
    **verifier** sub-agent (role `analysis`) judges the output against the step's expected output and the run's criteria
-   and answers `{verdict, issues[{severity, confidence 0–1, text, where}]}`. Any failed check, or a `revise` verdict with
-   a high/medium issue of confidence ≥ 0.6, → **fix round**: the same role gets its previous output + the exact issues
-   and returns the full corrected output (≤ `max_fix_rounds`, then the step is `failed` and the run will end
-   `partial`). A fix round whose output is identical to the previous one stops fixing that step (no progress).
+   and answers `{verdict, issues[{severity, confidence 0–1, kind error|missing|unclear, text, where, quote,
+   source_quote}]}`. Any failed check, or an open ledger issue, → **fix round**: the same role gets its previous output
+   + the exact issues (`[i1] where：text（原文：「quote」）`) and returns the full corrected output (≤ `max_fix_rounds`,
+   then the step is `failed` and the run will end `partial`). A fix round whose output is identical to the previous one
+   stops fixing that step (no progress).
+   **Issue ledger** (`src/workflows/ledger.ts`, `workflow_steps.inputs.ledger {reviewed, next, items[{id, status
+   open|fixed|unresolved|invalid, severity, text, where?, quote?, source_quote?, rounds, opened, closed?, evidence?,
+   note?}]}`): the first judged round of a step is a full review whose actionable issues (high/medium, confidence ≥ 0.6)
+   are recorded with stable ids; later rounds of the same step are a **re-check** — the verifier answers per open id
+   `fixed` (evidence quoted from the new version) or still open (the offending text quoted), and may add only **new
+   high** issues (new medium/low ones are shown as low, never fixed). A bare `pass` closes every open issue; an error
+   issue whose quoted text is gone and that the verifier does not re-quote counts as fixed. Pass = checks pass + no
+   open issue. A new draft (a step re-run without fix issues) starts a full review again (closed items stay for the
+   report). **False-positive filter** (deterministic): an issue whose `quote` is not in the output (whitespace /
+   punctuation / Markdown ignored, 「…」 splits, ≥ 80 % 4-gram match for long quotes), whose `source_quote` is not in the
+   sources, an error/unclear issue without a quote, or a self-contradictory text (「第 2 頁而非…第 2 頁」, 「把『A』改為
+   『A』」) is recorded `invalid` (「驗收者判斷無效」) and never fixed. **Convergence guard** (`CONVERGENCE_ROUNDS` = 3): an
+   issue still open after 3 fix rounds is no longer fixed — medium/low → `unresolved` (the step can pass; a report
+   item), high → the step fails now (「同一個問題修正 3 輪仍未解決」). A high issue that would fail the step (its last
+   round, or stuck) first gets one **second opinion** (`purpose verify_second`, `{real, reason}`); `real: false` →
+   `invalid`. 繼續改 re-opens `unresolved` / stuck issues of failed steps with a fresh round count.
    Sub-agents see only their brief (never the chat) and cannot delegate (depth 1). A sub-agent that lacks required data
    answers `BLOCKED: <what is missing>` instead of inventing content → the step goes back to `pending` and the
    orchestrator turns the blocker into a **question card** with grounded options (below; `purpose: blocked`, the answer
@@ -1561,9 +1578,16 @@ the budget):
    with quoted evidence (`criteria[].evidence`); one the verifier could not judge is `skipped`, never `pass` (the run
    then ends `partial`). Failing criteria map back to
    steps and get one more targeted fix round while the budget allows (`final_rounds` ≤ 2), then re-integrate.
+   Final rounds share a ledger (`state.final_ledger {sections: hash[], items: {<id>: {status, evidence?, reason?, fails,
+   invalid?}}}`): a criterion that passed is not judged again when no section (Markdown heading / slide, LaTeX
+   section, else paragraph) changed, and otherwise only against the changed sections (`<changed>`; a fail must quote
+   them, else it keeps its pass). A fail quoting evidence that is not in the artifact or with a self-contradictory
+   reason is asked once more, then `skipped` with 「驗收者判斷無效」 (no repair round is spent on it).
 6. *Report*: `report.summary_md` (what was done, verification results, remaining issues, links) + a `notice` message
    (`kind workflow_done|workflow_partial|workflow_failed`) in the conversation + a notification (in-app always, Web Push
-   to the owner). `partial` lists the unmet criteria (「未達成」 = failed, 「未驗收」 = never evaluated, e.g. the budget ran out) and offers 「繼續改」 (`POST …/resume {more: true}`: +1 fix round per
+   to the owner). The summary counts the ledger issues (「驗收問題：已修正 n 個、仍未解決 m 個、判定無效 k 個」),
+   `report.ledger {fixed[], unresolved[], invalid[]}` lists them (the card shows them as collapsible groups; a passed
+   step's unresolved items are also in `issues` as 「仍未解決」). `partial` lists the unmet criteria (「未達成」 = failed, 「未驗收」 = never evaluated, e.g. the budget ran out) and offers 「繼續改」 (`POST …/resume {more: true}`: +1 fix round per
    failed step, +1 final round).
 Budgets are checked before each dispatch: steps, sub-agent calls, tokens, wall time (`active_ms`); exhaustion → the
 remaining steps are `skipped` and the run integrates what passed and ends `partial` (`stop_reason budget_*`).
@@ -1640,30 +1664,79 @@ and autopilot approves it only when every planned write is draft-only (above). W
 the hub except the open-world search query rules of the assistant.
 
 **Playbooks** (`registerWorkflowPlaybook(def)`, `src/workflows/playbooks/`; `def = {id, title, titleEn, description,
-detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step, env), integrate(env), finalize?(env)}`):
+detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step, env), integrate(env), finalize?(env)}`).
+`plan()` returns a plan, a question, `needs_pdf`, `skip`, or `redirect {playbook, message}` — another playbook fits
+better (a topic survey asked as a reading note): the engine switches `workflow_runs.playbook` once, logs the message and
+plans with it.
 
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
-| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
+| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, content checks on `data.refs` (`grounded_names`, `figure_refs`, `diagram_semantics`, `chart_semantics`; see **Content checks** below), `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
 | `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection → integrate → compile-verify (new file) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
-| `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis | new note | `table_rows` ≥ papers, `citations`, judge |
-| `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
+| `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis; a study with < 2 papers gets card `lit_too_few` (改做主題調研 → `redirect` to `topic_research` / 我先加入論文 → the old question), autopilot redirects directly | new note | `table_rows` ≥ papers, `citations`, judge |
+| `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate; no resolvable paper + a topic-like request (`isTopicRequest`) → `redirect` to `topic_research` | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
+| `topic_research` | 主題調研 (detect 0.9: `TOPIC_RE` — 有哪些…做法/方法, 調研, 研究現況, survey, state of the art, related approaches, 找…論文 — and no `paper_id` / arXiv id / DOI) | planning: sub-questions (outline, editable) with expanded keyword queries → **one search batch** + citation snowballing, then tainted → planner picks 8–12 papers (seminal + recent) incl. relevant study papers (step `research`, passed); per paper `paper_i` (parallel): import + structured full-text extraction (數字表), 「僅依摘要」 without a PDF → `taxonomy` → `approaches` ∥ `results` ∥ `practice` (stack named) ∥ `discussion` → `polish` (consistency + concision) → assemble (+ 參考文獻, 搜尋紀錄) | new note; `paper` write 「匯入 N 篇論文到實驗室文獻庫…」 (no draft effect → autopilot waits) | `sections_present`, `topic_taxonomy`, `topic_approaches`, `topic_cites`, `topic_numbers`, `topic_results_coverage`, `topic_consistency`, `topic_concise`, `topic_reading`, judge |
 | `experiment_report` | 實驗報告筆記 | researcher (notes / pasted results) → writer (tables, ```chart) | new note | `table_rows`, `chart_blocks`, `numbers_from_source` |
 | `meeting_prep` | 會議準備 | researcher (open tasks, last feedback, deck changes, recent activity) → writer agenda | new note | `sections_present`, judge |
+| `paper_outline` | 論文大綱 (`playbooks/paper.ts`) | sources = the handed-over notes (`note_ids`) else the newest research / reading notes + the study library with cite keys (step `research`, passed) → writer: fixed Markdown (`# 論文大綱：…`, `## 論文題目`, `## 主要貢獻`, `## 章節規劃` with `### n. 節名` + bullets + 「引用：[@key]」, `## 參考文獻`) → assemble; empty library and no notes → question | new note (kind research) | `sections_present` (三段), `outline_sections` (≥ 4 sections, each with points), `citations`, judge |
+| `paper_draft` | 撰寫 LaTeX 論文 (`playbooks/paper.ts`) | the outline note (`parseOutline`; else a planning-time outline step) + other notes + library → `sec_i` writers in parallel (one `\section`/`\chapter` each, `\cite` only study keys, language from `inputs.language`) → `abstract` (+ keywords) → `assemble` (`max_rounds` 3): **creates a new LaTeX project** from the template (`inputs.template`: zh → `article-zh`, 碩士論文 → `zh-thesis`, en → `ieee-conference`; `paperMain` replaces the sample `\input`s by `sections/sNN-<slug>.tex`, abstract file kept / added first, `refs.bib` = the library export in the auto-bib format) then a verification compile; a fix round repairs the files the compile errors name (`paper_fix`); later rounds rewrite only the run's own files whose text is unchanged since it wrote them (sha check), else leave them (log) → final; commit requests a real compile for the preview | new LaTeX project (`latex_project`, effect `new`) | `compile_ok`, `paper_sections` (every outline title present, from `data.sections`), `citations`, `no_placeholder`, judge |
 | `generic` | 一般任務 | the orchestrator plans freely (≤ 8 steps; roles from the list) | new note | `no_placeholder`, `not_truncated`, judge |
+
+**Topic research** (`playbooks/research.ts`). For 「研究有哪些做法」-style requests without a specific paper. Planning
+reads nothing untrusted before searching: the decomposition prompt gets only the request, the guidance and the study
+title and returns 3–6 sub-questions with 1–3 English keyword queries each (query expansion; canonical method names
+count as keywords) + 1–2 survey / seminal queries; queries are cleaned to keywords (`keywordQuery`: no URLs / long tokens,
+≤ 12 words), ordered round-robin over the sub-questions (≤ 10) and all run in one batch through `search_papers_online`
+(hits carry `open_access`). The top 3 hits are then **snowballed** (`service.relatedPapers` → Semantic Scholar
+`/paper/{id}/references|citations` with `citationCount`; only the DOI / arXiv id leaves the hub), the pool is merged by
+title (`via` = which queries / seeds found it) and ranked, and the run is marked tainted (「線上搜尋結果」), so no step
+searches again. The batch is stored (`state.topic_search`) **before** the run is tainted, so a job interrupted after
+searching (redeploy, crash) and every re-plan reuse it; a run tainted only by its own search (「線上搜尋結果」) whose batch
+was lost may search again (the queries still come from the request alone), any other taint blocks it. The planner picks 8–12 papers — ≥ 2 seminal, ≥ 3 recent, one
+representative per approach, papers on the stack the request names — and lists notable exclusions with reasons. The
+plan card shows the sub-questions (outline edits → `applyEdits` re-derives the later steps), one step per paper
+「匯入並精讀〈…〉」 with role (經典／近期／核心) and reason (switch it off to drop the paper) and `plan.notes` with the
+queries sent. `plan.writes` has the library import without a draft-only effect, so autopilot waits for the user's
+approval; nothing is imported before it. Budget (`budgetFor`): 900 calls / 16 M tokens / 360 min (a run redirected here
+gets the larger budget too).
+Execution: `paper_i` imports via `importIntoStudy` / `linkPaperToStudy` (`agent/tools/library.ts`, the same code as
+`import_paper` / `add_paper_to_study`; open-access PDF with a 30 s budget, no background job; `state.import_<key>`); a
+paper that cannot be imported is left out. The researcher gets the paper's **full text as a deterministic
+results-weighted digest** (`paperFullText` + `digest(…, 14 000, {focus: results})`) plus `read_paper` /
+`view_paper_pages` / `get_paper` (≤ 12 rounds, 16 000 output tokens) and writes a structured extraction with `#### `
+parts 一句話 / 方法 / 注入位置與訓練／推論 / 關鍵公式 / 實驗設定 / **數字表** (Markdown table with table / page refs) /
+限制 / 子問題對應; no PDF → 「（僅依摘要）」, no page / equation detail (also in 參考文獻). Writers get only the parts
+they need from every paper (`materialFor`, equal share of 15 000 chars per paper), and that material is also their
+verifier's sources (`state.brief_<key>`, read by `verify.ts` before `state.brief`): 「## 問題定義」 + 「## 方法分類」
+(table 方法｜核心想法｜注入位置｜優缺點｜代表論文, cells ≤ 40 字), 「## 各方法詳解」 (one `### ` per taxonomy row, formulas
+where the paper gives them), 「## 實驗結果比較」 (≥ 1 row per paper whose 數字表 has numbers, numbers only from the
+extractions), 「## 在 <stack> 上怎麼做」 when the request names a toolkit / model (`stackOf`: Zipformer, icefall, k2,
+ESPnet, NeMo, WeNet, Whisper…; where it plugs in, training vs. inference-only, cost — sources only), 「## 開放問題」 +
+「## 與本研究的關係」 (relation only, never a direction or timeline). Step `polish` (≤ 2 rounds) rewrites the whole draft for
+consistency and concision (no contradictory disclaimers, short cells, no repeated sentences, every citation and number
+kept, ≤ 12 000 chars); assemble uses it when it passed, else the section drafts, and appends 參考文獻 and
+「## 搜尋紀錄」 (queries, citation tracking, kept papers with role + reason, left out: switched off / not importable /
+the planner's exclusions). Checks are registered into `CHECKS` from the module and read their data from the step output
+(`data.keys` = the study's cite keys, `methods` = taxonomy rows, `source` = extractions, `abstract_only` / `full` =
+paper labels, `with_numbers`, `draft_keys`): `topic_cites`, `topic_taxonomy`, `topic_approaches`, `topic_numbers`,
+`topic_results_coverage`, `topic_consistency` (an abstract-only paper cited with §/p./equation/table detail, a
+full-text paper described as abstract-only / 「僅有定位」, 「筆記被截斷」 disclaimers), `topic_concise` (cells ≤ 60 chars
+without citations), `topic_length`, `topic_keep_cites`, `topic_reading`. Tests stub search, snowball and import
+(`setTopicResearchDeps`).
 
 **Slides: visual-first decks** (`playbooks/slides-visual.ts`, `lib/slides/deck-visuals.ts`, `lib/slides/diagram/`,
 `lib/slides/deck-layout.ts`, `lib/library/figure-locate.ts`). The run keeps the slide body in *source form*; every render
 materialises it into the deck tree:
 - Diagrams (preferred for every flowchart / architecture / comparison figure): ```` ```diagram ```` JSON spec
   (`diagram/spec.ts`, help text `DIAGRAM_SPEC_HELP` in the writer rules) with `type: pipeline | architecture |
-  encoder_decoder | comparison | cycle | timeline | tree | graph`; nodes `{id, label, sub?, kind: input|process|model|data|
+  encoder_decoder | comparison | cycle | timeline | tree | graph | grid`; nodes `{id, label, sub?, kind: input|process|model|data|
   output|highlight|note, icon?, frozen?, trainable?, repeat?, badge?, shape?}`, edges `{from, to, label?, kind: flow|skip|
   residual|feedback|cross|gradient, style?, both?}`, groups `{label, nodes, style: frozen|highlight}`; pipeline `stages`
   (a stage may be an array = parallel), architecture `layers` (node | `{row}` | `{repeat, label, layers}`; nodes outside the
   stack are side nodes wired by edges), encoder_decoder `encoder/decoder.layers`, comparison `panels[{title, sub?,
   highlight?, stages}]` (`direction: LR` = stacked rows), cycle `nodes + center`, timeline `events[{date, label}]`, tree
-  `root.children`. Lenient parsing (aliases, string nodes, label refs); zh-TW problems (`lintDiagrams`, used by the
+  `root.children`, grid `nodes` (+ `cols?`, `groups` = labelled sections; equal cards in centred rows, no arrows: parallel
+  items such as applications, datasets, compared systems). Lenient parsing (aliases, string nodes, label refs); zh-TW problems (`lintDiagrams`, used by the
   `diagram_syntax` check). Our own layouts per type (`diagram/layouts.ts`; free graphs via `@dagrejs/dagre`, MIT, then
   `straightenSpine`: the longest forward chain is put back on one line — no diagonal staircase — and skip / feedback edges
   become orthogonal bridges over / under the chain in separate lanes, `bridgeRoute`; graphs with groups keep dagre's routes): text is
@@ -1696,6 +1769,30 @@ materialises it into the deck tree:
   so the crop is ≈ 1800 px wide (`page-images.ts` `png`, `maxWidth` ≤ 3600) → `figures/p<page>-<t>-<b>-<l>-<r>.png` in a
   `.figure-frame`. The researcher's figure list carries a type (architecture / method / result / table / example); the
   Architecture page prefers the paper's own architecture figure, our diagrams draw the simplified explanation.
+- **Content checks** (`lib/slides/content-lint.ts`, pure; wrapped as checks in `checks.ts`, params `doc: true` = a note is
+  one unit). The sources they compare against are built once per run (`workflows/content-refs.ts`, state
+  `content_refs`): name-like terms of the brief + the paper's full text without the references section + request /
+  title (+ later guidance), sentences of the sources about training, and the measured figure list (`listFigures`, state
+  `figures`). Steps hand them to the checks as `data.refs` (+ the outline points). `grounded_names`: tokens that read as
+  model / dataset / method names (≥ 2 capitals, letters + digit, camel case, known single-capital names such as
+  Whisper / Conformer; generic acronyms such as WER, SSL, LLM never count) absent from the terms (HuBERT-Large is fine when
+  the paper names HuBERT). `figure_refs`: a crop captioned without Fig. N／Table N, a crop on another page than the list
+  puts Fig. N, slide text / notes naming another figure of the same kind than the one shown, "Fig. N (p. X)" with the
+  wrong page. `diagram_semantics`: `trainable` / `frozen` on inference-only steps (`INFERENCE_ONLY_RE`: search, DTW,
+  filtering, decoding, scoring, similarity, clustering …) or on input / data nodes, `trainable` on a part no training
+  sentence of the sources names, and parallel items drawn as an unlabeled arrow chain (≥ 3 same-kind steps without input
+  / output / data, on a slide about peers — applications, datasets, tasks, baselines, compared systems — with no action
+  step, or listed together in one outline point / bullet / note line without sequence words; comparison panels of one
+  box each). `chart_semantics`: an axis label / unit on every chart, one quantity per axis (series or categories of
+  different families — layer, correlation, error rate, accuracy, time, size, count —, a correlation above 1, series
+  ranges ≥ 30× apart), the same numbers charted on two slides. Before any check the writer output, the assembled body
+  and every visual-QA rewrite go through deterministic fixes (`fixContent`): refs whose caption names a listed Fig. N get
+  its page and band (a numberless caption whose band overlaps one listed figure gets its label), unfounded markers are
+  removed, peer chains become a `grid`. The writer's figure list gives each figure's exact `paper-fig` syntax
+  (`figureSyntax`). The same issues are `sourceIssues` of the visual QA (per page, so the rewrite targets them) and final
+  criteria `names` / `figrefs` / `semantics` / `charts` (repaired through `visual_qa`). Student-owned pages are exempt
+  (`allow_titles`: their content is the student's answer or, under autopilot, study data). Reading notes run
+  `grounded_names` + `figure_refs` (`doc: true`) on each section part.
 - Theme: generated decks add `css: hub-deck.css` (written into the tree, rewritten while it is still the generated
   theme): title 40 px, body 26 px, tables 22 px, captions 16 px at 1280×800; `.columns`, `.takeaway`, `.big-number(-label)`,
   `.figure-frame`, blockquote claim, `img.hub-diagram/.hub-chart` (max-height 600 px).
@@ -1717,10 +1814,84 @@ materialises it into the deck tree:
   criterion `visual_qa`; the per-page score table is appended to the report, so pages still failing after 3 rounds are
   listed honestly.
 
+**Goals: deliverable-first roadmaps** (`src/workflows/goals/`, table `workflow_goals` (`0117_workflow_goals.sql`),
+`workflow_runs.goal_id` + `goal_stage`; routes `routes/goals.ts`). One request → one fixed **deliverable** (`paper` = a
+built-in LaTeX project with every section written and compiled, `paper_section`, `deck`, `topic_note`, `lit_review`,
+`reading_note`, `outline`, `experiment_report`, `meeting_agenda`, `note`; `deliverableOf(request)` — 「寫一篇 paper」「可以開論文了」
+「最後要給我一個 latex 論文」 → `paper`, a deck about a paper stays `deck`, 「給我這篇論文的…」 is not a paper to write). It is never
+silently substituted: when no playbook produces it, `deliverable.direct = false` + `note` and the card says so.
+- **Capabilities** (`capabilities.ts`): every playbook declares `produces` (deliverable kind) and `requires` (`study`,
+  `papers` ≥ n, `papers_with_pdf` ≥ n, `note_kinds`, `outline_note`, `latex_project`, `experiment_data`, `paper`) and a one-line
+  summary — `def.capability`, else the built-in table there. **Readiness** (`readinessOf`) is a deterministic snapshot of the
+  study (papers total / with PDF, notes per kind, outline notes (title 大綱/outline), recent research / reading notes, LaTeX
+  projects, decks, experiment notes); `gapsOf(requires, snapshot)` lists what is missing (shown under pending stages).
+- **Planner** (`planner.ts`): recognised single deliverables use a deterministic **template** (no model call) — `paper`: topic
+  research when fewer than 8 papers have a PDF (`topic_research`; without it `lit_review` when ≥ 2 papers, else `generic`) →
+  `paper_outline` → `paper_draft` (`inputs.language`, `inputs.template`; uses the earlier stages); `outline`: research when
+  < 3 PDFs → `paper_outline`; `lit_review` with < 2 papers: research → `lit_review`; everything else one stage. Composite
+  (「先…再…」, 「最後要…」) or unrecognised requests ask the **planner LLM** (purpose `goal_plan`, role assistant) with the request,
+  the fixed deliverable, the catalogue, the readiness lines and the template as a hint → `{title, objective, deliverable,
+  cannot?, stages: [{playbook, title, why, request, uses: [earlier indices]}]}`; `validStages` rejects unknown playbooks,
+  forward `uses`, > 8 stages and a last stage that does not produce the deliverable (when a producer exists) → template / one
+  stage of the detected playbook. **One stage → exactly today's workflow** (`insertWorkflows`, no goal row, no roadmap card).
+- **Goal rows**: `deliverable {kind, label, direct, note?, language?, template?}`, `status planning | awaiting_approval |
+  running | awaiting_input | done | partial | failed | cancelled`, `stages [{id, playbook, title, why, request, inputs, uses[],
+  status pending|running|waiting|done|partial|failed|skipped|cancelled, run_id, artifacts, summary?, issues?, added_by
+  plan|replan|user}]`, `current`, `autopilot`, `context`, `readiness`, `state {template, planner, replans, rounds}`, `history`
+  (≤ 60 lines), `question`, `report {summary_md, done[], issues[]}`.
+- **Run** (`advance.ts`): the user confirms the roadmap once (「開始」; under autopilot it starts at once when every stage is
+  auto-approvable and none imports papers (`topic_research`)). A stage starts as an ordinary run (per-user queue applies) with
+  `goal_id`, the request + 「（目標「…」的第 i/n 個階段：why；最終成果：…）」 and `stageInputs`: its inputs + the artifacts of the
+  stages it `uses` (notes → `note_ids` ≤ 6, LaTeX project → `project_id`, deck → `deck_id`). Its plan is approved by the goal
+  (`autoApproval({goal: true})`: also writes without a draft effect such as a library import; `overwrite` / `publish` /
+  `delete` / `outbound` still wait). When the run's job stops (`runWorkflow`'s `finally` → `goalAfterRun`; also
+  `cancelWorkflow`): waiting (plan card / question / needs PDF / paused) → stage `waiting` (the card opens that stage);
+  done / partial → stage records artifacts, summary and issues, **re-plan** (`replanAfter`: a `topic_research` stage that left
+  < 4 PDFs before an outline / paper / review gets one more round, ≤ 2 rounds per goal; LLM-planned goals ask `goal_replan`
+  to insert / skip / reorder the rest, applied only when nobody edited the pending stages meanwhile), then the next pending
+  stage starts automatically; skipped (`stop_reason skipped`) → next; failed / cancelled by the user → goal `awaiting_input`
+  with 「要重試這個階段、略過它繼續，還是停止整個目標？」. After the last stage: `done` (every stage that ran is done, none failed /
+  skipped after running, the last stage produced the deliverable), `partial`, or `failed` (the last stage produced nothing),
+  report with the deliverable links, the stage list and 待處理. Notices `goal_awaiting_approval|awaiting_input|done|partial|failed`
+  in the conversation + a notification (kind `workflow`, deep link `focus=goal:<id>`); a stage run's own done / partial sends
+  no notification.
+- **Editing** while `awaiting_approval` / `running` / `awaiting_input`: the stages that have not started are replaced by the
+  given list (order, skip, removed, added with a playbook + request; a new stage uses every earlier stage); started stages
+  stay. **Deliverable change** (`updateGoal`, tool `update_goal`): stages that ran stay (their outputs feed the new roadmap),
+  the rest is re-planned for the new deliverable (a stage the new plan would repeat although it already produced output is
+  dropped) → `awaiting_approval`, or keeps running when a stage is working. **Cancel** stops the running stage run
+  (`cancelWorkflow`) and cancels pending stages; deleting the goal keeps its runs as ordinary workflows; deleting the
+  conversation deletes its goals first, then stops and deletes its runs (`conversationActivity` lists goals).
+- **Chat**: tools `start_goal {request, deliverable?, study?, paper_id?, project_id?, note_ids?}` (risk read; one stage →
+  the workflow result, else `{goal_id, status, deliverable, stages}`), `update_goal {request, deliverable?, goal_id?}`,
+  `get_goal {goal_id?}`. `start_workflow` routes through `routeWorkflowRequest`: when the request names a deliverable the
+  playbook (given or detected) does not produce — 「寫一篇論文」 with `lit_review` — it plans a goal for that deliverable
+  instead; when the conversation already pursues a goal for the same deliverable (「可以開論文了」) it returns that goal (no
+  second goal, no unrelated runs); a different deliverable updates the conversation's goal. The prompt (`PAPER_RULES`) tells
+  the model to fix the deliverable first, never substitute, use `start_goal` for multi-stage deliverables and `update_goal` when
+  the user changes it.
+- Frontend: `lib/goals/api.ts`, `components/workflows/GoalCard.svelte` (deliverable + status, objective, 「無法直接產生」 box,
+  readiness, roadmap with status / why / gaps / artifacts per stage, each stage expandable into its WorkflowCard (the waiting
+  one opens by itself), 「開始」 / 「修改路線圖」 (reorder / skip / remove / add) / 「取消」, 重試 / 略過 / 停止目標, report, log;
+  polls `GET /goals/:id` every 4 s while active), rendered for `start_goal` / `update_goal` / `start_workflow` results with
+  `goal_id` (`workflowIdOf` → `goal:<id>`); focus key `goal:<id>` (`lib/agent/focus.ts`); the agents indicator lists goals
+  (`kind: goal`, quick 「開始」 / stop); i18n `i18n/goals.ts`.
+
+| Method & path | Access | Notes |
+|---|---|---|
+| POST `/goals` `{request ≤ 4000, deliverable?, playbook?, conversation_id?, context?, inputs?: {study?, paper_id?, project_id?, note_ids?}, autopilot?}` | user | plans → 201 `{goal: GoalView, workflow: null}` or, for one stage, `{goal: null, workflow: WorkflowView}` |
+| GET `/goals?conversation=&active=1&limit=` · GET `/goals/:id` | owner | `{goals}` / `{goal}`; `GoalView = {id, title, request, objective, deliverable, status, needs_you, action: approve_plan\|answer\|null, question, stages: (Stage & {playbook_title(_en), run_status, gaps[]})[], current, autopilot, readiness: string[], planner, history[≤ 20], report, conversation_id, study, finished, …timestamps}` (a stage's status follows its run live: waiting ⇄ running) |
+| POST `/goals/:id/approve` `{stages?}` | owner | only `awaiting_approval` (409) → the first pending stage starts → `{goal}` |
+| PUT `/goals/:id/stages` `{stages: [{id?, playbook?, title?, request?, why?, skip?}] ≤ 8}` | owner | edits the stages that have not started (400 unknown playbook / empty request / > 8) |
+| POST `/goals/:id/resume` `{action: retry\|skip}` | owner | only `awaiting_input` (409) |
+| PATCH `/goals/:id` `{request, deliverable?}` | owner | deliverable / objective change (above) |
+| POST `/goals/:id/cancel` · DELETE `/goals/:id` | owner | cancel (409 when finished) / delete (stops it first; runs stay) |
+
 **Chat integration.** The assistant prompt (`WORKFLOW_RULES`) says: for multi-step creation, propose and call
 `start_workflow` instead of producing the result in one reply; for a quick one-shot draft only when the user explicitly
 asks for it (`create_deck {generate: true}` stays as that fast path). Tools: `start_workflow {request, playbook?, study?,
-paper_id?, deck_id?, project_id?, note_ids?, paper_ids? ≤ 10, pages?}` (risk read: it only plans; nothing is written
+paper_id?, deck_id?, project_id?, note_ids?, paper_ids? ≤ 10, pages?}` (its description routes topic / survey requests to
+`topic_research`, never reading_note / lit_review; risk read: it only plans; nothing is written
 before the plan is approved — by the user, or by autopilot for draft-only plans; not on MCP; study/paper default to the
 conversation's context) → `{workflow_id, status, playbook}` or, for a batch, `{batch_id, workflow_ids, workflows:
 [{id, title, status, paper_id}], status: "batch"}` (the tool row renders the **batch card**); the prompt tells the
@@ -1736,7 +1907,7 @@ planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
 |---|---|---|
 | GET `/workflows/playbooks` | user | `{playbooks: [{id, title, title_en, description, description_en, auto_approvable}]}` |
 | POST `/workflows` `{request ≤ 4000, playbook?, conversation_id?, context?, inputs?: {study?, paper_id?, deck_id?, project_id?, note_ids?, paper_ids? ≤ 10, pages?}, autopilot?}` | user (study read; writes are re-checked at run time) | admins 403; 503 `llm_unavailable` when `assistant` is down; playbook auto-detected when missing; context inherited / batch split / over 3 working runs → `queued` (never 409) → 201 `{workflow (first), workflows (the batch, or [workflow]), batch_id, conversation_id}` |
-| GET `/workflows/active` | user (own; admins → empty) | shell indicator 「N 個 Agent 執行中」: `{runs: ActiveAgentRun[], count, needs_you}` (`src/workflows/active.ts`) — my active workflow runs + the newest assistant run of each conversation when `running`/`awaiting_approval`/`awaiting_llm`, or ended on an unanswered `ask_user` card in the last 24 h (chat mode; status `awaiting_input`). `ActiveAgentRun = {kind: workflow\|assistant, id, title, objective, status, needs_you (awaiting_plan_approval/awaiting_input/needs_pdf/awaiting_approval; `queued` runs are listed too), conversation_id, study, current: {role (step role \| tool), text} \| null (latest `activity` event / running step / running tool call), progress: {done,total} (steps passed+skipped), plan: {done,total,current} (assistant: newest update_plan of the current turn), step: {step,max}, budget_pct, tokens, artifacts[≤4], action, focus, href, started_at, updated_at}`, needs-you first; `no-store`; polled (no SSE). Deep link to what waits: `action` = `approve_plan` (workflow plan card) \| `answer` (workflow question card / `needs_pdf` / `ask_user` card) \| `review` (consent card) \| null; `focus` = `workflow:<runId>` or `toolcall:<toolCallId>` (the first `pending_approval` call / the last `ask_user` call of the current turn); `href` = `/assistant/<conversationId>?focus=<focus>` or, for a run without a conversation, `/assistant/workflows?run=<id>` (`focusHref`, also used by workflow notifications and the jobs tray) |
+| GET `/workflows/active` | user (own; admins → empty) | shell indicator 「N 個 Agent 執行中」: `{runs: ActiveAgentRun[], count, needs_you}` (`src/workflows/active.ts`) — my active workflow runs + the newest assistant run of each conversation when `running`/`awaiting_approval`/`awaiting_llm`, or ended on an unanswered `ask_user` card in the last 24 h (chat mode; status `awaiting_input`). `ActiveAgentRun = {kind: workflow\|assistant\|goal, id, title, objective, status, needs_you (awaiting_plan_approval/awaiting_input/needs_pdf/awaiting_approval; `queued` runs are listed too), conversation_id, study, current: {role (step role \| tool), text} \| null (latest `activity` event / running step / running tool call), progress: {done,total} (steps passed+skipped), plan: {done,total,current} (assistant: newest update_plan of the current turn), step: {step,max}, budget_pct, tokens, artifacts[≤4], action, focus, href, started_at, updated_at}`, needs-you first; `no-store`; polled (no SSE). Deep link to what waits: `action` = `approve_plan` (workflow plan card) \| `answer` (workflow question card / `needs_pdf` / `ask_user` card) \| `review` (consent card) \| null; `focus` = `workflow:<runId>`, `goal:<goalId>` (a goal and its stage runs; also the jobs tray and notifications of goal stages) or `toolcall:<toolCallId>` (the first `pending_approval` call / the last `ask_user` call of the current turn); `href` = `/assistant/<conversationId>?focus=<focus>` or, for a run without a conversation, `/assistant/workflows?run=<id>` (`focusHref`, also used by workflow notifications and the jobs tray) |
 | GET `/workflows?active=1&study=&status=&conversation=&batch=&limit=` | user (own) | `{workflows: WorkflowView[]}` newest first (`batch`: in batch order; no steps); `active` includes `queued` / `needs_pdf` |
 | GET `/workflows/:id` | owner | `{workflow, steps: StepView[], resumeFrom}` |
 | GET `/workflows/:id/events` | owner | SSE (as the agent's: `Last-Event-ID` / `?after=`, `?once=1`, 15 s ping, 5 s poll fallback) |
@@ -1759,11 +1930,11 @@ type WorkflowView = { id, title, playbook, playbook_title, playbook_title_en, st
   guidance: {at, text, applied}[], report: {summary_md, done: string[], issues: string[]} | null, stop_reason, error,
   job: {status, stage} | null, question?: string | null, asks: (Card & {pending: boolean; ai_filled?: boolean})[],
   batch: {id, index} | null, auto_approved: {at, tainted} | null, paper_id: string | null, created_at, updated_at, finished_at };
-// report also has confirm?: string[] (AI-filled pages to confirm); plan.writes[].effect?: WriteEffect
+// report also has confirm?: string[] (AI-filled pages to confirm) and ledger?: {fixed, unresolved, invalid: string[]}; plan.writes[].effect?: WriteEffect
 type Artifact = { kind: "deck"|"note"|"latex_project"|"latex_file"|"paper"; id; url; title; role: "draft"|"suggestion"|"primary"; preview_url?; revision? };
 type StepView = { id, key, parent_key, position, role, kind, title, instructions, depends_on: string[], expected,
   verify, status, attempts, round, output: {summary, excerpt?} | null, verdict, history, tokens: {in, out}, ms, error,
-  started_at, finished_at };
+  started_at, finished_at, ledger: {id, status, severity, text, where?, quote?, evidence?, note?, rounds}[] | null };
 ```
 SSE event types: `workflow {workflow}` (status, criteria, usage, artifacts, report changed), `step {step}` (upsert),
 `activity {step_key, role, text}` (short live line of a running sub-agent: 「讀取 §3 Method」), `verdict {step_key, round,

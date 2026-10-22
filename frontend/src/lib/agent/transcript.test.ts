@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTranscript, categoryOf, countActivity, hasActivity, latestPlan, turnSeconds, type AssistantTurn } from "./transcript.ts";
+import { buildTranscript, workflowIdOf, categoryOf, countActivity, hasActivity, latestPlan, turnSeconds, type AssistantTurn } from "./transcript.ts";
 import type { Message, ToolCall } from "./types.ts";
 
 let seq = 0;
@@ -67,6 +67,16 @@ describe("transcript grouping", () => {
     expect(t[1]!.final?.id).toBe(a2.id);
     const open = turns(buildTranscript([u1, a1], [ask]));
     expect(open[0]!.asks.map((c) => c.id)).toEqual([ask.id]);
+  });
+
+  it("start_goal / a start_workflow routed to a goal carry the goal card", () => {
+    const u = msg("user", "幫我寫一篇論文");
+    const a = msg("assistant", "我先排路線圖。");
+    const goal = call(a, "start_goal", { result: { data: { goal_id: "g1" }, links: [], source: null } });
+    const routed = call(a, "start_workflow", { result: { data: { goal_id: "g2" }, links: [], source: null } });
+    const t = turns(buildTranscript([u, a], [goal, routed]));
+    expect(t[0]!.workflows.map((c) => workflowIdOf(c))).toEqual(["goal:g1", "goal:g2"]);
+    expect(t[0]!.activity).toHaveLength(0);
   });
 
   it("a live turn has no final answer yet, and an empty live turn exists before the first step", () => {

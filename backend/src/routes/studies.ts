@@ -231,6 +231,9 @@ const studies: FastifyPluginAsync = async app => {
         if (!access.canEdit && !access.canManage) throw forbidden("只有研究成員可以修改。");
         const contentChange = input.title !== undefined || input.slug !== undefined || input.summary_md !== undefined || input.maturity !== undefined;
         if (contentChange && !access.canEdit) throw forbidden("只有研究成員可以修改。");
+        // The study's identity (title, address) belongs to its owner; members edit everything else.
+        const identityChange = (input.title !== undefined && input.title !== access.study.title) || (input.slug !== undefined && input.slug !== access.study.slug);
+        if (identityChange && !access.canManage) throw forbidden("只有研究擁有者可以修改研究名稱與網址代稱。");
         // Archiving (and un-archiving) is a management action; other statuses are ordinary edits.
         if (input.status !== undefined && (input.status === "archived" || access.study.status === "archived") && !access.canManage) {
           throw forbidden("只有研究擁有者可以封存研究。");

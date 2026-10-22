@@ -184,6 +184,21 @@ export function createLibraryService(config: LibraryConfig = {}) {
     return { hits: hits.slice(0, limit), errors, skipped };
   }
 
+  /**
+   * Citation snowballing for a paper given by DOI / arXiv id (Semantic Scholar; works without a key, rate-limited):
+   * its references and the papers citing it, with citation counts. Only the identifier leaves the hub.
+   */
+  async function relatedPapers(ids: { doi?: string | null; arxivId?: string | null }, opts: { limit?: number; signal?: AbortSignal } = {}): Promise<{ record: PaperRecord; citations: number | null; relation: "references" | "citations" }[]> {
+    const id = ids.arxivId ? `ARXIV:${ids.arxivId}` : ids.doi ? `DOI:${ids.doi}` : null;
+    if (!id) return [];
+    const out: { record: PaperRecord; citations: number | null; relation: "references" | "citations" }[] = [];
+    for (const relation of ["references", "citations"] as const) {
+      const got = await quiet(clients.s2.related(id, relation, { limit: opts.limit ?? 20, signal: opts.signal }));
+      for (const g of got ?? []) out.push({ ...g, relation });
+    }
+    return out;
+  }
+
   async function resolveIdentifier(input: string | ParsedIdentifier, opts: { enrich?: boolean; signal?: AbortSignal } = {}): Promise<ResolveResult | null> {
     const id = typeof input === "string" ? parseIdentifier(input) : input;
     if (!id) return null;
@@ -322,6 +337,7 @@ export function createLibraryService(config: LibraryConfig = {}) {
   return {
     clients,
     searchPapers,
+    relatedPapers,
     resolveIdentifier,
     findOpenAccessPdf,
     extractPdfRecord,

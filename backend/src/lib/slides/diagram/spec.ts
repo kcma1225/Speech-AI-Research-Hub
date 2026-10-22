@@ -2,7 +2,7 @@
  * ```diagram JSON spec of generated decks: parsing + validation (lenient with model output: aliases, missing ids,
  * string nodes) with problems reported in zh-TW for the writer. See `DIAGRAM_SPEC_HELP` for the format the writers get.
  */
-export const DIAGRAM_TYPES = ["pipeline", "architecture", "encoder_decoder", "comparison", "cycle", "timeline", "tree", "graph"] as const;
+export const DIAGRAM_TYPES = ["pipeline", "architecture", "encoder_decoder", "comparison", "cycle", "timeline", "tree", "graph", "grid"] as const;
 export type DiagramType = (typeof DIAGRAM_TYPES)[number];
 export const NODE_KINDS = ["input", "process", "model", "data", "output", "highlight", "note"] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -43,6 +43,8 @@ export type DiagramSpec = {
   legend: DLegend[] | boolean;
   /** Edges were given explicitly (no automatic chaining). */
   explicitEdges: boolean;
+  /** grid: columns (auto when absent). */
+  cols?: number;
 };
 
 export type ParsedDiagram = { spec: DiagramSpec | null; problems: string[] };
@@ -65,7 +67,7 @@ export function parseDiagram(source: string): ParsedDiagram {
   const r = raw as Record<string, unknown>;
   const problems: string[] = [];
   const t = s(r.type, 30).toLowerCase().replace(/[-\s]/g, "_");
-  const type: DiagramType | null = (DIAGRAM_TYPES as readonly string[]).includes(t) ? (t as DiagramType) : /flow|pipe|process/.test(t) ? "pipeline" : /arch|stack|model/.test(t) ? "architecture" : /enc.*dec|seq2seq/.test(t) ? "encoder_decoder" : /compar|versus|vs/.test(t) ? "comparison" : /cycle|loop/.test(t) ? "cycle" : /time/.test(t) ? "timeline" : /tree|taxonomy|hierarch/.test(t) ? "tree" : /graph|network|dag/.test(t) ? "graph" : null;
+  const type: DiagramType | null = (DIAGRAM_TYPES as readonly string[]).includes(t) ? (t as DiagramType) : /flow|pipe|process/.test(t) ? "pipeline" : /arch|stack|model/.test(t) ? "architecture" : /enc.*dec|seq2seq/.test(t) ? "encoder_decoder" : /compar|versus|vs/.test(t) ? "comparison" : /cycle|loop/.test(t) ? "cycle" : /time/.test(t) ? "timeline" : /tree|taxonomy|hierarch/.test(t) ? "tree" : /graph|network|dag/.test(t) ? "graph" : /grid|group|list|cards?|set|matrix/.test(t) ? "grid" : null;
   if (!type) return { spec: null, problems: [`未知的 diagram type「${t || "（空）"}」；可用：${DIAGRAM_TYPES.join(" / ")}`] };
   const nodes = new Map<string, DNode>();
   let auto = 0;
@@ -228,6 +230,10 @@ export function parseDiagram(source: string): ParsedDiagram {
     if (!tree) problems.push("tree 需要 root（含 children）");
   } else if (type === "graph") {
     if (!listed.length) problems.push("graph 需要 nodes");
+  } else if (type === "grid") {
+    // Parallel items (applications, datasets, compared systems): `nodes` or `items`, no arrows.
+    if (!listed.length && Array.isArray(r.items)) for (const x of r.items as unknown[]) addNode(x);
+    if (!nodes.size) problems.push("grid 需要 nodes");
   }
 
   const edges = Array.isArray(r.edges) ? (r.edges as unknown[]).map(edgeOf).filter((e): e is DEdge => !!e) : [];
@@ -273,6 +279,7 @@ export function parseDiagram(source: string): ParsedDiagram {
     ...(s(r.center, 60) ? { center: s(r.center, 60) } : {}),
     legend,
     explicitEdges: Array.isArray(r.edges) && type !== "architecture" && type !== "encoder_decoder",
+    ...(type === "grid" && Number(r.cols ?? r.columns) >= 1 ? { cols: Math.min(6, Math.round(Number(r.cols ?? r.columns))) } : {}),
   };
   if (type === "cycle" && listed.length > 8) problems.push("cycle 最多 8 個 nodes");
   return { spec, problems };
@@ -287,4 +294,5 @@ export const DIAGRAM_SPEC_HELP = `\`\`\`diagram（JSON）由系統排版成學�
 - encoder_decoder：{"type":"encoder_decoder","encoder":{"title":"Encoder","layers":[…]},"decoder":{"title":"Decoder","layers":[…]},"edges":[{"from":"enc_out","to":"xattn","kind":"cross","label":"cross-attn"}]}
 - comparison（並排比較做法）：{"type":"comparison","panels":[{"title":"Baseline","stages":["Audio","ASR","Text"]},{"title":"Ours","highlight":true,"stages":["Audio","Aligner","Words"]}]}（加 "direction":"LR" 改成上下兩列、每列左→右）
 - cycle（循環）：{"type":"cycle","nodes":["Pseudo-label","Train","Evaluate"],"center":"Self-training"}；timeline：{"type":"timeline","events":[{"date":"2019","label":"wav2vec"}]}；tree：{"type":"tree","root":{"label":"Probing","children":[{"label":"Phonetic"},{"label":"Lexical"}]}}；graph（其他）：{"type":"graph","direction":"LR","nodes":[…],"edges":[…],"groups":[…]}
+- grid（並列的項目，沒有先後順序：應用、資料集、比較的系統、任務、模型家族）：{"type":"grid","nodes":[{"label":"Dataset A","sub":"一行說明"},{"label":"Dataset B"},{"label":"Dataset C"}],"cols":3}（可用 groups 分組）。箭頭只表示資料流或步驟的先後；並列項目不要用 pipeline 串箭頭
 規則：≤ 10 個節點；標籤短（細節放 sub 或講稿）；一張圖只表達一個想法；不要寫 title（投影片標題已經說了）。`;

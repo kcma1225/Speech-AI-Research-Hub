@@ -6,6 +6,7 @@
 import type { Queryable } from "../db.js";
 import { runView } from "./store.js";
 import type { RunRow } from "./types.js";
+import type { GoalRow } from "./goals/types.js";
 
 const ACTIVE_WF = ["queued", "planning", "awaiting_plan_approval", "running", "verifying", "awaiting_input", "needs_pdf", "paused"];
 const NEEDS_YOU_WF = new Set(["awaiting_plan_approval", "awaiting_input", "needs_pdf"]);
@@ -13,7 +14,7 @@ const NEEDS_YOU_WF = new Set(["awaiting_plan_approval", "awaiting_input", "needs
 const ASK_WINDOW_HOURS = 24;
 
 export type ActiveAgentRun = {
-  kind: "workflow" | "assistant";
+  kind: "workflow" | "assistant" | "goal";
   id: string;
   title: string;
   objective: string | null;
@@ -33,7 +34,8 @@ export type ActiveAgentRun = {
   /**
    * What the user should do (`approve_plan` workflow plan card, `answer` a question card, `review` a consent card)
    * and where: `focus` names the card (`workflow:<runId>` | `toolcall:<toolCallId>`), `href` deep-links to it
-   * (`/assistant/<conv>?focus=…`, or `/assistant/workflows?run=<id>` for a run without a conversation).
+   * (`/assistant/<conv>?focus=…`, or `/assistant/workflows?run=<id>` for a run without a conversation). A goal and its
+   * stage runs focus the goal card (`goal:<goalId>`), which expands the waiting stage.
    */
   action: "approve_plan" | "answer" | "review" | null;
   focus: string | null;
@@ -106,12 +108,42 @@ export async function activeAgentRuns(db: Queryable, userId: string): Promise<Ac
         tokens: (u.tokens_in ?? 0) + (u.tokens_out ?? 0),
         artifacts: (r.artifacts ?? []).slice(0, 4).map((a) => ({ kind: a.kind, id: a.id, url: a.url, title: a.title })),
         action: WF_ACTION[r.status] ?? null,
-        focus: `workflow:${r.id}`,
-        href: focusHref(r.conversation_id, `workflow:${r.id}`, r.id),
+        focus: r.goal_id ? `goal:${r.goal_id}` : `workflow:${r.id}`,
+        href: focusHref(r.conversation_id, r.goal_id ? `goal:${r.goal_id}` : `workflow:${r.id}`, r.id),
         started_at: iso(r.started_at ?? r.created_at),
         updated_at: iso(r.updated_at),
       });
     }
+  }
+
+  // ---------------------------------------------------------------- goals (roadmaps of workflow runs)
+  const goals = (await db.query<GoalRow>("SELECT * FROM workflow_goals WHERE user_id=$1 AND status IN ('planning','awaiting_approval','running','awaiting_input') ORDER BY created_at DESC LIMIT 10", [userId])).rows;
+  for (const g of goals) {
+    const cur = g.stages[g.current];
+    const settledStages = g.stages.filter((s) => ["done", "partial", "skipped"].includes(s.status)).length;
+    const action = g.status === "awaiting_approval" ? "approve_plan" : g.status === "awaiting_input" ? "answer" : null;
+    out.push({
+      kind: "goal",
+      id: g.id,
+      title: g.title,
+      objective: g.objective || null,
+      status: g.status,
+      needs_you: !!action,
+      conversation_id: g.conversation_id,
+      study: g.study_id ? (await db.query<{ id: string; slug: string; title: string }>("SELECT id, slug, title FROM studies WHERE id=$1", [g.study_id])).rows[0] ?? null : null,
+      current: g.status === "running" && cur ? { role: null, text: `階段 ${g.current + 1}/${g.stages.length}：${cur.title}`.slice(0, 200) } : g.question ? { role: null, text: g.question.slice(0, 200) } : null,
+      progress: { done: settledStages, total: g.stages.length },
+      plan: null,
+      step: null,
+      budget_pct: null,
+      tokens: 0,
+      artifacts: g.stages.flatMap((s) => s.artifacts).slice(-4).map((a) => ({ kind: a.kind, id: a.id, url: a.url, title: a.title })),
+      action,
+      focus: `goal:${g.id}`,
+      href: focusHref(g.conversation_id, `goal:${g.id}`),
+      started_at: iso(g.created_at),
+      updated_at: iso(g.updated_at),
+    });
   }
 
   // ---------------------------------------------------------------- assistant runs

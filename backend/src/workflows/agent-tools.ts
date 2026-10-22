@@ -10,6 +10,7 @@ import { notFound } from "../lib/http.js";
 import { getRun, getSteps } from "./store.js";
 import { announceRuns, insertWorkflows, startResult } from "./service.js";
 import { listWorkflowPlaybooks } from "./playbooks/index.js";
+import { routeWorkflowRequest } from "./goals/agent-tools.js";
 
 const playbookIds = () => listWorkflowPlaybooks().map((p) => p.id);
 
@@ -21,7 +22,7 @@ registerAgentTool({
   mcp: false,
   description:
     "Hand a multi-step creation task to the workflow engine instead of producing it in one reply: building a slide deck from zero (paper report or progress report), " +
-    "writing a thesis/LaTeX section, a literature review, a deep reading note, an experiment report note, meeting preparation, or another task-oriented request. " +
+    "writing a thesis/LaTeX section, a literature review, a topic survey (which approaches exist for X), a deep reading note, an experiment report note, meeting preparation, or another task-oriented request. " +
     "An orchestrator gathers context, writes objective + acceptance criteria + a plan (for decks: the page-by-page outline) that the user approves on a card, " +
     "then sub-agents do the parts, every part is verified and fixed, and the result is checked against the objective. Use it when the user asks you to create such a thing " +
     "(only use create_deck with generate:true when the user explicitly wants a quick one-shot draft). Put the user's request with all agreed details (page count, structure, emphasis, language) in `request`. " +
@@ -29,9 +30,13 @@ registerAgentTool({
     "One deck / reading note per paper (「把每一篇文獻都做成簡報」): call it ONCE — pass the study (or all paper_ids) and the request; it creates one run per paper as a batch " +
     "(runs over the limit of 3 working runs queue and start automatically). Papers without a PDF are handled by the workflow (open-access lookup, the record's URL, then it asks or skips) — do not drop them yourself. " +
     "The study and paper default to the conversation's page context. " +
-    "playbook ids: slides, latex_section, lit_review, reading_note, experiment_report, meeting_prep, generic (auto-detected when omitted). " +
-    "reading_note = notes on ONE specific paper already in the library (pass paper_id); lit_review = compare papers already in the study's library; " +
-    "a topic / survey note (「研究有哪些做法」, find methods or papers on a subject, anything without a specific paper) = generic — it can search papers online itself. " +
+    "playbook ids: slides, latex_section, lit_review, reading_note, topic_research, experiment_report, meeting_prep, paper_outline, paper_draft, generic (auto-detected when omitted). " +
+    "reading_note = notes on ONE specific paper already in the library (pass paper_id); lit_review = compare papers already in the study's library (≥ 2); " +
+    "topic_research = a topic / survey request without a specific paper (「研究有哪些做法／方法」, 調研, survey, state of the art, related approaches, 研究現況, find papers on a subject): " +
+    "it splits the topic into sub-questions, searches papers online with keywords only, lists candidates for the user to approve, imports and reads them, and writes a note with an approach taxonomy, per-approach sections, a result comparison and open problems. " +
+    "Never use reading_note or lit_review for such requests. " +
+    "A request whose final deliverable needs several workflows (a whole paper from scratch, 「先…再…」) is better started with start_goal; if the playbook you pass would not produce the deliverable the request names (e.g. lit_review for 「寫一篇論文」), this tool starts a goal for that deliverable instead (the result then has goal_id). " +
+    "Editing an existing deck (translate, rewrite, shorten, restyle) = slides with deck_id (the page's deck); it revises that deck as a new draft revision. " +
     "When unsure, omit playbook.",
   input: z.object({
     request: z.string().trim().min(4).max(4000).describe("The task in the user's words plus the details agreed in the chat"),
@@ -46,6 +51,9 @@ registerAgentTool({
   }),
   summarize: (a) => `交給 Agent：${a.request.replace(/\s+/g, " ").slice(0, 50)}`,
   async execute(a, ctx) {
+    // Deliverable first (goals/agent-tools.ts): a playbook that would not produce what the user asked for → a goal.
+    const routed = await routeWorkflowRequest(ctx, a);
+    if (routed) return routed;
     const conv = ctx.conversationId ? (await ctx.db.query<{ context: Record<string, unknown>; autopilot: boolean }>("SELECT context, autopilot FROM conversations WHERE id=$1", [ctx.conversationId])).rows[0] : undefined;
     const callId = ctx.runId ? (await ctx.db.query<{ id: string }>("SELECT id FROM tool_calls WHERE run_id=$1 AND tool='start_workflow' AND status='running' ORDER BY created_at DESC LIMIT 1", [ctx.runId])).rows[0]?.id : undefined;
     const uuid = (v?: string) => (v && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);

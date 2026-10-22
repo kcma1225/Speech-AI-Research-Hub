@@ -12,6 +12,7 @@ import { MAX_CROP_PAGE_WIDTH, renderPdfPages } from "../../lib/library/page-imag
 import { figureRefOf, locateFigureByLayout } from "../../lib/library/figure-locate.js";
 import { CHART_MIN_FONT, chartBlocks, chartFileName, DECK_CSS, figureFileName, figureRefs, normalizeDiagrams, renderDeckChartSvg, replaceRanges, withMermaidInit, type FigureRef } from "../../lib/slides/deck-visuals.js";
 import { DIAGRAM_SPEC_HELP, diagramBlocks, diagramFileName, diagramFromSource, parseDiagram } from "../../lib/slides/diagram/index.js";
+import { contentIssues, fixDiagrams, fixFigureRefs, type ContentRefs } from "../../lib/slides/content-lint.js";
 
 /** Titles of result / ablation pages (they must show the paper's numbers). */
 export const RESULTS_TITLE_RE = /\b(main results?|results?|ablations?|key figure|evaluation)\b|主要結果|實驗結果|結果|消融/i;
@@ -32,12 +33,16 @@ export const VISUAL_RULES = `視覺優先的投影片規則（一定要遵守）
 ${DIAGRAM_SPEC_HELP}
 - 架構頁（Architecture／方法總覽）：研究摘要「圖表清單」裡有論文自己的架構圖（type architecture／method）時，優先放那張圖（paper-fig，整頁寬或版型 E）；\`\`\`diagram 用來畫簡化版或流程（Training／Inference 頁用同一套節點名稱）。
 - 結果頁（Main results／Ablation）一定要有論文的實際數字：\`\`\`chart 畫主要比較（照論文的表），或直接放論文的表（圖表清單裡的 Table N，paper-fig）；不能只有定性描述。
+- 箭頭只表示資料流或步驟的先後。並列的項目（應用、資料集、比較的系統、任務、模型家族）沒有先後，用 {"type":"grid"} 或表格，不要用 pipeline 串成 A → B → C。
+- trainable／frozen 只標在研究摘要或論文明說「本文訓練」或「凍結不更新」的元件；搜尋、DTW、過濾、解碼、評分、相似度、分群等推論步驟沒有參數，不標 trainable 也不標 frozen。
+- 只寫來源（研究摘要、論文原文節錄）裡出現的模型、資料集、方法名稱；論文沒用到的模型（例如論文沒提 WavLM）不要寫進投影片或講稿。
 - \`\`\`diagram 不是文字框：comparison 只用來對照兩種方法的流程，每一格是元件或步驟（≤ 3 個字，例如 "Encoder"、"Inject at layer 6"），不要放句子或主張（主張寫在 .takeaway）。
 - 有數字比較時用 \`\`\`chart（JSON，數字必須逐字來自資料並標 source）：
   {"type":"bar|hbar|line|scatter|heatmap","title":"短標題","labels":["A","B"],"series":[{"name":"WER","data":[3.1,2.4]}],"y_label":"WER (%)","best":"min|max","unit":"%","source":"Table 2"}
-  grouped bar = 多個 series；heatmap 用 "rows":[…],"labels":[欄],"values":[[…],[…]]。同一組數字只用一種呈現：圖表或表格，不要兩個都放。
+  grouped bar = 多個 series；heatmap 用 "rows":[…],"labels":[欄],"values":[[…],[…]]。同一組數字只用一種呈現：圖表或表格，不要兩個都放；整份簡報同一組數字只畫一次。
+  一張圖表只有一種單位：每張都寫 y_label（含單位，hbar 寫 x_label）或 unit；不同的量（例如 CCA 值與層數、WER 與參數量）不要放在同一個軸上，分成兩張圖表或改用表格。
 - 圖表與 diagram 放整頁寬最清楚；放進欄位（.column）時欄寬至少 55%，否則字會太小。
-- 論文的圖或表（一頁最多一張）：![Fig. 2: 一句說明 (p. 4)](paper-fig:<頁碼>@<上緣>-<下緣>)，上下緣是該圖在頁面高度的比例（0–1，例如 0.08-0.52）；只用研究摘要「圖表清單」裡列出的圖，圖說保留「Fig. N」或「Table N」（系統用它精準找出圖的範圍）。
+- 論文的圖或表（一頁最多一張）：![Fig. 2: 一句說明 (p. 4)](paper-fig:<頁碼>@<上緣>-<下緣>)，上下緣是該圖在頁面高度的比例（0–1，例如 0.08-0.52）；只用研究摘要「圖表清單」裡列出的圖，照清單那一行的語法整段複製（頁碼與位置不要改），圖說保留同一個「Fig. N」或「Table N」（系統用它精準找出圖的範圍）。投影片文字與講稿提到的圖號要和這頁放的圖一致。
 - 表格 ≤ 5 列 × 5 欄，最好的數字用 **粗體**；每一格都要有資料裡的數字或內容。投影片上絕對不要寫「資料未提供」「N/A」或空格子：沒有資料的列、欄或條列直接刪掉（需要說明時寫在講稿）。
 - 一般文字不要用 LaTeX 語法（寫 N=1000，不要 N{=}1000 或 $N=1000$）；圖表 JSON 已畫出標題時，下面不要再重複寫一次標題；diagram 不要寫 title。
 - 需要逐步說明時可用 ::: {.incremental} 包住條列（漸進顯示）。
@@ -300,18 +305,38 @@ export function fixFor(issues: string[]): string {
     if (/方框裡放的是句子/.test(i)) out.add("比較圖不要當文字框用：comparison 的每一格是元件或步驟（≤ 3 個字），主張寫在 .takeaway；沒有真的兩種流程可比時改用論文圖、圖表或 2–3 條精簡條列。");
     if (/資料未提供/.test(i)) out.add("投影片上不要有「資料未提供」：刪掉沒有資料的那一列／欄／條列，只留有數字的比較；說明移到講稿。");
     if (/只有文字/.test(i)) out.add("這頁只有文字：改用 ```diagram、```chart、論文圖或表格（版型 A/D/E）。");
+    if (/來源.*沒有的名稱/.test(i)) out.add("刪掉來源（論文、研究摘要）沒有的模型／資料集名稱，只寫論文實際用到的。");
+    if (/並列的項目畫成流程/.test(i)) out.add("並列項目改用 {\"type\":\"grid\",\"nodes\":[…]}（或表格），不要用箭頭。");
+    if (/不能比較的量|座標軸標籤或單位/.test(i)) out.add("圖表一個軸只放一種單位，寫 y_label（含單位）；不同的量分成兩張圖表或改用表格。");
+    if (/同一組數字/.test(i)) out.add("同一組數字整份簡報只畫一次：這頁改放別的圖、論文圖或重點。");
+    if (/圖號|圖說寫|paper-fig 指到/.test(i)) out.add("圖號要和放的圖一致：照圖表清單那一行複製 paper-fig 語法，文字與講稿的圖號一起改正。");
+    if (/trainable|frozen/.test(i)) out.add("trainable／frozen 只標論文明說本文訓練或凍結的元件；推論步驟（搜尋、DTW、過濾、解碼）不要標。");
   }
   return [...out].join(" ");
+}
+
+/**
+ * Deterministic content fixes of a body before it is checked or rendered: paper-fig refs follow the measured figure
+ * list (Fig. N → its page and band), unfounded trainable / frozen markers are removed, parallel items drawn as an arrow
+ * chain become a grid.
+ */
+export function fixContent(body: string, refs: ContentRefs): { body: string; fixed: number } {
+  const a = fixFigureRefs(body, refs.figures ?? []);
+  const b = fixDiagrams(a.body, refs, parseSlides(a.body));
+  return { body: b.body, fixed: a.fixed + b.fixed };
 }
 
 /** Numbers of a text (normalised; integers < 10 ignored as too generic). */
 const numbersOf = (t: string) => new Set([...t.matchAll(/(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])/g)].map((m) => String(Number(m[0]))).filter((n) => n.includes(".") || Math.abs(Number(n)) >= 10));
 
 /** Source-level issues per slide title (see `sourceIssues` in docs); `paper`: paper reports (result pages need the paper's numbers). */
-export function sourceIssues(body: string, opts: { paper?: boolean } = { paper: true }): Map<string, string[]> {
+export function sourceIssues(body: string, opts: { paper?: boolean; refs?: ContentRefs } = { paper: true }): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const usedFigures = new Map<string, string>();
-  for (const s of parseSlides(body)) {
+  const slides = parseSlides(body);
+  // Content faults (names not in the sources, figure numbers, diagram semantics, chart units / duplicates), per page.
+  const content = contentIssues(slides, opts.refs ?? {});
+  for (const s of slides) {
     const issues: string[] = [];
     // Two paper figures side by side on one slide shrink each to half width: their axis labels become unreadable.
     if ((s.body.match(/\]\(paper-fig:/g) ?? []).length >= 2) issues.push("一頁放了兩張以上的論文圖（並排後圖中的字太小）");
@@ -347,6 +372,7 @@ export function sourceIssues(body: string, opts: { paper?: boolean } = { paper: 
       const wordy = labels.filter((l) => l.split(/\s+/).length >= 3 || (l.match(/[\u4e00-\u9fff]/g) ?? []).length >= 8).length;
       if (labels.length >= 3 && wordy / labels.length >= 0.5) issues.push("比較圖的方框裡放的是句子（看起來像文字框，不是圖）");
     }
+    issues.push(...content.filter((c) => c.index === s.index).map((c) => c.issue));
     if (issues.length) out.set(s.title, issues);
   }
   return out;

@@ -11,13 +11,14 @@ import { loadStudyAccess } from "../lib/studies/access.js";
 import { WorkflowEnv, type EnvDeps } from "./env.js";
 import { addUsage, emitRun, emitStep, getRun, getSteps, insertSteps, insertWorkflowEvent, stepView } from "./store.js";
 import { getWorkflowPlaybook, type WorkflowPlaybook } from "./playbooks/registry.js";
-import { actionable, verifyCriteria, verifyStep } from "./verify.js";
+import { verifyCriteria, verifyStepLedger } from "./verify.js";
+import { CONVERGENCE_ROUNDS, fixLine, ledgerReport } from "./ledger.js";
 import { finishNotice } from "./notify.js";
 import { asksOf, blockedQuestion, pendingAsk } from "./questions.js";
 import { autoApproval, autoApprovalNote } from "./autopilot.js";
 import { promoteQueued } from "./queue.js";
 import { runChecks } from "./checks.js";
-import { WorkflowStop, type Criterion, type RunRow, type StepOutput, type StepRow, type WorkflowStatus } from "./types.js";
+import { budgetFor, WorkflowStop, type Criterion, type RunRow, type StepOutput, type StepRow, type WorkflowStatus } from "./types.js";
 
 export class WorkflowInputError extends Error {}
 
@@ -120,6 +121,8 @@ export async function runWorkflow(deps: EnvDeps, workflowId: string, opts: { las
     await env.saveActive().catch(() => undefined);
     // A slot may have freed (the run waits for the user or ended): start the owner's next queued run.
     await promoteQueued(deps.db, initial.user_id).catch((e) => deps.log.warn({ err: e, workflowId }, "workflow queue promotion failed"));
+    // A goal stage: the goal moves on when the run ended, or shows that it waits for the user (goals/advance.ts).
+    if (initial.goal_id) await (await import("./goals/advance.js")).goalAfterRun(deps, workflowId).catch((e) => deps.log.warn({ err: e, workflowId }, "goal advance failed"));
   }
   return { status: (await env.refresh()).status };
 }
@@ -131,6 +134,18 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   await env.deps.progress?.("planning", 5).catch(() => undefined);
   await env.note("理解目標並蒐集資料，準備工作計畫。");
   let res = await pb.plan(env);
+  // The playbook hands over to a better-fitting one (reading note → topic research): switch once and plan with it.
+  if (res.kind === "redirect") {
+    const next = getWorkflowPlaybook(res.playbook);
+    if (!next || next.id === pb.id) throw new WorkflowInputError(res.message);
+    // The new playbook's budget too, unless it is smaller than the one the run has.
+    const budget = budgetFor(next.id);
+    await env.db.query("UPDATE workflow_runs SET playbook=$2, budget=(SELECT jsonb_object_agg(k, GREATEST((budget->>k)::numeric, (($3::jsonb)->>k)::numeric)) FROM jsonb_object_keys($3::jsonb) k), updated_at=now() WHERE id=$1", [env.run.id, next.id, JSON.stringify(budget)]);
+    await env.refresh();
+    await env.note(res.message);
+    pb = next;
+    res = await pb.plan(env);
+  }
   // The user answered, yet the playbook would ask the very same question again (e.g. a reading note picked for a topic
   // survey keeps asking which paper): don't loop — the general workflow gathers what it needs (incl. online search).
   const asked = env.state<string>("plan_question");
@@ -144,6 +159,7 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
       res = await pb.plan(env);
     }
   }
+  if (res.kind === "redirect") throw new WorkflowInputError(res.message);
   await env.refresh();
   if (env.run.status === "cancelled") throw new WorkflowStop("cancelled", "已停止。");
   if (res.kind === "question") {
@@ -173,7 +189,7 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   for (const s of await getSteps(env.db, env.run.id)) await insertWorkflowEvent(env.db, env.run.id, "step", { step: stepView(s) });
   await env.refresh();
   // Autopilot: draft-only plans are approved automatically, also when the run read others' content (autopilot.ts).
-  const decision = autoApproval({ autopilot: env.run.autopilot, autoApprovable: pb.autoApprovable, writes: res.plan.writes ?? [], tainted: env.run.tainted, manual: !!env.state<boolean>("manual_approval") });
+  const decision = autoApproval({ autopilot: env.run.autopilot, autoApprovable: pb.autoApprovable, writes: res.plan.writes ?? [], tainted: env.run.tainted, manual: !!env.state<boolean>("manual_approval"), goal: !!env.run.goal_id });
   if (decision.auto) {
     await env.setState({ auto_approved: { at: new Date().toISOString(), tainted: env.run.tainted } });
     await env.note(autoApprovalNote(decision, env.run.taint_sources));
@@ -205,12 +221,50 @@ function depsReady(step: StepRow, steps: StepRow[]) {
 }
 
 async function executePhase(env: WorkflowEnv, pb: WorkflowPlaybook) {
+  // Sliding window: a free slot is refilled as soon as any step settles (no waiting for the slowest of a batch).
+  const inFlight = new Map<string, Promise<void>>();
+  const drain = async () => {
+    const results = await Promise.allSettled(inFlight.values());
+    inFlight.clear();
+    return results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+  };
   for (;;) {
-    await env.checkpoint({ allowPause: true });
-    if (env.run.status !== "running" && env.run.status !== "verifying") return;
+    try {
+      await env.checkpoint({ allowPause: true });
+    } catch (e) {
+      // Pause / cancel: let the running steps finish their round first.
+      await drain();
+      throw e;
+    }
+    if (env.run.status !== "running" && env.run.status !== "verifying") {
+      await drain();
+      return;
+    }
     const steps = await getSteps(env.db, env.run.id);
-    const pending = steps.filter((s) => s.status === "pending");
+    const pending = steps.filter((s) => s.status === "pending" && !inFlight.has(s.id));
     const ready = pending.filter((s) => depsReady(s, steps));
+    const tasks = ready.filter((s) => s.kind !== "final");
+    const free = Math.max(1, env.run.budget.concurrency) - inFlight.size;
+    if (tasks.length && free > 0) {
+      const start = tasks.slice(0, free);
+      if (start.length > 1 || inFlight.size) await env.note(`派出子任務：${start.map((s) => s.title).join("、")}${inFlight.size ? `（另有 ${inFlight.size} 個進行中）` : ""}`);
+      for (const s of start) {
+        const p = executeStep(env, pb, s).finally(() => inFlight.delete(s.id));
+        // Keep the rejection for the race below; mark it handled so it never surfaces as unhandled.
+        p.catch(() => undefined);
+        inFlight.set(s.id, p);
+      }
+      continue;
+    }
+    if (inFlight.size) {
+      // Wait for the first step to settle, then look for newly ready work; a failure stops the phase after the others.
+      const settled = await Promise.race([...inFlight.values()].map((p) => p.then(() => null, (e: unknown) => e)));
+      if (settled !== null) {
+        await drain();
+        throw settled;
+      }
+      continue;
+    }
     if (!ready.length) {
       const blocked = pending.filter((s) => !depsReady(s, steps));
       if (blocked.length) {
@@ -220,15 +274,7 @@ async function executePhase(env: WorkflowEnv, pb: WorkflowPlaybook) {
       return finish(env, pb, null);
     }
     const finals = ready.filter((s) => s.kind === "final");
-    const batch = ready.filter((s) => s.kind !== "final").slice(0, Math.max(1, env.run.budget.concurrency));
-    if (!batch.length) {
-      await finalStep(env, pb, finals[0]!);
-      continue;
-    }
-    if (batch.length > 1) await env.note(`平行派出 ${batch.length} 個子任務：${batch.map((s) => s.title).join("、")}`);
-    const results = await Promise.allSettled(batch.map((s) => executeStep(env, pb, s)));
-    const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
-    if (failure) throw failure.reason;
+    await finalStep(env, pb, finals[0]!);
   }
 }
 
@@ -312,23 +358,33 @@ async function executeStep(env: WorkflowEnv, pb: WorkflowPlaybook, initial: Step
       return;
     }
     step = (await updateStep(env, step.id, { status: "verifying", output: out }))!;
-    const verdict = await verifyStep(env, step, out);
+    const maxRounds = step.max_rounds ?? run.budget.max_fix_rounds;
+    // The issue ledger (ledger.ts): a fix round re-checks the recorded issues instead of reviewing from scratch.
+    const { verdict, ledger, stuck } = await verifyStepLedger(env, step, out, { fresh: !fix, lastRound: step.round >= maxRounds });
     const history = [...step.history, { round: step.round, verdict, summary: out.summary.slice(0, 300) }].slice(-8);
     await insertWorkflowEvent(env.db, run.id, "verdict", { step_key: step.key, round: step.round, verdict });
     const ms = step.ms + (Date.now() - t0);
     if (verdict.verdict === "pass") {
-      await updateStep(env, step.id, { status: "passed", verdict, history, finished_at: new Date().toISOString(), ms, inputs: { ...step.inputs, fix_issues: [] } });
+      await updateStep(env, step.id, { status: "passed", verdict, history, finished_at: new Date().toISOString(), ms, inputs: { ...step.inputs, fix_issues: [], ledger } });
+      const left = ledger.items.filter((i) => i.status === "unresolved").length;
+      if (left) await env.note(`「${step.title}」通過驗收；${left} 個次要問題修正 ${CONVERGENCE_ROUNDS} 輪仍未解決，會在報告中列出。`);
       return;
     }
-    const maxRounds = step.max_rounds ?? run.budget.max_fix_rounds;
-    const problems = verdict.issues.filter(actionable).map((i) => (i.where ? `${i.where}：${i.text}` : i.text));
+    // Failed checks first, then the open ledger issues (with their ids and quoted text).
+    const problems = [...verdict.checks.filter((c) => !c.ok).map((c) => c.detail), ...ledger.items.filter((i) => i.status === "open").map(fixLine)];
+    if (stuck.length) {
+      // Convergence guard: a high issue that survived CONVERGENCE_ROUNDS fix rounds stops the fixing (no more burnt rounds).
+      await updateStep(env, step.id, { status: "failed", verdict, history, ms, finished_at: new Date().toISOString(), inputs: { ...step.inputs, ledger }, error: `同一個問題修正 ${CONVERGENCE_ROUNDS} 輪仍未解決，停止修正。` });
+      await env.note(`「${step.title}」有 ${stuck.length} 個問題修正 ${CONVERGENCE_ROUNDS} 輪仍未解決（${stuck[0]!.text.slice(0, 60)}），停止修正，會在報告中列出。`, "warn");
+      return;
+    }
     if (step.round < maxRounds) {
       await addUsage(env.db, run.id, { fix_rounds: 1 });
       await env.note(`「${step.title}」未通過驗收（${problems.length} 個問題），派出第 ${step.round + 1} 輪修正。`);
-      step = (await updateStep(env, step.id, { status: "pending", verdict, history, round: step.round + 1, ms, inputs: { ...step.inputs, fix_issues: problems } }))!;
+      step = (await updateStep(env, step.id, { status: "pending", verdict, history, round: step.round + 1, ms, inputs: { ...step.inputs, fix_issues: problems, ledger } }))!;
       continue;
     }
-    await updateStep(env, step.id, { status: "failed", verdict, history, ms, finished_at: new Date().toISOString(), error: `修正 ${maxRounds} 輪後仍未通過驗收。` });
+    await updateStep(env, step.id, { status: "failed", verdict, history, ms, finished_at: new Date().toISOString(), inputs: { ...step.inputs, ledger }, error: `修正 ${maxRounds} 輪後仍未通過驗收。` });
     await env.note(`「${step.title}」修正 ${maxRounds} 輪後仍未通過驗收，會在報告中列出。`, "warn");
     return;
   }
@@ -470,6 +526,13 @@ export function buildReport(run: RunRow, steps: StepRow[], outcome: "done" | "pa
   // A criterion the final verification never reached (budget / stop) or could not judge is 「未驗收」, not failed.
   for (const c of run.criteria) if (c.status !== "pass") issues.push(`${c.status === "fail" ? "未達成" : "未驗收"}：${c.text}${c.reason ? `（${c.reason}）` : ""}`);
   for (const s of steps) if (s.status === "failed") issues.push(`「${s.title}」未通過驗收：${(s.verdict?.issues ?? []).filter((i) => i.severity !== "low").map((i) => i.text).slice(0, 3).join("；") || s.error || ""}`);
+  // Issue ledgers: medium/low issues a passed step could not fix in CONVERGENCE_ROUNDS rounds are report items too.
+  const ledger = ledgerReport(run, steps);
+  for (const s of steps) {
+    if (s.status !== "passed" || s.kind === "final") continue;
+    const left = ((s.inputs?.ledger as { items?: { status: string; text: string; where?: string }[] } | undefined)?.items ?? []).filter((i) => i.status === "unresolved");
+    for (const i of left.slice(0, 3)) issues.push(`仍未解決（「${s.title}」${i.where ? `${i.where}` : ""}）：${i.text.slice(0, 200)}`);
+  }
   if (stop) issues.push(stop.message);
   const ok = run.criteria.filter((c) => c.status === "pass").length;
   // Student-owned pages autopilot filled (student-input.ts): acceptable for the run, but the student must confirm them.
@@ -479,12 +542,13 @@ export function buildReport(run: RunRow, steps: StepRow[], outcome: "done" | "pa
     outcome === "done" ? `**已完成**，${run.criteria.length} 項驗收標準全部通過。` : `**部分完成**：${ok}/${run.criteria.length} 項驗收標準通過，尚有問題需要處理。`,
     "",
     `- 完成的步驟：${done.length} 個${fixed.length ? `（其中 ${fixed.length} 個經過修正）` : ""}`,
+    ...(ledger.fixed.length || ledger.unresolved.length || ledger.invalid.length ? [`- 驗收問題：已修正 ${ledger.fixed.length} 個、仍未解決 ${ledger.unresolved.length} 個、判定無效 ${ledger.invalid.length} 個`] : []),
     ...(commitLine ? [`- ${commitLine}`] : []),
     ...(run.artifacts.length ? ["", "成果：", ...run.artifacts.map((a) => `- [${a.title}](${a.url})`)] : []),
     ...(confirm.length ? ["", "待你確認：", ...confirm.map((i) => `- ${i}`)] : []),
     ...(issues.length ? ["", "待處理：", ...issues.map((i) => `- ${i}`)] : []),
   ];
-  return { summary_md: lines.join("\n"), done, issues, ...(confirm.length ? { confirm } : {}) };
+  return { summary_md: lines.join("\n"), done, issues, ...(confirm.length ? { confirm } : {}), ledger };
 }
 
 /** Re-checks that the owner may still edit the study (before each write). */

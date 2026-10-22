@@ -9,6 +9,7 @@
   import TurnActivity from "./TurnActivity.svelte";
   import WorkflowCard from "#lib/components/workflows/WorkflowCard.svelte";
   import WorkflowBatchCard from "#lib/components/workflows/WorkflowBatchCard.svelte";
+  import GoalCard from "#lib/components/workflows/GoalCard.svelte";
   import { askArgs } from "#lib/agent/ask.ts";
   import { hasActivity, workflowIdOf, type AssistantTurn } from "#lib/agent/transcript.ts";
   import type { Streaming } from "#lib/agent/chat.svelte.ts";
@@ -71,7 +72,8 @@
 
 {#each turn.workflows as c (c.id)}
   {@const id = workflowIdOf(c)}
-  {#if id?.startsWith("batch:")}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowBatchCard batchId={id.slice(6)} {compact} {focusKey} />{/key}</div>
+  {#if id?.startsWith("goal:")}<div class={compact ? "" : "sm:ml-11"}>{#key id}<GoalCard id={id.slice(5)} {compact} />{/key}</div>
+  {:else if id?.startsWith("batch:")}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowBatchCard batchId={id.slice(6)} {compact} {focusKey} />{/key}</div>
   {:else if id}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowCard {id} {compact} collapsible />{/key}</div>{/if}
 {/each}
 

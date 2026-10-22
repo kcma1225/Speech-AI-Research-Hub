@@ -33,7 +33,7 @@ export type Study = {
 /**
  * What a user may do in one study (docs/architecture.md "Roles"). Everyone signed in can read every study.
  * - `canEdit`: study owner or member (content: summary, stages, milestones, tasks, notes, decks, papers…).
- * - `canManage`: study owner (members, transfer, archive, delete). Admin accounts never reach study routes (workspace guard).
+ * - `canManage`: study owner (title / slug, members, transfer, archive, delete). Admin accounts never reach study routes (workspace guard).
  * - `canComment`: everyone signed in (reviews, comments, meeting feedback).
  * Advisors (professor accounts) read and comment but never edit student content.
  */

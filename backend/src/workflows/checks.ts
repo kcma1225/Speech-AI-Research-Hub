@@ -5,6 +5,7 @@
 import type { CheckResult, CheckSpec } from "./types.js";
 import { chartBlocks, lintMermaid, mermaidBlocks } from "../lib/slides/deck-visuals.js";
 import { lintDiagrams } from "../lib/slides/diagram/index.js";
+import { chartIssues, diagramIssues, figureIssues, formatIssues, nameIssues, type ContentRefs, type LintSlide } from "../lib/slides/content-lint.js";
 
 export type Slide = { title: string; body: string; notes: string; index: number };
 
@@ -38,6 +39,21 @@ export const SLIDE_MISSING_RE = /資料未提供|摘要未提供|論文未提供
 
 type Ctx = { params: Record<string, unknown>; data: unknown };
 type CheckFn = (text: string, ctx: Ctx) => { ok: boolean; detail: string };
+
+/** Content refs of a step output (`data.refs`, see lib/slides/content-lint.ts); empty when the run has none. */
+const refsOf = (data: unknown): ContentRefs => ((data as { refs?: ContentRefs } | null)?.refs ?? {});
+/**
+ * Slides of a deck body; a document (`params.doc`, or no `## ` slides) is checked as one unit. `allow_titles` =
+ * student-owned pages: their content is the student's own answer (or study data), not the paper's.
+ */
+const unitsOf = (text: string, params: Record<string, unknown>): LintSlide[] => {
+  const slides = params.doc ? [] : parseSlides(text);
+  if (!slides.length) return [{ title: "", body: text, notes: "", index: 0 }];
+  const allow = strs(params.allow_titles);
+  return slides.filter((s) => !allow.some((a) => titleMatches(a, s.title)));
+};
+const contentResult = (issues: string[], okText: string, lead: string) =>
+  issues.length ? { ok: false, detail: `${lead}${issues.slice(0, 8).join("；")}。` } : { ok: true, detail: okText };
 
 const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
 const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
@@ -217,6 +233,24 @@ export const CHECKS: Record<string, CheckFn> = {
     const nums = [...`${tables}\n${charts}`.matchAll(/(?<![\w.])\d+\.\d+|(?<![\w.])\d{2,}(?![\w])/g)].map((m) => m[0]);
     const missing = [...new Set(nums)].filter((n) => !source.includes(n) && !source.includes(String(Number(n))));
     return missing.length ? { ok: false, detail: `表格或圖表中的這些數字在原始資料裡找不到：${missing.slice(0, 12).join("、")}。只能使用資料中的數字。` } : { ok: true, detail: `${nums.length} 個數字皆可在資料中找到` };
+  },
+  /** Model / dataset / method names that the sources (brief, paper, request) never mention (`data.refs.terms`). */
+  grounded_names(text, { data, params }) {
+    const terms = refsOf(data).terms;
+    if (!terms?.length) return { ok: true, detail: "（沒有來源名稱表，略過）" };
+    return contentResult(formatIssues(nameIssues(unitsOf(text, params), terms)), "提到的模型、資料集與方法名稱都在來源裡", "有來源找不到的名稱（可能是捏造）：");
+  },
+  /** paper-fig crops vs their Fig. N (the measured figure list, `data.refs.figures`) and figure numbers in text / notes. */
+  figure_refs(text, { data, params }) {
+    return contentResult(formatIssues(figureIssues(unitsOf(text, params), refsOf(data).figures ?? [])), "圖號與放的論文圖一致", "論文圖與圖號對不上：");
+  },
+  /** trainable / frozen markers vs the sources, parallel items drawn as a flow. */
+  diagram_semantics(text, { data, params }) {
+    return contentResult(formatIssues(diagramIssues(unitsOf(text, params), refsOf(data))), "流程圖的語意正確", "圖的語意有問題：");
+  },
+  /** One unit per axis, an axis label / unit on every chart, the same numbers charted once. */
+  chart_semantics(text, { params }) {
+    return contentResult(formatIssues(chartIssues(unitsOf(text, params))), "圖表的單位與資料正確", "圖表有問題：");
   },
   render_ok(_text, { data }) {
     const err = (data as { renderError?: string | null; renderTimedOut?: boolean } | null) ?? null;

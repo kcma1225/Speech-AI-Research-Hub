@@ -15,6 +15,8 @@
   import Pill from "#lib/components/ui/Pill.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
+  import LibraryScopeSwitch from "#lib/components/library/LibraryScopeSwitch.svelte";
+  import { initialLibraryScope, rememberLibraryScope, type LibraryScope, type LibraryScopeCounts } from "#lib/library/scope.ts";
   import AddPaperSheet from "#lib/components/library/AddPaperSheet.svelte";
   import OnlineSearchSheet from "#lib/components/library/OnlineSearchSheet.svelte";
   import PaperSheet from "#lib/components/library/PaperSheet.svelte";
@@ -27,6 +29,9 @@
   let study = $state(params.get("study") ?? "");
   let pdf = $state(params.get("has_pdf") ?? "");
   let sort = $state<"recent" | "year" | "title">((params.get("sort") as "recent") ?? "recent");
+  /** 我的研究 (papers of studies I own, the default) or 全部文獻; the choice is remembered per browser. */
+  let scope = $state<LibraryScope>(initialLibraryScope(params));
+  let counts = $state<LibraryScopeCounts | null>(null);
   let papers = $state<LabPaper[] | null>(null);
   let total = $state(0);
   let facets = $state<Facets>({ venues: [], years: [] });
@@ -41,6 +46,7 @@
 
   function query(offset = 0) {
     const p = new URLSearchParams();
+    p.set("scope", scope);
     if (q.trim()) p.set("q", q.trim());
     if (venue) p.set("venue", venue);
     if (year) p.set("year", year);
@@ -56,10 +62,11 @@
   async function load() {
     const id = ++seq;
     try {
-      const r = await api.get<{ papers: LabPaper[]; total: number; facets: Facets }>(`/library/papers?${query()}`);
+      const r = await api.get<{ papers: LabPaper[]; total: number; counts: LibraryScopeCounts; facets: Facets }>(`/library/papers?${query()}`);
       if (id !== seq) return;
       papers = r.papers;
       total = r.total;
+      counts = r.counts;
       // Keep facet options for the active filter so it can be switched off.
       facets = r.facets;
       error = null;
@@ -79,11 +86,11 @@
   }
 
   $effect(() => {
-    const key = `${q.trim()}|${venue}|${year}|${study}|${pdf}|${sort}`;
+    const key = `${scope}|${q.trim()}|${venue}|${year}|${study}|${pdf}|${sort}`;
     const timer = setTimeout(() => {
       void load();
       const url = new URL(page.url.href);
-      for (const [name, value] of [["q", q.trim()], ["venue", venue], ["year", year], ["study", study], ["has_pdf", pdf], ["sort", sort === "recent" ? "" : sort]] as const) {
+      for (const [name, value] of [["scope", scope === "mine" ? "" : scope], ["q", q.trim()], ["venue", venue], ["year", year], ["study", study], ["has_pdf", pdf], ["sort", sort === "recent" ? "" : sort]] as const) {
         if (value) url.searchParams.set(name, value);
         else url.searchParams.delete(name);
       }
@@ -124,6 +131,10 @@
   {/snippet}
 </PageHeader>
 
+<div class="mb-3 sm:mb-4">
+  <LibraryScopeSwitch bind:value={scope} {counts} onValueChange={rememberLibraryScope} />
+</div>
+
 <div class="mb-5 flex flex-col gap-2.5 sm:mb-6 xl:flex-row xl:items-center">
   <label class="relative min-w-0 flex-1 xl:max-w-md">
     <span class="sr-only">{t("library.search")}</span>
@@ -150,6 +161,13 @@
   <Card><EmptyState title={t("common.error")} hint={error} /></Card>
 {:else if !papers}
   <Card><div class="flex flex-col gap-2">{#each [0, 1, 2, 3] as i (i)}<Skeleton class="h-14" />{/each}</div></Card>
+{:else if !papers.length && scope === "mine" && !filtering && counts?.all}
+  <Card>
+    <EmptyState title={t("library.scope.emptyMine")} hint={t("library.scope.emptyMineHint", { n: counts.all })} class="py-14">
+      {#snippet icon()}<BookOpen />{/snippet}
+      {#snippet action()}<Button variant="secondary" onclick={() => ((scope = "all"), rememberLibraryScope("all"))}>{t("library.scope.showAll")}</Button>{/snippet}
+    </EmptyState>
+  </Card>
 {:else if !papers.length}
   <Card>
     <EmptyState title={filtering ? t("library.emptyFiltered") : t("library.empty")} hint={filtering ? undefined : t("library.emptyHint")} class="py-14">

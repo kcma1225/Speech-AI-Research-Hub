@@ -41,7 +41,7 @@
         continue;
       }
       // start_workflow carries the live workflow card: never folded into a read group.
-      if (c.risk === "read" && c.status === "done" && !(c.result?.links?.length) && c.tool !== "start_workflow") reads.push(c);
+      if (c.risk === "read" && c.status === "done" && !(c.result?.links?.length) && !["start_workflow", "start_goal", "update_goal"].includes(c.tool)) reads.push(c);
       else {
         flush();
         out.push({ kind: "row", call: c });

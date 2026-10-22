@@ -2,23 +2,23 @@
  * Deep links to the card that waits for the user (shell 「N 個 Agent 執行中」 overview, notifications, the jobs tray):
  * `/assistant/<conversationId>?focus=workflow:<runId>` (workflow plan / question card) or `?focus=toolcall:<id>`
  * (ask_user question card, consent card). The chat scrolls to the card and pulses it once. `?workflow=<runId>` is
- * the older spelling of `focus=workflow:<runId>`. Runs without a conversation open `/assistant/workflows?run=<id>`.
+ * the older spelling of `focus=workflow:<runId>`. `?focus=goal:<goalId>` = a goal's roadmap card (it opens the stage that waits). Runs without a conversation open `/assistant/workflows?run=<id>`.
  */
 
-export type FocusTarget = { type: "workflow" | "toolcall"; id: string };
+export type FocusTarget = { type: "workflow" | "toolcall" | "goal"; id: string };
 
 const ID = /^[A-Za-z0-9_-]{1,80}$/;
 /** `URL` or SvelteKit's read-only `page.url`. */
 type UrlLike = { readonly href: string; readonly searchParams: { get(name: string): string | null } };
 
-/** `workflow:<id>` / `toolcall:<id>` → target; anything else → null. */
+/** `workflow:<id>` / `toolcall:<id>` / `goal:<id>` → target; anything else → null. */
 export function parseFocus(value: string | null | undefined): FocusTarget | null {
   if (!value) return null;
   const at = value.indexOf(":");
   if (at < 0) return null;
   const type = value.slice(0, at);
   const id = value.slice(at + 1);
-  if ((type !== "workflow" && type !== "toolcall") || !ID.test(id)) return null;
+  if ((type !== "workflow" && type !== "toolcall" && type !== "goal") || !ID.test(id)) return null;
   return { type, id };
 }
 

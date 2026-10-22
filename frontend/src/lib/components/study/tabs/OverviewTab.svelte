@@ -309,7 +309,8 @@
       <Card>
         <CardHeader title={t("studies.settings")} />
         <div class="flex flex-col gap-4">
-          {#if canEdit}
+          <!-- The study's name is the owner's (members edit everything else). -->
+          {#if canManage}
             <form class="flex items-end gap-2" onsubmit={saveTitle}>
               <TextField label={t("studies.field.title")} bind:value={titleDraft} maxlength={200} hint={t("studies.rename.hint")} class="min-w-0 flex-1" />
               <Button type="submit" size="sm" variant="secondary" class="mb-[26px] h-11" loading={savingTitle} disabled={!titleDraft.trim() || titleDraft.trim() === study.title}>{t("action.save")}</Button>

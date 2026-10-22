@@ -42,7 +42,7 @@ export async function finishNotice(env: WorkflowEnv, kind: NoticeKind) {
   const t = TEXT[kind](run.title || "工作流程");
   if (!t) return;
   // Deep link to the run's card in its conversation (scrolled to + highlighted), or the expanded run on /assistant/workflows.
-  const url = focusHref(run.conversation_id, `workflow:${run.id}`, run.id);
+  const url = run.goal_id ? focusHref(run.conversation_id, `goal:${run.goal_id}`, run.id) : focusHref(run.conversation_id, `workflow:${run.id}`, run.id);
   try {
     if (run.conversation_id) {
       const m = (await env.db.query<MessageRow>(
@@ -51,6 +51,8 @@ export async function finishNotice(env: WorkflowEnv, kind: NoticeKind) {
       )).rows[0]!;
       await insertEvent(env.db, run.conversation_id, null, "message", { message: messageView(m) });
     }
+    // A goal stage that finished: the goal reports (goals/advance.ts), no notification per stage.
+    if (run.goal_id && (kind === "done" || kind === "partial")) return;
     await env.db.query("INSERT INTO notifications(user_id,kind,title,body,url) VALUES($1,'workflow',$2,$3,$4)", [run.user_id, t.title, (run.title || t.notice).slice(0, 300), url]);
     const n = pusher(env.db);
     if (n?.canPush) await n.push([run.user_id], { kind: "workflow", title: t.title, body: run.title || t.notice, url }, { pref: null, tag: `workflow-${run.id}` }).catch(() => undefined);

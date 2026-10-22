@@ -81,7 +81,7 @@
   <header class="mb-5 flex flex-col gap-4 sm:mb-6">
     <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
       <div class="min-w-0">
-        <StudyTitle title={d.study.title} canEdit={d.permissions.edit} onRename={rename} />
+        <StudyTitle title={d.study.title} canEdit={d.permissions.manage} onRename={rename} />
         <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-ink-3">
           <Pill tone={statusTone[d.study.status]} size="sm" dot>{t(`studies.status.${d.study.status}` as MessageKey)}</Pill>
           {#if d.permissions.role}<Pill tone={memberRoleTone[d.permissions.role]} size="sm">{t(`studies.role.${d.permissions.role}` as MessageKey)}</Pill>{/if}

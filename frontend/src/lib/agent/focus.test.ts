@@ -12,6 +12,7 @@ describe("focus deep links", () => {
   it("parses workflow / toolcall targets and rejects anything else", () => {
     expect(parseFocus(`workflow:${U}`)).toEqual({ type: "workflow", id: U });
     expect(parseFocus(`toolcall:${U}`)).toEqual({ type: "toolcall", id: U });
+    expect(parseFocus(`goal:${U}`)).toEqual({ type: "goal", id: U });
     expect(parseFocus("message:abc")).toBeNull();
     expect(parseFocus("workflow:")).toBeNull();
     expect(parseFocus('workflow:a"],[x')).toBeNull();

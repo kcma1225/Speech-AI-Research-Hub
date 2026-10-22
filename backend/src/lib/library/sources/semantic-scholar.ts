@@ -129,6 +129,22 @@ export class SemanticScholarClient {
     return id ? this.getPaper(id, signal) : null;
   }
 
+  /**
+   * Citation snowballing: the papers a paper cites (`references`) or that cite it (`citations`), with citation counts.
+   * Only the paper's id leaves the hub.
+   */
+  async related(id: string, direction: "references" | "citations", opts: { limit?: number; signal?: AbortSignal } = {}): Promise<{ record: PaperRecord; citations: number | null }[]> {
+    const { data } = await this.req<{ data?: { citedPaper?: S2Paper & { citationCount?: number }; citingPaper?: S2Paper & { citationCount?: number } }[] }>(
+      `/paper/${encodeURIComponent(id).replace(/%3A/gi, ":")}/${direction}`,
+      { fields: `${S2_FIELDS},citationCount`, limit: String(clampLimit(opts.limit, 100)) },
+      opts.signal,
+    );
+    return (data?.data ?? [])
+      .map((r) => (direction === "references" ? r.citedPaper : r.citingPaper))
+      .filter((p): p is S2Paper & { citationCount?: number } => !!p?.paperId && !!p.title)
+      .map((p) => ({ record: s2PaperToRecord(p), citations: typeof p.citationCount === "number" ? p.citationCount : null }));
+  }
+
   /** Best title match (`/paper/search/match`); null when S2 finds none. */
   async matchTitle(title: string, signal?: AbortSignal): Promise<{ record: PaperRecord; score?: number } | null> {
     const { data } = await this.req<{ data?: S2Paper[] }>("/paper/search/match", { query: title, fields: S2_FIELDS }, signal);

@@ -16,6 +16,7 @@ import {
 import { answerInput } from "../agent/ask.js";
 import { listWorkflowPlaybooks } from "../workflows/playbooks/index.js";
 import "../workflows/agent-tools.js";
+import goals from "./goals.js";
 import { activeAgentRuns } from "../workflows/active.js";
 import type { RunRow } from "../workflows/types.js";
 
@@ -59,6 +60,8 @@ export const setWorkflowAvailability = (fn: typeof availability) => {
 };
 
 export default async function workflows(app: FastifyInstance) {
+  // Goals (multi-stage roadmaps of workflows): /goals…
+  await app.register(goals);
   async function assistantUp() {
     if (availability) return availability();
     try {

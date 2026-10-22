@@ -135,7 +135,7 @@ export const zh = {
   "studies.deleteConfirm": "刪除「{title}」？",
   "studies.deleteDesc": "研究裡的階段、里程碑、待辦與簡報都會一起刪除，無法復原。",
   "studies.deleted": "已刪除研究",
-  "studies.manageOnly": "封存、刪除與成員管理只有研究擁有者可以操作。",
+  "studies.manageOnly": "只有研究擁有者可以修改研究名稱、封存或刪除研究，以及管理成員；擁有者可以在「成員」分頁轉移擁有者。",
 
   "tasks.new": "新增待辦",
   "tasks.edit": "編輯待辦",
@@ -346,7 +346,7 @@ export const en: Record<keyof typeof zh, string> = {
   "studies.deleteConfirm": "Delete “{title}”?",
   "studies.deleteDesc": "Its stages, milestones, tasks and slides are deleted too. This can't be undone.",
   "studies.deleted": "Study deleted",
-  "studies.manageOnly": "Only the study owner can archive, delete or manage members.",
+  "studies.manageOnly": "Only the study owner can rename, archive or delete the study and manage members; the owner can hand the study over from the Members tab.",
 
   "tasks.new": "New task",
   "tasks.edit": "Edit task",
