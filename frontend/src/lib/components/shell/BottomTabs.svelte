@@ -9,7 +9,7 @@
   let moreOpen = $state(false);
   // Admin accounts (system-only) get their four management pages as tabs and no "more" drawer.
   const isAdmin = $derived(session.user?.role === "admin");
-  const tabs = $derived(isAdmin ? manageNav.filter(item => !item.external && canSee(item, session.user, session.config)) : workspaceNav);
+  const tabs = $derived(isAdmin ? manageNav.filter(item => !item.external && canSee(item, session.user)) : workspaceNav);
   const moreActive = $derived(manageNav.some(item => !item.external && isActive(item.href, page.url.pathname)));
   const tab = "flex flex-1 flex-col items-center justify-center gap-1 pt-2 pb-1.5 text-[11px] font-medium transition-colors";
 </script>

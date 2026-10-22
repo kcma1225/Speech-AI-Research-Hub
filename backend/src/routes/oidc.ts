@@ -7,8 +7,8 @@ import {
 } from "../lib/oidc/index.js";
 
 /**
- * OpenID Connect provider for Aldine (authorization code flow, PKCE S256, first-party client, no consent screen).
- * Off (404) unless LATEX_OIDC_CLIENT_ID/SECRET are set. Protocol errors use the RFC 6749 shape
+ * OpenID Connect provider (authorization code flow, PKCE S256, first-party client, no consent screen).
+ * Off (404) unless OIDC_CLIENT_ID/SECRET/REDIRECT_URIS are set. Kept for future MCP OAuth. Protocol errors use the RFC 6749 shape
  * `{ error: <code>, error_description: <繁中> }`, because the client parses `error` as a code.
  */
 
@@ -98,7 +98,7 @@ const oidc: FastifyPluginAsync = async app => {
     const c = client!;
     const body = (request.body && typeof request.body === "object" ? request.body : {}) as Record<string, unknown>;
 
-    // Client authentication: client_secret_basic (Aldine's default) or client_secret_post, not both.
+    // Client authentication: client_secret_basic or client_secret_post, not both.
     let clientId: string | undefined;
     let secret: string | undefined;
     const header = request.headers.authorization;

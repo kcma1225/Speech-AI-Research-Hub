@@ -30,7 +30,7 @@ export type CurrentUser = {
   preferences: Preferences;
 };
 
-export type ClientConfig = { latexUrl: string | null; pushPublicKey: string | null };
+export type ClientConfig = { pushPublicKey: string | null };
 
 /** Minimal study reference embedded in other objects. */
 export type StudyRef = { id: string; slug: string; title: string };

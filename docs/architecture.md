@@ -19,8 +19,6 @@ meetings `0080–0089`, search/embeddings `0090–0099`, QA fixes `0100+`.
    worker   (Node 22 + Quarto + Chrome + poppler + LibreOffice + ffmpeg)        │
      └── network "jobs" (internal: true, no internet): db + rustfs only         │
    latex-runner (TeX Live + Noto CJK, bubblewrap per compile) ── network "jobs" │
-   latex-app + latex-compiler (Aldine, profile `latex`, own hostname)           │
-     └── network "latex" (internal: true): compiler has no internet             │
 ```
 
 | Service | Dir | Responsibility |
@@ -33,7 +31,6 @@ meetings `0080–0089`, search/embeddings `0090–0099`, QA fixes `0100+`.
 | latex-runner | `latex-runner/` | Claims only `latex_compile` jobs (hub_worker role, network `jobs`: db + rustfs, no internet), runs `latexmk` in a per-compile bubblewrap sandbox (only its own project dir, no network/env/proc), uploads PDF/SyncTeX/log. Image `hub-latex-runner:${HUB_VERSION}` (~3.5 GB); read-only root, `cap_drop: ALL`, custom seccomp (`latex-runner/seccomp.json`), volume `latex_cache` (build caches, safe to delete). See `latex-runner/README.md` and "LaTeX" below |
 | db | `postgres/` | PostgreSQL 17 + pgvector (`pgvector/pgvector:0.8.7-pg17`; extensions `vector`, `pg_trgm` created by migration 0001); `postgres/init/` creates the `hub_worker` role on first init |
 | rustfs | — | `rustfs/rustfs:1.0.1`, S3 API on `:9000`, never published |
-| latex-app, latex-compiler | `deploy/aldine/` | Optional (`--profile latex`): Aldine collaborative LaTeX on `LATEX_HOSTNAME`. Compiler image adds Noto CJK. See `docs/aldine-evaluation.md` |
 
 ## Conventions (backend)
 
@@ -53,7 +50,7 @@ meetings `0080–0089`, search/embeddings `0090–0099`, QA fixes `0100+`.
   List endpoints return `{ <plural>: [...] }`. Set `Cache-Control: no-store` on per-user data.
 - User-facing messages are Traditional Chinese (繁體中文), matching v1 wording where it exists.
 - CSRF: a global `onRequest` hook rejects POST/PUT/PATCH/DELETE whose `Origin` ≠ `APP_ORIGIN` (403). The only
-  exemptions are the routes `POST /api/oidc/token` (server-to-server from Aldine, client-secret authenticated, never
+  exemptions are the routes `POST /api/oidc/token` (server-to-server from an OIDC client, client-secret authenticated, never
   reads cookies) and `POST /api/mcp` (bearer MCP token only, never the cookie; checks `Origin` itself when sent);
   matched on the registered route, so no other path or method is affected.
 - Uploads use `@fastify/multipart` (`request.file()`), streamed to S3 via `app.storage.put` — never buffer
@@ -1011,7 +1008,7 @@ manifest is deleted, compiles beyond the newest 8 (except the preview PDF) are p
 Isolation (latex-runner/README.md): kpathsea always allows reading (`openin_any = a`), so isolation is at the filesystem level —
 each compile runs in bubblewrap with new user/mount/pid/ipc/uts/cgroup/network namespaces, sees only its own project dir
 (`/work`, rw) plus the read-only TeX tree and fonts, no `/proc`, no environment (DB/S3 credentials never reach TeX), shell escape
-off, `prlimit` (2 GiB AS, 150 s CPU, 200 MB files, 256 procs) and a 120 s wall clock. This also fixes Aldine's cross-project read.
+off, `prlimit` (2 GiB AS, 150 s CPU, 200 MB files, 256 procs) and a 120 s wall clock. One project can never read another's files.
 
 Paths: runner rules (`isSafeProjectPath`) + no hidden segments, no spaces/quotes/TeX specials, depth ≤ 8 (`validProjectPath`).
 Text extensions `.tex .ltx .sty .cls .bst .bib .bbx .cbx .lbx .dbx .cfg .def .clo .dtx .ins .txt .md .csv .tsv .dat .tikz .pgf .lua
@@ -1024,7 +1021,7 @@ becoming an uneditable blob.
 |---|---|---|
 | GET `/studies/:ref/latex` | user | `{projects: ProjectCard[] (counts, last compile status, pdf_url of the preview PDF), permissions, templates (`name_zh/en`, `description_zh/en`)}` |
 | POST `/studies/:ref/latex` `{title, kind?, template?, compiler?, bib_mode?, author?, advisor?, institution?}` | study editor | from a template → 201 `{project, url}`; activity `latex_project_created` |
-| POST `/studies/:ref/latex/import` (multipart `title?`, `kind?`, file `.zip` ≤ 300 MB) | study editor | Overleaf/Aldine/any ZIP, files kept as-is: junk (`__MACOSX`, `.git`, build products `.aux .log .synctex.gz …`) skipped, one wrapping folder stripped, unsafe/hidden paths skipped (`skipped`), root = `\documentclass` + `\begin{document}` (conventional names first), compiler from `% !TEX program` or ctex/xeCJK/fontspec (XeLaTeX) / luatexja, `bib_mode manual`, version `import` → 201 `{project, url, files, skipped}`; 400 without a root |
+| POST `/studies/:ref/latex/import` (multipart `title?`, `kind?`, file `.zip` ≤ 300 MB) | study editor | Overleaf/any ZIP, files kept as-is (a `.aldine-out` folder from v2 Aldine exports is skipped too): junk (`__MACOSX`, `.git`, build products `.aux .log .synctex.gz …`) skipped, one wrapping folder stripped, unsafe/hidden paths skipped (`skipped`), root = `\documentclass` + `\begin{document}` (conventional names first), compiler from `% !TEX program` or ctex/xeCJK/fontspec (XeLaTeX) / luatexja, `bib_mode manual`, version `import` → 201 `{project, url, files, skipped}`; 400 without a root |
 | GET `/latex/:id` | user | `ProjectDetail {project (+bib_file), study, files: FileView[] (no content; `title` = first heading of .tex files, `generated` = auto bib), root_file_id, sections: [{file_id \| null (missing file), path, title, position, disabled (commented out), managed, command}], permissions, latest_compile, pdf_compile, limits}` |
 | PATCH `/latex/:id` `{title?, kind?, compiler?, bib_mode?, root_file?, bib_file?, halt_on_error?, section_command?}` | study editor | root must be a text `.tex`; bib-mode change reconnects the bib file's editors → `{project}` |
 | DELETE `/latex/:id` | study editor | cancels running compiles, deletes docs/suggestions/rows and the `latex/<id>/` prefix |
@@ -1194,7 +1191,8 @@ stripped from the text).
 | POST `/agent/conversations` `{mode?, context?, autopilot?, title?}` | user | autopilot / memory default from settings (interview: both off) → 201 `{conversation}` |
 | GET `/agent/conversations/:id` | owner | current branch only: `{conversation, messages (user/assistant/notice/compaction, each with memories, answers, versions: ids \| null), toolCalls, run (latest of the branch), grants, settings, resumeFrom}` |
 | PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?}` | owner | memory needs the user setting (409); emits `conversation` |
-| DELETE `/agent/conversations/:id` | owner | cancels the active run first; memories stay |
+| GET `/agent/conversations/:id/activity` | owner | what still runs: `{assistant: bool (an active agent run), workflows: [{id, title, status}] (unfinished runs of the conversation)}` — the delete dialog's warning (`frontend/src/lib/agent/delete.ts`) |
+| DELETE `/agent/conversations/:id` `?stop_agents=1` | owner | with an active run or unfinished workflows and no `stop_agents` → 409 `{code:"active_agents"}`; otherwise cancels the active run, stops (`cancelWorkflow`) and **deletes every workflow run of the conversation** (`deleteConversationWorkflows`; drafts they wrote — decks, notes — stay; a still-running job sees the cancel on its heartbeat and a retry finds the run `missing`); memories stay |
 | POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext, intent?: "make_note", attachments?: AttachmentRef[] ≤ 10}` | owner | text and/or `ask_user` answers; `intent` = toolbar quick action (see Paper reading); `attachments` see Attachments (a ref the caller cannot read → 403/404 「附件 N：…」, nothing is sent); 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; 409 while running → 202 `{message, run}` |
 | POST `/agent/conversations/:id/messages/:messageId/edit` `{text?, answers?, context?, attachments?}` | owner | current-branch user message → new version (cancels the active run first; empty body = resubmit unchanged; the message's attachments are kept and re-resolved unless `attachments` is given); an answer message takes only `answers` (400) → 202 `{message, run}` |
 | POST `/agent/conversations/:id/regenerate` | owner | 「重新產生」: resubmits the last user message → 202 `{message, run}`; 409 when there is none |
@@ -1812,13 +1810,13 @@ upload shows in the tray while the sheet is closed (closing mid-upload never ask
 
 ### OIDC provider (`oidc.ts`, `lib/oidc/`)
 
-Kept in v3 for the MCP endpoint's OAuth authorization (spec §13.2); today its only client is Aldine.
+Kept in v3 for the MCP endpoint's OAuth authorization (spec §13.2); no client is configured today (the v2 Aldine editor it
+was built for has been removed).
 
-The hub is the OpenID Connect provider for one first-party client, Aldine (authorization code flow, no consent
-screen). Off (every route 404) unless `LATEX_OIDC_CLIENT_ID` and `LATEX_OIDC_CLIENT_SECRET` (≥ 32 chars) are set and a
-redirect URI is known: `LATEX_OIDC_REDIRECT_URIS` (comma-separated, exact match) or else
-`<LATEX_URL>/api/auth/oauth/oidc/callback`. **Issuer = `<APP_ORIGIN>/api/oidc`** (Aldine's `OIDC_ISSUER`; it
-fetches discovery server-side and requires https). Requirements read from Aldine 0.12.3: `docs/aldine-evaluation.md`.
+The hub is the OpenID Connect provider for one first-party client (authorization code flow, no consent screen). Off
+(every route 404) unless `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (≥ 32 chars) and `OIDC_REDIRECT_URIS` (comma-separated
+absolute http(s) URIs, exact match) are set. **Issuer = `<APP_ORIGIN>/api/oidc`** (all endpoints sit under nginx's
+`/api/` proxy; clients that fetch discovery server-side usually require https).
 
 | Method & path | Access | Notes |
 |---|---|---|
@@ -1826,19 +1824,18 @@ fetches discovery server-side and requires https). Requirements read from Aldine
 | GET `/oidc/jwks` | public | `{keys:[{kty:"EC",crv:"P-256",x,y,kid,use:"sig",alg:"ES256"}]}` |
 | GET `/oidc/authorize?client_id&redirect_uri&response_type=code&scope&state&nonce&code_challenge&code_challenge_method&prompt` | session | unknown `client_id`/`redirect_uri` → 400 `{error}` (never redirected). Other errors redirect with `error`, `error_description`, `state`, `iss`. `scope` must contain `openid`; PKCE optional, but when sent it must be `S256`. No session → 302 `/login?next=<this URL>` (`prompt=none` → `error=login_required`). Session → one-time code (random 32 bytes, stored as sha256, **60 s**, bound to client, redirect_uri, user, scope, nonce, challenge) → 302 `<redirect_uri>?code&state&iss` |
 | POST `/oidc/token` (form) | client secret | **exempt from the Origin check**. `client_secret_basic` or `_post` (not both; constant-time compare) else 401 `invalid_client`. `grant_type=authorization_code`; the code is consumed atomically (`DELETE … RETURNING`, so reuse fails) and must be unexpired, same client and redirect_uri; a code with a challenge needs the matching `code_verifier`, a code without one rejects a verifier; disabled users fail. → `{access_token, token_type:"Bearer", expires_in:300, id_token, scope}`, `Cache-Control: no-store`; audit `oidc_sign_in`. Errors: RFC 6749 `{error:<code>, error_description:<繁中>}` |
-| GET `/oidc/userinfo` | Bearer access token | same user claims as the ID token; 401 `invalid_token` (+ `WWW-Authenticate`) otherwise. Aldine only calls it when the ID token lacks email/name (never, today) |
+| GET `/oidc/userinfo` | Bearer access token | same user claims as the ID token; 401 `invalid_token` (+ `WWW-Authenticate`) otherwise. |
 
 - ID token (ES256, `kid` = RFC 7638 thumbprint, 300 s): `iss`, `aud` = client id, `sub` = hub user id, `iat`, `exp`,
-  `nonce` (when sent); scope `profile` → `name` (Chinese full name; no `given_name`/`family_name`, so Aldine never mixes scripts), `preferred_username` (hub username); scope `email` →
-  `email` = `<hub user id>@users.speech-ai-hub.invalid`, `email_verified: true`. Hub users have no email; Aldine needs
-  one for admins (`ALDINE_ADMIN_EMAILS`) and collaborator invites. The synthetic address is stable across renames,
-  `.invalid` cannot receive mail, and Aldine never links an SSO identity to a password account with the same email.
+  `nonce` (when sent); scope `profile` → `name` (Chinese full name; no `given_name`/`family_name`, so clients never mix scripts), `preferred_username` (hub username); scope `email` →
+  `email` = `<hub user id>@users.speech-ai-hub.invalid`, `email_verified: true`. Hub users have no email; clients that
+  key accounts on one get this synthetic address: stable across renames, unique per subject, and `.invalid` cannot
+  receive mail.
 - Signing key: generated on first use (P-256), private key stored as PKCS#8 PEM in `oidc_signing_keys` (only the backend
   reads it; it is in DB backups), public JWK published. Rotation: insert a new active key, set the old one
   `active=false` and keep it published until issued ID tokens expire (minutes), then delete it.
 - All roles may sign in (professors included); disabled users get neither a code nor tokens. Access tokens live 5 min;
-  disabling a hub user does **not** end an existing Aldine session (up to 30 days; remove it from Aldine's
-  `sessions.json` if needed). No logout propagation, no role sync.
+  disabling a hub user does **not** end a session the client already created. No logout propagation, no role sync.
 - The login page treats `next` values starting with `/api/oidc/authorize?` as a full-page navigation (other `next`
   values stay SPA routes); `next` must be a same-origin path (no `//`, no backslash).
 
@@ -2195,7 +2192,7 @@ the shown version) and `LatexLayoutReview` (LaTeX toolbar, pdf.js + `SyncClient.
 - ZIP junk (`__MACOSX`, `.DS_Store`, `Thumbs.db`, `.git`, `node_modules`, `_site`, `.quarto`) is skipped by both the
   backend validator and the worker (Finder-made ZIPs work); `.env*`, symlinks, unsafe paths, encrypted entries,
   duplicate names (worker) and disallowed types are rejected.
-- `GET /api/config` → `{ latexUrl, pushPublicKey }` (`latexUrl` = `LATEX_ORIGIN`, null when unset).
+- `GET /api/config` → `{ pushPublicKey }` (null when VAPID is unset).
 - Migrations: `0001_v3_baseline` (identity, jobs, system settings, stage templates, studies, decks/slide tables, notifications,
   audit, OIDC; extensions `vector`, `pg_trgm`; `hub_worker` grants). v2 tables `items`, `tags`, `item_tags`, `slide_tags`,
   `slide_project_tags` are gone; `slide_projects` is `decks` (FK columns `project_id` → `deck_id`). `0040_deck_sources` (slides: `decks.metadata`, `deck_source_trees`, `deck_sources`, `deck_previews`).
@@ -2206,18 +2203,3 @@ the shown version) and `LatexLayoutReview` (LaTeX toolbar, pdf.js + `SyncClient.
 - A failed render clears the version's `thumbnail_key`, `page_count` and `manifest_key`.
 - Lifecycle coverage (create/rename/delete per entity, what is deliberately missing) is tracked in `docs/crud-audit.md`.
   `ConfirmDialog` toasts an error thrown by `onConfirm` unless the caller already showed a toast with that message.
-
-## Aldine (LaTeX) security model
-
-Accepted by the user (2026-10-20): accounts are lab members only, and any Aldine user can read other projects'
-files (upstream limitation). Sign-in is by hub SSO (see "OIDC provider for Aldine"; `LATEX_SSO_ONLY=1` turns off
-Aldine's password login/registration), so the hub decides who gets an account. Password registration additionally
-stays behind nginx Basic Auth (`owner` / `LATEX_REGISTER_PASSWORD`). Aldine admins: `LATEX_ADMIN_EMAILS` with the
-Owner's synthetic email.
-
-Two mounts (nginx `entrypoint.sh`): `LATEX_HOSTNAME` (own hostname, isolated by the same-origin policy; preferred)
-or `LATEX_PATH` (e.g. `/latex` on the hub origin). **The deployment at speech-ai-hub.gugulu.tw uses `LATEX_PATH=/latex`,
-accepted by the user on 2026-10-20** to avoid an extra DNS name/proxy route. Consequence: Aldine's scripts share the
-hub origin, so an XSS in Aldine could call `/api` as the signed-in hub user and pass the Origin check. Mitigations
-in path mode: nginx strips `hub_session` from the Cookie header sent to Aldine (`$latex_cookie` map), registration
-stays behind Basic Auth, and accounts are lab members only. Moving to `LATEX_HOSTNAME` later removes the risk.

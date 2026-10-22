@@ -27,8 +27,6 @@ gen_env() {
     -e "s|^PROVIDER_TOKEN_KEY=.*|PROVIDER_TOKEN_KEY=$(openssl rand -base64 32 | tr -d '\n')|" \
     -e "s|^S3_ACCESS_KEY=.*|S3_ACCESS_KEY=hub$(openssl rand -hex 10)|" \
     -e "s|^S3_SECRET_KEY=.*|S3_SECRET_KEY=$(rand 32 40)|" \
-    -e "s|^LATEX_REGISTER_PASSWORD=.*|LATEX_REGISTER_PASSWORD=|" \
-    -e "s|^LATEX_OIDC_CLIENT_SECRET=.*|LATEX_OIDC_CLIENT_SECRET=|" \
     .env.example > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
   echo "Wrote $ENV_FILE (admin; password: ADMIN_PASSWORD in .env.staging)."

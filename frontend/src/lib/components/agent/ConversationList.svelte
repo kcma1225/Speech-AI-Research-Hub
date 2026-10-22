@@ -12,6 +12,7 @@
   import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
   import DeleteMenuItem from "#lib/components/ui/DeleteMenuItem.svelte";
   import type { ConversationListItem } from "#lib/agent/types.ts";
+  import { deleteConversation, deleteDescription, loadActivity, type ConversationActivity } from "#lib/agent/delete.ts";
 
   /**
    * Conversation list for /assistant: search on top, conversations grouped by day (今天 / 昨天 / 本週 / 更早), rename and
@@ -71,6 +72,14 @@
   let deleteId = $state<string | null>(null);
   const deleteTitle = $derived(deleteId ? (items?.find((c) => c.id === deleteId)?.title ?? "") : "");
   let deleteOpen = $state(false);
+  let deleteActivity = $state<ConversationActivity | null>(null);
+  async function askDelete(id: string) {
+    deleteId = id;
+    deleteActivity = null;
+    deleteOpen = true;
+    const a = await loadActivity(id);
+    if (deleteId === id) deleteActivity = a;
+  }
   let saving = $state(false);
 
   async function rename() {
@@ -92,7 +101,7 @@
     const id = deleteId;
     if (!id) return;
     try {
-      await api.del(`/agent/conversations/${id}`);
+      await deleteConversation(id, deleteActivity, (a) => (deleteActivity = a));
       toasts.show(t("agent.deleted"), "success");
       items = items?.filter((c) => c.id !== id) ?? null;
       onDeleted?.(id);
@@ -152,13 +161,13 @@
                   </span>
                   <span class="flex items-center gap-2 text-[12px] text-ink-3"><span class="min-w-0 flex-1 truncate">{c.last_text ?? ""}</span><span class="shrink-0 tabular-nums">{relativeTime(c.updated_at)}</span></span>
                 </a>
-                <div class="absolute top-1/2 right-11 -translate-y-1/2"><DeleteButton reveal label={t("agent.delete")} onclick={() => ((deleteId = c.id), (deleteOpen = true))} /></div>
+                <div class="absolute top-1/2 right-11 -translate-y-1/2"><DeleteButton reveal label={t("agent.delete")} onclick={() => askDelete(c.id)} /></div>
                 <DropdownMenu.Root>
                   <DropdownMenu.Trigger class="more absolute top-1/2 right-1.5 grid size-9 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-surface hover:text-ink data-[state=open]:bg-surface data-[state=open]:opacity-100" aria-label={t("agent.list.actions")}><Ellipsis class="size-4" /></DropdownMenu.Trigger>
                   <DropdownMenu.Portal>
                     <DropdownMenu.Content align="end" sideOffset={4} class="{menuContent} w-44">
                       <DropdownMenu.Item class={menuItem} onSelect={() => ((renameId = c.id), (renameValue = c.title ?? ""), (renameOpen = true))}><Pencil />{t("agent.rename")}</DropdownMenu.Item>
-                      <DeleteMenuItem label={t("agent.delete")} onSelect={() => ((deleteId = c.id), (deleteOpen = true))} />
+                      <DeleteMenuItem label={t("agent.delete")} onSelect={() => askDelete(c.id)} />
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>
                 </DropdownMenu.Root>
@@ -190,7 +199,7 @@
   {/snippet}
 </Sheet>
 
-<ConfirmDialog bind:open={deleteOpen} title={deleteTitle ? t("crud.conversation.deleteTitle", { title: deleteTitle }) : t("agent.deleteConfirm")} description={t("agent.deleteHint")} confirmLabel={t("agent.delete")} onConfirm={remove} />
+<ConfirmDialog bind:open={deleteOpen} title={deleteTitle ? t("crud.conversation.deleteTitle", { title: deleteTitle }) : t("agent.deleteConfirm")} description={deleteDescription(deleteActivity)} confirmLabel={t("agent.delete")} onConfirm={remove} />
 
 <style>
   /* Fine pointers: the ⋯ button appears on hover / focus; touch keeps it visible. */

@@ -16,7 +16,7 @@
     const value = page.url.searchParams.get("next") ?? "/";
     return value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") ? value : "/";
   });
-  /** SPA routes use goto; the OIDC authorize endpoint (Aldine sign-in) is a backend URL and needs a full navigation. */
+  /** SPA routes use goto; the OIDC authorize endpoint (provider sign-in) is a backend URL and needs a full navigation. */
   function proceed() {
     if (next.startsWith("/api/oidc/authorize?")) window.location.replace(next);
     else void goto(next, { replace: true });

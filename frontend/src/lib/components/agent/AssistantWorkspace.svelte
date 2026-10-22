@@ -13,6 +13,7 @@
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { ChatSession } from "#lib/agent/chat.svelte.ts";
+  import { deleteConversation, deleteDescription, loadActivity, type ConversationActivity } from "#lib/agent/delete.ts";
   import ChatView from "./ChatView.svelte";
   import ConversationList from "./ConversationList.svelte";
   import ViewerSplit from "./viewer/ViewerSplit.svelte";
@@ -31,6 +32,15 @@
   let renameOpen = $state(false);
   let renameValue = $state("");
   let deleteOpen = $state(false);
+  let deleteActivity = $state<ConversationActivity | null>(null);
+  async function askDelete() {
+    const id = session.id;
+    if (!id) return;
+    deleteActivity = null;
+    deleteOpen = true;
+    const a = await loadActivity(id);
+    if (session.id === id) deleteActivity = a;
+  }
 
   const COLLAPSE_KEY = "hub.assistant.sidebarCollapsed";
   let collapsed = $state(readCollapsed());
@@ -124,7 +134,7 @@
   }
   async function remove() {
     if (!session.id) return;
-    await api.del(`/agent/conversations/${session.id}`);
+    await deleteConversation(session.id, deleteActivity, (a) => (deleteActivity = a));
     toasts.show(t("agent.deleted"), "success");
     newChat();
   }
@@ -154,7 +164,7 @@
           <DropdownMenu.Portal>
             <DropdownMenu.Content align="end" sideOffset={6} class="z-50 min-w-[180px] rounded-2xl border border-line bg-popover p-1.5 shadow-pop data-[state=open]:animate-[pop-in_140ms_ease-out]">
               <DropdownMenu.Item class={menuItem} onSelect={() => ((renameValue = session.conversation?.title ?? ""), (renameOpen = true))}><Pencil class="size-4" />{t("agent.rename")}</DropdownMenu.Item>
-              <DeleteMenuItem label={t("agent.delete")} onSelect={() => (deleteOpen = true)} />
+              <DeleteMenuItem label={t("agent.delete")} onSelect={askDelete} />
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
@@ -200,7 +210,7 @@
   {/snippet}
 </Sheet>
 
-<ConfirmDialog bind:open={deleteOpen} title={session.conversation?.title ? t("crud.conversation.deleteTitle", { title: session.conversation.title }) : t("agent.deleteConfirm")} description={t("agent.deleteHint")} confirmLabel={t("agent.delete")} onConfirm={remove} />
+<ConfirmDialog bind:open={deleteOpen} title={session.conversation?.title ? t("crud.conversation.deleteTitle", { title: session.conversation.title }) : t("agent.deleteConfirm")} description={deleteDescription(deleteActivity)} confirmLabel={t("agent.delete")} onConfirm={remove} />
 
 <style>
   /* Fill the viewport below the top bar (and above the phone tab bar). */

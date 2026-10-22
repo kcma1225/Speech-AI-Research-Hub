@@ -58,7 +58,7 @@ db           PostgreSQL 17 + pgvector
 rustfs       S3
 ```
 
-- Aldine（`deploy/aldine/`、`/latex`、OIDC provider）在切換時移除。OIDC 程式碼是否保留給未來的 MCP 授權使用 ⚠️（見第 13 節）。
+- Aldine（`deploy/aldine/`、`/latex`、compose profile `latex`）**已移除**（2026-10-22）。OIDC provider 保留給未來的 MCP 授權使用（見第 13 節），改用通用的 `OIDC_CLIENT_ID`／`OIDC_CLIENT_SECRET`／`OIDC_REDIRECT_URIS` 設定。
 - 呼叫 LLM 或 ASR 的地方只有 backend（聊天的串流回應）和 ai-worker（背景工作），兩者共用 `src/ai/` 底下的 adapter 與路由程式。
 - **Migrations 重新起算**：資料要清空，所以 v3 用一份乾淨的 `0001_v3_baseline.sql` 取代 0001–0005。
   - ⚠️ 帳號要保留嗎？建議保留帳號與邀請（匯出再匯入），只清空內容。
@@ -234,7 +234,7 @@ rustfs       S3
 7. **M6 會議**：網頁錄音、上傳（影片抽音軌）、ASR、語者對應、分析、草稿確認
 8. **M7 LaTeX**：latex-runner、CodeMirror + Yjs、檔案樹、編譯與 SyncTeX、文獻庫 → `refs.bib`、AI 建議
 9. **M8 語意搜尋**：pgvector、身分指紋、切換精靈、索引工作
-10. **M9** 總覽、全系統 QA、移除 Aldine、切換正式站
+10. **M9** 總覽、全系統 QA、移除 Aldine（✅ 已完成）、切換正式站
 
 ---
 
@@ -331,7 +331,7 @@ rustfs       S3
 ## 12. 系統架構補充
 
 - `ai-worker` 可以連外網，負責：ASR（含輪詢）、會議分析、embedding、論文抓取、AI 簡報生成、長時間 agent 任務、Claude Code CLI 轉接器。原本的 `worker` 維持無外網。
-- `latex-runner` 取代 `deploy/aldine/`。目前的 `compiler.Dockerfile` 是以 Aldine 的 AGPL 映像為基礎，要重寫。
+- `latex-runner` 取代 `deploy/aldine/`（已移除，含以 Aldine AGPL 映像為基礎的 `compiler.Dockerfile`）。
 - SSE 與 WebSocket 需要 nginx 設定：`proxy_buffering off`、逾時延長、`Upgrade` 標頭。
 
 ## 13. 第二輪決策（2026-10-21）

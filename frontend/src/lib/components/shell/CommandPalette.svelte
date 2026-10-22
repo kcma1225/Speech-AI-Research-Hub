@@ -25,7 +25,7 @@
 
   const pages = $derived(
     [...workspaceNav, ...manageNav].filter(
-      item => !item.external && canSee(item, session.user, session.config) && t(item.label).toLowerCase().includes(query.trim().toLowerCase()),
+      item => !item.external && canSee(item, session.user) && t(item.label).toLowerCase().includes(query.trim().toLowerCase()),
     ),
   );
 

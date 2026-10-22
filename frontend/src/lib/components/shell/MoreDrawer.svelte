@@ -1,14 +1,13 @@
 <script lang="ts">
   import { ArrowUpRight, ChevronRight } from "@lucide/svelte";
-  import { canSee, hrefOf as resolveHref, manageNav, type NavItem } from "#lib/nav.ts";
+  import { canSee, manageNav } from "#lib/nav.ts";
   import { session } from "#lib/stores/session.svelte.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import Sheet from "#lib/components/ui/Sheet.svelte";
   import JobsWidget from "./JobsWidget.svelte";
 
   let { open = $bindable(false) }: { open?: boolean } = $props();
-  const items = $derived(manageNav.filter(item => canSee(item, session.user, session.config)));
-  const hrefOf = (item: NavItem) => resolveHref(item, session.config);
+  const items = $derived(manageNav.filter(item => canSee(item, session.user)));
 </script>
 
 <Sheet bind:open title={t("nav.more")}>
@@ -16,7 +15,7 @@
     {#each items as item (item.key)}
       <li class="border-b border-line last:border-0">
         <a
-          href={hrefOf(item)}
+          href={item.href}
           target={item.external ? "_blank" : undefined}
           rel={item.external ? "noopener noreferrer" : undefined}
           onclick={() => (open = false)}

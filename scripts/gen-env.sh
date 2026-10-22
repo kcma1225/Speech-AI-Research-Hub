@@ -17,8 +17,6 @@ sed \
   -e "s|^PROVIDER_TOKEN_KEY=.*|PROVIDER_TOKEN_KEY=$(openssl rand -base64 32 | tr -d '\n')|" \
   -e "s|^S3_ACCESS_KEY=.*|S3_ACCESS_KEY=hub$(openssl rand -hex 10)|" \
   -e "s|^S3_SECRET_KEY=.*|S3_SECRET_KEY=$(rand 32 40)|" \
-  -e "s|^LATEX_REGISTER_PASSWORD=.*|LATEX_REGISTER_PASSWORD=$(rand 24 24)|" \
-  -e "s|^LATEX_OIDC_CLIENT_SECRET=.*|LATEX_OIDC_CLIENT_SECRET=$(rand 48 48)|" \
   .env.example > .env
 chmod 600 .env
 echo "Wrote .env (mode 600). Initial admin: name admin, password in ADMIN_PASSWORD (.env)."

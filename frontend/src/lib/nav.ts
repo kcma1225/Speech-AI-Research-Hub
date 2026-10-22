@@ -1,11 +1,11 @@
 import type { Component } from "svelte";
-import { BookOpen, Bot, Cpu, Server, FlaskConical, House, Settings, Sigma, Users, UsersRound } from "@lucide/svelte";
+import { BookOpen, Bot, Cpu, Server, FlaskConical, House, Settings, Users, UsersRound } from "@lucide/svelte";
 import type { MessageKey } from "./messages";
-import type { ClientConfig, CurrentUser } from "./types";
+import type { CurrentUser } from "./types";
 
 /**
  * Shell navigation (sidebar, bottom tabs, "more" drawer, ⌘K pages).
- * `admin`: only for system admins. `external`: opens outside the SPA (href resolved by the shell).
+ * `admin`: only for system admins. `external`: opens outside the SPA in a new tab.
  * Modules may append ONE entry to a list below; keep keys unique.
  */
 export type NavItem = { key: string; href: string; label: MessageKey; short?: MessageKey; icon: Component; admin?: boolean; external?: boolean };
@@ -19,23 +19,19 @@ export const workspaceNav: NavItem[] = [
 ];
 
 export const manageNav: NavItem[] = [
-  { key: "latex", href: "", label: "nav.latex", icon: Sigma, external: true },
   { key: "admin", href: "/admin", label: "nav.admin", icon: Users, admin: true },
   { key: "models", href: "/admin/models", label: "nav.models", icon: Cpu, admin: true },
   { key: "system", href: "/admin/system", label: "nav.system", icon: Server, admin: true },
   { key: "settings", href: "/settings", label: "nav.settings", icon: Settings },
 ];
 
-/** Whether the signed-in user sees `item` (admin-only entries, the LaTeX link only when configured). */
-export function canSee(item: NavItem, user: CurrentUser | null, config: ClientConfig) {
+/** Whether the signed-in user sees `item` (admin-only entries; admin accounts see no workspace pages). */
+export function canSee(item: NavItem, user: CurrentUser | null) {
   if (item.admin && user?.role !== "admin") return false;
-  // Admin accounts are system-only: no workspace pages (and no LaTeX link).
-  if (user?.role === "admin" && (workspaceNav.includes(item) || item.key === "latex")) return false;
-  if (item.key === "latex") return Boolean(config.latexUrl);
+  // Admin accounts are system-only: no workspace pages.
+  if (user?.role === "admin" && workspaceNav.includes(item)) return false;
   return true;
 }
-
-export const hrefOf = (item: NavItem, config: ClientConfig) => (item.key === "latex" ? (config.latexUrl ?? "") : item.href);
 
 const matches = (href: string, pathname: string) => (href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/"));
 

@@ -1,5 +1,5 @@
 # v3 staging overlay (scripts/staging.sh): compose project `hubv3`, plain HTTP on 127.0.0.1:18090 only,
-# own volumes (hubv3_*), no TLS, no Aldine. Use with: -p hubv3 -f compose.yaml -f compose.staging.yaml --env-file .env.staging
+# own volumes (hubv3_*), no TLS. Use with: -p hubv3 -f compose.yaml -f compose.staging.yaml --env-file .env.staging
 services:
   nginx:
     ports: !override

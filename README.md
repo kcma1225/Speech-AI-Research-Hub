@@ -1,14 +1,13 @@
 # Speech-AI Research Hub
 
-研究室協作網站：管理每週組會簡報（Quarto）、研究筆記、錄音與逐字稿，並提供自架協作 LaTeX（Aldine）。
+研究室協作網站：管理每週組會簡報（Quarto）、研究筆記、錄音與逐字稿，並提供內建的協作 LaTeX 編輯器。
 
 架構（詳見 [`docs/architecture.md`](docs/architecture.md)）：
 
 ```
 nginx（唯一對外 port）─┬─ /        SvelteKit 靜態前端
-                      ├─ /api/*   backend（Node 22 + Fastify）── PostgreSQL、RustFS（S3）
-                      └─ /latex 或 LATEX_HOSTNAME → Aldine（選用，profile latex）
-worker（Quarto + Chrome + ffmpeg）從 PostgreSQL 取工作、讀寫 RustFS，無對外網路
+                      └─ /api/*   backend（Node 22 + Fastify）── PostgreSQL、RustFS（S3）
+worker（Quarto + Chrome + ffmpeg）、latex-runner（TeX Live）從 PostgreSQL 取工作、讀寫 RustFS，無對外網路
 ```
 
 ## 啟動
@@ -16,7 +15,6 @@ worker（Quarto + Chrome + ffmpeg）從 PostgreSQL 取工作、讀寫 RustFS，�
 ```bash
 scripts/gen-env.sh                # 產生 .env（隨機 secret，chmod 600；已存在時不覆寫）
 docker compose up -d --build      # 主系統：http://localhost/
-docker compose --profile latex up -d --build   # 連同 Aldine：http://latex.localhost/
 docker compose down               # 停止；資料保留在 volumes
 ```
 
@@ -46,18 +44,12 @@ scripts/staging.sh reset   # 停止並刪除 staging 資料（會再確認一次
 - `AUTH_SECRET`：簽章簡報檢視 token；更換後已開啟的簡報需重新整理。Session 不受影響。
 - `S3_ACCESS_KEY`、`S3_SECRET_KEY`：RustFS 帳密，backend 與 worker 共用。
 - 前面有反向代理（如 OpenResty、Cloudflare）時：在代理終止 TLS，`HTTPS_ENABLED=false`、`APP_ORIGIN=https://<網域>`，並把代理的 IP 填入 `TRUSTED_PROXIES`，否則所有人共用代理 IP 的登入頻率限制。
-- HTTPS：把涵蓋 `APP_HOSTNAME`（與 `LATEX_HOSTNAME`）的 `fullchain.pem`、`privkey.pem` 放進 `nginx/certs/`，設 `HTTPS_ENABLED=true` 並把 origin 改成 `https://`。若 TLS 在 Cloudflare 等前端終止，維持 `false`。
+- HTTPS：把涵蓋 `APP_HOSTNAME` 的 `fullchain.pem`、`privkey.pem` 放進 `nginx/certs/`，設 `HTTPS_ENABLED=true` 並把 origin 改成 `https://`。若 TLS 在 Cloudflare 等前端終止，維持 `false`。
 - Web Push：`VAPID_*`（`npx web-push generate-vapid-keys`）。手機推播需要 HTTPS，iOS 需先加入主畫面。
 
-## Aldine（協作 LaTeX）
+## LaTeX
 
-- 兩種掛法（擇一）：
-  - 獨立主機名（建議，與 Hub 隔離）：`LATEX_HOSTNAME=latex.<網域>`、`LATEX_ORIGIN=https://latex.<網域>`。只有 IP 時可用 `latex.<IP>.nip.io`；`latex.localhost` 只在伺服器本機有效。
-  - Hub 網址下的路徑（目前正式站的做法，不需額外 DNS）：`LATEX_PATH=/latex`、`LATEX_ORIGIN=https://<網域>/latex`。Aldine 與 Hub 同源，若 Aldine 有 XSS 漏洞可冒用登入中的 Hub 使用者（已接受的風險）；nginx 會移除轉給 Aldine 的 `hub_session` cookie。
-- 反向代理需轉送 WebSocket（`Upgrade`／`Connection` 標頭），否則即時協作無法同步。
-- Aldine 沒有邀請制：建立帳號的網址受 nginx Basic Auth 保護（帳號 `owner`，密碼 `LATEX_REGISTER_PASSWORD`）。
-- 帳號只開給實驗室成員：Aldine 使用者之間可以讀到彼此的專案檔案（上游限制，已接受）。不要放保密稿件。
-- 編譯 image 約 8 GB（TeX Live＋Noto CJK），請預留磁碟。評估細節見 [`docs/aldine-evaluation.md`](docs/aldine-evaluation.md)。
+每個研究的「LaTeX」分頁是內建的協作 LaTeX 編輯器（多人即時共編），由隔離的 `latex-runner` 編譯（TeX Live＋Noto CJK，無對外網路）。可匯入 Overleaf 等 LaTeX 專案的 ZIP。v2 的 Aldine 已移除。
 
 ## 簡報
 
@@ -65,7 +57,7 @@ scripts/staging.sh reset   # 停止並刪除 staging 資料（會再確認一次
 
 ## 備份與 v1 資料
 
-- `scripts/backup.sh [compose 專案名]`：PostgreSQL dump＋RustFS bucket 鏡像＋Aldine volumes，寫到 `backups/<時間>/`。
+- `scripts/backup.sh [compose 專案名]`：PostgreSQL dump＋RustFS bucket 鏡像，寫到 `backups/<時間>/`。
 - `scripts/export-legacy.sh <v1 專案名>`：在執行 v1 的主機上把舊資料（DB dump、每則筆記一個 Markdown、錄音、簡報）匯出到 `legacy-export/<時間>/`。v2 不匯入舊資料。
 
 ## 開發

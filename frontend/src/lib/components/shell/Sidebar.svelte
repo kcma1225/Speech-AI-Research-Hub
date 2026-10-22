@@ -3,7 +3,7 @@
   import { Tooltip } from "bits-ui";
   import type { Snippet } from "svelte";
   import { ArrowUpRight, PanelLeftClose, PanelLeftOpen } from "@lucide/svelte";
-  import { canSee, hrefOf as resolveHref, isActive, manageNav, workspaceNav, type NavItem } from "#lib/nav.ts";
+  import { canSee, isActive, manageNav, workspaceNav, type NavItem } from "#lib/nav.ts";
   import { session } from "#lib/stores/session.svelte.ts";
   import { isSidebarShortcut, sidebar } from "#lib/stores/sidebar.svelte.ts";
   import { viewport } from "#lib/media.svelte.ts";
@@ -13,8 +13,7 @@
   import JobsWidget from "./JobsWidget.svelte";
   import JobsRail from "./JobsRail.svelte";
 
-  const visible = (item: NavItem) => canSee(item, session.user, session.config);
-  const hrefOf = (item: NavItem) => resolveHref(item, session.config);
+  const visible = (item: NavItem) => canSee(item, session.user);
   const collapsed = $derived(sidebar.collapsed);
   const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
   const toggleLabel = $derived(collapsed ? t("nav.expand") : t("nav.collapse"));
@@ -55,7 +54,7 @@
   {#snippet anchor(props: Record<string, unknown>)}
     <a
       {...props}
-      href={hrefOf(item)}
+      href={item.href}
       target={item.external ? "_blank" : undefined}
       rel={item.external ? "noopener noreferrer" : undefined}
       aria-current={active ? "page" : undefined}

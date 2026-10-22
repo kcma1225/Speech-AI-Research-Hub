@@ -2,9 +2,9 @@ import { createHash, createPublicKey, randomBytes, verify, type JsonWebKey } fro
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestContext, hasTestDb, ORIGIN, type TestContext } from "./helpers.js";
 
-const CLIENT_ID = "aldine";
+const CLIENT_ID = "test-client";
 const SECRET = "s".repeat(20) + randomBytes(16).toString("hex");
-const REDIRECT = "https://latex.hub.test/latex/api/auth/oauth/oidc/callback";
+const REDIRECT = "https://client.hub.test/oauth/callback";
 const ISSUER = `${ORIGIN}/api/oidc`;
 
 const b64url = (value: Buffer) => value.toString("base64url");
@@ -29,7 +29,7 @@ function verifyJwt(token: string, keys: JsonWebKey[]): Record<string, unknown> |
 describe.skipIf(!hasTestDb)("oidc provider", () => {
   let t: TestContext;
   beforeAll(async () => {
-    t = await createTestContext({ LATEX_OIDC_CLIENT_ID: CLIENT_ID, LATEX_OIDC_CLIENT_SECRET: SECRET, LATEX_OIDC_REDIRECT_URIS: REDIRECT });
+    t = await createTestContext({ OIDC_CLIENT_ID: CLIENT_ID, OIDC_CLIENT_SECRET: SECRET, OIDC_REDIRECT_URIS: REDIRECT });
   });
   afterAll(async () => {
     await t?.close();

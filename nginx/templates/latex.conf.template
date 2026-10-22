@@ -1,5 +1,0 @@
-server {
-    listen 80;
-    server_name ${LATEX_HOSTNAME};
-    include /etc/nginx/conf.d/latex-locations.inc;
-}

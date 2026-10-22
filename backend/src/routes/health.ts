@@ -18,7 +18,6 @@ const health: FastifyPluginAsync = async app => {
 
   /** Public client config for the SPA. */
   app.get("/config", async () => ({
-    latexUrl: app.config.LATEX_URL || null,
     pushPublicKey: app.config.VAPID_PUBLIC_KEY || null,
   }));
 };

@@ -360,6 +360,28 @@ export async function deleteWorkflow(app: FastifyInstance, user: CurrentUser, id
   await app.db.query("DELETE FROM workflow_runs WHERE id=$1", [id]);
 }
 
+/** What still runs for a conversation: its assistant turn and its unfinished workflows (the delete warning). */
+export async function conversationActivity(db: Queryable, conversationId: string) {
+  const assistant = Boolean((await db.query("SELECT 1 FROM agent_runs WHERE conversation_id=$1 AND status IN ('running','awaiting_approval','awaiting_llm') LIMIT 1", [conversationId])).rowCount);
+  const workflows = (await db.query<{ id: string; title: string; status: string }>(
+    "SELECT id, title, status FROM workflow_runs WHERE conversation_id=$1 AND status <> ALL($2::text[]) ORDER BY created_at",
+    [conversationId, FINISHED_STATUSES],
+  )).rows;
+  return { assistant, workflows };
+}
+
+/**
+ * Deleting a conversation removes its workflows too: unfinished ones are stopped first (a running job sees the cancel
+ * on its next heartbeat), then every run of the conversation is deleted. Drafts they already wrote (decks, notes) stay.
+ */
+export async function deleteConversationWorkflows(app: FastifyInstance, user: CurrentUser, conversationId: string) {
+  const rows = (await app.db.query<{ id: string; status: RunRow["status"] }>("SELECT id, status FROM workflow_runs WHERE conversation_id=$1 AND user_id=$2", [conversationId, user.id])).rows;
+  for (const r of rows) if (!FINISHED_STATUSES.includes(r.status)) await cancelWorkflow(app, user, r.id).catch(() => undefined);
+  if (rows.length) await app.db.query("DELETE FROM workflow_runs WHERE id = ANY($1::uuid[])", [rows.map((r) => r.id)]);
+  await promoteQueued(app.db, user.id).catch(() => undefined);
+  return rows.length;
+}
+
 export async function publishWorkflowDeck(app: FastifyInstance, user: CurrentUser, id: string) {
   const r = await ownRun(app.db, user, id);
   if (r.playbook !== "slides") throw badRequest("只有簡報工作流程可以發布。");

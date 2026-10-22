@@ -21,10 +21,6 @@ services:
       APP_HOSTNAME: ${APP_HOSTNAME:-localhost}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
-      # Optional Aldine LaTeX editor (profile `latex`): own hostname or a path; both empty disables it.
-      LATEX_HOSTNAME: ${LATEX_HOSTNAME:-}
-      LATEX_PATH: ${LATEX_PATH:-}
-      LATEX_REGISTER_PASSWORD: ${LATEX_REGISTER_PASSWORD:-}
     volumes:
       - ./nginx/certs:/etc/nginx/certs:ro
     networks: [edge]
@@ -58,11 +54,10 @@ services:
       S3_BUCKET: ${S3_BUCKET:-hub}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in .env}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY in .env}
-      LATEX_URL: ${LATEX_ORIGIN:-}
-      # OIDC provider for Aldine (issuer <APP_ORIGIN>/api/oidc); off unless client id + secret are set.
-      LATEX_OIDC_CLIENT_ID: ${LATEX_OIDC_CLIENT_ID:-}
-      LATEX_OIDC_CLIENT_SECRET: ${LATEX_OIDC_CLIENT_SECRET:-}
-      LATEX_OIDC_REDIRECT_URIS: ${LATEX_OIDC_REDIRECT_URIS:-}
+      # OIDC provider (issuer <APP_ORIGIN>/api/oidc, kept for future MCP OAuth); off unless all three are set.
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URIS: ${OIDC_REDIRECT_URIS:-}
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
@@ -266,98 +261,14 @@ services:
     restart: unless-stopped
     logging: *logging
 
-  # --- Optional: Aldine collaborative LaTeX editor (`docker compose --profile latex up -d`). ---
-  # Served by nginx on LATEX_HOSTNAME or under LATEX_PATH. Evaluation and accepted risks: docs/aldine-evaluation.md.
-  latex-app:
-    profiles: ["latex"]
-    image: ghcr.io/trahloff/aldine-app:0.12.3
-    environment:
-      DATA_DIR: /data
-      META_DIR: /secrets
-      COMPILER_URL: http://latex-compiler:4020
-      AUTH_ENABLED: "1"
-      # Public URL with scheme; https:// also turns on Secure cookies.
-      ALDINE_PUBLIC_URL: ${LATEX_ORIGIN:-http://latex.localhost}
-      ALDINE_ADMIN_EMAILS: ${LATEX_ADMIN_EMAILS:-}
-      TRUST_PROXY: "1"
-      # Root fs is read-only; the default cache dir (/srv/.cache) is not writable (verified: boot fails without this).
-      CACHE_DIR: /tmp/aldine-cache
-      # SSO from the hub (backend is the OIDC provider): LATEX_OIDC_ISSUER=<APP_ORIGIN>/api/oidc plus the same
-      # client id/secret as the backend; LATEX_SSO_ONLY=1 turns password login/registration off.
-      ALDINE_SSO_ONLY: ${LATEX_SSO_ONLY:-}
-      OIDC_ISSUER: ${LATEX_OIDC_ISSUER:-}
-      OIDC_CLIENT_ID: ${LATEX_OIDC_CLIENT_ID:-}
-      OIDC_CLIENT_SECRET: ${LATEX_OIDC_CLIENT_SECRET:-}
-      OIDC_LABEL: ${LATEX_OIDC_LABEL:-Speech-AI Hub}
-    volumes:
-      - latex_data:/data
-      - latex_secrets:/secrets
-    # edge: reachable by nginx, plus outbound access for DOI/arXiv/Zotero lookups.
-    # latex: private link to the compiler.
-    networks: [edge, latex]
-    init: true
-    read_only: true
-    tmpfs: ["/tmp:size=256m"]
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    mem_limit: 1g
-    pids_limit: 256
-    depends_on:
-      latex-compiler:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 8
-      start_period: 30s
-    stop_grace_period: 30s
-    restart: unless-stopped
-    logging: *logging
-
-  latex-compiler:
-    profiles: ["latex"]
-    # Upstream compiler + Noto CJK (TC/SC/JP/KR); upstream ships only Fandol, which lacks Traditional glyphs (e.g. 週).
-    build:
-      context: ./deploy/aldine
-      dockerfile: compiler.Dockerfile
-    image: speech-hub/aldine-compiler-tc:0.12.3
-    platform: linux/amd64
-    environment:
-      DATA_DIR: /data
-      COMPILE_TIMEOUT_MS: "120000"
-      MAX_CONCURRENT_COMPILES: "2"
-    volumes:
-      - latex_data:/data
-    # Internal-only network: no route to the internet (verified: DNS resolution fails).
-    networks: [latex]
-    init: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    mem_limit: 2g
-    cpus: 2
-    pids_limit: 256
-    healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4020/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 20s
-    restart: unless-stopped
-    logging: *logging
-
 networks:
   edge: {}
   internal:
     internal: true
   jobs:
     internal: true
-  latex:
-    internal: true
 
 volumes:
   pgdata:
   rustfsdata:
   latex_cache:
-  latex_data:
-  latex_secrets:

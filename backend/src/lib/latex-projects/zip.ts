@@ -1,5 +1,5 @@
 /**
- * ZIP import (Overleaf / Aldine / any LaTeX folder exported as ZIP) and the pure heuristics it needs: the root file
+ * ZIP import (Overleaf or any LaTeX folder exported as ZIP) and the pure heuristics it needs: the root file
  * (`\documentclass` + `\begin{document}` outside comments; conventional names first) and the compiler (magic
  * comment or packages that need XeLaTeX/LuaLaTeX). Files are kept as they are (no splitting).
  */
@@ -10,6 +10,7 @@ import type { LatexCompiler } from "../latex/contract.js";
 import { isSafeProjectPath } from "../latex/contract.js";
 import { isBlockedPath, MAX_BINARY_BYTES, MAX_FILES, MAX_TEXT_BYTES } from "./store.js";
 
+// `.aldine-out`: build output in project exports from the retired v2 Aldine editor.
 const SKIPPED_DIRS = new Set([".git", "__MACOSX", "node_modules", ".out", ".aldine-out", "_minted"]);
 const SKIPPED_FILES = new Set([".DS_Store", "Thumbs.db", "desktop.ini"]);
 /** Build products that must not become project files (latexmk recreates them). */

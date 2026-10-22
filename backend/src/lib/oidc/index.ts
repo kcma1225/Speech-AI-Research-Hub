@@ -3,7 +3,7 @@ import type { Config } from "../../config.js";
 import type { Db } from "../../db.js";
 
 /**
- * Minimal OpenID Connect provider for one first-party client (Aldine). See docs/architecture.md "OIDC provider".
+ * Minimal OpenID Connect provider for one first-party client (kept for future MCP OAuth). See docs/architecture.md "OIDC provider".
  * Issuer = `<APP_ORIGIN>/api/oidc`, so every endpoint (incl. discovery) is under nginx's `/api/` proxy.
  */
 
@@ -14,9 +14,8 @@ export const CODE_TTL_SECONDS = 60;
 export const ACCESS_TOKEN_TTL_SECONDS = 300;
 export const ID_TOKEN_TTL_SECONDS = 300;
 /**
- * Hub users have no email. Aldine needs one for admins (ALDINE_ADMIN_EMAILS) and for inviting collaborators, so
- * we emit `<hub user id>@<domain>`: stable across renames, unique per user, and `.invalid` (RFC 6761) can never
- * receive mail or belong to anyone else.
+ * Hub users have no email. Clients that key accounts on an address get `<hub user id>@<domain>`: stable across
+ * renames, unique per user, and `.invalid` (RFC 6761) can never receive mail or belong to anyone else.
  */
 export const SYNTHETIC_EMAIL_DOMAIN = "users.speech-ai-hub.invalid";
 export const syntheticEmail = (userId: string) => `${userId}@${SYNTHETIC_EMAIL_DOMAIN}`;
@@ -25,12 +24,10 @@ export type OidcClient = { clientId: string; secret: string; redirectUris: strin
 
 /** The configured client, or null when the provider is off. */
 export function oidcClient(config: Config): OidcClient | null {
-  if (!config.LATEX_OIDC_CLIENT_ID || !config.LATEX_OIDC_CLIENT_SECRET) return null;
-  const explicit = config.LATEX_OIDC_REDIRECT_URIS.split(",").map(uri => uri.trim()).filter(Boolean);
-  const derived = config.LATEX_URL ? [`${config.LATEX_URL.replace(/\/+$/, "")}/api/auth/oauth/oidc/callback`] : [];
-  const redirectUris = (explicit.length ? explicit : derived).filter(isAbsoluteHttpUrl);
+  if (!config.OIDC_CLIENT_ID || !config.OIDC_CLIENT_SECRET) return null;
+  const redirectUris = config.OIDC_REDIRECT_URIS.split(",").map(uri => uri.trim()).filter(Boolean).filter(isAbsoluteHttpUrl);
   if (!redirectUris.length) return null;
-  return { clientId: config.LATEX_OIDC_CLIENT_ID, secret: config.LATEX_OIDC_CLIENT_SECRET, redirectUris };
+  return { clientId: config.OIDC_CLIENT_ID, secret: config.OIDC_CLIENT_SECRET, redirectUris };
 }
 
 function isAbsoluteHttpUrl(value: string) {
@@ -81,9 +78,8 @@ export function userClaims(user: { id: string; name: string; username: string },
   return {
     sub: user.id,
     ...(scopes.has("profile") ? { name: user.name, preferred_username: user.username } : {}),
-    // email_verified: Aldine (OIDC_EMAIL_VERIFIED=require) ignores unverified addresses. Safe because the
-    // address is synthetic: nobody can receive mail there, and Aldine never links an SSO identity to a
-    // password account or to another subject that merely shares the address.
+    // email_verified: some clients ignore unverified addresses. Safe because the address is synthetic and
+    // unique per subject: nobody can receive mail there or share it with another account.
     ...(scopes.has("email") ? { email: syntheticEmail(user.id), email_verified: true } : {}),
   };
 }

@@ -120,7 +120,7 @@ The sandbox sees only:
 
 There is no `/proc`, no `/etc/passwd`, no `/app` (runner code), no other project and no environment
 from the runner (`--clearenv`: database and S3 credentials never reach TeX). kpathsea's
-`openin_any = a` therefore cannot read anything sensitive, which also fixes Aldine's cross-project read.
+`openin_any = a` therefore cannot read anything sensitive, so one project can never read another project's files.
 
 Inside the sandbox a seccomp filter (`src/seccomp-bpf.ts`, passed with `--seccomp 3`) blocks new
 namespaces (clone with `CLONE_NEW*`, unshare, setns), every mount syscall, ptrace, bpf, perf,

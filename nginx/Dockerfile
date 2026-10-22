@@ -11,8 +11,6 @@ COPY csp-hashes.mjs /tmp/csp-hashes.mjs
 RUN node /tmp/csp-hashes.mjs build/index.html > /src/script-hashes
 
 FROM nginx:1.27.5-alpine
-# openssl hashes LATEX_REGISTER_PASSWORD into an htpasswd file at start.
-RUN apk add --no-cache openssl
 RUN rm -f /etc/nginx/conf.d/default.conf
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY templates/ /etc/nginx/hub-templates/

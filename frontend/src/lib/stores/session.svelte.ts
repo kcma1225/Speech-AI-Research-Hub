@@ -10,7 +10,7 @@ import type { ClientConfig, CurrentUser, Locale, Preferences, ThemePref } from "
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
 
 let user = $state<CurrentUser | null>(null);
-let config = $state<ClientConfig>({ latexUrl: null, pushPublicKey: null });
+let config = $state<ClientConfig>({ pushPublicKey: null });
 let loaded = $state(false);
 
 function adopt(next: CurrentUser | null) {

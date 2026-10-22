@@ -65,7 +65,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
   const expectedOrigin = new URL(deps.config.APP_ORIGIN).origin;
   app.addHook("onRequest", async (request, reply) => {
     if (!UNSAFE_METHODS.has(request.method)) return;
-    // Aldine's server calls the OIDC token endpoint without our Origin. It authenticates with the client
+    // OIDC clients call the token endpoint server-to-server, without our Origin. It authenticates with the client
     // secret and never reads cookies, so there is nothing to forge; only this exact route is exempt.
     if (request.method === "POST" && request.routeOptions.url === OIDC_TOKEN_ROUTE) return;
     // MCP (routes/mcp.ts) authenticates with a bearer token only (never the cookie) and checks Origin itself.

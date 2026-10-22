@@ -59,38 +59,5 @@ else
   envsubst "$vars" </etc/nginx/hub-templates/http.conf.template >"$out/http.conf"
 fi
 
-# Optional Aldine LaTeX editor (compose profile `latex`): on its own hostname (LATEX_HOSTNAME, isolated) or
-# under a path of the hub origin (LATEX_PATH, same-origin: accepted risk, see docs/aldine-evaluation.md).
-LATEX_HOSTNAME="${LATEX_HOSTNAME:-}"
-LATEX_PATH="${LATEX_PATH:-}"
-[ -z "$LATEX_HOSTNAME" ] || [ -z "$LATEX_PATH" ] || { echo 'Set LATEX_HOSTNAME or LATEX_PATH, not both' >&2; exit 1; }
-if [ -n "$LATEX_HOSTNAME$LATEX_PATH" ]; then
-  : "${LATEX_REGISTER_PASSWORD:?LATEX_REGISTER_PASSWORD required when LaTeX is enabled}"
-  printf 'owner:%s\n' "$(openssl passwd -apr1 "$LATEX_REGISTER_PASSWORD")" >"$out/latex-register.htpasswd"
-  chmod 640 "$out/latex-register.htpasswd" && chgrp nginx "$out/latex-register.htpasswd"
-  cp /etc/nginx/snippets/latex-maps.conf "$out/latex-maps.conf"
-fi
-if [ -n "$LATEX_PATH" ]; then
-  case "$LATEX_PATH" in /*) ;; *) echo 'LATEX_PATH must start with /' >&2; exit 1;; esac
-  case "${LATEX_PATH#/}" in ''|*[!a-z0-9-]*) echo 'LATEX_PATH must be one segment of a-z, 0-9, -' >&2; exit 1;; esac
-  case "$LATEX_PATH" in /api|/_app) echo 'LATEX_PATH collides with a hub path' >&2; exit 1;; esac
-  export LATEX_PATH
-  # Appended to the hub server's locations (locations.inc is included by http.conf / https.conf).
-  envsubst '${LATEX_PATH}' </etc/nginx/hub-templates/latex-path-locations.conf.template >>"$out/locations.inc"
-elif [ -n "$LATEX_HOSTNAME" ]; then
-  case "$LATEX_HOSTNAME" in *[!a-zA-Z0-9.:-]*) echo 'Invalid LATEX_HOSTNAME' >&2; exit 1;; esac
-  [ "$LATEX_HOSTNAME" != "$APP_HOSTNAME" ] || { echo 'LATEX_HOSTNAME must differ from APP_HOSTNAME' >&2; exit 1; }
-  export LATEX_HOSTNAME
-  latex_vars='${LATEX_HOSTNAME} ${HSTS_HEADER}'
-  envsubst "$latex_vars" </etc/nginx/hub-templates/latex-locations.conf.template >"$out/latex-locations.inc"
-  if [ "$HTTPS_ENABLED" = true ]; then
-    envsubst "$latex_vars" </etc/nginx/hub-templates/latex-https.conf.template >"$out/latex.conf"
-    # The port-80 server above redirects only APP_HOSTNAME; redirect the LaTeX host too.
-    printf 'server { listen 80; server_name %s; location / { return 308 https://$host$request_uri; } }\n' "$LATEX_HOSTNAME" >>"$out/latex.conf"
-  else
-    envsubst "$latex_vars" </etc/nginx/hub-templates/latex.conf.template >"$out/latex.conf"
-  fi
-fi
-
 nginx -t
 exec nginx -g 'daemon off;'

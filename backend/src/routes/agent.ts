@@ -18,6 +18,7 @@ import memories from "./memories.js";
 import mcp from "./mcp.js";
 import { agentImagePrefix } from "../agent/images.js";
 import { attachmentsInput } from "../agent/attachments/index.js";
+import { conversationActivity, deleteConversationWorkflows } from "../workflows/service.js";
 
 const idParams = z.object({ id: z.uuid() });
 const uuidLike = z.string().regex(/^[0-9a-f-]{36}$/i);
@@ -194,11 +195,26 @@ export default async function agent(app: FastifyInstance) {
     return { conversation: view };
   });
 
-  app.delete("/agent/conversations/:id", async (request) => {
+  // What still runs for the conversation (the delete dialog warns about it).
+  app.get("/agent/conversations/:id/activity", async (request) => {
     const user = await requireUser(request);
     const { id } = parse(idParams, request.params, "找不到這個對話。");
     await ownConversation(app, user.id, id);
+    return conversationActivity(app.db, id);
+  });
+
+  app.delete("/agent/conversations/:id", async (request) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params, "找不到這個對話。");
+    const { stop_agents } = parse(z.object({ stop_agents: z.enum(["1", "true"]).optional() }), request.query);
+    await ownConversation(app, user.id, id);
+    // Agents still running: refuse unless the caller confirmed stopping them (the dialog showed the warning).
+    const activity = await conversationActivity(app.db, id);
+    if (!stop_agents && (activity.assistant || activity.workflows.length)) {
+      throw new HttpError(409, `這個對話還有 ${activity.workflows.length ? `${activity.workflows.length} 個 Agent 工作流程` : "AI 回覆"}正在進行；刪除對話會一併停止並刪除它們。`, { code: "active_agents" });
+    }
     await runtime.cancel(user, id).catch(() => undefined);
+    await deleteConversationWorkflows(app, user, id);
     await app.db.query("DELETE FROM conversations WHERE id=$1 AND user_id=$2", [id, user.id]);
     // Page images shown to the model (view_paper_pages).
     await app.storage.deletePrefix(agentImagePrefix(id)).catch((e) => request.log.warn({ err: e }, "agent image cleanup failed"));

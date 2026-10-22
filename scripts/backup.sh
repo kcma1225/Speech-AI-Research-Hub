@@ -1,5 +1,5 @@
 #!/bin/sh
-# Backs up the running v2 stack into backups/<UTC timestamp>/: a PostgreSQL dump and a mirror of the
+# Backs up the running stack into backups/<UTC timestamp>/: a PostgreSQL dump and a mirror of the
 # RustFS bucket. Run from the repo root host: scripts/backup.sh [compose project name]
 set -eu
 cd "$(dirname "$0")/.."
@@ -32,15 +32,5 @@ docker run --rm --network "$network" \
   -v "$PWD/$out/objects:/backup" --user "$(id -u):$(id -g)" \
   amazon/aws-cli:2.31.0 --endpoint-url http://rustfs:9000 s3 sync "s3://$bucket" /backup --only-show-errors
 
-# Aldine (profile `latex`) keeps projects (git repos) and its own secrets/database in two volumes.
-for volume in latex_data latex_secrets; do
-  if docker volume inspect "${project}_${volume}" >/dev/null 2>&1; then
-    echo "Archiving volume $volume…"
-    docker run --rm -v "${project}_${volume}:/src:ro" -v "$PWD/$out:/out" alpine:3.22 \
-      tar -C /src -czf "/out/${volume}.tar.gz" .
-  fi
-done
-
 echo "Backup written to $out"
-echo "Restore: Aldine volumes: stop latex-app/latex-compiler, then untar into the volumes."
 echo "Restore: pg_restore --clean -d $db_name < db.dump; aws s3 sync objects/ s3://$bucket"
