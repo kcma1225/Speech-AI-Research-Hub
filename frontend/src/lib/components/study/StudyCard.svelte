@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Check, Flag, ListTodo } from "@lucide/svelte";
-  import { relativeTime, t } from "#lib/i18n.svelte.ts";
+  import { i18n, relativeTime, t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
   import Pill from "#lib/components/ui/Pill.svelte";
@@ -16,6 +16,7 @@
   const people = $derived(study.members.filter(m => m.role !== "advisor"));
   const advisors = $derived(study.members.filter(m => m.role === "advisor"));
   const owner = $derived(ownerOf(study.members));
+  const advisorNames = $derived(advisors.map(a => displayName(a, "formal")).join(i18n.locale === "en" ? ", " : "、"));
 </script>
 
 <a
@@ -67,7 +68,7 @@
     <div class="flex min-w-0 items-center gap-2">
       <AvatarStack people={people} size={26} />
       {#if advisors.length}
-        <span class="min-w-0 truncate text-[12px] text-ink-3" title={advisors.map(a => a.name).join("、")}>· {advisors.map(a => a.name).join("、")}</span>
+        <span class="min-w-0 truncate text-[12px] text-ink-3" title={advisorNames}>· {advisorNames}</span>
       {/if}
     </div>
     <span class="flex shrink-0 items-center gap-3 text-[12px] text-ink-3">

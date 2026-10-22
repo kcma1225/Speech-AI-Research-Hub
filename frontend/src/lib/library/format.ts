@@ -10,11 +10,11 @@ export function authorName(a: PaperAuthor): string {
   return [a.given, fam, a.suffix].filter(Boolean).join(" ").trim();
 }
 
-/** "Gulati, Qin, Chiu et al." (max `n` names). */
+/** "Gulati, Qin, Chiu et al." (max `n` names); CJK names stay whole ("陳柏宇", a family name alone says little). */
 export function authorsShort(authors: PaperAuthor[] | undefined, n = 3): string {
   const list = authors ?? [];
   if (!list.length) return t("library.noAuthors");
-  const names = list.slice(0, n).map(a => a.family ?? a.literal ?? a.given ?? "").filter(Boolean);
+  const names = list.slice(0, n).map(a => (a.family && CJK.test(a.family) ? authorName(a) : a.family ?? a.literal ?? a.given ?? "")).filter(Boolean);
   return names.join(", ") + (list.length > n ? " et al." : "");
 }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { Bot, Check, CheckCheck, Sparkles, User, X } from "@lucide/svelte";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
@@ -34,7 +35,7 @@
         <span class="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full bg-surface-2 text-ink-2"><Icon class="size-3.5" /></span>
         <div class="min-w-0 flex-1">
           <p class="truncate text-[13.5px] font-semibold text-ink">{s.title || t("suggest.untitled")}</p>
-          <p class="text-[12px] text-ink-3">{t(`suggest.source.${s.source}`)}{s.creator_name ? ` · ${s.creator_name}` : ""} · {relativeTime(s.created_at)}</p>
+          <p class="text-[12px] text-ink-3">{t(`suggest.source.${s.source}`)}{s.creator_name ? ` · ${displayName(s.creator_name)}` : ""} · {relativeTime(s.created_at)}</p>
         </div>
         <Pill size="sm" tone={open ? "butter" : "stone"}>{t("suggest.left", { n: open })}</Pill>
       </header>

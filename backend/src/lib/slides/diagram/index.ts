@@ -10,6 +10,7 @@ import { COMPACT, KIND_STYLE, LARGE, NORMAL, sceneBox, sceneMinFont, type Box, t
 import { parseDiagram, type DiagramSpec, type DLegend } from "./spec.js";
 import { fitText, plainLabel, type TextBlock } from "./text.js";
 import { flame, snowflake } from "./icons.js";
+import { visualFit } from "../deck-layout.js";
 
 export { parseDiagram, DIAGRAM_SPEC_HELP, type DiagramSpec } from "./spec.js";
 
@@ -219,11 +220,11 @@ export const diagramBlocks = (body: string): DiagramBlock[] => [...body.matchAll
 
 export const diagramFileName = (source: string, fit: Fit) => `diagrams/diagram-${createHash("sha256").update(`${source}\n${Math.round(fit.w)}x${Math.round(fit.h)}\nv1`).digest("hex").slice(0, 12)}.svg`;
 
-/** Lint of every ```diagram block (spec problems; rendering problems included). */
+/** Lint of every ```diagram block (spec problems; rendering problems included), laid out for the box it gets on its slide. */
 export function lintDiagrams(body: string): string[] {
   const out: string[] = [];
   diagramBlocks(body).forEach((b, i) => {
-    const { problems } = diagramFromSource(b.source);
+    const { problems } = diagramFromSource(b.source, visualFit(body, b.start, b.end));
     for (const p of problems) out.push(`第 ${i + 1} 張 diagram：${p}`);
   });
   return out;

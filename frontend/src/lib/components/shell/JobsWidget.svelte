@@ -57,7 +57,7 @@
             {#if active}
               <div class="mt-1.5 flex items-center gap-2 pl-8">
                 <Progress value={job.status === "queued" ? null : job.progress} label={job.label} class="flex-1" />
-                <span class="w-14 truncate text-right text-[11px] text-ink-3">{job.status === "queued" ? t("jobs.queued") : stageLabel(job.stage)}</span>
+                <span class="w-14 truncate text-right text-[11px] text-ink-3">{job.status === "queued" && job.stage !== "waiting_llm" ? t("jobs.queued") : stageLabel(job.stage)}</span>
               </div>
             {:else}
               <p class="mt-0.5 pl-8 text-[11px] text-ink-3">{job.status === "succeeded" ? t("jobs.done") : job.status === "failed" ? t("jobs.failed") : t("jobs.cancelled")}</p>

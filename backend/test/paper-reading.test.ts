@@ -292,7 +292,7 @@ run("paper reading tools", () => {
     await send(c2, "做一份進度報告", prof);
     const s2 = await state(c2, prof);
     expect(s2.toolCalls[0].status).toBe("failed");
-    expect(s2.toolCalls[0].error).toContain("不是〈語音情緒辨識〉的成員");
+    expect(s2.toolCalls[0].error).toContain("〈語音情緒辨識〉的指導教授");
   });
 
   it("「整理成筆記」 sends the task with the conversation; the note keeps the user's questions", async () => {

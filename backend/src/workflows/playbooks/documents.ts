@@ -14,7 +14,7 @@ import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { STEP_ROLES, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRole, type StepRow, type StepSpec } from "../types.js";
-import { clipText, depOutputs, paperOf, resolveStudy, systemFor, taskPrompt } from "./common.js";
+import { clipText, depOutputs, paperOf, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
 import { AI_FILLED_MARK, askStudentView, isAiFilled } from "../student-input.js";
 import { ensurePaperPdf } from "../paper-pdf.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
@@ -32,7 +32,7 @@ const PART_CHECKS: CheckSpec[] = [{ id: "min_length", params: { chars: 150 } }, 
 
 async function studyOrQuestion(env: WorkflowEnv): Promise<StudyAccess | { question: string }> {
   const access = await resolveStudy(env);
-  if (!access) return { question: "要在哪個研究進行？請在補充指示寫研究名稱，或從研究頁面再按一次「交給 Agent」。" };
+  if (!access) return { question: await whichStudyQuestion(env, "這份成果") };
   if (!access.canEdit) return { question: `你不是〈${access.study.title}〉的成員，工作流程不能在這裡建立筆記。請指定你參與的研究。` };
   return access;
 }

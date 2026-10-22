@@ -9,15 +9,18 @@
 import { randomUUID } from "node:crypto";
 import { transaction } from "../../db.js";
 import { MAX_CROP_PAGE_WIDTH, renderPdfPages } from "../../lib/library/page-images.js";
-import { locateFigureByLayout } from "../../lib/library/figure-locate.js";
+import { figureRefOf, locateFigureByLayout } from "../../lib/library/figure-locate.js";
 import { CHART_MIN_FONT, chartBlocks, chartFileName, DECK_CSS, figureFileName, figureRefs, normalizeDiagrams, renderDeckChartSvg, replaceRanges, withMermaidInit, type FigureRef } from "../../lib/slides/deck-visuals.js";
-import { DIAGRAM_SPEC_HELP, diagramBlocks, diagramFileName, diagramFromSource } from "../../lib/slides/diagram/index.js";
+import { DIAGRAM_SPEC_HELP, diagramBlocks, diagramFileName, diagramFromSource, parseDiagram } from "../../lib/slides/diagram/index.js";
+
+/** Titles of result / ablation pages (they must show the paper's numbers). */
+export const RESULTS_TITLE_RE = /\b(main results?|results?|ablations?|key figure|evaluation)\b|主要結果|實驗結果|結果|消融/i;
 import { visualFit } from "../../lib/slides/deck-layout.js";
 import { mermaidCellsToDiagrams } from "../../lib/slides/diagram/mermaid.js";
 import { listFiles, saveBinary, saveText, sourceKeys } from "../../lib/slides/sources.js";
 import { imageFromBuffer, type ReviewImage } from "../../lib/vision/review.js";
 import type { ChatMessage, ImageBlock, TextBlock } from "../../ai/types.js";
-import { hasVisual, parseSlides, titleMatches, visibleWords } from "../checks.js";
+import { hasVisual, parseSlides, SLIDE_MISSING_RE, titleMatches, visibleWords } from "../checks.js";
 import { parseJson } from "../llm.js";
 import type { WorkflowEnv } from "../env.js";
 
@@ -28,12 +31,14 @@ export const VISUAL_RULES = `視覺優先的投影片規則（一定要遵守）
 - 流程圖、架構圖、比較圖、循環、時間軸、分類樹一律用 \`\`\`diagram（系統會排版成學術風格的 SVG，文字一定放得下框）；不要用 Mermaid。
 ${DIAGRAM_SPEC_HELP}
 - 架構頁（Architecture／方法總覽）：研究摘要「圖表清單」裡有論文自己的架構圖（type architecture／method）時，優先放那張圖（paper-fig，整頁寬或版型 E）；\`\`\`diagram 用來畫簡化版或流程（Training／Inference 頁用同一套節點名稱）。
+- 結果頁（Main results／Ablation）一定要有論文的實際數字：\`\`\`chart 畫主要比較（照論文的表），或直接放論文的表（圖表清單裡的 Table N，paper-fig）；不能只有定性描述。
+- \`\`\`diagram 不是文字框：comparison 只用來對照兩種方法的流程，每一格是元件或步驟（≤ 3 個字，例如 "Encoder"、"Inject at layer 6"），不要放句子或主張（主張寫在 .takeaway）。
 - 有數字比較時用 \`\`\`chart（JSON，數字必須逐字來自資料並標 source）：
   {"type":"bar|hbar|line|scatter|heatmap","title":"短標題","labels":["A","B"],"series":[{"name":"WER","data":[3.1,2.4]}],"y_label":"WER (%)","best":"min|max","unit":"%","source":"Table 2"}
   grouped bar = 多個 series；heatmap 用 "rows":[…],"labels":[欄],"values":[[…],[…]]。同一組數字只用一種呈現：圖表或表格，不要兩個都放。
 - 圖表與 diagram 放整頁寬最清楚；放進欄位（.column）時欄寬至少 55%，否則字會太小。
-- 論文的圖或表：![Fig. 2: 一句說明 (p. 4)](paper-fig:<頁碼>@<上緣>-<下緣>)，上下緣是該圖在頁面高度的比例（0–1，例如 0.08-0.52）；只用研究摘要「圖表清單」裡列出的圖，圖說保留「Fig. N」或「Table N」（系統用它精準找出圖的範圍）。
-- 表格 ≤ 5 列 × 5 欄，最好的數字用 **粗體**。
+- 論文的圖或表（一頁最多一張）：![Fig. 2: 一句說明 (p. 4)](paper-fig:<頁碼>@<上緣>-<下緣>)，上下緣是該圖在頁面高度的比例（0–1，例如 0.08-0.52）；只用研究摘要「圖表清單」裡列出的圖，圖說保留「Fig. N」或「Table N」（系統用它精準找出圖的範圍）。
+- 表格 ≤ 5 列 × 5 欄，最好的數字用 **粗體**；每一格都要有資料裡的數字或內容。投影片上絕對不要寫「資料未提供」「N/A」或空格子：沒有資料的列、欄或條列直接刪掉（需要說明時寫在講稿）。
 - 一般文字不要用 LaTeX 語法（寫 N=1000，不要 N{=}1000 或 $N=1000$）；圖表 JSON 已畫出標題時，下面不要再重複寫一次標題；diagram 不要寫 title。
 - 需要逐步說明時可用 ::: {.incremental} 包住條列（漸進顯示）。
 - 從下列版型挑一個最適合的（每頁的版型可以不同）：
@@ -255,7 +260,7 @@ export const RUBRIC = ["readability", "crowding", "layout", "visual", "diagrams"
 export type PageScore = { page: number; title: string; scores: Partial<Record<(typeof RUBRIC)[number], number>>; score: number; pass: boolean; issues: string[]; fix: string; source: "vision" | "metrics" };
 
 /** Layout thresholds (deck coordinates at 1280×800). */
-export const LAYOUT_LIMITS = { minFont: 16, maxBodyWords: 75, maxBullets: 6, overflowPx: 6, emptyBand: 0.4 };
+export const LAYOUT_LIMITS = { minFont: 16, maxBodyWords: 75, maxBullets: 6, overflowPx: 6, emptyBand: 0.35 };
 /** Vision rubric: a page passes only with every score ≥ 3, a mean ≥ 4 and no high-severity issue. */
 export const VISION_PASS = { min: 3, mean: 4 };
 
@@ -283,11 +288,17 @@ export function fixFor(issues: string[]): string {
     if (/標籤超出方框|超出方框/.test(i)) out.add("流程圖的字超出方框：改用 ```diagram（系統排版，字一定放得下），標籤 ≤ 4 個英文字，細節放 sub。");
     if (/原始碼|Syntax error|語法錯誤/.test(i)) out.add("圖沒有畫出來：改用 ```diagram JSON（照規則的範例），不要用 Mermaid。");
     if (/超出投影片/.test(i)) out.add("內容超出投影片：刪掉一個區塊（條列或結論框擇一），或把圖放在整頁寬的版型 A。");
+    if (/圖太大/.test(i)) out.add("圖太大：節點 ≤ 6 個、標籤 ≤ 3 個字（細節放 sub 或講稿），並讓圖用整頁寬（拿掉這頁的條列或只留 .takeaway）。");
     if (/字太小/.test(i)) out.add("字太小：不要把圖或圖表放在窄欄裡（改成整頁寬：版型 A／D），或減少圖的節點與圖表的類別數。");
     if (/文字太多|條列太多/.test(i)) out.add("文字太多：最多 4 條、每條 ≤ 12 個英文字，細節移到講稿。");
     if (/大片空白/.test(i)) out.add("版面太空：讓視覺元素變大（整頁寬的 ```diagram／圖表，或論文圖用整頁寬），或加一個 .takeaway 結論框；不要只放兩三行字。");
     if (/重複/.test(i)) out.add("同一組數字不要同時用圖表和表格：保留一種（比較用圖表，精確數字用表格）。");
     if (/正文|裁切|被切|截斷|座標軸|軸/.test(i)) out.add("論文圖裁切不對：調整 paper-fig 的 @上緣-下緣（只包含圖本身，不要包含正文段落；座標軸與圖例要完整），或改用 ```chart 重畫數字。");
+    if (/兩張以上的論文圖/.test(i)) out.add("一頁只放一張論文圖（整頁寬或版型 E 的 62% 欄）；另一張移到別頁，或把它的數字畫成 ```chart。");
+    if (/同一張論文圖/.test(i)) out.add("同一張論文圖不要在兩頁重複出現：這頁改用別的圖、```chart（照論文的表）或 ```diagram 呈現這頁的重點。");
+    if (/結果頁沒有論文的數字/.test(i)) out.add("結果頁要放論文的實際數字：用 ```chart 畫主要比較（數字照論文的表，標 source），或用圖表清單裡論文的 Table N（paper-fig）；不要只放文字或定性表格。");
+    if (/方框裡放的是句子/.test(i)) out.add("比較圖不要當文字框用：comparison 的每一格是元件或步驟（≤ 3 個字），主張寫在 .takeaway；沒有真的兩種流程可比時改用論文圖、圖表或 2–3 條精簡條列。");
+    if (/資料未提供/.test(i)) out.add("投影片上不要有「資料未提供」：刪掉沒有資料的那一列／欄／條列，只留有數字的比較；說明移到講稿。");
     if (/只有文字/.test(i)) out.add("這頁只有文字：改用 ```diagram、```chart、論文圖或表格（版型 A/D/E）。");
   }
   return [...out].join(" ");
@@ -296,17 +307,45 @@ export function fixFor(issues: string[]): string {
 /** Numbers of a text (normalised; integers < 10 ignored as too generic). */
 const numbersOf = (t: string) => new Set([...t.matchAll(/(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])/g)].map((m) => String(Number(m[0]))).filter((n) => n.includes(".") || Math.abs(Number(n)) >= 10));
 
-/** Source-level issues per slide title: the same numbers shown as a chart and a table on one slide. */
-export function sourceIssues(body: string): Map<string, string[]> {
+/** Source-level issues per slide title (see `sourceIssues` in docs); `paper`: paper reports (result pages need the paper's numbers). */
+export function sourceIssues(body: string, opts: { paper?: boolean } = { paper: true }): Map<string, string[]> {
   const out = new Map<string, string[]>();
+  const usedFigures = new Map<string, string>();
   for (const s of parseSlides(body)) {
     const issues: string[] = [];
+    // Two paper figures side by side on one slide shrink each to half width: their axis labels become unreadable.
+    if ((s.body.match(/\]\(paper-fig:/g) ?? []).length >= 2) issues.push("一頁放了兩張以上的論文圖（並排後圖中的字太小）");
+    // The same paper figure on two slides reads as padding: the later slide shows something else.
+    for (const m of s.body.matchAll(/!\[([^\]]*)\]\(paper-fig:(\d+)@/g)) {
+      const ref = figureRefOf(m[1]!);
+      const key = ref ? `${m[2]}:${ref.kind}${ref.num}` : null;
+      if (!key) continue;
+      const first = usedFigures.get(key);
+      if (first && first !== s.title) issues.push(`和「${first}」用了同一張論文圖（${m[1]!.slice(0, 24)}）`);
+      else usedFigures.set(key, s.title);
+    }
     const charts = [...s.body.matchAll(/^```\{?\.?chart\}?[^\n]*\n([\s\S]*?)^```/gm)].map((m) => m[1]!);
     const tables = s.body.split("\n").filter((l) => /^\s*\|.*\|\s*$/.test(l)).join("\n");
     if (charts.length && tables) {
       const cn = numbersOf(charts.join("\n"));
       const shared = [...numbersOf(tables)].filter((n) => cn.has(n));
       if (shared.length >= 2) issues.push(`同一頁的圖表與表格重複呈現相同數字（${shared.slice(0, 4).join("、")}）`);
+    }
+    if (SLIDE_MISSING_RE.test(s.body)) issues.push("投影片上寫了「資料未提供／N/A」（觀眾會看到空的格子）");
+    // Results / ablation pages show the paper's numbers: a chart, a table with numbers, or the paper's own table.
+    if (opts.paper && RESULTS_TITLE_RE.test(s.title)) {
+      const numericTable = s.body.split("\n").filter((l) => /^\s*\|.*\|\s*$/.test(l) && /\d+(?:\.\d+)?\s*%?\s*\|/.test(l)).length >= 2;
+      if (!charts.length && !numericTable && !/paper-fig:|\.hub-chart|charts\/chart-/.test(s.body)) issues.push("結果頁沒有論文的數字（沒有圖表、數字表格或論文的表）");
+    }
+    // A comparison "diagram" whose boxes hold sentences is a text slide in disguise; a diagram that only fits its
+    // slide box below 16 px would be shown shrunk (unreadable).
+    for (const d of diagramBlocks(s.body)) {
+      if (diagramFromSource(d.source, visualFit(s.body, d.start, d.end)).problems.some((p) => /太大/.test(p))) issues.push("圖太大：放進這頁的空間後字會小於 16px（請減少節點或拆成兩頁）");
+      const spec = parseDiagram(d.source).spec;
+      if (!spec || spec.type !== "comparison") continue;
+      const labels = [...spec.nodes.values()].map((n) => n.label);
+      const wordy = labels.filter((l) => l.split(/\s+/).length >= 3 || (l.match(/[\u4e00-\u9fff]/g) ?? []).length >= 8).length;
+      if (labels.length >= 3 && wordy / labels.length >= 0.5) issues.push("比較圖的方框裡放的是句子（看起來像文字框，不是圖）");
     }
     if (issues.length) out.set(s.title, issues);
   }
@@ -378,7 +417,7 @@ export function combineScores(pages: ShotPage[], vision: PageScore[], allowed: (
     const defect = (v?.issues ?? []).some((x) => DEFECT_RE.test(x) || x.startsWith("［嚴重］"));
     const pass = ok ? hard.length === 0 : mi.length === 0 && !defect && (v ? v.pass : true);
     const fix = [fixFor(issues), v?.fix ?? ""].filter(Boolean).join(" ").slice(0, 900) || (mi.length ? "依量測問題修正：精簡文字、拆頁或縮小圖。" : "");
-    return { page: p.index, title: p.title ?? "", scores: v?.scores ?? {}, score: v?.score ?? (mi.length ? 2 : 4), pass, issues: [...new Set(issues)].slice(0, 6), fix, source: v ? "vision" : "metrics" };
+    return { page: p.index, title: p.title ?? "", scores: v?.scores ?? {}, score: v?.score ?? 0 /* no rubric score without the verifier (the table shows —) */, pass, issues: [...new Set(issues)].slice(0, 6), fix, source: v ? "vision" : "metrics" };
   });
 }
 
@@ -404,9 +443,32 @@ export function visualShare(body: string, allowed: (title: string) => boolean) {
   return { total: slides.length, with: slides.filter((s) => hasVisual(s.body)).length };
 }
 
+/**
+ * Closes what a truncated writer left open, per slide: an unclosed ``` fence or ::: div (typically a cut-off
+ * `::: {.notes}`) would otherwise swallow every following slide into that block.
+ */
+export function closeOpenBlocks(body: string): string {
+  return body
+    .split(/^(?=## )/m)
+    .map((part) => {
+      const lines = part.replace(/\s+$/, "").split("\n");
+      let fence = false;
+      let depth = 0;
+      for (const l of lines) {
+        if (/^\s*```/.test(l)) fence = !fence;
+        else if (!fence && /^:{3,}\s*[^:\s]/.test(l)) depth++;
+        else if (!fence && /^:{3,}\s*$/.test(l)) depth = Math.max(0, depth - 1);
+      }
+      if (!fence && !depth) return part;
+      const tail = [...(fence ? ["```"] : []), ...Array.from({ length: depth }, () => ":::")];
+      return `${lines.join("\n")}\n${tail.join("\n")}\n\n`;
+    })
+    .join("");
+}
+
 /** Replaces slides (by title) with rewritten ones; keeps every other slide byte-identical. */
 export function replaceSlides(body: string, rewritten: string): string {
-  const fresh = rewritten.split(/^(?=## )/m).filter((p) => p.startsWith("## "));
+  const fresh = closeOpenBlocks(rewritten).split(/^(?=## )/m).filter((p) => p.startsWith("## "));
   const parts = body.split(/^(?=## )/m);
   return parts
     .map((p) => {
@@ -423,6 +485,6 @@ export function replaceSlides(body: string, rewritten: string): string {
 export function scoreTable(scores: PageScore[]): string {
   if (!scores.length) return "";
   const head = `| 頁 | 標題 | 分數 | 結果 | 問題 |\n|---|---|---|---|---|`;
-  const rows = scores.map((s) => `| ${s.page} | ${s.title.replace(/\|/g, "/").slice(0, 40)} | ${s.score || "—"} | ${s.pass ? "通過" : "未通過"} | ${s.issues.join("；").replace(/\|/g, "/").slice(0, 120) || "—"} |`);
+  const rows = scores.map((s) => `| ${s.page} | ${s.title.replace(/\|/g, "/").slice(0, 40)} | ${s.score || "—"} | ${s.pass ? (s.source === "metrics" ? "通過（僅量測）" : "通過") : "未通過"} | ${s.issues.join("；").replace(/\|/g, "/").slice(0, 120) || "—"} |`);
   return [head, ...rows].join("\n");
 }

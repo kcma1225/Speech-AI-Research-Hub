@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { Paperclip, Pencil, Send, Trash2, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
@@ -67,7 +68,7 @@
         <li class="rounded-2xl border border-line/80 p-3.5">
           <div class="mb-2 flex items-center gap-2">
             <Avatar name={f.author_name ?? "?"} size={26} />
-            <span class="min-w-0 truncate text-[13.5px] font-medium text-ink">{f.author_name ?? t("meet.fb.deleted")}</span>
+            <span class="min-w-0 truncate text-[13.5px] font-medium text-ink">{f.author_name ? displayName(f.author_name) : t("meet.fb.deleted")}</span>
             {#if f.author_role === "professor"}<Pill tone="lilac" size="sm">{t("meet.fb.professor")}</Pill>{/if}
             <span class="ml-auto shrink-0 text-[12px] text-ink-3">{relativeTime(f.created_at)}</span>
             {#if f.can_edit && editing !== f.id}

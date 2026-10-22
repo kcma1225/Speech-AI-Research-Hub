@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { Check, CircleSlash, ExternalLink, ListTodo, Lock, Pencil, Plus, Quote, RotateCcw, Sparkles, Trash2, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatClock } from "#lib/audio/time.ts";
@@ -92,7 +93,7 @@
     <div class="min-w-0">
       <h3 id="draft-{draft.id}" class="truncate text-[15.5px] font-semibold text-ink"><a href="/studies/{draft.study_slug}" class="hover:underline">{draft.study_title}</a></h3>
       <p class="mt-0.5 flex flex-wrap items-center gap-x-2 text-[12.5px] text-ink-3">
-        {#if study?.owner}<span>{t("meet.form.owner", { name: study.owner.name })}</span>{/if}
+        {#if study?.owner}<span>{t("meet.form.owner", { name: displayName(study.owner) })}</span>{/if}
         <span class="inline-flex items-center gap-1">{#if draft.origin === "ai"}<Sparkles class="size-3" />{t("meet.draft.ai")}{:else}<Pencil class="size-3" />{t("meet.draft.edited", { name: draft.edited_by_name ?? "" })}{/if}</span>
       </p>
     </div>

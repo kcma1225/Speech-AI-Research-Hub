@@ -154,10 +154,14 @@ export async function locateFigureByLayout(pdf: Buffer, pageNo: number, caption:
     const heading = (s: Seg) => inExt(s) && s.size >= bodySize - 0.3 && s.x1 - s.x0 < 0.8 * colW && /^\s*(([IVX]{1,4}|[A-H]|\d{1,2}(\.\d{1,2})*)\.?\s+[A-Z]|abstract|references|acknowledg|introduction|conclusion)/i.test(s.str);
     // Other captions stop the band with their whole block (continuation lines included).
     const otherBlocks = segs.filter(otherCaption).flatMap(blockOf).filter((s) => s.x1 > capX0 - 10 && s.x0 < capX1 + 10);
+    // Page-level lines (paper title, authors, affiliations) run across the column gap above a single-column float;
+    // so do larger title fonts. Neither belongs to the figure.
+    const crossesGap = (s: Seg) => twoCol && !spans && s.x1 > ex0 + 2 && s.x0 < ex1 - 2 && (s.x0 < ex0 - 8 || s.x1 > ex1 + 8);
+    const titleFont = (s: Seg) => inExt(s) && s.size > bodySize * 1.25 && s.size > cap.size * 1.25;
     if (ref.kind === "figure") {
       y0 = capTop;
       const header = (s: Seg) => s.y > vy0! + H * 0.93;
-      let above = segs.filter((s) => s.y > capTop && (isBody(s) || otherBlocks.includes(s) || header(s) || heading(s))).sort((a, b) => a.y - b.y)[0];
+      let above = segs.filter((s) => s.y > capTop && (isBody(s) || otherBlocks.includes(s) || header(s) || heading(s) || crossesGap(s) || titleFont(s))).sort((a, b) => a.y - b.y)[0];
       // The paragraph's (short) last lines below the first full line belong to it too.
       for (let k = 0; above && k < 6; k++) {
         const a: Seg = above;
@@ -176,7 +180,7 @@ export async function locateFigureByLayout(pdf: Buffer, pageNo: number, caption:
     // Tighten to what is drawn / written inside the band (axes, tick labels, images, table rules and cells).
     const inBand = (r: Rect) => r.y1 > y0 + 0.5 && r.y0 < y1 - 0.5 && r.x1 > ex0 - 6 && r.x0 < ex1 + 6;
     const draws = (await drawingBoxes(page as never, pdfjs.OPS as unknown as Record<string, number>).catch(() => [] as Rect[])).filter((r) => inBand(r) && r.x1 - r.x0 < W * 0.98 && r.y1 - r.y0 < H * 0.9);
-    const texts = segs.filter((s) => !capLines.includes(s) && s.y > y0 && s.y + s.size * 0.8 < y1 + 1 && inExt(s)).map((s) => ({ x0: s.x0, y0: s.y - s.size * 0.25, x1: s.x1, y1: s.y + s.size * 0.85 }));
+    const texts = segs.filter((s) => !capLines.includes(s) && !crossesGap(s) && s.y > y0 && s.y + s.size * 0.8 < y1 + 1 && inExt(s)).map((s) => ({ x0: s.x0, y0: s.y - s.size * 0.25, x1: s.x1, y1: s.y + s.size * 0.85 }));
     // Side-by-side floats (e.g. two tables in one band): keep the horizontal cluster under the caption.
     const items = [...draws, ...texts].sort((a, b) => a.x0 - b.x0);
     const clusters: { x0: number; x1: number; items: Rect[] }[] = [];
@@ -197,9 +201,13 @@ export async function locateFigureByLayout(pdf: Buffer, pageNo: number, caption:
       if (c.y1 - c.y0 > (y1 - y0) * 0.25 && c.x1 - c.x0 > extW * 0.2) box = c;
     }
     const pad = 4;
+    // The padding never reaches into the caption (below a figure, above a table).
+    // …nor into the line that ended the band on the other side.
+    const yTop = Math.min(box.y1 + pad, ref.kind === "table" ? capBottom - 1 : y1);
+    const yBottom = Math.max(box.y0 - pad, ref.kind === "figure" ? capTop + 1 : y0);
     const frac: FigureBox = {
-      top: Math.max(0, 1 - (box.y1 + pad - vy0!) / H),
-      bottom: Math.min(1, 1 - (box.y0 - pad - vy0!) / H),
+      top: Math.max(0, 1 - (yTop - vy0!) / H),
+      bottom: Math.min(1, 1 - (yBottom - vy0!) / H),
       left: Math.max(0, (box.x0 - pad - vx0!) / W),
       right: Math.min(1, (box.x1 + pad - vx0!) / W),
     };
@@ -211,4 +219,43 @@ export async function locateFigureByLayout(pdf: Buffer, pageNo: number, caption:
   } finally {
     await task.destroy().catch(() => {});
   }
+}
+
+export type ListedFigure = LocatedFigure & { page: number; label: string };
+
+/**
+ * Every captioned figure / table of the first `maxPages` pages, located like `locateFigureByLayout` (first caption per
+ * figure number; references to a figure inside body text do not start a line with "Fig. N:" and are skipped).
+ */
+export async function listFigures(pdf: Buffer, opts: { maxPages?: number; max?: number } = {}): Promise<ListedFigure[]> {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const task = pdfjs.getDocument({ data: new Uint8Array(pdf), disableFontFace: true, useSystemFonts: false, verbosity: 0, stopAtErrors: false });
+  const found: { page: number; caption: string; kind: "figure" | "table"; num: number }[] = [];
+  try {
+    const doc = await task.promise;
+    const seen = new Set<string>();
+    for (let p = 1; p <= Math.min(doc.numPages, opts.maxPages ?? 20); p++) {
+      const page = await doc.getPage(p);
+      const segs = segments((await page.getTextContent()).items as unknown as { str: string; transform: number[]; width: number; height: number }[]);
+      for (const s of segs) {
+        const m = /^\s*(fig(?:ure)?\.?|table)\s*([0-9]{1,2}|[IVXL]{1,5})\s*[.:|]/i.exec(s.str);
+        if (!m) continue;
+        const ref = figureRefOf(`${m[1]} ${m[2]}`);
+        if (!ref || seen.has(`${ref.kind}${ref.num}`)) continue;
+        seen.add(`${ref.kind}${ref.num}`);
+        found.push({ page: p, caption: s.str, ...ref });
+      }
+      page.cleanup();
+    }
+  } catch {
+    return [];
+  } finally {
+    await task.destroy().catch(() => {});
+  }
+  const out: ListedFigure[] = [];
+  for (const f of found.slice(0, opts.max ?? 16)) {
+    const located = await locateFigureByLayout(pdf, f.page, f.caption).catch(() => null);
+    if (located) out.push({ ...located, page: f.page, label: `${f.kind === "figure" ? "Fig." : "Table"} ${f.num}` });
+  }
+  return out;
 }

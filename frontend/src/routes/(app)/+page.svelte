@@ -222,7 +222,7 @@
                   <p class="text-[13.5px] leading-snug text-ink">
                     {#if item.actor}<span class="font-semibold">{displayName(item.actor)}</span>{/if}
                     <span class="text-ink-2">{kindLabel(item.kind)}</span>
-                    <span class="font-medium break-words">{item.title}</span>
+                    <span class="font-medium break-words">{item.kind === "member_added" ? displayName(item.title) : item.title}</span>
                   </p>
                   <p class="mt-1 flex min-w-0 items-center gap-2 text-[12px] text-ink-3">
                     <Pill tone={toneFor(item.study.id)} size="sm" class="max-w-[60%]">{item.study.title}</Pill>

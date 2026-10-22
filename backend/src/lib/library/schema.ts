@@ -76,4 +76,4 @@ export const tagsSchema = z
     return tags.filter((t) => !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()));
   });
 
-export const citeKeySchema = z.string().trim().min(1).max(100).regex(CITE_KEY_RE);
+export const citeKeySchema = z.string().trim().min(1, "引用鍵不能是空的。").max(100, "引用鍵最多 100 個字元。").regex(CITE_KEY_RE, "引用鍵只能使用英數字與 _ : - .，不能有空白或中文。");

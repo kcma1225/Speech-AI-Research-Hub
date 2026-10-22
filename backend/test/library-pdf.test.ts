@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createLibraryService, extractIdentifiers, extractPdfText, GrobidClient, RateLimiter, SourceError } from "../src/lib/library/index.js";
+import { createLibraryService, parseIdentifier, extractIdentifiers, extractPdfText, GrobidClient, RateLimiter, SourceError } from "../src/lib/library/index.js";
 import { fixture, makePdf, mockServer, sendJson, sendText } from "./library-fixtures/helpers.js";
 
 const fast = () => new RateLimiter({ intervalMs: 1, burst: 10, concurrency: 10 });
@@ -104,6 +104,16 @@ describe("PDF → record", () => {
     expect(guess.method).toBe("guess");
     expect(guess.record).toEqual({ type: "document", title: "Robust Speech Recognition via Large-Scale Weak Supervision", authors: [] });
     expect(guess.warnings[0]).toContain("請確認資料");
+  });
+
+  it("uses the download link's identifier when the PDF has none (ACL Anthology, DOI links)", async () => {
+    const r = await svc(false).extractPdfRecord(noIdPdf, { sourceUrl: "https://doi.org/10.21437/Interspeech.2020-3015" });
+    expect(r.method).toBe("url");
+    expect(r.record).toMatchObject({ title: "Conformer: Convolution-augmented Transformer for Speech Recognition", doi: "10.21437/Interspeech.2020-3015" });
+    expect(parseIdentifier("https://aclanthology.org/2020.acl-main.747.pdf")).toEqual({ kind: "acl", value: "2020.acl-main.747" });
+    // An unknown link changes nothing.
+    const g = await svc(false).extractPdfRecord(noIdPdf, { sourceUrl: "https://example.org/paper.pdf" });
+    expect(g.method).toBe("guess");
   });
 
   it("GROBID client: references and liveness", async () => {

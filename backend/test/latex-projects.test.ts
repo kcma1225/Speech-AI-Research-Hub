@@ -200,6 +200,9 @@ describe.skipIf(!hasTestDb || !hasTestS3)("LaTeX projects (routes)", () => {
     const bibText = await fileText(d.files.find((f: { path: string }) => f.path === "refs.bib").id);
     expect(bibText).toContain("@inproceedings{chen2024ser,");
     expect(bibText).toContain("研究文獻庫自動產生");
+    // The template's sample entries that the sections still cite are kept (no "[?]" on the first compile).
+    expect(bibText).toContain("@inproceedings{radford2023whisper,");
+    expect(bibText).toContain("@inproceedings{vaswani2017attention,");
     const job = (await t.db.query("SELECT j.kind, j.payload, j.created_by, j.max_attempts FROM jobs j JOIN latex_compiles c ON c.job_id=j.id WHERE c.id=$1", [compileId])).rows[0];
     expect(job).toMatchObject({ kind: "latex_compile", created_by: null, max_attempts: 2 });
     expect(job.payload).toMatchObject({ projectId, compileId, rootFile: "main.tex", compiler: "xelatex", outputPrefix: `latex/${projectId}/builds/${compileId}/`, manifestKey: `latex/${projectId}/manifests/${compileId}.json` });

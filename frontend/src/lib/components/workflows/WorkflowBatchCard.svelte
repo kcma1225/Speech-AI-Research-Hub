@@ -14,7 +14,12 @@
    * its status (排隊中 / 規劃中 / 需要 PDF / 已完成…), expandable into that run's live WorkflowCard. Polls while any run
    * is active (the cards themselves stream over SSE once expanded).
    */
-  let { batchId, compact = false }: { batchId: string; compact?: boolean } = $props();
+  let { batchId, compact = false, focusKey = null }: {
+    batchId: string;
+    compact?: boolean;
+    /** Deep-linked card (`workflow:<runId>`, lib/agent/focus.ts): that run's row opens so the chat can scroll to its card. */
+    focusKey?: string | null;
+  } = $props();
 
   let runs = $state<Workflow[]>([]);
   let error = $state<string | null>(null);
@@ -40,6 +45,11 @@
   onDestroy(() => {
     destroyed = true;
     if (timer) clearTimeout(timer);
+  });
+
+  $effect(() => {
+    const id = focusKey?.startsWith("workflow:") ? focusKey.slice(9) : null;
+    if (id && runs.some((r) => r.id === id) && !untrack(() => open[id])) open = { ...untrack(() => open), [id]: true };
   });
 
   const counts = $derived({

@@ -33,12 +33,19 @@ const TOUCH_CSS = "<style>html:not(.print-pdf) .reveal .slide-number{bottom:auto
 const HUB_BRIDGE = "(function(){if(window.parent===window)return;window.addEventListener('keydown',function(e){if(e.ctrlKey||e.metaKey||e.altKey||e.shiftKey||e.isComposing)return;var k=String(e.key||'').toLowerCase(),t=k==='s'?'speaker':k==='f'?'fullscreen':null;if(!t)return;var g=e.target;if(g&&(g.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(g.tagName||'')))return;e.preventDefault();e.stopImmediatePropagation();window.parent.postMessage({namespace:'hub',type:t},'*')},true)})();";
 
 /**
+ * Reveal sizes `.r-stretch` images (Quarto stretches a slide's lone image) when it lays the slide out; a lazily loaded
+ * image that arrives later keeps height 0 until the next layout, so a deck opened at slide N showed no figure. Re-run
+ * the layout when an image loads and right after a slide change.
+ */
+const RELAYOUT = "(function(){var t;function l(){clearTimeout(t);t=setTimeout(function(){try{if(window.Reveal&&Reveal.isReady&&Reveal.isReady())Reveal.layout()}catch(_){}},60)}document.addEventListener('load',function(e){if(e.target&&e.target.tagName==='IMG')l()},true);window.addEventListener('load',function(){try{Reveal.on('slidechanged',l);Reveal.on('ready',l)}catch(_){}})})();";
+
+/**
  * Rewrites rendered deck HTML for the sandboxed, cookie-less iframe. Reveal gets `postMessage` (the parent can
  * call the Reveal API) and `postMessageEvents` (Reveal events are posted to the parent as JSON strings).
  */
 export function patchDeckHtml(html: string) {
   return html
-    .replace(/<head(\s[^>]*)?>/i, match => `${match}<script>${STORAGE_SHIM}${HUB_BRIDGE}</script>`)
+    .replace(/<head(\s[^>]*)?>/i, match => `${match}<script>${STORAGE_SHIM}${HUB_BRIDGE}${RELAYOUT}</script>`)
     .replace(/Reveal\.initialize\(\{/, "Reveal.initialize({scrollActivationWidth:0,postMessage:true,postMessageEvents:true,")
     .replace(/<\/head>/i, match => `${TOUCH_CSS}${match}`);
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Popover, Portal } from "bits-ui";
+  import { page } from "$app/state";
   import { ArrowRight, Bot, ExternalLink, MessageSquare, Pause, Play, Square } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t, relativeTime } from "#lib/i18n.svelte.ts";
@@ -48,6 +49,36 @@
     }
     return "";
   };
+  // Phones on /assistant: the composer sits right above the tab bar, so the floating pill rides above the composer
+  // (opposite the question navigator) instead of covering its toolbar.
+  let floatBottom = $state<number | null>(null);
+  const onAssistant = $derived(page.url.pathname.startsWith("/assistant"));
+  $effect(() => {
+    if (!onAssistant || viewport.desktop || typeof ResizeObserver === "undefined") return void (floatBottom = null);
+    let el: Element | null = null;
+    const measure = () => {
+      el = document.querySelector("main [data-chat-root] [data-chat-bottom]");
+      floatBottom = el ? Math.max(0, Math.round(window.innerHeight - el.getBoundingClientRect().top + 12)) : null;
+    };
+    const ro = new ResizeObserver(measure);
+    const mo = new MutationObserver(() => {
+      const next = document.querySelector("main [data-chat-root] [data-chat-bottom]");
+      if (next !== el) {
+        ro.disconnect();
+        if (next) ro.observe(next);
+        measure();
+      }
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+    measure();
+    if (el) ro.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  });
   const progressOf = (r: ActiveAgentRun) => r.progress ?? (r.plan ? { done: r.plan.done, total: r.plan.total } : null);
 
   async function act(r: ActiveAgentRun, name: string, fn: () => Promise<unknown>) {
@@ -64,6 +95,8 @@
   function stop(r: ActiveAgentRun) {
     if (r.kind === "assistant" && r.conversation_id) return void act(r, "stop", () => api.post(`/agent/conversations/${r.conversation_id}/cancel`));
     stopTarget = r;
+    // Close the overview first: the popover sits above the dialog layer and would swallow its clicks.
+    open = false;
     stopOpen = true;
   }
   const label = $derived(needs ? `${t("agentRuns.indicator", { n: runs.length })} · ${t("agentRuns.needsYou", { n: needs })}` : t("agentRuns.indicator", { n: runs.length }));
@@ -171,7 +204,7 @@
     <!-- Tablets: in the topbar. Phones: the topbar is full, so a pill floats above the tab bar (left of the Ask-AI button). -->
     {@render trigger({ onclick: () => (open = true), "data-state": open ? "open" : "closed" }, "hidden sm:inline-flex")}
     <Portal>
-      <div class="fixed bottom-[calc(88px+env(safe-area-inset-bottom))] left-4 z-30 sm:hidden">
+      <div class="fixed bottom-[calc(88px+env(safe-area-inset-bottom))] left-4 z-30 sm:hidden" style={floatBottom !== null ? `bottom:${floatBottom}px` : undefined}>
         {@render trigger({ onclick: () => (open = true), "data-state": open ? "open" : "closed" }, "inline-flex shadow-pop")}
       </div>
     </Portal>

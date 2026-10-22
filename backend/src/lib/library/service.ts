@@ -83,7 +83,7 @@ export interface OpenAccessPdf {
 
 export interface PdfImportResult {
   record: PaperRecord | null;
-  method: "doi" | "arxiv" | "title-match" | "grobid" | "guess" | "none";
+  method: "doi" | "arxiv" | "url" | "title-match" | "grobid" | "guess" | "none";
   identifiers: PdfIdentifiers;
   titleGuess?: string;
   /** 繁中 notes for the UI (e.g. "無法自動辨識，請確認資料"). */
@@ -269,7 +269,8 @@ export function createLibraryService(config: LibraryConfig = {}) {
     return null;
   }
 
-  async function extractPdfRecord(pdf: Uint8Array, opts: { useGrobid?: boolean; signal?: AbortSignal } = {}): Promise<PdfImportResult> {
+  /** `sourceUrl`: where the PDF was downloaded from; its identifier (arXiv / ACL / DOI / ISCA link) is used when the PDF has none. */
+  async function extractPdfRecord(pdf: Uint8Array, opts: { useGrobid?: boolean; signal?: AbortSignal; sourceUrl?: string | null } = {}): Promise<PdfImportResult> {
     const signal = opts.signal;
     const text = await extractPdfText(pdf);
     const identifiers = extractIdentifiers(text);
@@ -288,6 +289,12 @@ export function createLibraryService(config: LibraryConfig = {}) {
       const r = await quiet(clients.arxiv.getById(identifiers.arxivId, signal));
       if (r) return { ...base, record: r, method: "arxiv" };
       warnings.push(`找到 arXiv 編號 ${identifiers.arxivId}，但 arXiv 查不到`);
+    }
+    // ACL Anthology PDFs carry no DOI in their text; the download link names the paper.
+    const fromUrl = opts.sourceUrl ? parseIdentifier(opts.sourceUrl) : null;
+    if (fromUrl && !(fromUrl.kind === "doi" && fromUrl.value === identifiers.doi) && !(fromUrl.kind === "arxiv" && fromUrl.value === identifiers.arxivId)) {
+      const res = await quiet(resolveIdentifier(fromUrl, { signal }));
+      if (res) return { ...base, record: res.record, method: "url" };
     }
     if (titleGuess) {
       const m = await quiet(clients.crossref.matchBibliographic(titleGuess, undefined, { signal }));

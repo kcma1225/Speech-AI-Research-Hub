@@ -123,7 +123,10 @@ export async function activeAgentRuns(db: Queryable, userId: string): Promise<Ac
     // Newest run per conversation first (approvals expire after 24 h, so older runs can never be active), then filter.
     `SELECT * FROM (
        SELECT DISTINCT ON (r.conversation_id) r.id, r.conversation_id, r.status, r.stop_reason, r.step, r.max_steps, r.tokens_in, r.tokens_out,
-              r.started_at, r.updated_at, r.finished_at, c.title, c.mode
+              r.started_at, r.updated_at, r.finished_at,
+              -- A new chat has no title until the first step is done: name it by the user's first words meanwhile.
+              CASE WHEN c.title <> '' THEN c.title ELSE coalesce((SELECT left(regexp_replace(m.text, '[[:space:]]+', ' ', 'g'), 40) FROM agent_messages m
+                WHERE m.conversation_id = c.id AND m.role = 'user' AND m.hidden_by IS NULL ORDER BY m.seq LIMIT 1), '') END AS title, c.mode
          FROM agent_runs r JOIN conversations c ON c.id = r.conversation_id
         WHERE c.user_id = $1 AND r.started_at > now() - interval '2 days'
         ORDER BY r.conversation_id, r.started_at DESC, r.id DESC) x

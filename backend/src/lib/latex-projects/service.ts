@@ -15,6 +15,7 @@ import { LATEX_JOB_KIND, type LatexCompilePayload, type LatexCompiler, type Late
 import { addInput, removeInput, renameInput, reorderInputs } from "../latex/inputs.js";
 import { escapeLatex, generateTemplate, LATEX_TEMPLATES, newSectionContent, sectionPath, templateInfo, type LatexTemplateId } from "../latex/templates.js";
 import { exportStudyBibtex } from "../library/study-export.js";
+import { carriedEntries, citedKeys } from "../latex/bib-carry.js";
 import { recordActivity } from "../studies/activity.js";
 import {
   bibFileOf, contentTypeOf, findFile, findFileByPath, findProject, forgetFileDocs, insertTextFile, isGeneratedBib, latexDocName, latexKeys, latexUrl,
@@ -185,14 +186,23 @@ export async function reorderSections(deps: LatexDeps, project: ProjectRow, file
 
 /**
  * `auto` projects: rewrites the bib file from the study library (`exportStudyBibtex`). An empty library leaves the
- * file unchanged (templates ship sample entries). Creates the file when missing. Returns whether it changed.
+ * file unchanged (templates ship sample entries); entries of the old file that are still cited but not in the library
+ * are kept at the end (`carriedEntries`). Creates the file when missing. Returns whether it changed.
  */
 export async function regenerateBib(deps: LatexDeps, project: ProjectRow, actorId: string | null): Promise<{ changed: boolean; count: number }> {
-  const { bibtex, count } = await exportStudyBibtex(deps.db, project.study_id);
+  const { bibtex, keys, count } = await exportStudyBibtex(deps.db, project.study_id);
   if (!count) return { changed: false, count };
-  const text = `% 此檔由研究文獻庫自動產生（${count} 筆），每次編譯前更新；手動修改會被覆蓋。\n% 要自行編輯，請在專案設定把參考文獻改為「手動」。\n\n${bibtex}`;
   const path = bibFileOf(project);
   const file = await findFileByPath(deps.db, project.id, path);
+  // Entries still cited but not in the library (template samples, a former manual bib) stay, so citations never break.
+  let carried = "";
+  if (file?.kind === "text") {
+    const texFiles = (await listFiles(deps.db, project.id)).filter((f) => f.kind === "text" && /\.(tex|ltx)$/i.test(f.path));
+    const cited = citedKeys(await Promise.all(texFiles.map((f) => liveText(deps.db, deps.collab, f))));
+    const kept = carriedEntries(await liveText(deps.db, deps.collab, file), keys, cited);
+    if (kept.length) carried = `\n% 以下條目仍被專案引用、但不在研究文獻庫（加入文獻庫或移除引用後會自動消失）。\n\n${kept.map((e) => e.text).join("\n\n")}\n`;
+  }
+  const text = `% 此檔由研究文獻庫自動產生（${count} 筆），每次編譯前更新；手動修改會被覆蓋。\n% 要自行編輯，請在專案設定把參考文獻改為「手動」。\n\n${bibtex}${carried}`;
   if (!file) {
     await transaction(deps.db, (client) => insertTextFile(client, { projectId: project.id, path, content: text, role: "bib", actorId }));
     return { changed: true, count };

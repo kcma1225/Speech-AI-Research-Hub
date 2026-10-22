@@ -12,7 +12,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { ChatResult } from "../src/ai/types.js";
 import { runWorkflow } from "../src/workflows/engine.js";
 import { autoApproval, AUTO_APPROVED_NOTE } from "../src/workflows/autopilot.js";
-import { createWorkflow, revisePlan } from "../src/workflows/service.js";
+import { addGuidance, createWorkflow, revisePlan } from "../src/workflows/service.js";
 import { getRun, getSteps, markTainted } from "../src/workflows/store.js";
 import { registerWorkflowPlaybook } from "../src/workflows/playbooks/index.js";
 import { pendingAsk } from "../src/workflows/questions.js";
@@ -384,6 +384,30 @@ run("workflow autopilot", () => {
     // Cancelling a working run frees a slot too.
     await post(alice, `/api/workflows/${runs[1].id}/cancel`);
     expect((await getRun(t.db, runs[4].id))!.status).toBe("planning");
+    await clearRuns();
+  });
+
+  it("「放在哪個研究」 lists the studies; 「你決定」 picks the latest one and splits 「每一個文獻」 into a batch", async () => {
+    const title = `委派 ${randomBytes(2).toString("hex")}`;
+    const s4 = await insertStudy(t.db, alice.id, title);
+    await t.db.query("UPDATE studies SET activity_at=now() + interval '1 hour' WHERE id=$1", [s4.id]);
+    await addPaper(s4.id, "Delegated A", { pdf: true });
+    await addPaper(s4.id, "Delegated B", { pdf: true });
+    const request = "幫我把每一個文獻都做成簡報，要在週會報告";
+    const id = (await createWorkflow(t.app, await asUser(alice.id), { request, playbook: "slides" })).id;
+    expect((await getRun(t.db, id))!.study_id).toBeNull();
+    expect((await runWorkflow(deps(), id)).status).toBe("awaiting_input");
+    const q = (await getRun(t.db, id))!.question!;
+    expect(q).toContain(`〈${title}〉`);
+    expect(q).toContain("你決定");
+    await addGuidance(t.app, await asUser(alice.id), id, "你決定");
+    expect((await runWorkflow(deps(), id)).status).toBe("cancelled");
+    const r = (await getRun(t.db, id))!;
+    expect(r.study_id).toBe(s4.id);
+    expect(r.report!.summary_md).toContain("已拆成 2 個工作流程");
+    const batch = (await t.db.query("SELECT study_id, inputs->>'mode' AS mode FROM workflow_runs WHERE user_id=$1 AND batch_id IS NOT NULL AND created_at > $2 ORDER BY batch_index", [alice.id, r.created_at])).rows;
+    expect(batch).toEqual([{ study_id: s4.id, mode: "paper_report" }, { study_id: s4.id, mode: "paper_report" }]);
+    await t.db.query("UPDATE studies SET activity_at=now() - interval '1 day' WHERE id=$1", [s4.id]);
     await clearRuns();
   });
 

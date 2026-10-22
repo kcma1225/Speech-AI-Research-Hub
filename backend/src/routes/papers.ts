@@ -483,7 +483,7 @@ export default async function papers(app: FastifyInstance) {
     const { service } = await libraryService(app.db);
     let extracted;
     try {
-      extracted = await service.extractPdfRecord(data);
+      extracted = await service.extractPdfRecord(data, { sourceUrl });
     } catch (e) {
       if (e instanceof SourceError && e.source === "pdf") throw new HttpError(415, e.message || "檔案不是 PDF。");
       throw sourceHttpError(e);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { CircleCheck, CircleX, ShieldCheck } from "@lucide/svelte";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
   import { aiApi, ROLE_KEYS, toErrorBody, type AiErrorBody, type CallRow, type StatRow, type Stats } from "#lib/ai/admin.ts";
@@ -190,7 +191,7 @@
                 {#if !c.ok && c.error_code} · <code class="text-danger">{c.error_code}</code>{/if}
                 {#if c.fallback_index > 0} · {t("aiAdmin.traffic.fallbackN", { n: c.fallback_index })}{/if}
                 {#if c.retries} · {t("aiAdmin.traffic.retries", { n: c.retries })}{/if}
-                {#if c.user_name} · {c.user_name}{:else if c.job_id} · {t("aiAdmin.traffic.job")}{/if}
+                {#if c.user_name} · {displayName(c.user_name)}{:else if c.job_id} · {t("aiAdmin.traffic.job")}{/if}
               </p>
             </div>
             <div class="text-right text-[12px] tabular-nums text-ink-2">

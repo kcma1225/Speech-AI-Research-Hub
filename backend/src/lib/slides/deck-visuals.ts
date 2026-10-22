@@ -166,8 +166,15 @@ export function renderDeckChartSvg(spec: DeckChart, size: { w: number; h: number
   const H = Math.round(Math.max(330, Math.min(580, size.h, W * 0.66)));
   const parts: string[] = [];
   const unit = spec.unit ?? "";
-  const legendItems = spec.type !== "heatmap" && (spec.series.length > 1 || spec.series[0]?.name) ? spec.series.map((s, i) => ({ name: s.name ?? `#${i + 1}`, color: DECK_PALETTE[i % DECK_PALETTE.length]! })) : [];
-  const top = (spec.title ? 52 : 18) + (legendItems.length ? 34 : 0);
+  // One series needs no legend: its name becomes the value axis label instead (when there is none).
+  if (spec.series.length === 1 && spec.series[0]?.name && spec.type !== "heatmap") {
+    const name = spec.series[0].name;
+    if (spec.type === "hbar") spec = { ...spec, x_label: spec.x_label ?? name };
+    else if (spec.type !== "scatter") spec = { ...spec, y_label: spec.y_label ?? name };
+  }
+  const legendItems = spec.type !== "heatmap" && spec.series.length > 1 ? spec.series.map((s, i) => ({ name: s.name ?? `#${i + 1}`, color: DECK_PALETTE[i % DECK_PALETTE.length]! })) : [];
+  // Value labels sit above the tallest bar / point: keep them clear of the title and legend.
+  const top = (spec.title ? 52 : 18) + (legendItems.length ? 34 : 0) + (spec.type === "bar" || spec.type === "line" ? 24 : 0);
   const bottom = (spec.x_label ? 78 : 50) + (spec.source ? 26 : 0);
   if (spec.title) parts.push(`<text x="${W / 2}" y="34" text-anchor="middle" font-size="26" font-weight="700" fill="${DECK_INK}">${esc(spec.title)}</text>`);
   if (legendItems.length) {
@@ -197,7 +204,9 @@ export function renderDeckChartSvg(spec: DeckChart, size: { w: number; h: number
   });
 
   if (spec.type === "hbar") {
-    const labelW = Math.min(320, Math.max(80, ...(spec.labels ?? []).map((l) => textWidth(clip(l, 28), 19) + 16)));
+    // Long category names wrap onto two lines instead of being cut.
+    const lines = (l: string) => (l.length > 26 && l.includes(" ") ? splitTwo(clip(l, 56)).map((w) => clip(w, 30)) : [clip(l, 30)]);
+    const labelW = Math.min(340, Math.max(80, ...(spec.labels ?? []).flatMap((l) => lines(l).map((w) => textWidth(w, 19) + 16))));
     const m = { l: labelW, r: 70, t: top, b: bottom - 20 };
     const pw = W - m.l - m.r;
     const ph = H - m.t - m.b;
@@ -213,7 +222,8 @@ export function renderDeckChartSvg(spec: DeckChart, size: { w: number; h: number
     const bh = Math.min(44, (band * 0.72) / k);
     for (let i = 0; i < n; i++) {
       const cy = m.t + band * (i + 0.5);
-      parts.push(`<text x="${m.l - 12}" y="${cy + 6}" text-anchor="end" font-size="19" fill="${DECK_INK}">${esc(clip(spec.labels?.[i] ?? String(i + 1), 28))}</text>`);
+      const ls = lines(spec.labels?.[i] ?? String(i + 1));
+      ls.forEach((w, wi) => parts.push(`<text x="${m.l - 12}" y="${(cy + 6 + (wi - (ls.length - 1) / 2) * 22).toFixed(1)}" text-anchor="end" font-size="19" fill="${DECK_INK}">${esc(w)}</text>`));
       spec.series.forEach((s, si) => {
         const d = s.data[i];
         if (!isNum(d)) return;
@@ -233,7 +243,10 @@ export function renderDeckChartSvg(spec: DeckChart, size: { w: number; h: number
   const ph = H - m.t - m.b;
   let lo = Math.min(...values);
   let hi = Math.max(...values);
-  if (spec.type === "bar") {
+  // Bars of nearly equal height hide the difference the slide is about (e.g. WER 4.33 vs 4.00 on a 0–5 axis): such a
+  // chart is drawn as a dot plot on a zoomed axis instead (dots, unlike bars, do not need a zero baseline).
+  const dots = spec.type === "bar" && lo > 0 && (hi - lo) / hi < 0.2 && values.length >= 3;
+  if (spec.type === "bar" && !dots) {
     lo = Math.min(0, lo);
     hi = Math.max(0, hi);
   } else {
@@ -269,7 +282,21 @@ export function renderDeckChartSvg(spec: DeckChart, size: { w: number; h: number
       const words = label.length > maxChars && label.includes(" ") ? splitTwo(label) : [label];
       words.forEach((w, wi) => parts.push(`<text x="${cx(i).toFixed(1)}" y="${m.t + ph + 26 + wi * 21}" text-anchor="middle" font-size="18" fill="${DECK_INK}">${esc(clip(w, maxChars + 6))}</text>`));
     }
-    if (spec.type === "bar") {
+    if (dots) {
+      const k = spec.series.length;
+      const off = (si: number) => (k > 1 ? (si - (k - 1) / 2) * Math.min(28, band / (k + 1)) : 0);
+      spec.series.forEach((s, si) =>
+        s.data.forEach((d, i) => {
+          if (!isNum(d)) return;
+          const best = bests[si] !== null && d === bests[si];
+          const color = DECK_PALETTE[si % DECK_PALETTE.length]!;
+          const x0 = cx(i) + off(si);
+          parts.push(`<line x1="${x0.toFixed(1)}" x2="${x0.toFixed(1)}" y1="${(m.t + ph).toFixed(1)}" y2="${y(d).toFixed(1)}" stroke="${color}" stroke-opacity="0.25" stroke-width="2"/>`);
+          parts.push(`<circle cx="${x0.toFixed(1)}" cy="${y(d).toFixed(1)}" r="${best ? 11 : 9}" fill="${color}"${best ? ` stroke="${DECK_INK}" stroke-width="2.5"` : ""}/>`);
+          if (k * n <= 18) parts.push(`<text x="${x0.toFixed(1)}" y="${(y(d) - 18).toFixed(1)}" text-anchor="middle" font-size="17" font-weight="${best ? 700 : 500}" fill="${DECK_INK}">${fmt(d, unit)}</text>`);
+        }),
+      );
+    } else if (spec.type === "bar") {
       const k = spec.series.length;
       const bw = Math.min(90, (band * 0.74) / k);
       spec.series.forEach((s, si) =>
@@ -280,7 +307,8 @@ export function renderDeckChartSvg(spec: DeckChart, size: { w: number; h: number
           const xPos = cx(i) - (bw * k) / 2 + bw * si;
           const best = bests[si] !== null && d === bests[si];
           parts.push(`<rect x="${xPos.toFixed(1)}" y="${t.toFixed(1)}" width="${(bw - 3).toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" rx="3" fill="${DECK_PALETTE[si % DECK_PALETTE.length]}"${best ? ` stroke="${DECK_INK}" stroke-width="2.5"` : ""}/>`);
-          if (k * n <= 24) parts.push(`<text x="${(xPos + bw / 2 - 1.5).toFixed(1)}" y="${(d >= 0 ? t - 8 : t + h + 20).toFixed(1)}" text-anchor="middle" font-size="${k * n > 14 ? 14 : 17}" font-weight="${best ? 700 : 500}" fill="${DECK_INK}">${fmt(d, unit)}</text>`);
+          // Value labels never go below the 16 px floor; with too many bars there are none (the axis carries it).
+          if (k * n <= 18 && bw >= 34) parts.push(`<text x="${(xPos + bw / 2 - 1.5).toFixed(1)}" y="${(d >= 0 ? t - 8 : t + h + 20).toFixed(1)}" text-anchor="middle" font-size="${k * n > 12 ? 16 : 17}" font-weight="${best ? 700 : 500}" fill="${DECK_INK}">${fmt(d, unit)}</text>`);
         }),
       );
       parts.push(`<line x1="${m.l}" x2="${W - m.r}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="${DECK_MUTED}" stroke-width="1.5"/>`);

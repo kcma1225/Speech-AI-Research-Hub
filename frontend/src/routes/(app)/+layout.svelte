@@ -38,7 +38,8 @@
       <main id="main" tabindex="-1" class="flex-1 outline-none px-4 pt-2 pb-[calc(96px+env(safe-area-inset-bottom))] sm:px-6 lg:px-0 lg:pt-7 lg:pb-10">
         <!-- A collapsed sidebar frees ~190px; wide screens give it to the content (max-width eases with the rail). -->
         <div class="mx-auto w-full max-w-[1280px] transition-[max-width] duration-[220ms] ease-[cubic-bezier(.2,.8,.2,1)] {sidebar.collapsed ? 'lg:max-w-[1600px]' : ''}">
-          {#if !page.url.pathname.startsWith("/settings")}<NamesConfirmBanner />{/if}
+          <!-- Not on /assistant: its workspace fills the viewport, a banner above it would push the composer off screen. -->
+          {#if !page.url.pathname.startsWith("/settings") && !page.url.pathname.startsWith("/assistant")}<NamesConfirmBanner />{/if}
           {@render children()}
         </div>
       </main>

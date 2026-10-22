@@ -390,6 +390,8 @@ function modelIssues(snap: ConfigSnapshot, m: ModelRecord, capability: ModelCapa
     // Speech-to-text by a multimodal chat model: needs a chat model whose protocol and profile accept audio.
     const a = modelAudio(p, m.model_id, m.profile);
     if (!a.codec_ok) out.push(`「${p.name}」的連線方式無法傳送音訊（目前支援 OpenAI 相容 Chat Completions 與 Gemini），不能用在語音轉文字。`);
+    else if (m.profile.fields.capability === "asr")
+      out.push(`「${m.model_id}」是語音轉文字模型，但「${p.name}」是聊天模型帳號，只能用支援音訊輸入的多模態聊天模型轉錄。Whisper 等語音模型請新增「語音轉文字」帳號後再綁定。`);
     else if (m.profile.fields.capability !== "chat") out.push(`「${m.model_id}」是${capLabel(m.profile.fields.capability)}模型，不能用在語音轉文字。`);
     else if (!a.audio) out.push(`「${m.model_id}」不支援音訊輸入，不能用在語音轉文字。若確定支援，可在「模型」分頁開啟「音訊輸入」。`);
   } else if (p.family === "llm") {

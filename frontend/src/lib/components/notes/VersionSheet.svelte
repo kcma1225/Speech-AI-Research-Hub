@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { diffLines } from "diff";
   import { ArrowLeft, Bot, History, RotateCcw, Sparkles } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
@@ -80,7 +81,7 @@
       </button>
       <div>
         <p class="text-[14px] font-semibold text-ink">{t("versions.number", { n: selected.version })} · {kindLabel(selected)}</p>
-        <p class="text-[12.5px] text-ink-3">{formatDate(selected.created_at, { dateStyle: "medium", timeStyle: "short" })}{selected.actor_name ? ` · ${selected.actor_name}` : ""}</p>
+        <p class="text-[12.5px] text-ink-3">{formatDate(selected.created_at, { dateStyle: "medium", timeStyle: "short" })}{selected.actor_name ? ` · ${displayName(selected.actor_name)}` : ""}</p>
       </div>
       <p class="text-[12.5px] font-medium text-ink-2">{t("versions.diffHint")}</p>
       <div class="max-h-[50dvh] overflow-auto rounded-xl border border-line bg-surface-2/50 p-2 font-mono text-[12.5px] leading-relaxed">
@@ -113,7 +114,7 @@
                 <span class="truncate">{kindLabel(v)}</span>
                 {#if v.kind === "autopilot"}<Pill size="sm" tone="lilac"><Bot class="size-3" />{t("versions.autopilot")}</Pill>{:else if v.author === "ai"}<Pill size="sm" tone="sky"><Sparkles class="size-3" />AI</Pill>{/if}
               </span>
-              <span class="block text-[12px] text-ink-3">{relativeTime(v.created_at)}{v.actor_name ? ` · ${v.actor_name}` : ""}</span>
+              <span class="block text-[12px] text-ink-3">{relativeTime(v.created_at)}{v.actor_name ? ` · ${displayName(v.actor_name)}` : ""}</span>
             </span>
           </button>
         </li>

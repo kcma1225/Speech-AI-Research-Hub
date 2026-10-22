@@ -150,7 +150,7 @@
           {:else}
             <StatusPill status={d.meeting.status} size="sm" />
           {/if}
-          {#if d.meeting.creator_name}<span>{t("meet.createdBy", { name: d.meeting.creator_name })}</span>{/if}
+          {#if d.meeting.creator_name}<span>{t("meet.createdBy", { name: displayName(d.meeting.creator_name) })}</span>{/if}
         </p>
       </div>
       <div class="flex shrink-0 gap-2">

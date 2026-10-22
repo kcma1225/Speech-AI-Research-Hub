@@ -19,7 +19,7 @@ import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import type { CheckSpec, Criterion, StepOutput, StepRow, StepSpec } from "../types.js";
-import { clipText, planningStep, resolveStudy, systemFor, taskPrompt } from "./common.js";
+import { clipText, planningStep, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
@@ -100,7 +100,7 @@ export async function verificationCompile(env: WorkflowEnv, projectId: string, e
 
 async function plan(env: WorkflowEnv): Promise<PlanResult> {
   const access = await resolveStudy(env);
-  if (!access) return { kind: "question", question: "要寫進哪個研究的論文？請在補充指示寫研究名稱，或從 LaTeX 頁面再按一次「交給 Agent」。" };
+  if (!access) return { kind: "question", question: await whichStudyQuestion(env, "這段論文內容") };
   if (!access.canEdit) return { kind: "question", question: `你不是〈${access.study.title}〉的成員，不能修改這份論文。` };
   const projects = (await env.db.query<{ id: string; title: string }>("SELECT id,title FROM latex_projects WHERE study_id=$1 ORDER BY updated_at DESC", [access.study.id])).rows;
   const projectId = (env.run.inputs.project_id as string | undefined) ?? (projects.length === 1 ? projects[0]!.id : undefined);

@@ -779,6 +779,9 @@ export function graph(ctx: Ctx): Scene {
     if (!p) continue;
     scene.nodes.push({ ...m, x: p.x - m.w / 2, y: p.y - m.h / 2 });
   }
+  // dagre bends the main chain around skip / feedback edges (a diagonal "staircase"): put it back on one line.
+  const straightened = !spec.groups.length && straightenSpine(scene.nodes, edges, lr, 36 * sc.gap);
+  const lanes: Lane[] = [];
   const pos = new Map(scene.nodes.map((n) => [n.id, n]));
   type Info = { e: DEdge; i: number; a: SNode; b: SNode; d: { points: { x: number; y: number }[]; x?: number; y?: number }; clear: boolean };
   const infos: Info[] = [];
@@ -814,7 +817,9 @@ export function graph(ctx: Ctx): Scene {
     const lab = edgeLabel(e, sc, 150);
     if (clear) {
       const ps = portOut.get(info) ?? cross(a);
-      const pt = portIn.get(info) ?? cross(b);
+      let pt = portIn.get(info) ?? cross(b);
+      // A port a few px off the source line would draw a tiny jog: go straight when that point is still on b's side.
+      if (Math.abs(ps - pt) < 12 && Math.abs(ps - cross(b)) < span(b) / 2 - 8) pt = ps;
       const m = lab && d.x !== undefined && d.y !== undefined ? (lr ? d.x : d.y) : lr ? (a.x + a.w + b.x) / 2 : (a.y + a.h + b.y) / 2;
       const straight = Math.abs(ps - pt) < 2;
       const pts: Pt[] = lr
@@ -842,6 +847,12 @@ export function graph(ctx: Ctx): Scene {
       }
       if (routed) continue;
     }
+    // Straightened layouts: dagre's own route is stale; bridge over (forward) or under (feedback) the nodes in between.
+    const bridge = straightened ? bridgeRoute(a, b, scene.nodes, lr, lanes) : null;
+    if (bridge) {
+      scene.edges.push({ ...edgeBase(e), pts: bridge.pts, ...(lab ? { label: lab, labelAt: bridge.labelAt } : {}) });
+      continue;
+    }
     const pts = d.points.map((p) => [p.x, p.y] as Pt);
     scene.edges.push({ ...edgeBase(e), pts, smooth: pts.length > 2, ...(lab && d.x !== undefined && d.y !== undefined ? { label: lab, labelAt: [d.x, d.y] as Pt } : {}) });
   }
@@ -853,4 +864,84 @@ export function graph(ctx: Ctx): Scene {
     scene.groups.push(grp);
   });
   return scene;
+}
+
+/**
+ * Puts the longest forward chain of a dagre layout (its "spine") on one line: every rank (nodes sharing a main-axis
+ * centre) is re-stacked around its spine node, keeping dagre's order on each side. Returns false when there is no
+ * chain of ≥ 3 nodes or nothing had to move.
+ */
+export function straightenSpine(nodes: SNode[], edges: DEdge[], lr: boolean, sep: number): boolean {
+  const main = (n: SNode) => (lr ? n.x + n.w / 2 : n.y + n.h / 2);
+  const cross = (n: SNode) => (lr ? n.y + n.h / 2 : n.x + n.w / 2);
+  const span = (n: SNode) => (lr ? n.h : n.w);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const fwd = edges.filter((e) => byId.has(e.from) && byId.has(e.to) && main(byId.get(e.to)!) > main(byId.get(e.from)!) + 1);
+  // Longest path (node count) in the forward DAG, ties broken by the edge order of the spec.
+  const order = [...nodes].sort((p, q) => main(p) - main(q));
+  const best = new Map<string, { len: number; prev: string | null }>();
+  for (const n of order) {
+    let b = { len: 1, prev: null as string | null };
+    for (const e of fwd) if (e.to === n.id) { const f = best.get(e.from); if (f && f.len + 1 > b.len) b = { len: f.len + 1, prev: e.from }; }
+    best.set(n.id, b);
+  }
+  let end: string | null = null;
+  for (const [id, b] of best) if (!end || b.len > best.get(end)!.len) end = id;
+  const spine: SNode[] = [];
+  for (let id = end; id; id = best.get(id)!.prev) spine.unshift(byId.get(id)!);
+  if (spine.length < 3) return false;
+  const line = spine.map(cross).sort((a, b) => a - b)[Math.floor(spine.length / 2)]!;
+  if (spine.every((n) => Math.abs(cross(n) - line) < 2)) return false;
+  // Ranks = nodes whose main-axis extents overlap a spine node's.
+  const set = (n: SNode, c: number) => { if (lr) n.y = c - n.h / 2; else n.x = c - n.w / 2; };
+  const placed = new Set<SNode>();
+  for (const s of spine) {
+    const lo = lr ? s.x : s.y;
+    const hi = lo + (lr ? s.w : s.h);
+    const rank = nodes.filter((n) => !placed.has(n) && (n === s || (!spine.includes(n) && (lr ? n.x : n.y) < hi && (lr ? n.x + n.w : n.y + n.h) > lo)));
+    rank.sort((p, q) => cross(p) - cross(q));
+    const k = rank.indexOf(s);
+    set(s, line);
+    let edge = line - span(s) / 2;
+    for (let i = k - 1; i >= 0; i--) { const n = rank[i]!; set(n, edge - sep - span(n) / 2); edge -= sep + span(n); }
+    edge = line + span(s) / 2;
+    for (let i = k + 1; i < rank.length; i++) { const n = rank[i]!; set(n, edge + sep + span(n) / 2); edge += sep + span(n); }
+    rank.forEach((n) => placed.add(n));
+  }
+  return true;
+}
+
+/** Orthogonal route over (forward) or under (feedback) everything between a and b; null when it would cross a node. */
+type Lane = { side: number; lo: number; hi: number; level: number };
+function bridgeRoute(a: SNode, b: SNode, nodes: SNode[], lr: boolean, lanes: Lane[]): { pts: Pt[]; labelAt: Pt } | null {
+  const forward = lr ? cx(b) > cx(a) : b.y + b.h / 2 > a.y + a.h / 2;
+  const between = nodes.filter((n) => n !== a && n !== b && (lr ? n.x + n.w > Math.min(a.x, b.x) && n.x < Math.max(a.x + a.w, b.x + b.w) : n.y + n.h > Math.min(a.y, b.y) && n.y < Math.max(a.y + a.h, b.y + b.h)));
+  const others = nodes.filter((n) => n !== a && n !== b);
+  // Interleaved bridges on one side would cross: an edge whose span overlaps a bridge already drawn goes to the other side.
+  const sa = lr ? cx(a) : a.y + a.h / 2;
+  const sb = lr ? cx(b) : b.y + b.h / 2;
+  const busy = (side: number) => lanes.some((l) => l.side === side && l.lo < Math.max(sa, sb) && l.hi > Math.min(sa, sb));
+  const pref = forward ? -1 : 1;
+  for (const side of busy(pref) && !busy(-pref) ? [-pref, pref] : [pref, -pref]) {
+    const all = [a, b, ...between];
+    let level = lr
+      ? side < 0 ? Math.min(...all.map((n) => n.y)) - 28 : Math.max(...all.map((n) => n.y + n.h)) + 28
+      : side < 0 ? Math.min(...all.map((n) => n.x)) - 28 : Math.max(...all.map((n) => n.x + n.w)) + 28;
+    // Leave a and b from the side facing the bridge, a little off-centre so it does not meet the chain's own arrows.
+    const pa = lr ? a.x + a.w * 0.62 : a.y + a.h * 0.62;
+    const pb = lr ? b.x + b.w * 0.38 : b.y + b.h * 0.38;
+    const ea = lr ? (side < 0 ? a.y : a.y + a.h) : side < 0 ? a.x : a.x + a.w;
+    const eb = lr ? (side < 0 ? b.y : b.y + b.h) : side < 0 ? b.x : b.x + b.w;
+    // Bridges whose spans overlap get their own lane further out.
+    const lo = Math.min(pa, pb) - 6;
+    const hi = Math.max(pa, pb) + 6;
+    while (lanes.some((l) => l.side === side && Math.abs(l.level - level) < 12 && l.lo < hi && l.hi > lo)) level += side * 20;
+    const pts: Pt[] = lr ? [[pa, ea], [pa, level], [pb, level], [pb, eb]] : [[ea, pa], [level, pa], [level, pb], [eb, pb]];
+    if (pts.slice(1).every((q, k) => !others.some((n) => segHits(pts[k]!, q, n, 4)))) {
+      lanes.push({ side, lo, hi, level });
+      const mid = (pa + pb) / 2;
+      return { pts, labelAt: lr ? [mid, level + side * 14] : [level + side * 40, mid] };
+    }
+  }
+  return null;
 }

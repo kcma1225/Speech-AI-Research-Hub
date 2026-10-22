@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { Sparkles } from "@lucide/svelte";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
   import { typeMeta } from "#lib/search/meta.ts";
@@ -50,7 +51,7 @@
     <span class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-3">
       {#if hit.study && hit.type !== "study"}<span class="max-w-full truncate font-medium text-ink-2">{hit.study.title}</span><span aria-hidden="true">·</span>{/if}
       {#each facts as f, i (i)}<span>{f}</span><span aria-hidden="true" class="last:hidden">·</span>{/each}
-      {#if hit.author}<span>{hit.author.name}</span>{/if}
+      {#if hit.author}<span>{displayName(hit.author)}</span>{/if}
     </span>
   </span>
 </a>

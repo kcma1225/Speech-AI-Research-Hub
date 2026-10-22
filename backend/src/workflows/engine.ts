@@ -93,12 +93,20 @@ export async function runWorkflow(deps: EnvDeps, workflowId: string, opts: { las
       break;
     }
   } catch (e) {
-    if (e instanceof WorkflowStop && e.reason === "cancelled" && (await env.refresh()).status !== "cancelled") {
+    // The job's signal fired (worker shutdown, lost lease, or the user's cancel): whatever the abort surfaced as — a
+    // WorkflowStop, an aborted fetch, an AI error — it is never a failure of the run, even on the job's last attempt.
+    const aborted = (e instanceof WorkflowStop && e.reason === "cancelled") || deps.signal.aborted;
+    const userCancelled = aborted && (await env.refresh()).status === "cancelled";
+    if (aborted && !userCancelled) {
       // Aborted by a worker shutdown / lost lease, not by the user: hand the job back; the next attempt resumes.
       await deps.db.query("UPDATE workflow_steps SET status='pending' WHERE run_id=$1 AND status IN ('running','verifying')", [workflowId]);
       throw new Error("workflow interrupted (worker shutdown); will resume");
-    } else if (e instanceof WorkflowStop) await onStop(env, pb, e);
+    } else if (userCancelled && !(e instanceof WorkflowStop)) await onStop(env, pb, new WorkflowStop("cancelled", "已停止。"));
+    else if (e instanceof WorkflowStop) await onStop(env, pb, e);
     else if (isLlmUnavailable(e)) {
+      // The model being down is not the step's fault: give back the attempt the interrupted steps just started, so
+      // an outage (job backoff, then resume) never burns the per-step attempt cap.
+      await deps.db.query("UPDATE workflow_steps SET status='pending', attempts=GREATEST(attempts-1, 0) WHERE run_id=$1 AND status IN ('running','verifying')", [workflowId]);
       await env.note("模型暫時無法使用，等它恢復後會自動繼續。", "warn");
       throw e;
     } else if (e instanceof WorkflowInputError || e instanceof HttpError || opts.lastAttempt) {
@@ -433,7 +441,8 @@ export function buildReport(run: RunRow, steps: StepRow[], outcome: "done" | "pa
   const fixed = steps.filter((s) => s.history.length > 1 && s.kind !== "final");
   const done = passed.filter((s) => s.kind !== "final").map((s) => `${s.title}${s.history.length > 1 ? `（經 ${s.history.length - 1} 輪修正後通過）` : ""}`);
   const issues: string[] = [];
-  for (const c of run.criteria) if (c.status !== "pass") issues.push(`未達成：${c.text}${c.reason ? `（${c.reason}）` : ""}`);
+  // A criterion the final verification never reached (budget / stop) or could not judge is 「未驗收」, not failed.
+  for (const c of run.criteria) if (c.status !== "pass") issues.push(`${c.status === "fail" ? "未達成" : "未驗收"}：${c.text}${c.reason ? `（${c.reason}）` : ""}`);
   for (const s of steps) if (s.status === "failed") issues.push(`「${s.title}」未通過驗收：${(s.verdict?.issues ?? []).filter((i) => i.severity !== "low").map((i) => i.text).slice(0, 3).join("；") || s.error || ""}`);
   if (stop) issues.push(stop.message);
   const ok = run.criteria.filter((c) => c.status === "pass").length;

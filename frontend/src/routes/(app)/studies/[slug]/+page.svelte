@@ -3,7 +3,8 @@
   import { goto } from "$app/navigation";
   import { ArrowLeft, Eye, FlaskConical } from "@lucide/svelte";
   import { api, ApiError } from "#lib/api.ts";
-  import { relativeTime, t } from "#lib/i18n.svelte.ts";
+  import { i18n, relativeTime, t } from "#lib/i18n.svelte.ts";
+  import { displayName } from "#lib/people.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import Card from "#lib/components/ui/Card.svelte";
@@ -89,7 +90,7 @@
       </div>
       <div class="flex shrink-0 items-center gap-3">
         <AvatarStack people={team} max={5} size={32} />
-        {#if advisors.length}<span class="text-[12.5px] text-ink-3">{advisors.map(a => a.name).join("、")}</span>{/if}
+        {#if advisors.length}<span class="text-[12.5px] text-ink-3">{advisors.map(a => displayName(a, "formal")).join(i18n.locale === "en" ? ", " : "、")}</span>{/if}
       </div>
     </div>
     <div class="flex max-w-xl flex-col gap-1.5">

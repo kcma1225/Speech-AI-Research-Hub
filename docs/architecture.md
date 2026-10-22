@@ -715,7 +715,7 @@ the only address sent to external APIs; never a user's email), `library.unpaywal
 | DELETE `/library/papers/:id/pdf/:fileId` | paper editor | the previous file becomes primary → `{paper}` |
 | POST `/library/papers/:id/fetch-pdf` | paper editor | `findOpenAccessPdf` + download now (≤ 90 s) → `{outcome:{status:"stored",source,url,bytes}, paper}`; 404 `code:no_open_access`; 502 `code:download_failed` (+`url`) |
 | POST `/library/pdf` (multipart `file`, `study?`) | user; `study` needs editor | PDF → metadata (`extractPdfRecord`: DOI → arXiv → Crossref title → GROBID → title guess) → 201 `{batch (source pdf, 1 item), extraction:{method, identifiers, titleGuess}}`; confirm stores the PDF on the resulting paper |
-| POST `/library/pdf-from-url` `{url, study?}` | user; `study` needs editor | like POST `/library/pdf` but downloads the PDF first (same errors as `pdf-from-url`) → 201 `{batch (format pdf-url), extraction, download}`; confirm stores the file with source `url` |
+| POST `/library/pdf-from-url` `{url, study?}` | user; `study` needs editor | like POST `/library/pdf` but downloads the PDF first (same errors as `pdf-from-url`); when the PDF has no DOI/arXiv id, the final URL's identifier (ACL Anthology, DOI, arXiv, ISCA link) is resolved before the title match (`method: "url"`) → 201 `{batch (format pdf-url), extraction, download}`; confirm stores the file with source `url` |
 | POST `/library/papers/:id/ai/summary` | user | role **`analysis`** (abstract + first 3 PDF pages, ≤ 12 000 chars) → `{markdown, usedPdf}`; 422 `code:no_text` when there is neither; AI errors `{error, code, hint}` (503 `llm_unavailable`) |
 | GET `/library/search?q=&sources=openalex,s2,arxiv,crossref,isca&yearFrom=&yearTo=&limit≤50&study=<ref>` | user | `searchPapers` → `{hits:[{record, sources, existing: {paperId, level, inStudy} \| null}], errors, skipped}` (`existing` = same/likely lab match). 20 searches/min/user (429; shared with resolve and fetch-pdf) |
 | GET/PUT `/library/settings` | admin | see Settings; PUT fields `contact_email, unpaywall_email, grobid_url, openalex_api_key, s2_api_key, zotero_api_key, zotero_library` (omit = keep, `null`/`""` = remove) → `{settings}` |
@@ -883,7 +883,7 @@ transcript → `transcribed`; media (incl. a recording in progress) → `recorde
 (`adoptAsrTranscript`); otherwise the upload stays current and the ASR one is an alternative (UI: transcript switcher + 「改用語音轉錄」).
 
 **Permissions**: everyone signed in reads every meeting. *Meeting editor* (details, media, recordings, transcripts, speakers, start/cancel
-jobs) = admin, creator, participant, or owner/member of an included study. Delete = creator or admin. Feedback = anyone; edit/delete own
+jobs) = admin, creator, participant, or owner/member of an included study. Delete = creator, admin, or owner/member of an included study. Feedback = anyone; edit/delete own
 (admin any). Drafts (edit/confirm/dismiss/reopen) = owner/member of the draft's study only (403 `只有該研究的成員可以處理這份草稿。`).
 Detail `permissions = {edit, delete, feedback, studies: <study ids the caller may confirm>}`; each draft carries `can_edit`.
 
@@ -1000,7 +1000,7 @@ suggestions) go through `app.collab.edit` with a line diff, so open editors see 
 `{type:"latex_compiled", compileId, status}` (finalizer), `{type:"latex_meta"}` (settings changed), `{type:"suggestions"}`.
 
 Compile (`requestCompile`): `auto` → `refs.bib` (settings.bibFile) is regenerated from `exportStudyBibtex` (unchanged when the
-library is empty; the file is created when missing) → snapshot (live text of every text file → blob, uploaded only when the hash
+library is empty; the file is created when missing; entries of the old file still `\cite`d but not in the library — template samples — are kept at the end, `lib/latex/bib-carry.ts`) → snapshot (live text of every text file → blob, uploaded only when the hash
 changed; binaries are blobs already) → manifest → `latex_compile` job. Queued compiles of the project are cancelled
 (「已由較新的編譯取代。」); a running one finishes (the runner serializes a project). Finalizer: result status (a LaTeX error is a
 successful job with `failure`/`partial`; diagnostics without a zh hint get one from the backend's `hints.ts`), output keys only when below the compile's own prefix; a PDF becomes
@@ -1086,7 +1086,7 @@ Tables (`0070_agent.sql`):
   cancelled by an edit / a new message).
 - `tool_calls` (`message_id`+`position`, `provider_call_id`, `tool`, `args`, `edited_args`, `risk read|write|destructive`,
   `status pending_approval|approved|denied|running|done|failed|cancelled|expired`, `approved_via user|conversation_grant|autopilot`,
-  `approval_reason write|destructive|memory|tainted|outbound|autopilot_limit`, `summary`, `target {studyId,label,url}`,
+  `approval_reason write|destructive|memory|tainted|outbound|autopilot_limit`, `summary` (from the args; after a successful read the ids / slugs its result names are replaced by 〈title〉, `summary-labels.ts`), `target {studyId,label,url}`,
   `result {data,links,source,untrusted}`, `result_text` (what the model saw), `error`, `deny_reason`).
 - `conversation_grants (conversation_id, tool, scope = study id | '*')`, `memories` (`scope global|study`, `content` ≤ 300,
   `source agent|user`, `source_conversation_id` kept after the chat is deleted), `memory_uses (message_id, memory_id)`,
@@ -1391,7 +1391,7 @@ risk class (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`
 
 Frontend: `/assistant[/<id>]` (`components/agent/AssistantWorkspace`), the global slide-over (`AskAiButton` in the topbar from
 `sm`, a floating button above the tab bar on phones; full-screen sheet on phones; page context from the URL via
-`lib/agent/context.ts`), `ChatView` (shared by page, panel and interview), `ConsentCard`, `ToolTimeline`/`ToolRow`,
+`lib/agent/context.ts`, the paper reader `/library/<id>[?study=<slug>]` gives `paperId` + the study), `ChatView` (shared by page, panel and interview), `ConsentCard`, `ToolTimeline`/`ToolRow`,
 `Composer`, `MemorySettings` + `McpTokens` (settings tab 「AI 助理」), `StudyInterview` (`/studies/new` 「AI 訪談」:
 `interview` conversation (seeded maturity card) → question cards → `propose_study_plan` → editable draft (maturity, stages,
 optional tasks from first steps / 「與教授討論：…」 open questions) → `POST /studies` + stage/task(/milestone) API calls), `AskCard`
@@ -1421,7 +1421,7 @@ plan unchanged, `POST /workflows/:id/approve {}`), artifact links and 暫停/繼
 **Focus deep links** (`lib/agent/focus.ts`): `/assistant/<id>?focus=workflow:<runId>|toolcall:<callId>` (`?workflow=<runId>`
 is an alias) — `AssistantWorkspace` passes the target to `ChatView`, which waits for the transcript and the card
 (`data-focus-key` on `WorkflowCard` once loaded, ask cards, consent cards; a `[data-focus-target]` inside narrows it to the
-plan editor / open question), opens a deferred question card, scrolls to it, pulses a ring once (static under reduced
+plan editor / open question / needs-PDF panel), opens a deferred question card or the batch row of a run (`WorkflowBatchCard focusKey`), scrolls to it, pulses a ring once (static under reduced
 motion), focuses it, then drops the parameter (`replaceState`); a missing card toasts 「找不到這張卡片…」.
 `/assistant/workflows?run=<id>` (alias `?id=`) expands that run (fetched when not in the list) and scrolls + pulses it.
 **Document viewer** (「文件檢視器」, `components/agent/viewer/`, contract `lib/agent/viewer.ts`, state `viewer-state.svelte.ts`,
@@ -1473,7 +1473,8 @@ for, asks only when blocked, never adds schedules.
 must wait (plan approval, input, pause) or ends; every state change is persisted first (steps are the checkpoints), so a
 restarted / reaped job resumes from the database: a step left `running` goes back to `pending` (its attempt counts).
 Approve / resume / guidance / 繼續改 enqueue a new job when none is queued or running for the run (`workflow_runs.job_id`).
-`llm_unavailable` from any call → the runner's usual backoff (`waiting_llm`, no attempt consumed; the card shows
+`llm_unavailable` from any call → the runner's usual backoff (`waiting_llm`, no job attempt consumed, and the interrupted
+steps get their step attempt back so an outage never reaches the per-step attempt cap; the card shows
 「等待模型恢復」 from the job stage). Sub-agent roles that are unconfigured/unavailable fall back to `assistant`.
 
 Tables (`0109_workflows.sql`, `0116_workflow_batches.sql`):
@@ -1564,12 +1565,13 @@ the budget):
    steps and get one more targeted fix round while the budget allows (`final_rounds` ≤ 2), then re-integrate.
 6. *Report*: `report.summary_md` (what was done, verification results, remaining issues, links) + a `notice` message
    (`kind workflow_done|workflow_partial|workflow_failed`) in the conversation + a notification (in-app always, Web Push
-   to the owner). `partial` lists the unmet criteria and offers 「繼續改」 (`POST …/resume {more: true}`: +1 fix round per
+   to the owner). `partial` lists the unmet criteria (「未達成」 = failed, 「未驗收」 = never evaluated, e.g. the budget ran out) and offers 「繼續改」 (`POST …/resume {more: true}`: +1 fix round per
    failed step, +1 final round).
 Budgets are checked before each dispatch: steps, sub-agent calls, tokens, wall time (`active_ms`); exhaustion → the
 remaining steps are `skipped` and the run integrates what passed and ends `partial` (`stop_reason budget_*`).
 A worker shutdown / lost lease aborts the job without touching the run: interrupted steps go back to `pending` and the
-job is requeued (only a user cancel sets `cancelled`). Pause: `pause_requested` is honoured between steps (`paused`; running sub-agents finish their call). Cancel: status
+job is requeued (only a user cancel sets `cancelled`; whatever error the abort surfaces as, it never fails the run, also on
+the job's last attempt). Pause: `pause_requested` is honoured between steps (`paused`; running sub-agents finish their call). Cancel: status
 `cancelled` + `cancelJob` (the job's signal aborts the current call); drafts already written stay (listed in
 `artifacts`). Guidance (「補充指示」) is appended to every task dispatched after it and to the verifier's criteria.
 
@@ -1606,7 +1608,14 @@ as before. `askStudentView(env, step, {cardId, title, questions})` is the same p
 **Context and batches** (`src/workflows/context.ts`). A new run inherits its study / paper from the inputs, the page
 context, then the conversation (`conversations.context` / `study_id`, the page context of its recent user messages),
 then a study named in the request (title/slug tokens of a study the user edits: English word = 2 points, CJK bigram =
-1, ≥ 4 and a unique best), then the user's only active study — so a chat about one study never gets 「要把簡報放在哪個研究？」.
+1, ≥ 4 and a unique best), then the user's only active study — so a chat about one study never gets 「要把簡報放在哪個研究？」. When
+planning still has no study (`resolveStudy`), it retries the match on the request + guidance, and a guidance that hands the
+choice back (「你決定」, `DELEGATE_RE`) takes the user's most recently active study; the found study is written to
+`workflow_runs.study_id`. Otherwise the question lists the user's studies (`whichStudyQuestion`). A slides run whose study
+was only found at planning and whose request is 「每一篇文獻」 creates the batch then and ends itself (`cancelled`,
+`stop_reason=skipped`, report 「已拆成 n 個工作流程…」). A slides / reading-note run
+without a `paper_id` takes the study paper the request or the guidance names (full title, or the short name before a colon
+such as 「wav2vec 2.0」; unique match, `matchPaperTitle`), else the study's only paper with a PDF.
 A per-paper playbook (`slides`, `reading_note`) asked for 「每一篇文獻」 (`EACH_PAPER_RE`) without a single paper, or
 given ≥ 2 `paper_ids`, becomes a **batch**: one run per study paper (≤ 10, study order) with a shared `batch_id`,
 `batch_index`, the request + 「（批次 i/n：只處理〈title〉）」 and `inputs.paper_id`. **Queue** (`src/workflows/queue.ts`):
@@ -1637,7 +1646,7 @@ detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step
 
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
-| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder`, `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
+| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 100 calls / 2 M tokens / 75 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
 | `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection → integrate → compile-verify (new file) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
 | `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis | new note | `table_rows` ≥ papers, `citations`, judge |
 | `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
@@ -1657,7 +1666,9 @@ materialises it into the deck tree:
   stack are side nodes wired by edges), encoder_decoder `encoder/decoder.layers`, comparison `panels[{title, sub?,
   highlight?, stages}]` (`direction: LR` = stacked rows), cycle `nodes + center`, timeline `events[{date, label}]`, tree
   `root.children`. Lenient parsing (aliases, string nodes, label refs); zh-TW problems (`lintDiagrams`, used by the
-  `diagram_syntax` check). Our own layouts per type (`diagram/layouts.ts`; free graphs via `@dagrejs/dagre`, MIT): text is
+  `diagram_syntax` check). Our own layouts per type (`diagram/layouts.ts`; free graphs via `@dagrejs/dagre`, MIT, then
+  `straightenSpine`: the longest forward chain is put back on one line — no diagonal staircase — and skip / feedback edges
+  become orthogonal bridges over / under the chain in separate lanes, `bridgeRoute`; graphs with groups keep dagre's routes): text is
   measured with the real glyph metrics of vendored fonts (`backend/assets/fonts/`: Source Sans 3, Noto Sans TC subset to
   Big5-1 + GB2312-1 + CJK punctuation, KaTeX Main/Math/AMS for `$…$`; read with `opentype.js`, MIT) and drawn as glyph
   outlines (`<defs>` + `<use>`), so every label is wrapped into the box it was measured for and renders identically in any
@@ -1676,7 +1687,8 @@ materialises it into the deck tree:
   so the measured and drawn label sizes match.
 - Charts: ```` ```chart ```` JSON `{type: bar|hbar|line|scatter|heatmap, title?, labels, series[{name?, data}], rows?/values?
   (heatmap), x_label?, y_label?, unit?, best?: max|min, source?, caption?}` → SVG laid out for its slide box (fonts 16–26 px
-  absolute, best value per series outlined, `Source:` line) stored as binary `charts/chart-<sha12 of source + box>.svg`,
+  absolute, never below 16 — value labels are dropped instead; best value per series outlined, `Source:` line; a single
+  series has no legend, its name labels the value axis; long `hbar` categories wrap onto two lines; a `bar` chart whose values differ by < 20 % is drawn as a dot plot on a zoomed axis) stored as binary `charts/chart-<sha12 of source + box>.svg`,
   embedded as `{.hub-chart data-font=16}`. Numbers stay in the source body, so `numbers_from_source` can trace them.
 - Paper figures: `![Fig. N: caption](paper-fig:<page>@<top>-<bottom>)` → located on the page from its own layout first
   (`locateFigureByLayout`: caption "Fig./Figure/Table N" incl. roman numerals → its column or full width → the band up to
@@ -1694,13 +1706,16 @@ materialises it into the deck tree:
   6 screenshots on readability / crowding / layout / visual / diagrams / overflow / consistency / professional (1–5;
   pass = all ≥ 3, mean ≥ 4 and no `high`-severity issue). A metric issue always fails the page: raw diagram code, Mermaid
   error, overflow > 6 px on any edge, labels outside their box, HTML font < 16 px, diagram/chart text rendered < 16 px,
-  an empty band > 40 % of the body (content pages), > 75 words, > 6 bullets; so do source issues (`sourceIssues`: a chart
-  and a table sharing ≥ 2 numbers on one slide) and verifier issues naming a defect (`DEFECT_RE`: cut-off figure/text, raw
+  an empty band > 35 % of the body (content pages), > 75 words, > 6 bullets; so do source issues (`sourceIssues`: a chart
+  and a table sharing ≥ 2 numbers on one slide, 「資料未提供」/N/A on the slide, a result / ablation page without the
+  paper's numbers, a comparison diagram whose boxes hold sentences, a diagram that would render < 16 px in its slide box,
+  the same paper figure on two slides, two or more paper figures on one slide) and verifier issues naming a defect (`DEFECT_RE`: cut-off figure/text, raw
   code, unrendered markup, overflow, body text in a crop, duplicated presentation). Text-only pages beyond the 60 % visual
   share fail too. Every failing page gets issue-specific fix instructions (`fixFor`) plus the verifier's own; it goes back
   to a writer (`replaceSlides`, titles unchanged) and the deck is re-rendered; a broken render keeps the last good body.
   Student-owned / title pages fail only on rendering problems. Without vision the step title says so and only metrics are
-  used; with no screenshots at all, source heuristics. State `deck.qa` (`{round, scores[], vision, failed[]}`) feeds
+  used (a verifier that returns nothing is logged, and those pages show 「通過（僅量測）」 with no score); a capture that
+  returns no screenshots is retried once, and a final round without screenshots fails criterion `visual_qa` (`unseen`). State `deck.qa` (`{round, scores[], vision, failed[]}`) feeds
   criterion `visual_qa`; the per-page score table is appended to the report, so pages still failing after 3 rounds are
   listed honestly.
 
@@ -1843,7 +1858,7 @@ HMAC-SHA256(`AUTH_SECRET`, `slide-preview|<deckId>|<previewId>|<expiry>`) (12 h,
 
 Asset rules (ported from v1 `app/app/slides/view/[slug]/[key]/[versionId]/[[...asset]]/route.ts`): empty path →
 entry HTML; reject `slides.pdf`, `pdf.log`, `offline-assets/licenses/*`, `_hub/*`, any `..`/`.`/backslash/NUL; HTML gets the
-in-memory Web Storage shim (it also seeds `annotate:prefs` collapsed, so the annotate toolbar starts collapsed in the player and presenter views — the plugin itself starts collapsed too; `T` or its fold button opens it), the hub bridge (below), the `scrollActivationWidth:0,postMessage:true,postMessageEvents:true`
+in-memory Web Storage shim (it also seeds `annotate:prefs` collapsed, so the annotate toolbar starts collapsed in the player and presenter views — the plugin itself starts collapsed too; `T` or its fold button opens it), the hub bridge (below), a re-layout when an image loads or the slide changes (lazily loaded `.r-stretch` images otherwise kept height 0 when a deck opened at slide N), the `scrollActivationWidth:0,postMessage:true,postMessageEvents:true`
 Reveal patch and the 44 px touch-target CSS; every
 response carries the sandbox CSP, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`,
 `Referrer-Policy: no-referrer`, `Vary: Origin`; requests with `Origin: null` (CORS-mode loads such as web fonts from the

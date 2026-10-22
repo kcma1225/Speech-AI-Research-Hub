@@ -71,7 +71,7 @@
 
 {#each turn.workflows as c (c.id)}
   {@const id = workflowIdOf(c)}
-  {#if id?.startsWith("batch:")}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowBatchCard batchId={id.slice(6)} {compact} />{/key}</div>
+  {#if id?.startsWith("batch:")}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowBatchCard batchId={id.slice(6)} {compact} {focusKey} />{/key}</div>
   {:else if id}<div class={compact ? "" : "sm:ml-11"}>{#key id}<WorkflowCard {id} {compact} collapsible />{/key}</div>{/if}
 {/each}
 

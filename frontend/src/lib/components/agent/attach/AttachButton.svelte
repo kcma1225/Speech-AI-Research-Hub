@@ -24,10 +24,10 @@
   aria-label={draft.count ? `${t("attach.button")}（${draft.count}）` : t("attach.button")}
   aria-haspopup="dialog"
   onclick={() => (open = true)}
-  class="relative inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 text-[12.5px] font-medium text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent motion-reduce:transition-none {compact ? '' : 'sm:px-3'}"
+  class="relative inline-flex h-10 min-w-10 shrink-0 items-center justify-center gap-1.5 rounded-full px-2.5 text-[12.5px] font-medium text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent motion-reduce:transition-none {compact ? '' : '@min-[600px]:px-3'}"
 >
-  <Paperclip class="size-4" />{#if !compact}<span class="hidden sm:inline" aria-hidden="true">{t("attach.button")}</span>{/if}
-  {#if draft.count}<span class="absolute top-0.5 right-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-ink px-1 text-[10px] leading-none text-primary-ink {compact ? '' : 'sm:static sm:h-5 sm:min-w-5 sm:text-[11px]'}" aria-hidden="true">{draft.count}</span>{/if}
+  <Paperclip class="size-4" />{#if !compact}<span class="hidden @min-[600px]:inline" aria-hidden="true">{t("attach.button")}</span>{/if}
+  {#if draft.count}<span class="absolute top-0.5 right-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-ink px-1 text-[10px] leading-none text-primary-ink {compact ? '' : '@min-[600px]:static @min-[600px]:h-5 @min-[600px]:min-w-5 @min-[600px]:text-[11px]'}" aria-hidden="true">{draft.count}</span>{/if}
 </button>
 
 <AttachPicker bind:open {draft} {context} {conversationId} />

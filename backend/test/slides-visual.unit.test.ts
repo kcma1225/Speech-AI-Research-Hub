@@ -2,12 +2,22 @@ import { describe, expect, it } from "vitest";
 import { chartBlocks, chartFileName, figureRefs, fixMermaid, lintMermaid, normalizeDiagrams, parseDeckChart, renderDeckChartSvg } from "../src/lib/slides/deck-visuals.js";
 import { qmdHeader } from "../src/lib/slides/templates.js";
 import { runChecks, visibleWords } from "../src/workflows/checks.js";
-import { combineScores, fixFor, metricIssues, replaceSlides, scoreTable, sourceIssues, visionScores, type ShotPage } from "../src/workflows/playbooks/slides-visual.js";
+import { closeOpenBlocks, combineScores, fixFor, metricIssues, replaceSlides, scoreTable, sourceIssues, visionScores, type ShotPage } from "../src/workflows/playbooks/slides-visual.js";
 import type { WorkflowEnv } from "../src/workflows/env.js";
 
 const metrics = (over: Partial<NonNullable<ShotPage["metrics"]>> = {}) => ({ words: 20, bullets: 3, minFont: 20, maxFont: 40, overflowY: 0, overflowX: 0, visuals: 1, tables: 0, diagrams: 1, diagramErrors: 0, rawDiagramCode: 0, codeBlocks: 0, ...over });
 
 describe("deck charts", () => {
+  it("draws near-equal bars as a zoomed dot plot, a single series without legend, and never a font below 16 px", () => {
+    const close = renderDeckChartSvg(parseDeckChart(JSON.stringify({ type: "bar", labels: ["15", "11,15", "9,15"], series: [{ name: "WER", data: [4.33, 4.14, 4.0] }], best: "min" }))!);
+    expect(close).toContain("<circle");
+    expect(close).not.toMatch(/<rect x="[\d.]+" y="[\d.]+" width="[\d.]+" height="[\d.]+" rx="3" fill="#/);
+    expect(close).toContain("WER"); // series name → axis label
+    const far = renderDeckChartSvg(parseDeckChart(JSON.stringify({ type: "bar", labels: Array.from({ length: 8 }, (_, i) => `M${i}`), series: [{ name: "a", data: [1, 2, 3, 4, 5, 6, 7, 8] }, { name: "b", data: [2, 3, 4, 5, 6, 7, 8, 9] }] }))!);
+    expect(far).toContain("<rect");
+    for (const m of far.matchAll(/font-size="(\d+)"/g)) expect(Number(m[1])).toBeGreaterThanOrEqual(16);
+  });
+
   it("parses specs, rejects invalid ones and renders a standalone SVG with values, legend and source", () => {
     expect(parseDeckChart("not json")).toBeNull();
     expect(parseDeckChart(JSON.stringify({ type: "pie", labels: ["a"], series: [{ data: [1] }] }))).toBeNull();
@@ -168,6 +178,49 @@ describe("stricter visual QA", () => {
     expect(s[0]!.fix).toContain("不要同時用圖表和表格");
   });
 
+  it("results pages need the paper's numbers; sentence-filled comparison diagrams are flagged", () => {
+    const body = [
+      "## Main results\n\n| System | Context |\n|---|---|\n| Ours | early layers |\n",
+      "## Ablation and key figure\n\n![Table 4: layers (p. 4)](paper-fig:4@0.32-0.42)\n",
+      "## Results on LibriSpeech\n\n| System | WER |\n|---|---|\n| Base | 3.1 |\n| Ours | 2.5 |\n",
+      "## Setup and fairness\n\n```diagram\n" + JSON.stringify({ type: "comparison", panels: [{ title: "Prior work", stages: ["Claimed better than fusion", "No direct comparison"] }, { title: "This paper", stages: ["Head-to-head", "vs shallow fusion directly"] }] }) + "\n```\n",
+      "## Pipeline\n\n```diagram\n" + JSON.stringify({ type: "comparison", panels: [{ title: "A", stages: ["Audio", "Encoder", "Decoder"] }, { title: "B", stages: ["Audio", "Early inject", "Decoder"] }] }) + "\n```\n",
+    ].join("\n");
+    const m = sourceIssues(body);
+    expect(m.get("Main results")?.[0]).toContain("結果頁沒有論文的數字");
+    expect(m.has("Ablation and key figure")).toBe(false);
+    expect(m.has("Results on LibriSpeech")).toBe(false);
+    expect(m.get("Setup and fairness")?.[0]).toContain("句子");
+    expect(m.has("Pipeline")).toBe(false);
+    expect(fixFor(m.get("Main results")!)).toContain("```chart");
+  });
+
+  it("flags a diagram too large for its slide box and an unseen QA round", () => {
+    const nodes = Array.from({ length: 14 }, (_, i) => ({ id: `n${i}`, label: `Processing stage number ${i} with a long label` }));
+    const big = "## Architecture\n\n```diagram\n" + JSON.stringify({ type: "graph", direction: "LR", nodes, edges: nodes.slice(1).map((n, i) => ({ from: `n${i}`, to: n.id })) }) + "\n```\n\n- a\n- b\n- c\n";
+    expect(sourceIssues(big).get("Architecture")?.some((i) => i.includes("圖太大"))).toBe(true);
+    expect(runChecks([{ id: "visual_qa" }], "", { visualQa: { failed: [], scored: 12, vision: true, unseen: true } })[0]!.ok).toBe(false);
+    expect(runChecks([{ id: "visual_qa" }], "", { visualQa: { failed: [], scored: 12, vision: true } })[0]!.ok).toBe(true);
+  });
+
+  it("flags the same paper figure on a second slide", () => {
+    const m = sourceIssues("## Main results\n\n![Fig. 3: CCA (p. 4)](paper-fig:4@0.45-0.66)\n\n## Ablation\n\n![Fig. 3: CCA again](paper-fig:4@0.40-0.70)\n\n## Other\n\n![Fig. 4: fbank](paper-fig:4@0.36-0.45)\n");
+    expect(m.has("Main results")).toBe(false);
+    expect(m.get("Ablation")?.[0]).toContain("同一張論文圖");
+    expect(m.has("Other")).toBe(false);
+    const two = sourceIssues("## Main results\n\n:::: {.columns}\n::: {.column}\n![Fig. 5: MI (p. 4)](paper-fig:4@0.62-0.9)\n:::\n::: {.column}\n![Fig. 6: word (p. 5)](paper-fig:5@0.26-0.41)\n:::\n::::\n");
+    expect(two.get("Main results")?.some((i) => i.includes("兩張以上的論文圖"))).toBe(true);
+  });
+
+  it("flags 「資料未提供」 on a slide as a source issue with a fix", () => {
+    const m = sourceIssues("## Results\n\n| Model | WER |\n|---|---|\n| A | 資料未提供 |\n\n## Fine\n\n- ok\n\n::: {.notes}\n資料未提供\n:::\n");
+    expect(m.get("Results")?.[0]).toContain("資料未提供");
+    expect(m.has("Fine")).toBe(false);
+    const s = combineScores([{ index: 3, title: "Results", metrics: metrics() }], [], () => false, m);
+    expect(s[0]!.pass).toBe(false);
+    expect(s[0]!.fix).toContain("刪掉沒有資料");
+  });
+
   it("vision pass needs a mean ≥ 4 and no high-severity issue", async () => {
     const answer = (scores: Record<string, number>, issues: unknown[]) => ({ callJson: async () => ({ value: { pages: [{ page: 2, scores, issues }] }, text: "" }) }) as unknown as WorkflowEnv;
     const img = [{ page: 2, mediaType: "image/webp" as const, data: "AAAA" }];
@@ -185,5 +238,16 @@ describe("stricter visual QA", () => {
     const spec = parseDeckChart(JSON.stringify({ type: "bar", labels: ["A", "B"], series: [{ data: [1, 2] }] }))!;
     expect(renderDeckChartSvg(spec, { w: 600, h: 420 })).toContain('viewBox="0 0 600 396"');
     expect(chartFileName("x", { w: 600, h: 420 })).not.toBe(chartFileName("x", { w: 1100, h: 420 }));
+  });
+});
+
+describe("assembly repair", () => {
+  it("closes a cut-off notes block per slide so later slides stay slides", () => {
+    const body = "## A\n\n- x\n\n::: {.notes}\n講稿被截斷\n\n## B\n\n```chart\n{\"type\":\"bar\"\n\n## C\n\n:::: {.columns}\n::: {.column}\n- y\n:::\n::::\n";
+    const fixed = closeOpenBlocks(body);
+    expect(fixed).toContain("講稿被截斷\n:::\n");
+    expect(fixed).toContain("\"bar\"\n```\n");
+    expect(fixed.endsWith("::::\n")).toBe(true);
+    expect(runChecks([{ id: "not_truncated" }], fixed, null)[0]!.ok).toBe(true);
   });
 });

@@ -92,31 +92,29 @@
       <p class="mb-2 text-[13px] font-semibold text-ink">{t("wf.outline")} · {t("wf.outlinePages", { n: outline.length })}</p>
       <ol class="flex flex-col gap-2">
         {#each outline as page, i (i)}
+          <!-- Controls sit in a header row so the title and points get the full width (phones too); points wrap. -->
           <li class="rounded-xl border border-line bg-surface p-2.5">
-            <div class="flex items-start gap-2">
-              <span class="mt-2 w-12 shrink-0 text-[12px] text-ink-3 tabular-nums">{t("wf.page", { n: i + 1 })}</span>
-              <div class="min-w-0 flex-1">
-                <label class="sr-only" for="wf-page-{workflow.id}-{i}">{t("wf.pageTitlePlaceholder")}</label>
-                <input id="wf-page-{workflow.id}-{i}" class="h-10 w-full rounded-lg border border-transparent bg-transparent px-2 text-[14px] font-medium text-ink outline-none hover:border-line focus:border-ink" bind:value={page.title} placeholder={t("wf.pageTitlePlaceholder")} />
-                {#if owned.has(page.title)}<span class="ml-2 text-[11.5px] text-ink-3">{t("wf.studentOwned")}</span>{/if}
-                <ul class="mt-1 flex flex-col gap-0.5">
-                  {#each page.points as _, j (j)}
-                    <li class="flex items-center gap-1">
-                      <span class="ml-2 text-ink-3" aria-hidden="true">•</span>
-                      <label class="sr-only" for="wf-pt-{workflow.id}-{i}-{j}">{t("wf.point")}</label>
-                      <input id="wf-pt-{workflow.id}-{i}-{j}" class="h-9 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 text-[13px] text-ink-2 outline-none hover:border-line focus:border-ink" bind:value={page.points[j]} />
-                      <button type="button" class="grid size-9 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("wf.removePage")} onclick={() => (page.points = page.points.filter((__, k) => k !== j))}><X class="size-3.5" /></button>
-                    </li>
-                  {/each}
-                </ul>
-                {#if page.points.length < 8}<button type="button" class="mt-0.5 inline-flex min-h-9 items-center gap-1 rounded-full px-2 text-[12.5px] text-ink-3 hover:bg-surface-3 hover:text-ink" onclick={() => (page.points = [...page.points, ""])}><Plus class="size-3.5" />{t("wf.addPoint")}</button>{/if}
-              </div>
-              <div class="flex shrink-0 flex-col">
-                <button type="button" class="grid size-9 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-30" aria-label={t("wf.moveUp")} disabled={i === 0} onclick={() => (outline = moveItem(outline, i, i - 1))}><ChevronUp class="size-4" /></button>
-                <button type="button" class="grid size-9 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-30" aria-label={t("wf.moveDown")} disabled={i === outline.length - 1} onclick={() => (outline = moveItem(outline, i, i + 1))}><ChevronDown class="size-4" /></button>
-                <button type="button" class="grid size-9 place-items-center rounded-full text-ink-3 hover:bg-danger-soft hover:text-danger disabled:opacity-30" aria-label={t("wf.removePage")} disabled={outline.length <= 1} onclick={() => (outline = outline.filter((__, k) => k !== i))}><X class="size-4" /></button>
-              </div>
+            <div class="flex items-center gap-1">
+              <span class="pl-2 text-[12px] text-ink-3 tabular-nums">{t("wf.page", { n: i + 1 })}</span>
+              {#if owned.has(page.title)}<span class="ml-1 rounded-full bg-surface-3 px-2 py-0.5 text-[11.5px] text-ink-3">{t("wf.studentOwned")}</span>{/if}
+              <span class="flex-1"></span>
+              <button type="button" class="grid size-9 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-30" aria-label={t("wf.moveUp")} disabled={i === 0} onclick={() => (outline = moveItem(outline, i, i - 1))}><ChevronUp class="size-4" /></button>
+              <button type="button" class="grid size-9 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-30" aria-label={t("wf.moveDown")} disabled={i === outline.length - 1} onclick={() => (outline = moveItem(outline, i, i + 1))}><ChevronDown class="size-4" /></button>
+              <button type="button" class="grid size-9 place-items-center rounded-full text-ink-3 hover:bg-danger-soft hover:text-danger disabled:opacity-30" aria-label={t("wf.removePage")} disabled={outline.length <= 1} onclick={() => (outline = outline.filter((__, k) => k !== i))}><X class="size-4" /></button>
             </div>
+            <label class="sr-only" for="wf-page-{workflow.id}-{i}">{t("wf.pageTitlePlaceholder")}</label>
+            <input id="wf-page-{workflow.id}-{i}" class="h-10 w-full rounded-lg border border-transparent bg-transparent px-2 text-[14px] font-medium text-ink outline-none hover:border-line focus:border-ink" bind:value={page.title} placeholder={t("wf.pageTitlePlaceholder")} />
+            <ul class="mt-0.5 flex flex-col gap-0.5">
+              {#each page.points as _, j (j)}
+                <li class="flex items-start gap-1">
+                  <span class="mt-2 ml-2 text-ink-3" aria-hidden="true">•</span>
+                  <label class="sr-only" for="wf-pt-{workflow.id}-{i}-{j}">{t("wf.point")}</label>
+                  <textarea id="wf-pt-{workflow.id}-{i}-{j}" rows="1" class="point min-h-9 min-w-0 flex-1 resize-none rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-[13px] leading-snug text-ink-2 outline-none hover:border-line focus:border-ink" bind:value={page.points[j]} onkeydown={(e) => e.key === "Enter" && !e.isComposing && e.preventDefault()}></textarea>
+                  <button type="button" class="grid size-9 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("wf.removePoint")} onclick={() => (page.points = page.points.filter((__, k) => k !== j))}><X class="size-3.5" /></button>
+                </li>
+              {/each}
+            </ul>
+            {#if page.points.length < 8}<button type="button" class="mt-0.5 inline-flex min-h-9 items-center gap-1 rounded-full px-2 text-[12.5px] text-ink-3 hover:bg-surface-3 hover:text-ink" onclick={() => (page.points = [...page.points, ""])}><Plus class="size-3.5" />{t("wf.addPoint")}</button>{/if}
           </li>
         {/each}
       </ol>
@@ -132,7 +130,7 @@
           <span class="grid size-5 shrink-0 place-items-center rounded-full border border-line-2" aria-hidden="true"></span>
           <label class="sr-only" for="wf-cr-{workflow.id}-{i}">{t("wf.criteria")} {i + 1}</label>
           <input id="wf-cr-{workflow.id}-{i}" class="h-10 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 text-[13.5px] text-ink outline-none hover:border-line focus:border-ink" bind:value={c.text} />
-          <button type="button" class="grid size-9 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("wf.removePage")} onclick={() => (criteria = criteria.filter((__, k) => k !== i))}><X class="size-3.5" /></button>
+          <button type="button" class="grid size-9 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("wf.crit.remove")} onclick={() => (criteria = criteria.filter((__, k) => k !== i))}><X class="size-3.5" /></button>
         </li>
       {/each}
     </ul>
@@ -189,6 +187,10 @@
 </section>
 
 <style>
+  /* Points grow with their text (wrapping instead of a one-line field that cuts long points off). */
+  .point {
+    field-sizing: content;
+  }
   .plan {
     animation: plan-in 200ms cubic-bezier(0.2, 0, 0, 1);
   }

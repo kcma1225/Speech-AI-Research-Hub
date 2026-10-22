@@ -38,6 +38,17 @@ describe("workflow checks", () => {
     expect(CHECKS.no_placeholder!("結果待補", { params: {}, data: null }).ok).toBe(false);
   });
 
+  it("decks: 「資料未提供」 fails on the slide, not in the notes", () => {
+    const onSlide = "## Results\n\n| Model | WER |\n|---|---|\n| A | 資料未提供 |\n\n::: {.notes}\n講稿講稿講稿講稿講稿講稿講稿講稿講稿講稿講稿講稿講稿講稿講稿\n:::\n";
+    const inNotes = "## Results\n\n| Model | WER |\n|---|---|\n| A | 4.1 |\n\n::: {.notes}\nB 的數字資料未提供。\n:::\n";
+    const r = CHECKS.no_placeholder!(onSlide, { params: { on_slide: true }, data: null });
+    expect(r.ok).toBe(false);
+    expect(r.detail).toContain("Results");
+    expect(CHECKS.no_placeholder!(onSlide, { params: {}, data: null }).ok).toBe(true);
+    expect(CHECKS.no_placeholder!(inNotes, { params: { on_slide: true }, data: null }).ok).toBe(true);
+    expect(CHECKS.no_placeholder!("## Baselines\n\n- WER: N/A\n", { params: { on_slide: true }, data: null }).ok).toBe(false);
+  });
+
   it("finds unclosed blocks", () => {
     expect(CHECKS.not_truncated!("## A\n\n::: {.notes}\n講稿", { params: {}, data: null }).ok).toBe(false);
     expect(CHECKS.not_truncated!("\\begin{itemize}\n\\item x", { params: {}, data: null }).ok).toBe(false);
@@ -127,6 +138,8 @@ describe("workflow helpers", () => {
     expect(r.summary_md).toContain("部分完成");
     expect(r.issues.join()).toContain("正好 11 頁");
     expect(r.done[0]).toContain("修正後通過");
+    const stopped = buildReport({ ...run, criteria: [{ id: "c", text: "可以編譯", kind: "check", status: "pending" }] } as unknown as RunRow, steps, "partial", null, null);
+    expect(stopped.issues).toEqual(["未驗收：可以編譯"]);
   });
 });
 
@@ -153,5 +166,25 @@ describe("chat completion check vs start_workflow", () => {
     expect(completionReview({ text: "我已經把這件事交給工作流程，正在規劃；計畫卡片準備好時請確認後按「開始」。", calls, earlierWrite: false, plan: null })).toBeNull();
     // A false claim of a finished deck is still caught.
     expect(completionReview({ text: "已建立簡報草稿，共 11 頁。", calls, earlierWrite: false, plan: null })).not.toBeNull();
+  });
+});
+
+describe("paper named in a workflow request", async () => {
+  const { matchPaperTitle } = await import("../src/workflows/playbooks/common.js");
+  const papers = [
+    { id: "w", title: "wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations" },
+    { id: "a", title: "Attention Is All You Need" },
+    { id: "c", title: "Conformer: Convolution-augmented Transformer for Speech Recognition" },
+    { id: "z", title: "基於自監督學習之台語語音辨識" },
+  ];
+  it("matches the short name before the colon or the full title", () => {
+    expect(matchPaperTitle("幫我把 wav2vec 2.0 這篇做成 6 頁的論文報告簡報", papers)?.id).toBe("w");
+    expect(matchPaperTitle("把 attention is all you need 做成簡報", papers)?.id).toBe("a");
+    expect(matchPaperTitle("請報告〈基於自監督學習之台語語音辨識〉", papers)?.id).toBe("z");
+    expect(matchPaperTitle("Conformer 那篇", papers)?.id).toBe("c");
+  });
+  it("needs a unique match", () => {
+    expect(matchPaperTitle("做一份進度報告", papers)).toBeNull();
+    expect(matchPaperTitle("比較 wav2vec 2.0 和 Conformer", papers)).toBeNull();
   });
 });

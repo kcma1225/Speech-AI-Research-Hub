@@ -59,6 +59,7 @@ const allPass = (req: { messages: { role: string; content: unknown }[] }) => JSO
 
 // A small playbook that exercises the engine generically: steps a ∥ b → c → final.
 let crashOnce = false;
+let crashHook: (() => void) | null = null;
 registerWorkflowPlaybook({
   id: "test_pb",
   title: "測試流程", titleEn: "Test", description: "", descriptionEn: "",
@@ -84,6 +85,7 @@ registerWorkflowPlaybook({
     }
     if (crashOnce && step.key === "b") {
       crashOnce = false;
+      crashHook?.();
       throw new Error("simulated worker crash");
     }
     const r = await env.call({ purpose: `w:${step.key}`, role: "writer", messages: [{ role: "user", content: fix ? `修正：${fix.issues.join("；")}` : step.instructions }] }, step.id);
@@ -215,6 +217,44 @@ run("workflow engine", () => {
     expect((await getRun(t.db, id))!.guidance[0]!.text).toBe("語氣再正式一點");
   });
 
+  it("a worker shutdown on the job's last attempt hands the run back instead of failing it", async () => {
+    m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
+    m.set("w:b", "B 段落的完整內容，依據資料撰寫。");
+    const id = await newRun();
+    await runWorkflow(deps(), id);
+    await approveWorkflow(t.app, await asUser(alice.id), id, {});
+    // The shutdown aborts the job's signal; the interrupted call surfaces as a plain error (aborted fetch).
+    const ctrl = new AbortController();
+    crashOnce = true;
+    crashHook = () => ctrl.abort();
+    try {
+      await expect(runWorkflow(deps(ctrl.signal), id, { lastAttempt: true })).rejects.toThrow("interrupted");
+    } finally {
+      crashHook = null;
+    }
+    expect((await getRun(t.db, id))!.status).toBe("running");
+    expect((await runWorkflow(deps(), id)).status).toBe("done");
+  });
+
+  it("a model outage does not use up the step's attempts", async () => {
+    m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
+    m.set("w:b", "B 段落的完整內容，依據資料撰寫。");
+    const id = await newRun();
+    await runWorkflow(deps(), id);
+    await approveWorkflow(t.app, await asUser(alice.id), id, {});
+    const { llmUnavailable } = await import("../src/ai/platform/errors.js");
+    let outages = 8; // more outages than the attempt cap (fix rounds + 3)
+    m.set("w:b", () => {
+      if (outages-- > 0) throw llmUnavailable("assistant", "all_failed");
+      return "B 段落的完整內容，依據資料撰寫。";
+    });
+    for (let i = 0; i < 8; i++) await expect(runWorkflow(deps(), id)).rejects.toThrow();
+    const b = (await getSteps(t.db, id)).find((s) => s.key === "b")!;
+    expect(b.status).toBe("pending");
+    expect(b.attempts).toBe(0);
+    expect((await runWorkflow(deps(), id)).status).toBe("done");
+  });
+
   it("final verification failure triggers a targeted repair round", async () => {
     m.set("w:a", "A 段落的完整內容，依據資料撰寫。");
     m.set("w:b", "B 段落的完整內容，依據資料撰寫。");
@@ -285,8 +325,21 @@ run("workflow engine", () => {
     let stop = false;
     const worker = (async () => {
       while (!stop) {
-        const jobs = (await t.db.query<{ id: string; payload: { previewId: string } }>("UPDATE jobs SET status='succeeded', finished_at=now() WHERE kind='slide_preview' AND status='queued' RETURNING id, payload")).rows;
-        for (const j of jobs) await t.db.query("UPDATE deck_previews SET status='ready', entry_html='index.html', finished_at=now() WHERE id=$1", [j.payload.previewId]);
+        const jobs = (await t.db.query<{ id: string; payload: { previewId: string; deckId: string; shots?: boolean } }>("SELECT id, payload FROM jobs WHERE kind='slide_preview' AND status='queued'")).rows;
+        for (const j of jobs) {
+          // Outputs first, then the job status (the run reads the shots as soon as the job has succeeded).
+          const pv = (await t.db.query<{ output_prefix: string }>("UPDATE deck_previews SET status='ready', entry_html='index.html', finished_at=now() WHERE id=$1 RETURNING output_prefix", [j.payload.previewId])).rows[0];
+          if (!j.payload.shots || !pv) {
+            await t.db.query("UPDATE jobs SET status='succeeded', finished_at=now() WHERE id=$1", [j.id]);
+            continue;
+          }
+          // Screenshot capture: one page per slide of the deck's entry, with clean layout metrics.
+          const qmd = (await t.db.query<{ content: string }>("SELECT content FROM deck_sources WHERE deck_id=$1 AND path='index.qmd'", [j.payload.deckId])).rows[0]?.content ?? "";
+          const titles = ["", ...[...qmd.matchAll(/^## (.+)$/gm)].map((x) => x[1]!.trim())];
+          const metrics = { words: 20, bullets: 2, minFont: 22, maxFont: 40, overflowY: 0, overflowX: 0, visuals: 1, tables: 1, diagrams: 0, diagramErrors: 0, rawDiagramCode: 0, codeBlocks: 0, emptyBand: 0.1 };
+          await t.storage.put(`${pv.output_prefix}_hub/shots.json`, Buffer.from(JSON.stringify({ version: 1, width: 1280, height: 800, total: titles.length, truncated: false, pages: titles.map((title, i) => ({ index: i + 1, h: i, title, metrics })) })), "application/json");
+          await t.db.query("UPDATE jobs SET result=$2, status='succeeded', finished_at=now() WHERE id=$1", [j.id, JSON.stringify({ shots: { count: titles.length } })]);
+        }
         await new Promise((r) => setTimeout(r, 200));
       }
     })();
@@ -381,6 +434,21 @@ run("workflow engine", () => {
     expect((await post(alice, `/api/workflows/${wf.id}/pause`)).statusCode).toBe(200);
     expect((await post(alice, `/api/workflows/${wf.id}/cancel`)).statusCode).toBe(200);
     expect(json(await get(alice, `/api/workflows/${wf.id}`)).workflow.status).toBe("cancelled");
+  });
+
+  it("slides plan approved with outline edits over HTTP: steps re-derived, an added template page is student-owned", async () => {
+    m.set("outline", JSON.stringify({ pages: ["問題定義", "方法", "結果"].map((title) => ({ title, points: ["依資料"] })) }));
+    const id = await newRun("slides", { request: "幫我做這個研究的進度報告簡報，3 頁", inputs: { pages: 3, mode: "progress" } });
+    expect((await runWorkflow(deps(), id)).status).toBe("awaiting_plan_approval");
+    const outline = [{ title: "問題定義", points: ["依資料"] }, { title: "方法與結果", points: ["依資料", "數字"] }, { title: "My assessment", points: [] }];
+    const res = await post(alice, `/api/workflows/${id}/approve`, { outline });
+    expect(res.statusCode, res.body).toBe(200);
+    const after = (await getRun(t.db, id))!;
+    expect(after.status).toBe("running");
+    expect(after.plan!.outline!.map((o) => o.title)).toEqual(outline.map((o) => o.title));
+    expect((after.plan!.outline as { title: string; student_owned?: boolean }[]).find((o) => o.title === "My assessment")!.student_owned).toBe(true);
+    expect((await getSteps(t.db, id)).map((s) => s.key)).toContain("student_input");
+    await cancelWorkflow(t.app, await asUser(alice.id), id);
   });
 
   it("a non-member cannot get writes: slides asks for a study the user belongs to", async () => {

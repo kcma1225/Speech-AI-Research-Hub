@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { RefreshCw } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
@@ -82,7 +83,7 @@
               {@const total = u.tokens_in + u.tokens_out}
               <li>
                 <div class="flex items-baseline gap-2 text-[13px]">
-                  <span class="min-w-0 flex-1 truncate text-ink">{u.user.name} <span class="text-ink-3">@{u.user.username}</span></span>
+                  <span class="min-w-0 flex-1 truncate text-ink">{displayName(u.user)} <span class="text-ink-3">@{u.user.username}</span></span>
                   <span class="shrink-0 text-ink-3 tabular-nums">{u.calls} · {fmtTokens(u.tokens_in)} / {fmtTokens(u.tokens_out)}</span>
                 </div>
                 <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3"><div class="h-full rounded-full bg-ink" style="width:{Math.max(2, (total / maxUserTokens) * 100)}%"></div></div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { Clock, FileText, Mic } from "@lucide/svelte";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
   import { formatClock } from "#lib/audio/time.ts";
@@ -54,7 +55,7 @@
       {#each meeting.studies as s (s.id)}
         <span class="inline-flex max-w-full min-w-0 items-center gap-1 rounded-full border border-line/80 bg-surface-2 px-2.5 py-0.5 text-[12px] text-ink-2" title={s.owner ? t("meet.card.studyOf", { name: s.owner.name, title: s.title }) : s.title}>
           <span class="truncate">{s.title}</span>
-          {#if s.owner}<span class="shrink-0 text-ink-3">· {s.owner.name}</span>{/if}
+          {#if s.owner}<span class="shrink-0 text-ink-3">· {displayName(s.owner)}</span>{/if}
         </span>
       {/each}
     </div>

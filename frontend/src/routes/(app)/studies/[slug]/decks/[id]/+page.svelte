@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { tick, untrack } from "svelte";
   import { DropdownMenu, Tabs } from "bits-ui";
   import { ArrowLeft, CircleAlert, Download, Ellipsis, Expand, FileCode2, FilePen, FileSearch, Globe, History, Info, LoaderCircle, MessageSquareQuote, Play, Presentation, Send, Trash2 } from "@lucide/svelte";
@@ -227,11 +228,11 @@
   </div>
 {:else}
   {@const d = detail}
-  <header class="mb-5 flex flex-col gap-4 lg:mb-6 lg:flex-row lg:items-end lg:justify-between">
+  <header class="mb-5 flex flex-col gap-4 lg:mb-6 2xl:flex-row 2xl:items-end 2xl:justify-between">
     <div class="min-w-0">
       <h1 class="font-display text-[30px] leading-[1.08] text-balance text-ink sm:text-[40px]">{d.project.title}</h1>
       <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-ink-3">
-        {#if author}<span class="inline-flex items-center gap-2 text-ink-2"><Avatar name={author} size={22} class="ring-0" />{author}</span><span aria-hidden="true">·</span>{/if}
+        {#if author}<span class="inline-flex items-center gap-2 text-ink-2"><Avatar name={author} size={22} class="ring-0" />{displayName(author)}</span><span aria-hidden="true">·</span>{/if}
         {#if d.activeVersion}
           <span>{t("slides.version", { n: d.activeVersion.version })}</span><span aria-hidden="true">·</span>
           <span>{formatDate(d.activeVersion.published_at ?? d.activeVersion.created_at)}</span>
@@ -303,7 +304,7 @@
               <p class="text-sm font-medium">{t("slides.noDeck")}</p>
               <p class="text-[13px] text-ink-3">{t("slides.noDeck.rendering")}</p>
               <div class="mt-1 w-56">
-                <div class="mb-1.5 flex justify-between text-[12px] text-ink-3"><span>{latest.stage ?? t("slides.status.queued")}</span><span class="tabular-nums">{latest.progress}%</span></div>
+                <div class="mb-1.5 flex justify-between text-[12px] text-ink-3"><span>{latest.stage && latest.stage !== "queued" ? latest.stage : t("slides.status.queued")}</span><span class="tabular-nums">{latest.progress}%</span></div>
                 <Progress value={latest.progress || null} />
               </div>
             {:else if !latest && d.project.source}

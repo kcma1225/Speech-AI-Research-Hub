@@ -132,3 +132,19 @@ describe("visual fit", () => {
     expect(f3.h).toBe(f1.h);
   });
 });
+
+describe("graph spine", () => {
+  it("keeps the main chain on one line around skip and feedback edges (no staircase)", () => {
+    for (const dir of ["LR", "TB"] as const) {
+      const { spec } = parseDiagram(JSON.stringify({ type: "graph", direction: dir, nodes: ["Speech input", "CNN encoder", "Transformer", "Layer outputs", "Probing classifier"].map((l, i) => ({ id: `n${i}`, label: l })), edges: [{ from: "n0", to: "n1" }, { from: "n1", to: "n2" }, { from: "n2", to: "n3" }, { from: "n3", to: "n4" }, { from: "n1", to: "n4" }, { from: "n0", to: "n3" }, { from: "n4", to: "n1", style: "dashed" }] }));
+      const scene = _buildScene(spec!, { w: 1120, h: 470 });
+      const cross = scene.nodes.map((n) => (dir === "LR" ? n.y + n.h / 2 : n.x + n.w / 2));
+      expect(Math.max(...cross) - Math.min(...cross)).toBeLessThan(1);
+      // Every edge is orthogonal and no segment passes through a node other than its ends.
+      for (const e of scene.edges) for (let i = 0; i + 1 < e.pts.length; i++) {
+        const [p, q] = [e.pts[i]!, e.pts[i + 1]!];
+        expect(Math.abs(p[0] - q[0]) < 0.5 || Math.abs(p[1] - q[1]) < 0.5).toBe(true);
+      }
+    }
+  });
+});

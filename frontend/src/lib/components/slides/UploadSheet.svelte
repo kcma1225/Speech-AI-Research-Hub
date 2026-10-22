@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { CircleAlert, CircleCheck, FileSearch, Info } from "@lucide/svelte";
   import { api, ApiError } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
@@ -78,6 +79,15 @@
 
   $effect(() => {
     if (!slugTouched) slug = title.trim() ? slugify(title) : "";
+  });
+  // A picked file names the deck until the user types a title of their own.
+  let autoTitle = "";
+  $effect(() => {
+    if (isVersion || !file) return;
+    const name = file.name.replace(/\.(zip|pdf|pptx)$/i, "").replace(/[_]+/g, " ").trim().slice(0, 120);
+    untrack(() => {
+      if (!title.trim() || title === autoTitle) title = autoTitle = name;
+    });
   });
   // A finished upload shows its result until the sheet is reopened.
   let wasOpen = false;
@@ -193,7 +203,8 @@
     }
   });
 
-  const renderLabel = $derived(status?.stage ?? t("slides.status.queued"));
+  // The job reports the raw stage `queued` before a worker picks it up.
+  const renderLabel = $derived(status?.stage && status.stage !== "queued" ? status.stage : t("slides.status.queued"));
 </script>
 
 <!-- No discard prompt: closing keeps the form (and a running upload continues); reopening shows it again. -->

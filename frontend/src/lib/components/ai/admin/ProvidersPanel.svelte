@@ -190,7 +190,7 @@
                   {#if !p.last_probe}{t("aiAdmin.providers.probe.never")}
                   {:else}
                     <span class="font-medium">{p.last_probe.ok ? t("aiAdmin.providers.probe.ok") : t("aiAdmin.providers.probe.failed")}</span>
-                    <span class="text-ink-3"> · {p.last_probe.detail_zh}{#if p.last_probe_at} · {t("aiAdmin.providers.probedAt", { time: relativeTime(p.last_probe_at) })}{/if}</span>
+                    <span class="text-ink-3"> · {p.last_probe.detail_zh.replace(/[。.]\s*$/, "")}{#if p.last_probe_at}{" · "}{t("aiAdmin.providers.probedAt", { time: relativeTime(p.last_probe_at) })}{/if}</span>
                   {/if}
                 </p>
               </div>

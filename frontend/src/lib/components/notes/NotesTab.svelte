@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { page } from "$app/state";
   import { DropdownMenu } from "bits-ui";
   import { Ellipsis, FileText, ListChecks, Plus, Search, Sparkles, Trash2, X } from "@lucide/svelte";
@@ -183,8 +184,8 @@
               <span class="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-ink-3">
                 {#if n.event_date}<span class="font-medium text-ink-2 tabular-nums">{formatDate(`${n.event_date}T00:00:00+08:00`)}</span>{/if}
                 <span>{n.template_name ? templateName(n.template_name) : t(`notes.kind.${n.kind}` as MessageKey)}</span>
-                {#if n.creator_name}<span>{n.creator_name}</span>{/if}
-                <span>{t("notes.edited", { when: relativeTime(n.updated_at) })}{n.updater_name && n.updater_name !== n.creator_name ? ` · ${n.updater_name}` : ""}</span>
+                {#if n.creator_name}<span>{displayName(n.creator_name)}</span>{/if}
+                <span>{t("notes.edited", { when: relativeTime(n.updated_at) })}{n.updater_name && n.updater_name !== n.creator_name ? ` · ${displayName(n.updater_name)}` : ""}</span>
               </span>
             </span>
           </a>

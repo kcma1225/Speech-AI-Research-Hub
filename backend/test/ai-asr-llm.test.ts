@@ -263,7 +263,7 @@ describe.skipIf(!hasTestDb)("asr role bound to multimodal chat models", () => {
     clip = join(dir, "clip.mp3");
     await writeFile(clip, "fake-mp3-bytes");
     await GW.start();
-    GW.on("GET", "/v1/models", { body: { data: [{ id: "ear", capabilities: { audioInput: true } }, { id: "text-only", capabilities: { audioInput: false } }] } });
+    GW.on("GET", "/v1/models", { body: { data: [{ id: "ear", capabilities: { audioInput: true } }, { id: "text-only", capabilities: { audioInput: false } }, { id: "whisper-1" }] } });
     GW.on("POST", "/v1/chat/completions", (req) =>
       earDown
         ? { status: 503, body: { error: { message: "busy" } } }
@@ -312,6 +312,10 @@ describe.skipIf(!hasTestDb)("asr role bound to multimodal chat models", () => {
     expect(bad.statusCode).toBeGreaterThanOrEqual(400);
     expect(json(bad)).toMatchObject({ code: "capability_mismatch" });
     expect(json(bad).error).toMatch(/音訊輸入/);
+    // A Whisper model listed by a chat gateway: the message points to an ASR account instead of contradicting itself.
+    const whisper = await send("PUT", "/api/admin/ai/bindings", { roles: ["asr"], target: { model_id: ids["whisper-1"] } });
+    expect(json(whisper).code).toBe("capability_mismatch");
+    expect(json(whisper).error).toContain("語音轉文字」帳號");
     const live = await send("PUT", "/api/admin/ai/bindings", { roles: ["asr_live"], target: { model_id: ids.ear } });
     expect(json(live).code).toBe("route_invalid");
     // The admin can turn audio input on by hand (e.g. a new model the listing does not describe).

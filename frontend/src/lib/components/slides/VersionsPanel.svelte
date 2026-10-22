@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { DropdownMenu } from "bits-ui";
   import { ChevronDown, ChevronUp, CircleCheck, Download, Ellipsis, Eye, FileSearch, Images, LoaderCircle, RotateCcw, Send, Trash2, Upload } from "@lucide/svelte";
   import { api, ApiError } from "#lib/api.ts";
@@ -106,7 +107,7 @@
             </div>
             <div class="mt-1.5 flex min-w-0 items-center gap-1.5 text-[12px] text-ink-3">
               {#if v.uploader_name}
-                <Avatar name={v.uploader_name} size={18} class="ring-0" /><span class="min-w-0 truncate text-ink-2">{v.uploader_name}</span><span aria-hidden="true">·</span>
+                <Avatar name={v.uploader_name} size={18} class="ring-0" /><span class="min-w-0 truncate text-ink-2">{displayName(v.uploader_name)}</span><span aria-hidden="true">·</span>
               {/if}
               <time class="shrink-0" datetime={v.created_at} title={formatDate(v.created_at, { dateStyle: "medium", timeStyle: "short" })}>{relativeTime(v.published_at ?? v.created_at)}</time>
             </div>

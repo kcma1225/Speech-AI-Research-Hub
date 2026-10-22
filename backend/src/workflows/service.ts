@@ -16,8 +16,10 @@ import { enqueueWorkflow } from "./jobs.js";
 import { emitRun, getRun, getSteps, insertSteps, insertWorkflowEvent, runView, stepView } from "./store.js";
 import { detectPlaybook, getWorkflowPlaybook } from "./playbooks/index.js";
 import { WorkflowEnv } from "./env.js";
+import { platformPort } from "./llm.js";
+import { aiFor } from "../ai/platform/index.js";
 import { asksOf, cardAnswersText, validateCardAnswers } from "./questions.js";
-import { DEFAULT_BUDGET, FINISHED_STATUSES, type Criterion, type RunRow, type StepRow } from "./types.js";
+import { budgetFor, DEFAULT_BUDGET, FINISHED_STATUSES, type Criterion, type RunRow, type StepRow } from "./types.js";
 import { randomUUID } from "node:crypto";
 import { batchPapers, batchRequest, conversationContext, studyFromText } from "./context.js";
 import { lockUserSlots, MAX_ACTIVE_PER_USER, promoteAllQueued, promoteQueued, slotUsage } from "./queue.js";
@@ -72,7 +74,7 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
     const row = (await client.query<RunRow>(
       `INSERT INTO workflow_runs(user_id,study_id,conversation_id,tool_call_id,playbook,title,request,inputs,context,autopilot,budget,status,batch_id,batch_index)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [user.id, studyId, input.conversationId ?? null, input.toolCallId ?? null, playbook, sp.title, sp.request.slice(0, 4000), JSON.stringify(sp.inputs), JSON.stringify(ctx), !!input.autopilot, JSON.stringify(DEFAULT_BUDGET), status, batchId, sp.index],
+      [user.id, studyId, input.conversationId ?? null, input.toolCallId ?? null, playbook, sp.title, sp.request.slice(0, 4000), JSON.stringify(sp.inputs), JSON.stringify(ctx), !!input.autopilot, JSON.stringify(budgetFor(playbook)), status, batchId, sp.index],
     )).rows[0]!;
     await enqueueWorkflow(client, row.id, user.id, row.title);
     runs.push((await getRun(client, row.id))!);
@@ -172,7 +174,8 @@ export async function approveWorkflow(app: FastifyInstance, user: CurrentUser, i
   let outline = r.plan?.outline;
   let replacement: import("./types.js").StepSpec[] | undefined;
   if (edits.outline?.length && pb?.applyEdits) {
-    const env = new WorkflowEnv({ db: app.db, storage: app.storage, app, model: null as never, log: app.log, signal: new AbortController().signal, jobId: null }, r, user);
+    // A real model port: re-deriving the steps asks whether the slides role has vision (no model call is made).
+    const env = new WorkflowEnv({ db: app.db, storage: app.storage, app, model: platformPort(aiFor(app)), log: app.log, signal: new AbortController().signal, jobId: null }, r, user);
     const res = await pb.applyEdits(env, { outline: edits.outline, steps: edits.steps }, outline);
     outline = res.outline ?? outline;
     replacement = res.steps;

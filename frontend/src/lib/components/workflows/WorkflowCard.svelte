@@ -146,7 +146,7 @@
       <span class="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-ink-2"><WorkflowIcon class="size-4" /></span>
       <div class="min-w-0 flex-1">
         <p class="text-[11.5px] tracking-wide text-ink-3 uppercase">{t("wf.title")} · {i18n.locale === "en" ? w.playbook_title_en : w.playbook_title}</p>
-        <p class="text-[14.5px] font-semibold break-words text-ink">{w.title}</p>
+        <p class="text-[14.5px] font-semibold break-words text-ink {compact && !detailed ? 'line-clamp-2' : ''}" title={w.title}>{w.title}</p>
       </div>
       <div class="flex items-center gap-1.5">
         {#if waitingLlm}<Pill tone="butter" size="sm"><Hourglass class="size-3" />{t("wf.waitingLlm")}</Pill>{/if}
@@ -160,7 +160,7 @@
         <p class="mt-0.5 text-[13.5px] leading-relaxed break-words text-ink-2 {detailed ? '' : 'line-clamp-3'}">{w.objective}</p>
       </div>
     {:else if w.status === "planning"}
-      <p class="mt-3 text-[13px] text-ink-3">{w.request}</p>
+      <p class="mt-3 text-[13px] break-words text-ink-3 {detailed ? '' : 'line-clamp-3'}">{w.request}</p>
     {/if}
 
     {#if w.status === "planning"}
@@ -172,7 +172,7 @@
     {/if}
 
     {#if w.status === "needs_pdf"}
-      <div class="mt-3 flex flex-col gap-2 rounded-2xl border border-line-2 bg-surface-2 p-3" data-wf-needs-pdf>
+      <div class="mt-3 flex flex-col gap-2 rounded-2xl border border-line-2 bg-surface-2 p-3" data-wf-needs-pdf data-focus-target>
         <p class="flex items-center gap-2 text-[13px] font-semibold text-ink"><FileWarning class="size-4 shrink-0" aria-hidden="true" />{t("wf.pdf.title")}</p>
         {#if w.question}<p class="text-[13.5px] break-words whitespace-pre-wrap text-ink-2">{w.question}</p>{/if}
         {#if w.paper_id}

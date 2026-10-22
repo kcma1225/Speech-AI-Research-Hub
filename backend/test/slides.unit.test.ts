@@ -136,6 +136,9 @@ describe("asset serving helpers", () => {
     expect(html).toContain("window.parent.postMessage({namespace:'hub',type:t},'*')");
     expect(html).toContain("k==='s'?'speaker':k==='f'?'fullscreen'");
     expect(html.indexOf("namespace:'hub'")).toBeLessThan(html.indexOf("</head>"));
+    // Lazily loaded stretched images get a re-layout (else they keep height 0 when the deck opens at slide N).
+    expect(html).toContain("e.target.tagName==='IMG')l()");
+    expect(html).toContain("Reveal.on('slidechanged',l)");
   });
 
   it("builds the sandbox CSP", () => {

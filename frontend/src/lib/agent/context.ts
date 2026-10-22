@@ -16,6 +16,12 @@ export function pageContextFrom(url: { pathname: string; searchParams: { get(nam
     }
   }
   if (parts[0] === "meetings" && parts[1] && UUID.test(parts[1])) ctx.meetingId = parts[1];
+  // The paper reader page (/library/<id>[?study=<slug>]): the paper is the context, plus the study it was opened from.
+  if (parts[0] === "library" && parts[1] && UUID.test(parts[1])) {
+    ctx.paperId = parts[1];
+    const study = url.searchParams.get("study");
+    if (study && !ctx.studySlug) ctx.studySlug = study;
+  }
   const paper = url.searchParams.get("paper");
   if (paper && UUID.test(paper)) ctx.paperId = paper;
   if (parts[0] === "assistant") return null;

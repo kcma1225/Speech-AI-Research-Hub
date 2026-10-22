@@ -108,6 +108,7 @@ describe.skipIf(!hasTestDb || !hasTestS3)("doc import routes", () => {
     expect((await upload(bob, "/api/md-images", { scope }, { filename: "a.png", data: PNG })).statusCode).toBe(403);
     const fake = await upload(alice, "/api/md-images", { scope }, { filename: "a.png", data: fixture("bad-page.txt") });
     expect(fake.statusCode).toBe(415);
+    expect(fake.json().hint).toBe("偵測到：HTML 網頁");
     const r = await upload(alice, "/api/md-images", { scope }, { filename: "a.png", data: PNG });
     expect(r.statusCode, r.body).toBe(201);
     const url = r.json().image.url as string;

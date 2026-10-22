@@ -137,7 +137,8 @@
 </script>
 
 <div
-  class="composer relative rounded-[24px] border border-line-2 bg-raised shadow-card"
+  class="composer @container relative rounded-[24px] border border-line-2 bg-raised shadow-card"
+  data-composer
   data-autopilot={autopilot || undefined}
   data-acting={acting || undefined}
   role="group"
@@ -179,7 +180,7 @@
     aria-keyshortcuts="Enter Shift+Enter Escape"
     class="block max-h-[220px] min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed text-ink outline-none placeholder:text-ink-3 disabled:opacity-60 sm:text-[14.5px]"
   ></textarea>
-  <div class="flex items-center gap-1 px-2 pb-2 sm:gap-1.5">
+  <div class="flex items-center gap-1 px-2 pb-2 @min-[600px]:gap-1.5">
     {#if attach}{@render attach()}{/if}
     {#if autopilot !== null && onAutopilot}
       <button
@@ -191,7 +192,7 @@
         onclick={() => onAutopilot(!autopilot)}
         class="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[12.5px] font-medium transition-colors {autopilot ? 'bg-[var(--pill-butter)] text-[var(--pill-butter-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
       >
-        <Rocket class="size-4" /><span class="hidden sm:inline">{t("agent.autopilot")}</span>
+        <Rocket class="size-4" /><span class="hidden @min-[600px]:inline">{t("agent.autopilot")}</span>
         <span class="thumb {autopilot ? 'on' : ''}" aria-hidden="true"></span>
       </button>
     {/if}
@@ -206,7 +207,7 @@
         onclick={() => onMemory(!memory.on)}
         class="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[12.5px] font-medium transition-colors disabled:opacity-50 {memory.on ? 'bg-[var(--pill-lilac)] text-[var(--pill-lilac-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
       >
-        <Brain class="size-4" /><span class="hidden sm:inline">{t("agent.memory")}</span>
+        <Brain class="size-4" /><span class="hidden @min-[600px]:inline">{t("agent.memory")}</span>
       </button>
     {/if}
     {#if onAgent}
@@ -218,7 +219,7 @@
         onclick={() => (value.trim() ? onAgent(value.trim()) : ref?.focus())}
         class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium whitespace-nowrap text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
       >
-        <Workflow class="size-4" /><span class={agentCompact ? "sr-only" : "hidden sm:inline"}>{t("wf.handOff")}</span>
+        <Workflow class="size-4" /><span class={agentCompact ? "sr-only" : "hidden @min-[600px]:inline"}>{t("wf.handOff")}</span>
       </button>
     {/if}
     {#if onMakeNote}
@@ -230,11 +231,11 @@
         onclick={onMakeNote}
         class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[12.5px] font-medium whitespace-nowrap text-ink-3 transition-colors hover:bg-surface-3 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent"
       >
-        <NotebookPen class="size-4" /><span class={agentCompact ? "sr-only" : "hidden sm:inline"}>{t("agent.makeNote.label")}</span>
+        <NotebookPen class="size-4" /><span class={agentCompact ? "sr-only" : "hidden @min-[600px]:inline"}>{t("agent.makeNote.label")}</span>
       </button>
     {/if}
-    <span class="hidden flex-1 truncate text-right text-[11.5px] text-ink-3 lg:block" aria-hidden="true">{t("agent.keys")}</span>
-    <span class="flex-1 lg:hidden"></span>
+    <span class="hidden flex-1 truncate text-right text-[11.5px] text-ink-3 @min-[760px]:block" aria-hidden="true">{t("agent.keys")}</span>
+    <span class="flex-1 @min-[760px]:hidden"></span>
     {#if busy}
       <button type="button" class="grid size-10 place-items-center rounded-full bg-ink text-primary-ink" aria-label={t("agent.stop")} title={`${t("agent.stop")} (Esc)`} onclick={onStop}><Square class="size-3.5 fill-current" /></button>
     {:else}

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireUser } from "../lib/auth.js";
-import { detectContentType } from "../lib/doc-import/index.js";
+import { describeLabel, detectContentType } from "../lib/doc-import/index.js";
 import { badRequest, forbidden, HttpError, notFound, parse } from "../lib/http.js";
 import { loadStudyAccess } from "../lib/studies/access.js";
 import { registerStudyCleanup } from "../lib/studies/cleanup.js";
@@ -67,7 +67,7 @@ export default async function mdImages(app: FastifyInstance) {
 
     const detected = await detectContentType(file.bytes);
     const type = TYPES[detected.label];
-    if (!type) throw new HttpError(415, "只能上傳 PNG、JPEG、GIF 或 WebP 圖片。", { code: "content_mismatch", hint: `偵測到：${detected.label}` });
+    if (!type) throw new HttpError(415, "只能上傳 PNG、JPEG、GIF 或 WebP 圖片。", { code: "content_mismatch", hint: `偵測到：${describeLabel(detected.label)}` });
 
     const sha256 = createHash("sha256").update(file.bytes).digest("hex");
     // The same picture pasted twice into one study (or one user's drafts) reuses the stored copy.

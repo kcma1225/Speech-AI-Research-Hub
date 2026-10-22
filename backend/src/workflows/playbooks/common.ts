@@ -4,6 +4,7 @@ import { loadStudyAccess, type StudyAccess } from "../../lib/studies/access.js";
 import { dataBlock } from "../llm.js";
 import { verifyStep } from "../verify.js";
 import { getSteps } from "../store.js";
+import { studyFromText } from "../context.js";
 import type { WorkflowEnv } from "../env.js";
 import type { StepOutput, StepRole, StepRow, StepSpec, Verdict } from "../types.js";
 
@@ -87,8 +88,36 @@ export async function resolveStudy(env: WorkflowEnv): Promise<StudyAccess | null
     const rows = (await env.db.query<{ study_id: string }>("SELECT sp.study_id FROM study_papers sp JOIN study_members m ON m.study_id=sp.study_id AND m.user_id=$2 AND m.role IN ('owner','member') WHERE sp.paper_id=$1", [paperId, env.user.id]).catch(() => ({ rows: [] as { study_id: string }[] }))).rows;
     if (rows.length === 1) return loadStudyAccess(env.db, rows[0]!.study_id, env.user);
   }
-  return null;
+  // Named in the request or a later guidance (「放在 Lightweight ASR」), else the only study; 「你決定」 → the most
+  // recently active study the user edits. Persisted so the rest of the run (papers, batches) sees it.
+  const guidance = (env.run.guidance ?? []).map((g) => g.text).join("\n");
+  let id = await studyFromText(env.db, env.user, `${env.run.request}\n${guidance}`);
+  if (!id && DELEGATE_RE.test(guidance)) {
+    id = (await env.db.query<{ id: string }>(
+      `SELECT s.id FROM studies s JOIN study_members m ON m.study_id=s.id AND m.user_id=$1 AND m.role IN ('owner','member')
+        WHERE s.archived_at IS NULL AND s.status <> 'archived' ORDER BY s.activity_at DESC LIMIT 1`,
+      [env.user.id],
+    )).rows[0]?.id ?? null;
+  }
+  if (!id) return null;
+  await env.db.query("UPDATE workflow_runs SET study_id=$2, updated_at=now() WHERE id=$1 AND study_id IS NULL", [env.run.id, id]);
+  env.run.study_id = id;
+  return loadStudyAccess(env.db, id, env.user);
 }
+
+/** 「要把…放在哪個研究？」 with the studies the user can pick (and that 「你決定」 works). */
+export async function whichStudyQuestion(env: WorkflowEnv, what: string): Promise<string> {
+  const rows = (await env.db.query<{ title: string }>(
+    `SELECT s.title FROM studies s JOIN study_members m ON m.study_id=s.id AND m.user_id=$1 AND m.role IN ('owner','member')
+      WHERE s.archived_at IS NULL AND s.status <> 'archived' ORDER BY s.activity_at DESC LIMIT 6`,
+    [env.user.id],
+  )).rows;
+  if (!rows.length) return `你還沒有參與任何研究，請先建立研究，再從研究頁面按「交給 Agent」。`;
+  return `要把${what}放在哪個研究？請在補充指示寫研究名稱（${rows.map((r) => `〈${r.title}〉`).join("、")}），或回答「你決定」，我會用最近在進行的研究。`;
+}
+
+/** Guidance that hands the choice back to the AI (「你決定」「你來選」「都可以」「you decide」). */
+export const DELEGATE_RE = /你(來)?(決定|選|挑|判斷)|交給你|都可以|隨便|you (decide|choose|pick)|up to you/i;
 
 export const paperIdOf = (env: WorkflowEnv) => (env.run.inputs.paper_id as string | undefined) ?? (env.run.context.paperId as string | undefined) ?? null;
 
@@ -101,13 +130,40 @@ export async function paperOf(env: WorkflowEnv) {
   let found: string | undefined;
   if (arxiv || doi) found = (await env.db.query<{ id: string }>("SELECT id FROM papers WHERE ($1::text IS NOT NULL AND arxiv_id LIKE $1 || '%') OR ($2::text IS NOT NULL AND lower(doi)=lower($2)) LIMIT 1", [arxiv ?? null, doi ?? null])).rows[0]?.id;
   if (!found && env.run.study_id) {
-    const rows = (await env.db.query<{ id: string }>("SELECT p.id FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 AND p.pdf_key IS NOT NULL LIMIT 2", [env.run.study_id])).rows;
-    if (rows.length === 1) found = rows[0]!.id;
+    // A study paper named in the request or the guidance (「把 wav2vec 2.0 這篇做成簡報」), else the only one with a PDF.
+    const rows = (await env.db.query<{ id: string; title: string; has_pdf: boolean }>("SELECT p.id, p.title, (p.pdf_key IS NOT NULL) AS has_pdf FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 LIMIT 500", [env.run.study_id])).rows;
+    found = matchPaperTitle([env.run.request, ...(env.run.guidance ?? []).map((g) => g.text)].join("\n"), rows)?.id;
+    if (!found) {
+      const withPdf = rows.filter((r) => r.has_pdf);
+      if (withPdf.length === 1) found = withPdf[0]!.id;
+    }
   }
   if (!found) return null;
   await env.db.query("UPDATE workflow_runs SET inputs = inputs || jsonb_build_object('paper_id', $2::text) WHERE id=$1", [env.run.id, found]);
   env.run.inputs = { ...env.run.inputs, paper_id: found };
   return getPaper(env.db, found);
+}
+
+const normTitle = (t: string) => t.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/**
+ * The paper a request names by title: the full title, or its short name before a colon (「wav2vec 2.0」 of
+ * "wav2vec 2.0: A Framework…", ≥ 4 characters). Only a unique best match counts.
+ */
+export function matchPaperTitle<T extends { title: string }>(text: string, papers: T[]): T | null {
+  const hay = ` ${normTitle(text)} `;
+  let best: T | null = null;
+  let bestScore = 0;
+  let tie = false;
+  for (const p of papers) {
+    const full = normTitle(p.title);
+    const head = normTitle(p.title.split(/[:：]/)[0] ?? "");
+    const score = full.length >= 6 && hay.includes(full) ? 2 : head.length >= 4 && head !== full && hay.includes(head) ? 1 : 0;
+    if (!score) continue;
+    if (score > bestScore) [best, bestScore, tie] = [p, score, false];
+    else if (score === bestScore) tie = true;
+  }
+  return tie ? null : best;
 }
 
 export const clipText = (t: string, n: number) => (t.length > n ? `${t.slice(0, n)}…` : t);

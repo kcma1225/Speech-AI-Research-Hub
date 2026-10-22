@@ -33,6 +33,9 @@ export const titleMatches = (want: string, got: string) => {
 
 export const PLACEHOLDER_RE = /〔\s*　*\s*〕|待補|待填|待完成|\bTODO\b|\bTBD\b|lorem ipsum|\bXXX\b|\?\?\?|〔[^〕]{0,6}〕|\[(?:插入|在此|placeholder)[^\]]*\]|（此處[^）]{0,20}）/i;
 
+/** Missing-data markers that must not be shown on a slide (they are fine in speaker notes). */
+export const SLIDE_MISSING_RE = /資料未提供|摘要未提供|論文未提供|未提供數據|未報告|\bN\/A\b|\bn\/a\b|not (?:reported|provided|available)/i;
+
 type Ctx = { params: Record<string, unknown>; data: unknown };
 type CheckFn = (text: string, ctx: Ctx) => { ok: boolean; detail: string };
 
@@ -92,7 +95,12 @@ export const CHECKS: Record<string, CheckFn> = {
     const slides = parseSlides(text);
     if (slides.length) {
       const bad = slides.filter((s) => !allow.some((a) => titleMatches(a, s.title)) && PLACEHOLDER_RE.test(`${s.body}\n${s.notes}`));
-      return bad.length ? { ok: false, detail: `這些頁面還有佔位文字（〔　〕、待補、TODO…）：${bad.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請填入依據資料的內容；資料裡真的沒有就明寫「資料未提供」。` } : { ok: true, detail: "沒有佔位文字" };
+      if (bad.length) return { ok: false, detail: `這些頁面還有佔位文字（〔　〕、待補、TODO…）：${bad.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請填入依據資料的內容；資料裡真的沒有就明寫「資料未提供」。` };
+      // Decks (`on_slide: true`): 「資料未提供」 is fine in the notes, never on the slide itself (an empty table cell or
+      // bullet the audience reads). The writer drops that row / column / bullet instead.
+      const missing = params.on_slide ? slides.filter((s) => !allow.some((a) => titleMatches(a, s.title)) && SLIDE_MISSING_RE.test(s.body)) : [];
+      if (missing.length) return { ok: false, detail: `這些頁面的投影片上寫了「資料未提供／N/A」：${missing.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。投影片上不要出現沒有資料的格子或條列：刪掉那一列、那一欄或那一條（或改放有數字的比較），說明可以寫在講稿。` };
+      return { ok: true, detail: "沒有佔位文字" };
     }
     const m = PLACEHOLDER_RE.exec(text);
     return m ? { ok: false, detail: `內容還有佔位文字「${m[0]}」。` } : { ok: true, detail: "沒有佔位文字" };
@@ -153,8 +161,9 @@ export const CHECKS: Record<string, CheckFn> = {
   },
   /** Result of the slides playbook's screenshot QA (`data.visualQa`). */
   visual_qa(_text, { data }) {
-    const qa = (data as { visualQa?: { failed?: number[]; scored?: number; vision?: boolean } } | null)?.visualQa;
+    const qa = (data as { visualQa?: { failed?: number[]; scored?: number; vision?: boolean; unseen?: boolean } } | null)?.visualQa;
     if (!qa) return { ok: false, detail: "還沒有做逐頁視覺檢查。" };
+    if (qa.unseen) return { ok: false, detail: "最後一輪沒有擷取到投影片截圖，版面沒有真的檢查過；請重新編譯預覽後再檢查。" };
     const failed = qa.failed ?? [];
     return failed.length ? { ok: false, detail: `這些頁面沒有通過視覺檢查：${failed.map((n) => `第 ${n} 頁`).join("、")}。` } : { ok: true, detail: `${qa.scored ?? 0} 頁都通過${qa.vision ? "截圖" : "版面量測"}檢查` };
   },

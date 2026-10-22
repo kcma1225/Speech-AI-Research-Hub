@@ -33,6 +33,8 @@ export type Plan = { summary: string; outline?: OutlineItem[]; writes: PlannedWr
 
 export type Budget = { max_steps: number; max_calls: number; max_tokens: number; max_minutes: number; max_fix_rounds: number; concurrency: number };
 export const DEFAULT_BUDGET: Budget = { max_steps: 30, max_calls: 60, max_tokens: 800_000, max_minutes: 40, max_fix_rounds: 3, concurrency: 3 };
+/** Decks render, screenshot and re-write pages (visual QA ≤ 3 rounds): a cheap model needs more time and calls. */
+export const budgetFor = (playbook: string): Budget => (playbook === "slides" ? { ...DEFAULT_BUDGET, max_calls: 100, max_tokens: 2_000_000, max_minutes: 75 } : DEFAULT_BUDGET);
 export type Usage = { steps: number; calls: number; tokens_in: number; tokens_out: number; active_ms: number; fix_rounds: number };
 
 export type Artifact = { kind: "deck" | "note" | "latex_project" | "latex_file" | "paper"; id: string; url: string; title: string; role: "draft" | "suggestion" | "primary"; preview_url?: string; revision?: number };

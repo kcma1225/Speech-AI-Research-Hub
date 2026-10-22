@@ -306,7 +306,7 @@ describe.skipIf(!hasTestDb)("agent runtime", () => {
     await send(conv, "在 Bob 的研究建一篇筆記", prof);
     const s = await state(conv, prof);
     expect(s.toolCalls[0]).toMatchObject({ tool: "create_note", status: "failed" });
-    expect(s.toolCalls[0].error).toContain("不是");
+    expect(s.toolCalls[0].error).toContain("指導教授");
     expect(s.toolCalls[1]).toMatchObject({ tool: "get_study", status: "done" });
     expect(s.toolCalls[1].result.data.permissions.can_edit).toBe(false);
     expect((await t.db.query("SELECT 1 FROM notes WHERE title='教授的筆記'")).rowCount).toBe(0);

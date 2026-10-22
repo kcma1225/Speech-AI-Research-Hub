@@ -14,7 +14,7 @@
   <p class="flex items-start gap-2 text-[13.5px] {result.probe.ok ? 'text-success' : 'text-danger'}">
     {#if result.probe.ok}<CircleCheck class="mt-0.5 size-4 shrink-0" />{:else}<CircleX class="mt-0.5 size-4 shrink-0" />{/if}
     <span><span class="font-medium">{result.probe.ok ? t("aiAdmin.providers.probe.ok") : t("aiAdmin.providers.probe.failed")}</span>
-      <span class="text-ink-3"> · {result.probe.detail_zh} · {result.probe.latencyMs} ms</span></span>
+      <span class="text-ink-3"> · {result.probe.detail_zh.replace(/[。.]\s*$/, "")} · {result.probe.latencyMs} ms</span></span>
   </p>
   {#if result.check}
     {#if result.check.ok}

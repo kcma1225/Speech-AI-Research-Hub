@@ -285,12 +285,14 @@ export const clearFullTextMemo = () => memo.clear();
  * Compact paper body for one-shot prompts (deck drafts): abstract and body sections in order, each clipped so the
  * whole fits `budget` chars; references dropped; appendix only when room is left.
  */
-export function digest(ft: PaperFullText, budget = 24_000): string {
+export function digest(ft: PaperFullText, budget = 24_000, opts: { focus?: RegExp } = {}): string {
   const body = ft.sections.filter((s) => s.kind === "abstract" || s.kind === "body");
-  const total = body.reduce((a, s) => a + s.text.length, 0) || 1;
+  // `focus`: sections whose title matches (e.g. experiments / results) get three times their share of the budget.
+  const weight = (s: (typeof body)[number]) => s.text.length * (opts.focus?.test(s.title) ? 3 : 1);
+  const total = body.reduce((a, s) => a + weight(s), 0) || 1;
   const parts: string[] = [];
   for (const s of body) {
-    const share = Math.max(600, Math.floor((s.text.length / total) * budget));
+    const share = Math.max(600, Math.floor((weight(s) / total) * budget));
     const head = `## ${s.number ? `${s.number} ` : ""}${s.title}（p. ${s.pageStart}${s.pageEnd !== s.pageStart ? `–${s.pageEnd}` : ""}）`;
     parts.push(`${head}\n${s.text.length > share ? `${s.text.slice(0, share)}…` : s.text}`);
   }

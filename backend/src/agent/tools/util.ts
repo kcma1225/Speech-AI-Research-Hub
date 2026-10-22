@@ -20,10 +20,16 @@ export const taipeiToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "A
 /** Read access (everyone signed in reads every study). 404 when missing. */
 export const readStudy = (ctx: AgentToolContext, ref: string) => loadStudyAccess(ctx.db, ref, ctx.user);
 
+/** The refusal for a caller who may read but not edit the study (advisors comment and give feedback only). */
+const notEditor = (access: StudyAccess) =>
+  forbidden(access.isAdvisor
+    ? `你是〈${access.study.title}〉的指導教授：可以閱讀與留言回饋，但不能直接修改研究內容（由研究成員修改）。`
+    : `你不是〈${access.study.title}〉的成員，不能修改這個研究。`);
+
 /** Edit access (study owner/member) or 403 — the same rule as the HTTP routes. */
 export async function editStudy(ctx: AgentToolContext, ref: string): Promise<StudyAccess> {
   const access = await loadStudyAccess(ctx.db, ref, ctx.user);
-  if (!access.canEdit) throw forbidden(`你不是〈${access.study.title}〉的成員，不能修改這個研究。`);
+  if (!access.canEdit) throw notEditor(access);
   return access;
 }
 
@@ -38,7 +44,7 @@ export const studyTarget = (access: StudyAccess): AgentTarget => ({
 export function withEditableStudy<T>(ctx: AgentToolContext, ref: string, work: (client: import("pg").PoolClient, access: StudyAccess) => Promise<T>) {
   return transaction(ctx.db, async (client) => {
     const access = await loadStudyAccess(client, ref, ctx.user, { forUpdate: true });
-    if (!access.canEdit) throw forbidden(`你不是〈${access.study.title}〉的成員，不能修改這個研究。`);
+    if (!access.canEdit) throw notEditor(access);
     return work(client, access);
   });
 }

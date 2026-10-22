@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { DropdownMenu } from "bits-ui";
   import { goto } from "$app/navigation";
   import { Ellipsis, FileCode2, FilePen, Globe, MessageSquareQuote, Presentation } from "@lucide/svelte";
@@ -45,7 +46,7 @@
     <div class="flex min-w-0 items-center gap-2 text-[12.5px] text-ink-3">
       {#if deck.author_name}
         <Avatar name={deck.author_name} size={20} class="ring-0" />
-        <span class="min-w-0 truncate text-ink-2">{deck.author_name}</span>
+        <span class="min-w-0 truncate text-ink-2">{displayName(deck.author_name)}</span>
         <span aria-hidden="true">·</span>
       {/if}
       <span class="shrink-0">{deck.active_version ? t("slides.version", { n: deck.active_version }) : t("slides.noVersion")}</span>
@@ -67,7 +68,8 @@
 </a>
 {#if onDelete}
   {#if canDelete}
-    <div class="absolute top-1.5 right-12.5 rounded-full bg-surface/90 shadow-card backdrop-blur"><DeleteButton reveal label={t("crud.deck.delete")} onclick={onDelete} /></div>
+    <!-- The whole pill fades in (not only the icon), so no empty circle shows before hover. -->
+    <div class="absolute top-1.5 right-12.5 rounded-full bg-surface/90 opacity-0 shadow-card backdrop-blur transition-opacity duration-150 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"><DeleteButton label={t("crud.deck.delete")} onclick={onDelete} /></div>
   {/if}
   <DropdownMenu.Root>
     <DropdownMenu.Trigger class="absolute top-1.5 right-1.5 grid size-10 cursor-pointer place-items-center rounded-full bg-surface/90 text-ink-2 shadow-card backdrop-blur hover:bg-surface hover:text-ink" aria-label={t("crud.more")} title={t("crud.more")}>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { Copy, Download, ExternalLink, FileText, Link2, RefreshCw, Star, Trash2 } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, t } from "#lib/i18n.svelte.ts";
@@ -147,7 +148,7 @@
       <dd>{t(p.kind === "paper_report" ? "slides.kind.paper_report" : "slides.kind.progress")}</dd>
       {#if p.creator_name}
         <dt class="text-ink-3">{t("slides.info.creator")}</dt>
-        <dd class="flex min-w-0 items-center gap-1.5"><Avatar name={p.creator_name} size={18} class="ring-0" /><span class="truncate">{p.creator_name}</span></dd>
+        <dd class="flex min-w-0 items-center gap-1.5"><Avatar name={p.creator_name} size={18} class="ring-0" /><span class="truncate">{displayName(p.creator_name)}</span></dd>
       {/if}
       <dt class="text-ink-3">{t("slides.info.created")}</dt><dd>{formatDate(p.created_at)}</dd>
       <dt class="text-ink-3">{t("slides.info.updated")}</dt><dd>{formatDate(p.updated_at, { dateStyle: "medium", timeStyle: "short" })}</dd>

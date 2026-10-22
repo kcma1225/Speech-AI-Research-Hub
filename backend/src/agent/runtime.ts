@@ -10,6 +10,7 @@
  *   Decisions (approve / approve_conversation / deny) resume the run once every call of the step is decided.
  *   LLM outage → awaiting_llm with backoff, auto-resumed by the ticker or when the role comes back.
  */
+import { labelSummary } from "./summary-labels.js";
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -1206,7 +1207,8 @@ export class AgentRuntime {
       const body = res.text ?? JSON.stringify(res.data, null, 0);
       const text = envelope(row.tool, capResult(body), { untrusted: !!res.untrusted || !!def.openWorld, source: res.source }) + (note ? `\n${note}` : "");
       const images = res.images?.length ? await storeToolImages(this.app.storage, conv.id, row.id, res.images.slice(0, 6)) : undefined;
-      await this.db.query("UPDATE tool_calls SET status='done', result=$2, result_text=$3, finished_at=now() WHERE id=$1", [row.id, JSON.stringify({ data: res.data, links: res.links ?? [], source: res.source ?? null, untrusted: !!res.untrusted, ...(images ? { images } : {}), ...(res.undo && row.approved_via !== "user" ? { undo: res.undo } : {}) }), text]);
+      const summary = def.risk === "read" ? labelSummary(row.summary ?? "", res.data) : row.summary;
+      await this.db.query("UPDATE tool_calls SET status='done', result=$2, result_text=$3, summary=$4, finished_at=now() WHERE id=$1", [row.id, JSON.stringify({ data: res.data, links: res.links ?? [], source: res.source ?? null, untrusted: !!res.untrusted, ...(images ? { images } : {}), ...(res.undo && row.approved_via !== "user" ? { undo: res.undo } : {}) }), text, summary ?? ""]);
       if (res.untrusted || def.openWorld) {
         await this.db.query(
           `UPDATE agent_runs SET tainted=true, taint_sources=CASE WHEN $2::text IS NULL OR taint_sources ? $2 THEN taint_sources ELSE (taint_sources || to_jsonb($2::text)) END WHERE id=$1`,

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { displayName } from "#lib/people.svelte.ts";
   import { BookmarkPlus, History, RotateCcw } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
@@ -76,7 +77,7 @@
         <li class="flex items-center gap-3 rounded-2xl border border-line px-3 py-2.5">
           <div class="min-w-0 flex-1">
             <p class="truncate text-[13.5px] font-medium text-ink">{name(v)}</p>
-            <p class="text-[12px] text-ink-3">{t(`latex.versions.kind.${v.kind}` as MessageKey)} · {relativeTime(v.created_at)}{v.created_by_name ? ` · ${v.created_by_name}` : ""} · {t("latex.fileCount", { n: v.file_count })}</p>
+            <p class="text-[12px] text-ink-3">{t(`latex.versions.kind.${v.kind}` as MessageKey)} · {relativeTime(v.created_at)}{v.created_by_name ? ` · ${displayName(v.created_by_name)}` : ""} · {t("latex.fileCount", { n: v.file_count })}</p>
           </div>
           {#if canEdit}
             <Button size="sm" variant="ghost" onclick={() => { restoring = v; confirmOpen = true; }}><RotateCcw />{t("latex.versions.restore")}</Button>

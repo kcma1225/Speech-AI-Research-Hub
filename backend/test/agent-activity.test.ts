@@ -93,13 +93,18 @@ run("agent activity + AI usage", () => {
     await agentRun(c5, alice.id, "awaiting_llm", { startedAgo: "10 minutes" });
     await agentRun(c5, alice.id, "done", { finished: true });
 
+    // A new chat whose title is not generated yet is named by the user's first words.
+    const c6 = await conversation(alice.id, "");
+    await agentRun(c6, alice.id, "running");
+    await message(c6, null, "user", "幫我整理\n這週的進度");
+
     const res = await get("/api/workflows/active", alice.cookie);
     expect(res.statusCode).toBe(200);
     expect(res.headers["cache-control"]).toBe("no-store");
     const body = res.json() as { runs: Record<string, any>[]; count: number; needs_you: number };
     const titles = body.runs.map((r) => r.title).sort();
-    expect(titles).toEqual(["問我問題", "建立待辦", "文獻回顧", "等確認", "讀論文"].sort());
-    expect(body.count).toBe(5);
+    expect(titles).toEqual(["問我問題", "建立待辦", "文獻回顧", "等確認", "讀論文", "幫我整理 這週的進度"].sort());
+    expect(body.count).toBe(6);
     expect(body.needs_you).toBe(3);
     // needs-you first
     expect(body.runs.slice(0, 3).every((r) => r.needs_you)).toBe(true);
