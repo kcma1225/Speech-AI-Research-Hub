@@ -158,4 +158,20 @@ describe("dropSupersededNotices", () => {
     const other = msg("notice", "其他", { kind: "compaction_note" });
     expect(dropSupersededNotices([n1, other, n2])).toEqual([other, n2]);
   });
+  it("never shows 'please act' notices: the card carries the prompt", () => {
+    const plan = msg("notice", "工作計畫已擬好，請確認後按「開始」", { kind: "workflow_awaiting_plan_approval" });
+    const goal = msg("notice", "路線圖待確認", { kind: "goal_awaiting_approval" });
+    const pdf = msg("notice", "需要 PDF", { kind: "workflow_needs_pdf" });
+    expect(dropSupersededNotices([pdf, goal, plan])).toEqual([]);
+  });
+});
+
+describe("turn duration", () => {
+  it("does not count the time a deferred delete waited for the user", () => {
+    const u = msg("user", "刪掉它");
+    const a = msg("assistant", "已排入待確認");
+    const del = call(a, "delete_task", { status: "done", created_at: a.created_at, decided_at: "2099-01-01T00:00:00.000Z", finished_at: "2099-01-01T00:00:01.000Z" });
+    const turn = buildTranscript([u, a], [del]).find((x) => x.kind === "assistant") as AssistantTurn;
+    expect(turn.endedAt).toBe(a.created_at);
+  });
 });

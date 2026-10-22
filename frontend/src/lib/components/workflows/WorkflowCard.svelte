@@ -136,14 +136,17 @@
   }
 </script>
 
-<article data-workflow-card data-focus-key={w ? `workflow:${id}` : undefined} class="card mt-2 rounded-[20px] border border-line bg-surface shadow-card {compact ? 'p-3' : 'p-3 sm:p-4'}" aria-busy={working} aria-label={t("wf.title")}>
+<article data-workflow-card data-focus-key={w ? `workflow:${id}` : undefined} class="card @container mt-2 rounded-[20px] border border-line bg-surface shadow-card {compact ? 'p-3' : 'p-3 sm:p-4'}" aria-busy={working} aria-label={t("wf.title")}>
   {#if session.loading && !w}
     <div class="flex items-center gap-2 text-[13px] text-ink-3"><WorkflowIcon class="size-4" />{t("wf.title")}…</div>
+  {:else if session.gone && !w}
+    <p class="flex items-center gap-2 text-[13px] text-ink-3" data-wf-gone><WorkflowIcon class="size-4" />{t("wf.gone")}</p>
   {:else if session.error && !w}
     <p class="text-[13px] text-danger">{t("wf.loadFailed")}：{session.error}</p>
   {:else if w}
     <header class="flex flex-wrap items-start gap-x-2 gap-y-1">
-      <span class="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-ink-2"><WorkflowIcon class="size-4" /></span>
+      <!-- Phones: no icon, the title gets the width. -->
+      <span class="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-ink-2 max-sm:hidden"><WorkflowIcon class="size-4" /></span>
       <div class="min-w-0 flex-1">
         <p class="text-[11.5px] tracking-wide text-ink-3 uppercase">{t("wf.title")} · {i18n.locale === "en" ? w.playbook_title_en : w.playbook_title}</p>
         <p class="text-[14.5px] font-semibold break-words text-ink {compact && !detailed ? 'line-clamp-2' : ''}" title={w.title}>{w.title}</p>
@@ -269,7 +272,8 @@
     {:else if w.criteria.length && detailed}
       <div class="mt-3">
         <p class="flex items-center gap-2 text-[12px] font-medium text-ink-3">{t("wf.criteria")}<span class="tabular-nums">{t("wf.criteriaCount", { passed, total: w.criteria.length })}</span></p>
-        <ul class="mt-1 flex flex-col gap-1">
+        <!-- Wide cards: two columns (criteria are short lines; one column left most of the card empty). -->
+        <ul class="mt-1 grid gap-1 @min-[56rem]:grid-cols-2 @min-[56rem]:gap-x-6">
           {#each w.criteria as c (c.id)}
             <li class="crit flex items-start gap-2 text-[13px]" data-status={c.status}>
               <span class="mt-0.5 shrink-0">
@@ -311,7 +315,8 @@
         <ul class="mt-1 flex flex-col gap-1.5">
           {#each w.artifacts as a (a.kind + a.id)}
             <li class="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface-2 px-3 py-2">
-              <span class="min-w-0 flex-1 text-[13px] break-words text-ink">{a.title}{#if a.revision} <span class="text-ink-3">r{a.revision}</span>{/if}</span>
+              <!-- min width: on phones the actions wrap below the title instead of squeezing it to a few letters per line. -->
+              <span class="min-w-[min(100%,14rem)] flex-1 text-[13px] break-words text-ink">{a.title}{#if a.revision}<span class="ml-1.5 text-ink-3 tabular-nums">r{a.revision}</span>{/if}</span>
               <Pill size="sm" tone={a.role === "suggestion" ? "lilac" : "sky"}>{t(`wf.artifactRole.${a.role}` as MessageKey)}</Pill>
               <div class="flex gap-1">
                 <Button size="sm" variant="ghost" class="min-h-10" onclick={() => viewArtifact(a)}><PanelRight />{t("wf.openViewer")}</Button>

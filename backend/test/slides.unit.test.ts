@@ -158,3 +158,15 @@ describe("revise outline", () => {
     expect(_test.toOutline(pages, true).some((p) => p.student_owned)).toBe(false);
   });
 });
+
+describe("outline point cleanup", () => {
+  it("strips Markdown emphasis and inline tables and cuts at a boundary", async () => {
+    const { _test } = await import("../src/workflows/playbooks/slides.js");
+    expect(_test.cleanPoint("**WER** 從 12.3 降到 10.1")).toBe("WER 從 12.3 降到 10.1");
+    expect(_test.cleanPoint("結果 | 模型 | WER | 比較")).not.toContain("|");
+    const long = `${"這是一個很長的重點。".repeat(40)}`;
+    const out = _test.cleanPoint(long);
+    expect(out.length).toBeLessThanOrEqual(240);
+    expect(out.endsWith("。")).toBe(true);
+  });
+});

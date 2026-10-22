@@ -95,10 +95,11 @@
     });
   });
   $effect(() => () => session.destroy());
-  // Refresh the list when a title arrives or a run ends.
+  // Refresh the list when a title arrives, a run ends, or a card is decided (the list's 「等你處理」 count).
   $effect(() => {
     void session.conversation?.title;
     void session.run?.status;
+    void session.toolCalls.filter((c) => c.status === "pending_approval" || c.status === "deferred").length;
     untrack(() => listVersion++);
   });
 

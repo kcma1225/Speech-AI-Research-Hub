@@ -80,7 +80,7 @@
           <ChevronRight class="size-3.5 shrink-0 text-ink-3 transition-transform duration-150 motion-reduce:transition-none {open[r.id] ? 'rotate-90' : ''}" aria-hidden="true" />
           <span class="shrink-0 text-[12px] text-ink-3 tabular-nums">{i + 1}.</span>
           <span class="min-w-0 flex-1">
-            <span class="block truncate text-[13.5px] text-ink">{r.title}</span>
+            <span class="block truncate text-[13.5px] text-ink" title={r.title}>{r.title}</span>
             {#if r.status === "needs_pdf" || r.status === "awaiting_input"}{#if r.question}<span class="block truncate text-[12px] text-ink-3">{r.question}</span>{/if}{/if}
           </span>
           <Pill size="sm" tone={STATUS_TONE[r.status] ?? "stone"} dot={WORKING.includes(r.status)}>{t(`wf.status.${r.status}` as MessageKey)}</Pill>

@@ -77,7 +77,7 @@
 
 <svelte:head><title>{t("wf.pageTitle")} · Speech-AI Hub</title></svelte:head>
 
-<div class="mx-auto w-full max-w-[880px] px-4 py-6 sm:px-6">
+<div class="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
   <PageHeader title={t("wf.pageTitle")} subtitle={t("wf.pageDesc")} />
   <div class="mb-3 flex items-center justify-between gap-2">
     <Segmented label={t("wf.title")} guardIgnore bind:value={filter} options={[{ value: "all", label: t("wf.filter.all") }, { value: "active", label: t("wf.filter.active") }]} />
@@ -95,12 +95,16 @@
         <li class="group relative rounded-[20px] border border-line bg-surface">
           <div class="absolute top-2 right-11 z-[1] sm:right-12"><DeleteButton reveal label={t("crud.workflow.delete")} reason={UNDELETABLE.includes(w.status) ? t("crud.deny.workflowActive") : null} onclick={() => ((deleting = w), (deleteOpen = true))} /></div>
           <button type="button" class="flex min-h-14 w-full items-center gap-3 rounded-[20px] py-2 pr-3 pl-3 text-left hover:bg-surface-2 sm:pl-4" aria-expanded={expanded === w.id} onclick={() => (expanded = expanded === w.id ? null : w.id)}>
-            <span class="grid size-9 shrink-0 place-items-center rounded-full bg-surface-3 text-ink-2"><WorkflowIcon class="size-4" /></span>
+            <span class="grid size-9 shrink-0 place-items-center rounded-full bg-surface-3 text-ink-2 max-sm:hidden"><WorkflowIcon class="size-4" /></span>
+            <!-- Phones: the title gets two lines and the status moves under it (a row of pills left ~6 characters of title). -->
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-[14px] font-medium text-ink">{w.title}</span>
-              <span class="block truncate text-[12px] text-ink-3">{i18n.locale === "en" ? w.playbook_title_en : w.playbook_title}{#if w.study} · {w.study.title}{/if} · {relativeTime(w.updated_at)}</span>
+              <span class="block text-[14px] font-medium text-ink max-sm:line-clamp-2 sm:truncate" title={w.title}>{w.title}</span>
+              <span class="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-ink-3">
+                <span class="shrink-0 sm:hidden"><Pill size="sm" tone={STATUS_TONE[w.status]}>{t(`wf.status.${w.status}` as MessageKey)}</Pill></span>
+                <span class="min-w-0 truncate">{i18n.locale === "en" ? w.playbook_title_en : w.playbook_title}{#if w.study} · {w.study.title}{/if} · {relativeTime(w.updated_at)}</span>
+              </span>
             </span>
-            <Pill size="sm" tone={STATUS_TONE[w.status]}>{t(`wf.status.${w.status}` as MessageKey)}</Pill>
+            <span class="shrink-0 max-sm:hidden"><Pill size="sm" tone={STATUS_TONE[w.status]}>{t(`wf.status.${w.status}` as MessageKey)}</Pill></span>
             <span class="w-10 shrink-0" aria-hidden="true"></span>
             <ChevronRight class="size-4 shrink-0 text-ink-3 transition-transform duration-150 {expanded === w.id ? 'rotate-90' : ''}" />
           </button>

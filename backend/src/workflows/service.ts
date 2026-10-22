@@ -394,6 +394,8 @@ export async function deleteWorkflow(app: FastifyInstance, user: CurrentUser, id
   if (!FINISHED_STATUSES.includes(r.status) && !["awaiting_plan_approval", "awaiting_input", "needs_pdf", "queued"].includes(r.status)) throw conflict("請先停止這個工作流程。");
   if (r.job_id && r.status === "queued") await cancelJob(app.db, r.job_id);
   await app.db.query("DELETE FROM workflow_runs WHERE id=$1", [id]);
+  // Its chat notices (incl. 「要我修這幾項嗎？」) would point at a run that no longer exists.
+  await app.db.query("DELETE FROM agent_messages WHERE role='notice' AND content @> $1::jsonb", [JSON.stringify([{ workflowId: id }])]).catch(() => undefined);
 }
 
 /** What still runs for a conversation: its assistant turn, its unfinished workflows and goals (the delete warning). */

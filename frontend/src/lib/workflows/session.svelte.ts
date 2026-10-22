@@ -1,3 +1,4 @@
+import { ApiError } from "#lib/api.ts";
 import { notifyArtifactChanged, refFromArtifact } from "#lib/agent/viewer.ts";
 import { workflowsApi } from "./api.ts";
 import { applyEvent, emptyState, type WorkflowState } from "./reduce.ts";
@@ -22,6 +23,8 @@ export class WorkflowSession {
   state = $state<WorkflowState>(emptyState());
   loading = $state(true);
   error = $state<string | null>(null);
+  /** The run no longer exists (deleted): the card says so quietly instead of showing an error. */
+  gone = $state(false);
   live = $state(false);
   private source: EventSource | null = null;
   private queue: { type: string; data: Record<string, unknown> }[] = [];
@@ -51,6 +54,7 @@ export class WorkflowSession {
       this.sync();
     } catch (e) {
       this.error = (e as Error).message;
+      this.gone = e instanceof ApiError && e.status === 404;
     } finally {
       this.loading = false;
     }

@@ -240,7 +240,7 @@
   <Dialog.Portal>
     <Dialog.Overlay class="fixed inset-0 z-50 bg-[var(--overlay)] backdrop-blur-[2px] data-[state=open]:animate-[fade-in_160ms_ease-out] motion-reduce:animate-none" />
     <Dialog.Content
-      class="picker fixed inset-0 z-50 flex flex-col overflow-hidden bg-popover outline-none pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:h-[min(640px,calc(100dvh-48px))] sm:w-[min(640px,calc(100vw-32px))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-[24px] sm:border sm:border-line sm:pt-0 sm:pb-0 sm:shadow-pop"
+      class="picker fixed inset-0 {step === 'home' ? 'sm:h-auto sm:max-h-[min(640px,calc(100dvh-48px))]' : 'sm:h-[min(640px,calc(100dvh-48px))]'} z-50 flex flex-col overflow-hidden bg-popover outline-none pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] sm:inset-auto sm:top-1/2 sm:left-1/2 sm:w-[min(640px,calc(100vw-32px))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-[24px] sm:border sm:border-line sm:pt-0 sm:pb-0 sm:shadow-pop"
       ondragover={(e: DragEvent) => {
         if (e.dataTransfer?.types.includes("Files")) {
           e.preventDefault();

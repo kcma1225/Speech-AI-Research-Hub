@@ -171,8 +171,19 @@ type OutlineJson = { pages: { title: string; points?: string[]; student_owned?: 
 const isOutline = (v: unknown): v is OutlineJson => !!v && typeof v === "object" && Array.isArray((v as OutlineJson).pages) && (v as OutlineJson).pages.every((p) => p && typeof p.title === "string");
 
 /** `revise`: an existing deck's pages already carry the student's content — none is student-owned. */
+/** An outline point as plain text: no Markdown emphasis / inline tables, cut at a sentence or word boundary. */
+export function cleanPoint(x: string, max = 240): string {
+  let t = x.replace(/\*\*|__|`/g, "").replace(/\s*\|[^\n]*\|\s*/g, " ").replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const stop = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("；"), cut.lastIndexOf(". "), cut.lastIndexOf("; "));
+  if (stop > max * 0.5) return cut.slice(0, stop + 1).trim();
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trim()}…`;
+}
+
 const toOutline = (pages: OutlineJson["pages"], revise = false): SlideOutline[] =>
-  pages.map((p, i) => ({ n: i + 1, title: p.title.trim().slice(0, 120), points: (p.points ?? []).filter((x) => typeof x === "string").map((x) => x.slice(0, 200)).slice(0, 6), ...(!revise && (p.student_owned || STUDENT_TITLE_RE.test(p.title)) ? { student_owned: true } : {}), ...(typeof p.item === "string" && p.item.trim() ? { item: p.item.trim().slice(0, 80) } : {}) }));
+  pages.map((p, i) => ({ n: i + 1, title: cleanPoint(p.title, 120), points: (p.points ?? []).filter((x) => typeof x === "string").map((x) => cleanPoint(x)).filter(Boolean).slice(0, 6), ...(!revise && (p.student_owned || STUDENT_TITLE_RE.test(p.title)) ? { student_owned: true } : {}), ...(typeof p.item === "string" && p.item.trim() ? { item: p.item.trim().slice(0, 80) } : {}) }));
 
 /** A page the student left for themselves (its note is the fixed 「由報告者補充」 label, in either language). */
 const STUDENT_NOTE_RE = /（由報告者補充）|\(To be added by the presenter\.\)/;
@@ -243,7 +254,10 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   const revise = await reviseSource(env, access.study.id);
   if (revise) return revisePlan(env, access, revise);
   let paper = await paperOf(env);
-  const mode: DeckMode = inputMode ?? (paper || /論文|paper|arxiv|文獻報告/i.test(env.run.request) ? "paper_report" : "progress");
+  // An explicit 「進度報告」 wins over a study paper picked by fallback (the study's only paper is not a reason for a paper report).
+  const progressAsked = /進度報告|進度簡報|週報|週會進度|progress report|weekly report/i.test(env.run.request);
+  if (progressAsked && paper && !paperIdOf(env)) paper = null;
+  const mode: DeckMode = inputMode ?? (!progressAsked && (paper || /論文|paper|arxiv|文獻報告/i.test(env.run.request)) ? "paper_report" : "progress");
   if (mode === "paper_report" && !paper) return { kind: "question", question: "要報告哪一篇論文？請先把論文加入文獻庫（或附加它），再在補充指示寫出論文標題。" };
   // No PDF: open access + the record's URLs first; then autopilot skips (needs_pdf), otherwise the user chooses (paper-pdf.ts).
   let abstractOnly = false;
@@ -1079,4 +1093,4 @@ export const slidesPlaybook: WorkflowPlaybook = {
 
 registerWorkflowPlaybook(slidesPlaybook);
 
-export const _test = { toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps };
+export const _test = { cleanPoint, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps };

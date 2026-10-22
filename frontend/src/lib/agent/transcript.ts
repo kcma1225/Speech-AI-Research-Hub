@@ -127,8 +127,11 @@ const isResult = (c: ToolCall) => c.status === "done" && c.risk !== "read" && c.
  * Workflow / goal status notices that a later message supersedes are dropped:
  * - a partial run's summary (「還沒達成的項目」 + 「要我修這幾項嗎？」, `items` + `workflow_id`) stays, but only the newest
  *   one per run (every 繼續改 round that ends partial posts a new one);
- * - the quiet one-line status notices (「…需要你補充資訊」) duplicate the workflow card: only the very last message
- *   of the chat keeps one (the bell keeps the notification).
+ * - 「please act」 notices (plan / roadmap to confirm, a question, a missing PDF: kinds `…_awaiting_*`, `…_needs_pdf`)
+ *   are never shown: the card in the chat carries that prompt itself, and the line went stale as soon as the user
+ *   acted on the card (the bell keeps the notification);
+ * - the other quiet one-line status notices (「…已完成」) duplicate the card too: only the very last message of the
+ *   chat keeps one.
  */
 export function dropSupersededNotices(messages: Message[]): Message[] {
   const isStatus = (m: Message) => m.role === "notice" && (!!m.kind?.startsWith("workflow_") || !!m.kind?.startsWith("goal_"));
@@ -139,6 +142,7 @@ export function dropSupersededNotices(messages: Message[]): Message[] {
     if (!isStatus(m)) return true;
     if (m.items?.length && m.workflow_id) return lastPartial.get(m.workflow_id) === m.id;
     if (m.items?.length) return true;
+    if (/_(awaiting_[a-z_]+|needs_pdf)$/.test(m.kind ?? "")) return false;
     return m === last;
   });
 }
@@ -199,7 +203,9 @@ function makeTurn(group: Message[], byMessage: Map<string, ToolCall[]>, answered
     : (withText.at(-1) ?? null);
   const steps = assistant.filter((m) => m !== final && (m.text.trim() || m.reasoning.trim()));
   const { counts, failed, denied } = countActivity(calls);
-  const times = [...group.map((m) => m.created_at), ...calls.map((c) => c.finished_at ?? c.created_at)].filter(Boolean).sort();
+  // A call that waited for the user (a card, a deferred delete confirmed later) counts from when it was asked: the
+  // turn's 「N 秒」 is the assistant's working time, not how long the card sat there.
+  const times = [...group.map((m) => m.created_at), ...calls.map((c) => (c.decided_at ? c.created_at : (c.finished_at ?? c.created_at)))].filter(Boolean).sort();
   return {
     kind: "assistant",
     // Stable from the first streamed token to the finished answer: the user message it answers.

@@ -531,7 +531,7 @@
       </div>
     </div>
     {#if data?.source && canEdit}
-      <div class="flex shrink-0 flex-wrap items-center gap-2">
+      <div class="flex shrink-0 items-center gap-1.5 max-sm:w-full sm:flex-wrap sm:gap-2">
         <AiGate role="slides" inline>
           <!-- Phones: the AI actions are icon buttons (title + accessible name), so the row stays one line with 發布. -->
           <Button variant="secondary" title={t("slides.editor.ai.draft")} disabled={aiRunning} onclick={() => ((draftInstructions = ""), (aiDraftOpen = true))}><Sparkles /><span class="max-sm:sr-only">{t("slides.editor.ai.draft")}</span></Button>
@@ -544,7 +544,7 @@
             onSuggested={fileId => fileId === activeId && void loadSuggestions(fileId)}
           />
         </AiGate>
-        <Button variant="primary" loading={publishing} disabled={aiRunning || reviewing} onclick={publish}><Send />{t("slides.editor.publish")}</Button>
+        <Button variant="primary" class="max-sm:min-w-0 max-sm:flex-1" title={t("slides.editor.publish")} loading={publishing} disabled={aiRunning || reviewing} onclick={publish}><Send /><span class="truncate">{t("slides.editor.publish")}</span></Button>
       </div>
     {/if}
   </header>

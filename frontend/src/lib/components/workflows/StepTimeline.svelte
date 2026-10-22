@@ -54,7 +54,8 @@
             <span class="mt-0.5 block truncate text-[12px] text-ink-3">{step.output.summary}</span>
           {/if}
         </span>
-        <span class="mt-1 shrink-0 text-[12px] text-ink-3">{t(`wf.step.${step.status}` as MessageKey)}</span>
+        <!-- Phones: 「通過」 is already the check badge on the icon; the summary gets the width. -->
+        <span class="mt-1 shrink-0 text-[12px] text-ink-3 {step.status === 'passed' ? 'max-sm:sr-only' : ''}">{t(`wf.step.${step.status}` as MessageKey)}</span>
         <ChevronRight class="mt-1.5 size-3.5 shrink-0 text-ink-3 transition-transform duration-150 {openKey === step.key ? 'rotate-90' : ''}" />
       </button>
       {#if openKey === step.key}

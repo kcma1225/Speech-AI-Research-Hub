@@ -82,7 +82,8 @@
 {/if}
 
 {#each turn.asks as c (c.id)}
-  <div class={compact ? "" : "sm:ml-11"} data-focus-key="toolcall:{c.id}">
+  <!-- A question form stays a readable width (like the consent cards) instead of stretching options across a wide column. -->
+  <div class="max-w-[52rem] {compact ? '' : 'sm:ml-11'}" data-focus-key="toolcall:{c.id}">
     <AskCard args={askArgs(c)!} deferred={deferredAsks && focusKey !== `toolcall:${c.id}`} disabled={busy} onSubmit={(a) => onAnswer(c, a)} />
   </div>
 {/each}

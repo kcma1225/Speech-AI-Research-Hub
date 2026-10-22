@@ -135,15 +135,11 @@
     <p class="mt-2 text-[12.5px] text-ink-3"><span class="font-medium">{t("agent.consent.why")}：</span>{why}</p>
   {/if}
 
-  <button type="button" class="mt-2 inline-flex min-h-8 items-center gap-1 rounded-full text-[12.5px] text-ink-3 hover:text-ink" aria-expanded={showDetails} onclick={() => (showDetails = !showDetails)}>
-    <ChevronRight class="size-3.5 transition-transform duration-150 {showDetails ? 'rotate-90' : ''}" />{t("agent.tool.details")}
-  </button>
-  {#if showDetails}
-    <pre class="mt-1 max-h-48 overflow-auto rounded-xl bg-surface-2 p-2.5 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2">{JSON.stringify(call.args, null, 2)}</pre>
-  {/if}
 
   <!-- Actions (no autofocus anywhere) -->
   {#if denying}
+    <div class="mt-2">{@render detailsToggle()}</div>
+    {@render detailsBody()}
     <div class="mt-3 flex flex-col gap-2">
       <TextField label={t("agent.consent.denyReason")} bind:value={reason} maxlength={500} />
       <div class="flex flex-wrap justify-end gap-2">
@@ -152,7 +148,10 @@
       </div>
     </div>
   {:else}
+    <!-- 「詳細內容」 and the decision share one row (no empty band between them on wide cards). -->
     <div class="mt-3 flex flex-wrap items-center justify-end gap-2">
+      <span class="max-sm:w-full">{@render detailsToggle()}</span>
+      <span class="flex-1 max-sm:hidden"></span>
       {#if kind === "memory"}
         <Button variant="ghost" size="sm" disabled={busy} onclick={() => run("deny")}>{t("agent.consent.dontRemember")}</Button>
         <Button variant="primary" size="sm" loading={busy} disabled={!memoryText.trim()} onclick={remember}>{memoryEdited ? t("agent.consent.rememberEdited") : t("agent.consent.remember")}</Button>
@@ -162,13 +161,25 @@
       {:else}
         <Button variant="ghost" size="sm" disabled={busy} onclick={() => (denying = true)}>{t("agent.consent.deny")}</Button>
         {#if call.grantable}
-          <Button variant="secondary" size="sm" disabled={busy} onclick={() => run("approve_conversation")} title={scopedLabel} class="max-w-full"><span class="truncate">{compact ? t("agent.consent.allowConversation") : scopedLabel}</span></Button>
+          <Button variant="secondary" size="sm" disabled={busy} onclick={() => run("approve_conversation")} title={scopedLabel} class="max-w-full">{#if compact}<span class="truncate">{t("agent.consent.allowConversation")}</span>{:else}<span class="truncate max-sm:hidden">{scopedLabel}</span><span class="truncate sm:hidden">{t("agent.consent.allowConversation")}</span>{/if}</Button>
         {/if}
         <Button variant="primary" size="sm" loading={busy} onclick={() => run("approve")}>{t("agent.consent.allow")}</Button>
       {/if}
     </div>
+    {@render detailsBody()}
   {/if}
 </section>
+
+{#snippet detailsToggle()}
+  <button type="button" class="-ml-1 inline-flex min-h-9 items-center gap-1 rounded-full px-1 text-[12.5px] text-ink-3 hover:text-ink" aria-expanded={showDetails} onclick={() => (showDetails = !showDetails)}>
+    <ChevronRight class="size-3.5 transition-transform duration-150 {showDetails ? 'rotate-90' : ''}" />{t("agent.tool.details")}
+  </button>
+{/snippet}
+{#snippet detailsBody()}
+  {#if showDetails}
+    <pre class="mt-2 max-h-48 overflow-auto rounded-xl bg-surface-2 p-2.5 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-2">{JSON.stringify(call.args, null, 2)}</pre>
+  {/if}
+{/snippet}
 
 <style>
   .card {

@@ -88,11 +88,11 @@
   }
 </script>
 
-<section class="plan flex flex-col gap-4 rounded-2xl border border-[var(--pill-butter-ink)]/30 bg-[var(--pill-butter)]/40 p-3 sm:p-4" aria-label={t("wf.plan")}>
+<section class="plan @container flex flex-col gap-4 rounded-2xl border border-[var(--pill-butter-ink)]/30 bg-[var(--pill-butter)]/40 p-3 max-sm:-mx-1.5 max-sm:px-2.5 sm:p-4" aria-label={t("wf.plan")}>
   <div>
     <p class="text-[14px] font-semibold text-ink">{t("wf.planReview")}</p>
     <p class="mt-0.5 text-[12.5px] text-ink-3">{t("wf.planHint")}</p>
-    {#if workflow.plan?.summary}<p class="mt-2 text-[13.5px] leading-relaxed text-ink-2">{workflow.plan.summary}</p>{/if}
+    {#if workflow.plan?.summary}<p class="mt-2 max-w-[90ch] text-[13.5px] leading-relaxed text-ink-2">{workflow.plan.summary}</p>{/if}
     {#if workflow.plan?.notes}<p class="mt-1 text-[12.5px] text-[var(--pill-peach-ink)]">{workflow.plan.notes}</p>{/if}
   </div>
 
@@ -101,13 +101,14 @@
     <p class="mb-2 text-[12px] text-ink-3">{t("wf.req.hint")}</p>
     {#if workflow.plan?.edit_kind}<p class="mb-1.5 text-[12.5px] text-ink-2">{t(workflow.plan.edit_kind === "expand" ? "wf.edit.expand" : "wf.edit.revise")}</p>{/if}
     {#if workflow.plan?.front_title}<p class="mb-1.5 text-[12.5px] break-words text-ink-2">{t("wf.frontTitle", { title: workflow.plan.front_title })}</p>{/if}
-    <ul class="flex flex-col gap-1">
+    <ul class="flex max-w-[52rem] flex-col gap-1">
       {#each reqs as r, i (i)}
-        <li class="flex items-center gap-1.5">
-          <span class="shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-[11.5px] text-ink-2">{t(reqType(r.type))}</span>
-          {#if r.source === "standing"}<span class="shrink-0 rounded-full bg-[var(--pill-sky)] px-2 py-0.5 text-[11.5px] text-[var(--pill-sky-ink)]">{t("wf.req.inherited")}</span>{/if}
+        <li class="flex items-start gap-1.5">
+          <span class="mt-2.5 min-w-[3.25rem] shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-center text-[11.5px] text-ink-2">{t(reqType(r.type))}</span>
+          {#if r.source === "standing"}<span class="mt-2.5 shrink-0 rounded-full bg-[var(--pill-sky)] px-2 py-0.5 text-[11.5px] text-[var(--pill-sky-ink)]">{t("wf.req.inherited")}</span>{/if}
           <label class="sr-only" for="wf-req-{workflow.id}-{i}">{t("wf.req.title")} {i + 1}</label>
-          <input id="wf-req-{workflow.id}-{i}" class="h-10 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 text-[13.5px] text-ink outline-none hover:border-line focus:border-ink" bind:value={r.text} placeholder={t("wf.req.placeholder")} />
+          <!-- Wraps (phones): a one-line field would cut the requirement off. -->
+          <textarea id="wf-req-{workflow.id}-{i}" rows="1" class="point min-h-10 min-w-0 flex-1 resize-none rounded-lg border border-transparent bg-transparent px-2 py-2 text-[13.5px] leading-snug text-ink outline-none hover:border-line focus:border-ink" bind:value={r.text} placeholder={t("wf.req.placeholder")} onkeydown={(e) => e.key === "Enter" && !e.isComposing && e.preventDefault()}></textarea>
           <button type="button" class="grid size-9 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("wf.req.remove")} onclick={() => (reqs = reqs.filter((__, k) => k !== i))}><X class="size-3.5" /></button>
         </li>
       {/each}
@@ -118,10 +119,11 @@
   {#if original}
     <div>
       <p class="mb-2 text-[13px] font-semibold text-ink">{t("wf.outline")} · {t("wf.outlinePages", { n: outline.length })}</p>
-      <ol class="flex flex-col gap-2">
+      <!-- Wide cards: two pages side by side (reading order left → right), so a long outline is not one tall column. -->
+      <ol class="grid gap-2 @min-[52rem]:grid-cols-2">
         {#each outline as page, i (i)}
           <!-- Controls sit in a header row so the title and points get the full width (phones too); points wrap. -->
-          <li class="rounded-xl border border-line bg-surface p-2.5">
+          <li class="rounded-xl border border-line bg-surface p-2 sm:p-2.5">
             <div class="flex items-center gap-1">
               <span class="pl-2 text-[12px] text-ink-3 tabular-nums">{t("wf.page", { n: i + 1 })}</span>
               {#if owned.has(page.title)}<span class="ml-1 rounded-full bg-surface-3 px-2 py-0.5 text-[11.5px] text-ink-3">{t("wf.studentOwned")}</span>{/if}
@@ -135,7 +137,7 @@
             <ul class="mt-0.5 flex flex-col gap-0.5">
               {#each page.points as _, j (j)}
                 <li class="flex items-start gap-1">
-                  <span class="mt-2 ml-2 text-ink-3" aria-hidden="true">•</span>
+                  <span class="mt-2 ml-1 text-ink-3 sm:ml-2" aria-hidden="true">•</span>
                   <label class="sr-only" for="wf-pt-{workflow.id}-{i}-{j}">{t("wf.point")}</label>
                   <textarea id="wf-pt-{workflow.id}-{i}-{j}" rows="1" class="point min-h-9 min-w-0 flex-1 resize-none rounded-lg border border-transparent bg-transparent px-2 py-1.5 text-[13px] leading-snug text-ink-2 outline-none hover:border-line focus:border-ink" bind:value={page.points[j]} onkeydown={(e) => e.key === "Enter" && !e.isComposing && e.preventDefault()}></textarea>
                   <button type="button" class="grid size-9 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("wf.removePoint")} onclick={() => (page.points = page.points.filter((__, k) => k !== j))}><X class="size-3.5" /></button>
@@ -152,7 +154,7 @@
 
   <div>
     <p class="mb-2 text-[13px] font-semibold text-ink">{t("wf.criteria")}</p>
-    <ul class="flex flex-col gap-1">
+    <ul class="flex max-w-[52rem] flex-col gap-1">
       {#each criteria as c, i (i)}
         <li class="flex items-center gap-1">
           <span class="grid size-5 shrink-0 place-items-center rounded-full border border-line-2" aria-hidden="true"></span>
@@ -168,7 +170,7 @@
   {#if tasks.length && !(original && outlineChanged(original, outline))}
     <div>
       <p class="mb-2 text-[13px] font-semibold text-ink">{t("wf.steps")}</p>
-      <ul class="flex flex-col gap-1.5">
+      <ul class="flex max-w-[52rem] flex-col gap-1.5">
         {#each tasks as s (s.key)}
           {@const e = stepEdits[s.key]}
           {#if e}

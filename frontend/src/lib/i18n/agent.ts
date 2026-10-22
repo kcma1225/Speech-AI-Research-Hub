@@ -423,7 +423,7 @@ export const en: Record<keyof typeof zh, string> = {
   "agent.autopilotConfirmTitle": "Turn on autopilot?",
   "agent.autopilotConfirm": "Turn on",
   "agent.autopilotExplain": "Fully automatic: in this conversation the AI no longer asks for approval. Creating, editing, memories and workflow plans run directly; edits to existing content keep a version you can undo or restore. Deletions are queued for you to confirm later without blocking other work. After reading papers or other people's content, the AI sends no outbound queries (to prevent leaks).",
-  "agent.autopilotActing": "Ran {n} write actions automatically",
+  "agent.autopilotActing": "Autopilot ran {n} write action(s)",
   "agent.memory": "Memory",
   "agent.memoryOn": "This conversation uses memory",
   "agent.memoryOff": "This conversation doesn't use memory",

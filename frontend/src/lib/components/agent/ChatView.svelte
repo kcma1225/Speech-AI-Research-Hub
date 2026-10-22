@@ -224,6 +224,16 @@
     }
   });
 
+  // A card decided here (approve / deny / a deferred delete confirmed): the shell's 「N 個等你處理」 follows now,
+  // not at its next idle poll.
+  const openDecisions = $derived(session.toolCalls.filter((c) => c.status === "pending_approval" || c.status === "deferred").length);
+  let seenDecisions = -1;
+  $effect(() => {
+    const n = openDecisions;
+    if (seenDecisions >= 0 && n < seenDecisions) void agentActivity.refresh();
+    seenDecisions = n;
+  });
+
   // Stick to the bottom only when the user is already there; otherwise offer a 「新內容」 pill.
   function onscroll() {
     if (!scroller) return;
@@ -556,6 +566,8 @@
       <p class="mb-1.5 text-center text-[12px] text-ink-3" role="status">{t("agent.offline")}</p>
     {/if}
     <AiGate role="assistant">
+      <!-- The 「#」 menu is positioned on this box, so it lines up with the composer (not the padded bottom bar). -->
+      <div class="relative">
       {#if !interview}<HashMenu textarea={input} bind:value={text} draft={attachments} study={refStudy} disabled={!input} />{/if}
       <Composer
         bind:value={text}
@@ -581,6 +593,7 @@
         onAt={interview ? undefined : () => (attachOpen = true)}
         onFiles={interview ? undefined : (files) => void attachFiles(files)}
       />
+      </div>
       {#snippet fallback()}
         <div class="flex items-start gap-3 rounded-[24px] border border-dashed border-line-2 bg-surface-2 p-4 text-[13px] text-ink-2" role="status">
           <Wrench class="mt-0.5 size-4 shrink-0 text-ink-3" />

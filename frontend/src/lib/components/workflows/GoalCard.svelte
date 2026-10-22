@@ -131,7 +131,8 @@
     <p class="text-[13px] text-danger">{t("goal.loadFailed")}：{error}</p>
   {:else}
     <header class="flex flex-wrap items-start gap-x-2 gap-y-1">
-      <span class="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-ink-2"><Target class="size-4" /></span>
+      <!-- Phones: no icon, the title gets the width. -->
+      <span class="grid size-8 shrink-0 place-items-center rounded-full bg-surface-3 text-ink-2 max-sm:hidden"><Target class="size-4" /></span>
       <div class="min-w-0 flex-1">
         <p class="text-[11.5px] tracking-wide text-ink-3 uppercase">{t("goal.title")} · {goal.deliverable.label}</p>
         <p class="text-[14.5px] font-semibold break-words text-ink" title={goal.title}>{goal.title}</p>
