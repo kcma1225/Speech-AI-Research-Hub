@@ -121,10 +121,10 @@
     </EmptyState>
   </Card>
 {:else}
-  <Card padded={false} class="overflow-hidden">
+  <Card padded={false} class="overflow-clip">
     <table class="hidden w-full text-left text-[13.5px] lg:table">
       <thead>
-        <tr class="border-b border-line bg-surface-2/60 text-[12px] text-ink-3">
+        <tr class="border-b border-line bg-surface-2/60 text-[12px] text-ink-3 lg:[&>th]:sticky lg:[&>th]:top-0 lg:[&>th]:z-10 lg:[&>th]:bg-surface-2">
           <th class="py-2.5 pl-6 font-medium">{t("manage.invites.col.state")}</th>
           <th class="py-2.5 font-medium">{t("manage.invites.col.role")}</th>
           <th class="py-2.5 font-medium">{t("manage.invites.col.uses")}</th>

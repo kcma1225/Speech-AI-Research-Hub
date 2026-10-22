@@ -32,7 +32,9 @@
     if (!title.trim() && doc.title) title = doc.title.slice(0, 200);
     toasts.show(doc.truncated ? t("docimport.truncated") : t("docimport.done", { name: doc.filename }), "success");
   }
-  let layout = $state<"split" | "edit" | "preview">(session.user?.preferences.editor.layout ?? "split");
+  // A new, empty summary never opens in preview-only (it would show a blank pane); the saved preference applies otherwise.
+  const preferred = session.user?.preferences.editor.layout ?? "split";
+  let layout = $state<"split" | "edit" | "preview">(preferred === "preview" ? "split" : preferred);
   let members = $state<string[]>([]);
   let advisors = $state<string[]>([]);
   let directory = $state<DirectoryUser[]>([]);
@@ -95,9 +97,10 @@
 <PageHeader title={t("studies.new.title")} subtitle={t("studies.new.subtitle")} />
 
 <!-- While the AI interview runs it takes the full width above the form (the side column is too narrow for a chat). -->
-<div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 {interviewing ? '' : 'lg:grid-cols-[minmax(0,1fr)_340px]'}">
+<div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 {interviewing ? '' : 'lg:grid-cols-[minmax(0,1fr)_340px] 2xl:grid-cols-[minmax(0,1fr)_400px]'}">
   <Card>
     <form id="study-form" class="flex flex-col gap-5" onsubmit={submit}>
+      <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-5 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
       <TextField label={t("studies.field.title")} bind:value={title} maxlength={200} placeholder={t("studies.field.titlePlaceholder")} required />
       <TextField
         label={t("studies.field.slug")}
@@ -108,6 +111,7 @@
         error={slugError}
         hint={t("studies.field.slugHint", { slug: slug || "…" })}
       />
+      </div>
       <div class="flex flex-col gap-2">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <span class="text-[13px] font-medium text-ink-2">{t("studies.field.summary")}</span>
@@ -118,12 +122,14 @@
         <p class="text-[12.5px] text-ink-3">{t("studies.field.summaryHint")}</p>
       </div>
 
-      <div class="flex flex-col gap-1.5">
+      <!-- Maturity and people sit side by side on wide screens instead of three short rows of narrow selects. -->
+      <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-5 md:grid-cols-2 xl:grid-cols-3">
+      <div class="flex flex-col gap-2">
         <span class="text-[13px] font-medium text-ink-2">{t("studies.maturity")}</span>
         <Select
           bind:value={maturity}
           label={t("studies.maturity")}
-          class="w-full sm:w-80"
+          class="w-full"
           options={[{ value: "", label: t("studies.maturity.none") }, ...MATURITIES.map(m => ({ value: m, label: t(`studies.maturity.${m}`), hint: t(`studies.maturity.${m}.hint`) }))]}
         />
       </div>
@@ -143,15 +149,16 @@
           {/if}
           {#if choices.length}
             {#if pick === "member"}
-              <Select bind:value={pickMember} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: displayName(u), hint: `@${u.username} · ${t(`role.${u.role}` as MessageKey)}` }))]} />
+              <Select bind:value={pickMember} label={t(add)} class="w-full" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: displayName(u), hint: `@${u.username} · ${t(`role.${u.role}` as MessageKey)}` }))]} />
             {:else}
-              <Select bind:value={pickAdvisor} label={t(add)} class="w-full sm:w-72" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: displayName(u), hint: `@${u.username}` }))]} />
+              <Select bind:value={pickAdvisor} label={t(add)} class="w-full" options={[{ value: "", label: `＋ ${t(add)}` }, ...choices.map(u => ({ value: u.id, label: displayName(u), hint: `@${u.username}` }))]} />
             {/if}
           {/if}
         </div>
       {/snippet}
       {@render people("studies.field.members", members, id => (members = members.filter(x => x !== id)), memberChoices, "studies.field.addMember", "member")}
       {@render people("studies.field.advisors", advisors, id => (advisors = advisors.filter(x => x !== id)), advisorChoices, "studies.field.addAdvisor", "advisor")}
+      </div>
 
       <p class="flex gap-2 rounded-2xl bg-surface-2 p-3.5 text-[12.5px] leading-relaxed text-ink-2"><Info class="mt-0.5 size-4 shrink-0 text-ink-3" />{t("studies.new.stagesHint")}</p>
       {#if error}<p class="text-[13px] text-danger" role="alert">{error}</p>{/if}

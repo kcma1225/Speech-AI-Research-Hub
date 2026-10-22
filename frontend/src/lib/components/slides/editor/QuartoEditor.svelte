@@ -3,7 +3,7 @@
   import { beforeNavigate, goto } from "$app/navigation";
   import { page } from "$app/state";
   import { EditorView } from "@codemirror/view";
-  import { ArrowLeft, Check, CircleAlert, Copy, FileCode2, FolderTree, LoaderCircle, Send, Sparkles, Wand2, X } from "@lucide/svelte";
+  import { ArrowLeft, Check, CircleAlert, Copy, FileCode2, FolderTree, LoaderCircle, PanelRightClose, PanelRightOpen, Send, Sparkles, Wand2, X } from "@lucide/svelte";
   import { api, ApiError } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
   import AiGate from "#lib/components/ai/AiGate.svelte";
@@ -28,6 +28,9 @@
   import FileTree from "./FileTree.svelte";
   import PreviewPane from "./PreviewPane.svelte";
   import SlideLayoutReview from "#lib/components/vision/SlideLayoutReview.svelte";
+  import SplitHandle from "#lib/components/workspace/SplitHandle.svelte";
+  import { viewport } from "#lib/media.svelte.ts";
+  import { loadFlag, loadRatio, saveFlag, saveRatio } from "#lib/workspace/split.ts";
 
   /**
    * In-app Quarto editor of a deck: file tree, CodeMirror (shared editor base), autosave with optimistic versions,
@@ -52,6 +55,13 @@
   let suggestions = $state<Suggestion[]>([]);
   let mobileTab = $state<"edit" | "preview" | "files">("edit");
   let filesSheet = $state(false);
+  // Desktop workspace: collapsible file tree, editor | preview split (draggable), collapsible preview; remembered per viewer.
+  let treeOpen = $state(loadFlag("quarto.tree", typeof window !== "undefined" && window.innerWidth >= 1536));
+  let previewHidden = $state(loadFlag("quarto.previewHidden", false));
+  let splitBox = $state<HTMLDivElement | null>(null);
+  let split = $state(loadRatio("quarto", 0.5));
+  let splitting = $state(false);
+  const sideBySide = $derived(viewport.desktop && !previewHidden);
 
   const canEdit = $derived(Boolean(data?.permissions.edit));
   const files = $derived(data?.files ?? []);
@@ -523,11 +533,13 @@
     {#if data?.source && canEdit}
       <div class="flex shrink-0 flex-wrap items-center gap-2">
         <AiGate role="slides" inline>
-          <Button variant="secondary" disabled={aiRunning} onclick={() => ((draftInstructions = ""), (aiDraftOpen = true))}><Sparkles />{t("slides.editor.ai.draft")}</Button>
-          <Button variant="secondary" disabled={aiRunning || reviewing || active?.kind !== "text"} onclick={openAiEdit}><Wand2 />{t("slides.editor.ai.edit")}</Button>
+          <!-- Phones: the AI actions are icon buttons (title + accessible name), so the row stays one line with 發布. -->
+          <Button variant="secondary" title={t("slides.editor.ai.draft")} disabled={aiRunning} onclick={() => ((draftInstructions = ""), (aiDraftOpen = true))}><Sparkles /><span class="max-sm:sr-only">{t("slides.editor.ai.draft")}</span></Button>
+          <Button variant="secondary" title={t("slides.editor.ai.edit")} disabled={aiRunning || reviewing || active?.kind !== "text"} onclick={openAiEdit}><Wand2 /><span class="max-sm:sr-only">{t("slides.editor.ai.edit")}</span></Button>
           <SlideLayoutReview
             {deckId}
             hasSource
+            iconOnlyMobile
             onOpenFile={ref => open(files.find(f => f.id === ref.fileId || f.path === ref.path) ?? null)}
             onSuggested={fileId => fileId === activeId && void loadSuggestions(fileId)}
           />
@@ -589,19 +601,31 @@
 
     <div class="lg:hidden"><Segmented bind:value={mobileTab} label={t("slides.editor.view")} options={tabOptions} class="w-full" /></div>
 
-    <div class="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] 2xl:grid-cols-[220px_minmax(0,1fr)_minmax(0,1fr)]">
-      <aside class="min-w-0 rounded-[22px] border border-line/70 bg-surface p-2.5 shadow-card {mobileTab === 'files' ? '' : 'max-lg:hidden'} lg:hidden 2xl:block 2xl:max-h-[calc(100dvh-14rem)] 2xl:overflow-hidden">
+    <div class="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:gap-3">
+      <aside class="min-w-0 rounded-[22px] border border-line/70 bg-surface p-2.5 shadow-card {mobileTab === 'files' ? '' : 'max-lg:hidden'} {treeOpen ? 'lg:block' : 'lg:hidden'} lg:w-56 lg:shrink-0 lg:self-stretch lg:overflow-y-auto">
         <FileTree {files} entry={data.source.entry} {activeId} {canEdit} dirty={dirtyIds} onOpen={f => open(f)} onNew={askNew} onUpload={upload} onRename={askRename}
           onDelete={f => ((deleteTarget = f), (deleteOpen = true))} onSetEntry={setEntry} />
       </aside>
 
-      <section class="flex min-w-0 flex-col overflow-hidden rounded-[22px] border border-line/70 bg-surface shadow-card {mobileTab === 'edit' ? '' : 'max-lg:hidden'}" aria-label={t("slides.editor.tab.edit")}>
-        <div class="flex min-h-12 items-center gap-2 border-b border-line px-3 py-1.5">
-          <span class="hidden lg:contents 2xl:hidden"><Button size="icon-sm" variant="ghost" title={t("slides.editor.files")} aria-label={t("slides.editor.files")} onclick={() => (filesSheet = true)}><FolderTree /></Button></span>
-          <span class="min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink-2" title={active?.path}>{active?.path ?? ""}</span>
+      <div bind:this={splitBox} class="flex min-w-0 flex-1 flex-col gap-4 lg:flex-row lg:items-start lg:gap-0 {splitting ? 'cursor-col-resize select-none' : ''}">
+      <section
+        class="flex min-w-0 flex-col overflow-hidden rounded-[22px] border border-line/70 bg-surface shadow-card lg:flex-1 {mobileTab === 'edit' ? '' : 'max-lg:hidden'}"
+        style={sideBySide ? `flex:0 0 calc(${(split * 100).toFixed(2)}% - 6px)` : undefined}
+        aria-label={t("slides.editor.tab.edit")}
+      >
+        <div class="flex min-h-12 items-center gap-1 border-b border-line px-2 py-1.5">
+          <span class="hidden lg:contents">
+            <Button size="icon-sm" variant={treeOpen ? "secondary" : "ghost"} aria-pressed={treeOpen} title={t("slides.editor.files")} aria-label={t("slides.editor.files")} onclick={() => ((treeOpen = !treeOpen), saveFlag("quarto.tree", treeOpen))}><FolderTree /></Button>
+          </span>
+          <span class="ml-1 min-w-0 flex-1 truncate font-mono text-[12.5px] text-ink-2" title={active?.path}>{active?.path ?? ""}</span>
           {#if readOnly && active?.kind === "text"}<Pill size="sm">{t("slides.editor.readOnly")}</Pill>{/if}
+          <span class="hidden lg:contents">
+            <Button size="icon-sm" variant={previewHidden ? "secondary" : "ghost"} aria-pressed={previewHidden} title={previewHidden ? t("slides.editor.preview.show") : t("slides.editor.preview.hide")} aria-label={previewHidden ? t("slides.editor.preview.show") : t("slides.editor.preview.hide")} onclick={() => ((previewHidden = !previewHidden), saveFlag("quarto.previewHidden", previewHidden))}>
+              {#if previewHidden}<PanelRightOpen />{:else}<PanelRightClose />{/if}
+            </Button>
+          </span>
         </div>
-        <div class="h-[62dvh] min-h-[360px] lg:h-[calc(100dvh-17rem)] lg:min-h-[420px]">
+        <div class="h-[62dvh] min-h-[360px] lg:h-[calc(100dvh-14.5rem)] lg:min-h-[420px]">
           {#if active?.kind === "text"}
             {#key active.id}
               {#await languageFor(active.path) then language}
@@ -632,10 +656,17 @@
         </div>
       </section>
 
-      <section class="min-w-0 rounded-[22px] border border-line/70 bg-surface p-3 shadow-card {mobileTab === 'preview' ? '' : 'max-lg:hidden'} lg:self-start" aria-label={t("slides.editor.tab.preview")}>
+      {#if sideBySide}
+        <SplitHandle container={splitBox} bind:ratio={split} bind:dragging={splitting} label={t("slides.editor.split")} onCommit={r => saveRatio("quarto", r)} class="self-stretch" />
+      {/if}
+      <section
+        class="min-w-0 rounded-[22px] border border-line/70 bg-surface p-3 shadow-card lg:sticky lg:top-4 lg:flex-1 {mobileTab === 'preview' ? '' : 'max-lg:hidden'} {previewHidden ? 'lg:hidden' : ''} {splitting ? 'pointer-events-none' : ''}"
+        aria-label={t("slides.editor.tab.preview")}
+      >
         <PreviewPane {preview} slide={cursorSlide} stale={previewStale} canRefresh={canEdit} onRefresh={() => void flushAll().then(requestPreview)} />
         <p class="mt-2.5 px-1 text-[12px] leading-relaxed text-ink-3">{t("slides.editor.preview.hint")}</p>
       </section>
+      </div>
     </div>
   {/if}
 </div>

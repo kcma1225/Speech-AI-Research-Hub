@@ -88,26 +88,7 @@
   const targetProvider = (b: Binding) => (b.target?.type === "model" ? adminStore.model(b.target.model_id)?.provider_id : null);
 </script>
 
-<section class="flex flex-col gap-5 pb-24">
-  <div class="flex flex-wrap items-end justify-between gap-3">
-    <p class="max-w-[62ch] text-[13.5px] text-ink-3">{t("aiAdmin.bindings.hint")}</p>
-    <Button variant="secondary" loading={probing} onclick={probe}><Activity />{t("aiAdmin.bindings.probeNow")}</Button>
-  </div>
-
-  {#if error}
-    <AiErrorPanel {error}>
-      {#snippet actions()}
-        {#if error?.code === "embedding_model_change_requires_switch" && onSwitchWizard}
-          <Button size="sm" variant="primary" onclick={onSwitchWizard}>{t("aiAdmin.bindings.goSwitch")}</Button>
-        {/if}
-      {/snippet}
-    </AiErrorPanel>
-  {/if}
-
-  {#if !adminStore.bindings}
-    <div class="flex flex-col gap-3">{#each [0, 1, 2] as i (i)}<Skeleton class="h-24" />{/each}</div>
-  {:else}
-    {#each sections as s (s.cap)}
+{#snippet sectionCard(s: (typeof sections)[number])}
       {@const all = s.roles.every(r => selected.includes(r))}
       <div class="rounded-[var(--radius-card)] border border-line/70 bg-surface shadow-card">
         <div class="flex items-center gap-3 border-b border-line px-4 py-2.5 sm:px-5">
@@ -177,7 +158,34 @@
           {/each}
         </ul>
       </div>
-    {/each}
+{/snippet}
+
+<section class="flex flex-col gap-5 pb-24">
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <p class="max-w-[62ch] text-[13.5px] text-ink-3">{t("aiAdmin.bindings.hint")}</p>
+    <Button variant="secondary" loading={probing} onclick={probe}><Activity />{t("aiAdmin.bindings.probeNow")}</Button>
+  </div>
+
+  {#if error}
+    <AiErrorPanel {error}>
+      {#snippet actions()}
+        {#if error?.code === "embedding_model_change_requires_switch" && onSwitchWizard}
+          <Button size="sm" variant="primary" onclick={onSwitchWizard}>{t("aiAdmin.bindings.goSwitch")}</Button>
+        {/if}
+      {/snippet}
+    </AiErrorPanel>
+  {/if}
+
+  {#if !adminStore.bindings}
+    <div class="flex flex-col gap-3">{#each [0, 1, 2] as i (i)}<Skeleton class="h-24" />{/each}</div>
+  {:else}
+    <!-- Wide screens: text functions on the left, embedding + speech on the right (no empty middle in each row). -->
+    <div class="grid gap-5 2xl:grid-cols-2 2xl:items-start">
+      {@render sectionCard(sections[0]!)}
+      <div class="flex flex-col gap-5">
+        {#each sections.slice(1) as s (s.cap)}{@render sectionCard(s)}{/each}
+      </div>
+    </div>
   {/if}
 </section>
 

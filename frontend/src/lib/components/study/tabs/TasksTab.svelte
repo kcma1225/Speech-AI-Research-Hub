@@ -104,7 +104,7 @@
     options={[{ value: "list", label: t("tasks.view.list"), icon: List }, { value: "board", label: t("tasks.view.board"), icon: Columns3 }]}
   />
   {#if view === "list"}
-    <span class="flex h-10 items-center gap-2 px-1 text-[13px] text-ink-2"><Switch bind:checked={showClosed} label={t("tasks.showClosed")} /><span>{t("tasks.showClosed")}</span></span>
+    <label class="flex h-10 cursor-pointer items-center gap-2 px-1 text-[13px] text-ink-2"><Switch bind:checked={showClosed} label={t("tasks.showClosed")} /><span>{t("tasks.showClosed")}</span></label>
   {/if}
   <span class="hidden text-[12.5px] text-ink-3 md:inline">{t("tasks.summary", { open: detail.counts.openTasks, done: detail.counts.doneTasks })}</span>
   {#if canEdit}<Button variant="primary" class="ml-auto" onclick={() => open(null)}><Plus />{t("tasks.new")}</Button>{/if}
@@ -128,7 +128,7 @@
     {/if}
   </Card>
 {:else}
-  <div class="grid grid-cols-[minmax(0,1fr)] gap-3 sm:gap-4 md:grid-cols-3">
+  <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-3 sm:gap-4 md:grid-cols-3">
     {#each columns as column (column)}
       {@const items = visible.filter(task => task.status === column)}
       <section class="flex min-w-0 flex-col gap-2 rounded-[22px] border border-line/70 bg-surface-2/60 p-2.5 sm:p-3" aria-label={t(`tasks.status.${column}` as MessageKey)}>

@@ -7,7 +7,13 @@ export type StepStatus = "pending" | "running" | "verifying" | "passed" | "faile
 export type Criterion = { id: string; text: string; kind: "check" | "judge"; status: "pending" | "pass" | "fail" | "skipped"; reason?: string };
 export type OutlineItem = { n: number; title: string; points: string[]; student_owned?: boolean };
 export type WriteEffect = "new" | "draft_own" | "suggestion" | "overwrite" | "publish" | "delete" | "outbound";
-export type Plan = { summary: string; outline?: OutlineItem[]; writes: { kind: string; label: string; effect?: WriteEffect }[]; notes?: string };
+/** The user's explicit requirements (backend requirements.ts): 「你的要求」 on the plan card; `standing` = 沿用 from the artifact. */
+export type RequirementType = "language" | "page_count" | "include_topics" | "exclude" | "per_item_fields" | "audience" | "tone" | "length" | "format" | "other";
+export type Requirement = { id: string; type: RequirementType; text: string; params?: Record<string, unknown>; source: "request" | "guidance" | "conversation" | "standing" | "user" };
+export type Plan = {
+  summary: string; outline?: OutlineItem[]; writes: { kind: string; label: string; effect?: WriteEffect }[]; notes?: string;
+  requirements?: Requirement[]; edit_kind?: "revise" | "expand"; front_title?: string;
+};
 export type Budget = { max_steps: number; max_calls: number; max_tokens: number; max_minutes: number; max_fix_rounds: number; concurrency: number };
 export type Usage = { steps: number; calls: number; tokens_in: number; tokens_out: number; active_ms: number; fix_rounds: number };
 export type Artifact = { kind: "deck" | "note" | "latex_project" | "latex_file" | "paper"; id: string; url: string; title: string; role: "draft" | "suggestion" | "primary"; preview_url?: string; revision?: number };

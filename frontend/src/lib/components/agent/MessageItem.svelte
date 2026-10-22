@@ -13,6 +13,7 @@
   import AskCard from "./AskCard.svelte";
   import MessageAttachments from "./attach/MessageAttachments.svelte";
   import { answerLabel } from "#lib/agent/ask.ts";
+  import { workflowsApi } from "#lib/workflows/api.ts";
   import type { Answer, AskArgs, Message } from "#lib/agent/types.ts";
 
   /**
@@ -21,7 +22,7 @@
    * ⋯ or a long press on phones. Answers to a question card render as a compact summary with 「修改答案」.
    */
   let { message, streaming = false, canRemember = false, conversationId = null, onContinue, ask = null, busy = false, onEdit, onEditAnswers, onRegenerate, onSwitch }: {
-    message: Pick<Message, "role" | "text" | "reasoning" | "status" | "memories" | "kind" | "page_context"> & { id?: string; answers?: Message["answers"]; versions?: string[] | null; attachments?: Message["attachments"] };
+    message: Pick<Message, "role" | "text" | "reasoning" | "status" | "memories" | "kind" | "page_context"> & { id?: string; answers?: Message["answers"]; versions?: string[] | null; attachments?: Message["attachments"]; items?: string[]; workflow_id?: string | null };
     streaming?: boolean;
     canRemember?: boolean;
     conversationId?: string | null;
@@ -36,6 +37,22 @@
     onRegenerate?: () => void;
     onSwitch?: (messageId: string) => void;
   } = $props();
+
+  // 「要我修這幾項嗎？」 on a partial workflow notice: 繼續改 with exactly these items as the guidance.
+  let fixBusy = $state(false);
+  let fixStarted = $state(false);
+  async function fixItems() {
+    if (!message.workflow_id || !message.items?.length) return;
+    fixBusy = true;
+    try {
+      await workflowsApi.guidance(message.workflow_id, `${t("wf.partial.guidance")}\n${message.items.map((i) => `- ${i}`).join("\n")}`.slice(0, 2000));
+      fixStarted = true;
+    } catch (e) {
+      toasts.show(`${t("wf.actionFailed")}：${(e as Error).message}`, "error");
+    } finally {
+      fixBusy = false;
+    }
+  }
   let showReasoning = $state(false);
   let showMemories = $state(false);
   let editing = $state(false);
@@ -229,7 +246,20 @@
     </div>
   {/if}
 {:else if message.role === "notice"}
-  {#if message.kind?.startsWith("workflow_") || message.kind?.startsWith("goal_")}
+  {#if message.kind === "workflow_partial" && message.items?.length && message.workflow_id}
+    <!-- A partial run: what is still unmet, in plain words, and one click to fix exactly those (繼續改 with them). -->
+    <div class="flex w-full max-w-[90ch] flex-col gap-2 rounded-2xl border border-[var(--pill-peach-ink)]/30 bg-[var(--pill-peach)]/40 px-4 py-3 text-[13px] text-ink-2" role="note" data-wf-partial>
+      <p class="flex items-center gap-1.5 font-medium text-ink"><Info class="size-4 text-ink-3" />{t("wf.partial.unmet")}</p>
+      <ul class="flex flex-col gap-1">{#each message.items as item, i (i)}<li class="break-words">・{item}</li>{/each}</ul>
+      <div>
+        {#if fixStarted}
+          <span class="text-[12.5px] text-ink-3">{t("wf.partial.fixing")}</span>
+        {:else}
+          <button type="button" class="inline-flex min-h-9 items-center rounded-full bg-ink px-3.5 text-[12.5px] font-medium text-primary-ink disabled:opacity-50" disabled={fixBusy} onclick={fixItems}>{t("wf.partial.fix")}</button>
+        {/if}
+      </div>
+    </div>
+  {:else if message.kind?.startsWith("workflow_") || message.kind?.startsWith("goal_")}
     <!-- Workflow status: the card above carries the details; one quiet line. -->
     <p class="flex items-center justify-center gap-1.5 text-center text-[12px] text-ink-3" role="note"><Info class="size-3.5" />{message.text}</p>
   {:else}

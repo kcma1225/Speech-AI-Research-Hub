@@ -12,7 +12,35 @@ import { getAgentTool, toolJsonSchema, type AgentToolContext } from "../agent/to
 import { addUsage, getRun, insertWorkflowEvent, markTainted } from "./store.js";
 import { llm, llmJson, type LlmRequest } from "./llm.js";
 import type { ChatRole } from "../ai/platform/roles.js";
-import { WorkflowStop, type ModelPort, type RunRow, type StepRole } from "./types.js";
+import { WorkflowStop, type ModelPort, type Requirement, type RunRow, type StepRole } from "./types.js";
+import { requirementsBlock, targetLanguage } from "./requirements.js";
+
+/**
+ * Calls that never get the user's requirements block: extracting them, goal planning, figure location, the blocked
+ * question (shown to the user), search-query planning / paper picking and the visual scoring.
+ */
+const NO_REQUIREMENTS = new Set(["requirements", "goal_plan", "goal_replan", "locate_figure", "blocked", "topic_plan", "topic_select", "visual_qa"]);
+
+/** Adds the requirements block to the system prompt (and a language reminder after the task for producers). */
+export function withRequirements(req: LlmRequest, reqs: Requirement[]): LlmRequest {
+  if (!reqs.length || NO_REQUIREMENTS.has(req.purpose.split(":")[0]!)) return req;
+  const verifier = req.role === "verifier";
+  const block = requirementsBlock(reqs, verifier ? "verifier" : "producer");
+  const messages = [...req.messages];
+  const sys = messages.findIndex((m) => m.role === "system");
+  const head = messages[sys];
+  if (head?.role === "system" && typeof head.content === "string") messages[sys] = { role: "system", content: `${head.content}\n\n${block}` };
+  else messages.unshift({ role: "system", content: block });
+  const lang = targetLanguage(reqs);
+  // Cheap models drift back to the default language at the end of a long brief: remind them right after the task.
+  if (!verifier && lang) {
+    const last = messages.map((m) => m.role).lastIndexOf("user");
+    const m = messages[last];
+    const note = lang === "en" ? "（提醒：成果全部用英文。Reminder: write the output in English only.）" : "（提醒：成果用繁體中文。）";
+    if (m?.role === "user" && typeof m.content === "string") messages[last] = { role: "user", content: `${m.content}\n\n${note}` };
+  }
+  return { ...req, messages };
+}
 
 export type EnvDeps = {
   db: Db;
@@ -127,11 +155,17 @@ export class WorkflowEnv {
 
   /** One model call counted against the run (and the step when given). */
   async call(req: LlmRequest, stepId?: string): Promise<ChatResult> {
-    return llm(this.hooks(stepId), req);
+    return llm(this.hooks(stepId), withRequirements(req, this.requirements()));
   }
 
   async callJson<T>(req: LlmRequest, valid: (v: unknown) => v is T, stepId?: string) {
-    return llmJson<T>(this.hooks(stepId), req, valid);
+    return llmJson<T>(this.hooks(stepId), withRequirements(req, this.requirements()), valid);
+  }
+
+  /** The user's requirements (requirements.ts), injected into every sub-agent call. */
+  requirements(): Requirement[] {
+    const r = this.run.state?.requirements;
+    return Array.isArray(r) ? (r as Requirement[]) : [];
   }
 
   private hooks(stepId?: string) {

@@ -226,8 +226,9 @@
                     {#if child}<Boxes class="size-3.5" aria-hidden="true" />{:else if m}<ProfileBadges model={m} />{/if}
                   {/snippet}
                   {#snippet trailing()}
-                    <span class="flex shrink-0 items-center gap-0.5">
-                      <span class="hidden sm:inline-flex">
+                    <!-- Phones: these controls move to the row under the brick so the model name keeps its width. -->
+                    <span class="hidden shrink-0 items-center gap-0.5 sm:flex">
+                      <span class="inline-flex">
                         <button type="button" class="grid size-9 place-items-center rounded-full text-[var(--bi)] hover:bg-black/5 disabled:opacity-30" disabled={i === 0} aria-label={t("aiAdmin.groups.up")} onclick={() => move(i, i - 1)}><ArrowUp class="size-4" /></button>
                         <button type="button" class="grid size-9 place-items-center rounded-full text-[var(--bi)] hover:bg-black/5 disabled:opacity-30" disabled={i === members.length - 1} aria-label={t("aiAdmin.groups.down")} onclick={() => move(i, i + 1)}><ArrowDown class="size-4" /></button>
                       </span>
@@ -238,6 +239,10 @@
                 </BrickFace>
                 {#if issueFor(i).length}<p class="mt-1 px-1 text-[12.5px] text-danger">{issueFor(i).join(" ")}</p>{/if}
                 <div class="flex flex-wrap items-center gap-x-4 gap-y-1 px-1 pt-1.5">
+                  <span class="order-last ml-auto flex items-center gap-0.5 sm:hidden">
+                    <Switch bind:checked={d.enabled} label={t("aiAdmin.groups.enabled")} />
+                    <button type="button" class="grid size-10 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-danger" aria-label={t("aiAdmin.groups.remove")} onclick={() => (members = members.filter((_, j) => j !== i))}><Trash2 class="size-4" /></button>
+                  </span>
                   {#if strategy === "load_balance"}
                     <label class="inline-flex items-center gap-2 text-[12.5px] text-ink-2">
                       {t("aiAdmin.groups.weight")}

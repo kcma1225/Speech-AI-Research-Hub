@@ -59,6 +59,8 @@
 {#if isAdmin}
   <PageHeader title={t("aiAdmin.title")} subtitle={t("aiAdmin.subtitle")}>
     {#snippet actions()}
+      <!-- One non-wrapping row: otherwise the refresh button wraps above the menu at tablet widths. -->
+      <div class="flex items-center gap-2">
       <Button variant="ghost" size="icon" aria-label={t("aiAdmin.refresh")} title={t("aiAdmin.refresh")} onclick={() => adminStore.load()}><RefreshCw /></Button>
       <DropdownMenu.Root>
         <DropdownMenu.Trigger class="inline-flex h-10 items-center gap-2 rounded-full border border-line bg-surface px-4 text-sm font-medium hover:bg-surface-2">
@@ -71,6 +73,7 @@
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
+      </div>
     {/snippet}
   </PageHeader>
 

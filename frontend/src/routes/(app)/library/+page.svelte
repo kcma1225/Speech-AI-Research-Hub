@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
-  import { BookOpen, Globe, Plus, Search, X } from "@lucide/svelte";
+  import { BookOpen, Globe, Plus, Search, SlidersHorizontal, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import { authorsShort, venueLine } from "#lib/library/format.ts";
@@ -100,6 +100,9 @@
   });
 
   const filtering = $derived(Boolean(q.trim() || venue || year || study || pdf));
+  /** Selects in use (not the text search); shown as a badge on the phone 「篩選」 toggle. */
+  const activeFilters = $derived([venue, year, study, pdf].filter(Boolean).length + (sort !== "recent" ? 1 : 0));
+  let filtersOpen = $state(false);
   const venueOptions = $derived([{ value: "", label: t("library.filter.anyVenue") }, ...(venue && !facets.venues.some(v => v.value === venue) ? [{ value: venue, label: venue }] : []), ...facets.venues.map(v => ({ value: v.value, label: v.value, hint: String(v.count) }))]);
   const yearOptions = $derived([{ value: "", label: t("library.filter.anyYear") }, ...(year && !facets.years.some(y => String(y.value) === year) ? [{ value: year, label: year }] : []), ...facets.years.map(y => ({ value: String(y.value), label: String(y.value), hint: String(y.count) }))]);
   const studyOptions = $derived([{ value: "", label: t("library.filter.anyStudy") }, ...studies.map(s => ({ value: s.slug, label: s.title }))]);
@@ -131,29 +134,36 @@
   {/snippet}
 </PageHeader>
 
-<div class="mb-3 sm:mb-4">
-  <LibraryScopeSwitch bind:value={scope} {counts} onValueChange={rememberLibraryScope} />
-</div>
-
-<div class="mb-5 flex flex-col gap-2.5 sm:mb-6 xl:flex-row xl:items-center">
-  <label class="relative min-w-0 flex-1 xl:max-w-md">
-    <span class="sr-only">{t("library.search")}</span>
-    <Search class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-3" />
-    <input
-      bind:value={q}
-      type="search"
-      placeholder={t("library.search")}
-      class="h-11 w-full rounded-full border border-line-2 bg-surface pr-10 pl-10 text-[15px] text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] sm:h-10 sm:text-sm [&::-webkit-search-cancel-button]:hidden"
-    />
-    {#if q}<button type="button" class="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("library.filter.clear")} onclick={() => (q = "")}><X class="size-4" /></button>{/if}
-  </label>
-  <div class="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-    <Select bind:value={venue} label={t("library.filter.venue")} options={venueOptions} class="w-full min-w-0 sm:w-40" />
-    <Select bind:value={year} label={t("library.filter.year")} options={yearOptions} class="w-full min-w-0 sm:w-32" />
-    <Select bind:value={study} label={t("library.filter.study")} options={studyOptions} class="w-full min-w-0 sm:w-44" />
-    <Select bind:value={pdf} label={t("library.filter.pdf")} options={pdfOptions} class="w-full min-w-0 sm:w-32" />
-    <Select bind:value={sort} label={t("library.sort")} options={sortOptions} class="w-full min-w-0 sm:w-36" />
-    {#if filtering}<Button variant="ghost" onclick={clear} class="w-full sm:w-auto"><X />{t("library.filter.clear")}</Button>{/if}
+<!-- Scope switch and search share a row from lg up; the five filters get their own row (equal columns from xl),
+     so the search box is never squeezed by the selects. On phones the filters fold behind 「篩選」. -->
+<div class="mb-5 flex flex-col gap-2.5 sm:mb-6">
+  <div class="flex flex-col gap-2.5 lg:flex-row lg:items-center lg:gap-3">
+    <LibraryScopeSwitch bind:value={scope} {counts} onValueChange={rememberLibraryScope} />
+    <div class="flex min-w-0 flex-1 items-center gap-2">
+      <label class="relative min-w-0 flex-1">
+        <span class="sr-only">{t("library.search")}</span>
+        <Search class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-3" />
+        <input
+          bind:value={q}
+          type="search"
+          placeholder={t("library.search")}
+          class="h-11 w-full rounded-full border border-line-2 bg-surface pr-10 pl-10 text-[15px] text-ink outline-none transition-[border-color,box-shadow] placeholder:text-ink-3 focus:border-ink focus:shadow-[0_0_0_3px_var(--surface-3)] sm:text-sm [&::-webkit-search-cancel-button]:hidden"
+        />
+        {#if q}<button type="button" class="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("library.filter.clear")} onclick={() => (q = "")}><X class="size-4" /></button>{/if}
+      </label>
+      <Button class="h-11 shrink-0 sm:hidden" variant={filtersOpen || activeFilters ? "secondary" : "ghost"} aria-expanded={filtersOpen} aria-controls="library-filters" onclick={() => (filtersOpen = !filtersOpen)}>
+        <SlidersHorizontal />{t("library.filters")}{#if activeFilters}<span class="inline-grid h-5 min-w-5 place-items-center rounded-full bg-ink px-1 text-[11px] font-semibold text-surface tabular-nums">{activeFilters}</span>{/if}
+      </Button>
+      {#if filtering}<Button variant="ghost" onclick={clear} class="hidden h-11 shrink-0 sm:inline-flex"><X />{t("library.filter.clear")}</Button>{/if}
+    </div>
+  </div>
+  <div id="library-filters" class="{filtersOpen ? 'grid' : 'hidden'} grid-cols-2 gap-2 sm:grid sm:grid-cols-3 xl:grid-cols-5">
+    <Select bind:value={venue} label={t("library.filter.venue")} options={venueOptions} class="w-full min-w-0!" />
+    <Select bind:value={year} label={t("library.filter.year")} options={yearOptions} class="w-full min-w-0!" />
+    <Select bind:value={study} label={t("library.filter.study")} options={studyOptions} class="w-full min-w-0!" />
+    <Select bind:value={pdf} label={t("library.filter.pdf")} options={pdfOptions} class="w-full min-w-0!" />
+    <Select bind:value={sort} label={t("library.sort")} options={sortOptions} class="w-full min-w-0!" />
+    {#if filtering}<Button variant="ghost" onclick={clear} class="w-full sm:hidden"><X />{t("library.filter.clear")}</Button>{/if}
   </div>
 </div>
 

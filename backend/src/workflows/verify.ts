@@ -214,9 +214,17 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
   const items: FinalLedger["items"] = { ...(prev?.items ?? {}) };
   const changed = prev?.sections?.length ? changedSections(text, prev.sections) : null;
   const passedBefore = (c: Criterion) => !!changed && items[c.id]?.status === "pass";
+  // A check with a judged fallback (requirements: a topic named differently, a per-item field under another heading):
+  // its deterministic miss is handed to the verifier with the detail instead of failing outright.
+  const fallback = new Map<string, string>();
   for (const c of env.run.criteria) {
     if (c.kind === "check" && c.check) {
       const [r] = runChecks([c.check], text, data);
+      if (!r!.ok && c.check.params?.judge_fallback) {
+        fallback.set(c.id, r!.detail);
+        judgeList.push(c);
+        continue;
+      }
       out.push({ ...c, status: r!.ok ? "pass" : "fail", reason: r!.detail });
     } else if (passedBefore(c) && !changed!.length) {
       // Nothing changed since it passed: keep the result (no re-roll).
@@ -238,7 +246,7 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
       .map((s) => s.output!.text!)
       .join("\n\n")
       .slice(0, 30_000);
-    const line = (c: Criterion) => passedBefore(c) ? `- [${c.id}]（先前已通過，證據：「${(items[c.id]!.evidence ?? "").slice(0, 80)}」；只判斷 <changed> 中改過的部分有沒有破壞這一條，沒有就維持通過；不通過時 evidence 要引用 <changed> 中的原文）${c.text}` : `- [${c.id}] ${c.text}`;
+    const line = (c: Criterion) => fallback.has(c.id) ? `- [${c.id}] ${c.text}（自動檢查沒有直接找到：${fallback.get(c.id)!.slice(0, 300)}；請判斷成果是否以其他說法或位置確實達成，通過要引用成果中的原文）` : passedBefore(c) ? `- [${c.id}]（先前已通過，證據：「${(items[c.id]!.evidence ?? "").slice(0, 80)}」；只判斷 <changed> 中改過的部分有沒有破壞這一條，沒有就維持通過；不通過時 evidence 要引用 <changed> 中的原文）${c.text}` : `- [${c.id}] ${c.text}`;
     const head = "請逐條判斷下列驗收標準是否達成（只根據 <data> 中的最終成果）：\n";
     const prompt = (list: Criterion[], note = "") => [
       `目標：${env.run.objective}`,

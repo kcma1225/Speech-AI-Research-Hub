@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markdownToHtml, unclosedMathStart } from "./markdown.ts";
+import { cellWidth, markdownToHtml, unclosedMathStart } from "./markdown.ts";
 
 const html = (s: string, streaming = false) => markdownToHtml(s, { streaming });
 const hasMath = (s: string) => s.includes('class="katex');
@@ -134,5 +134,18 @@ describe("CJK emphasis", () => {
     expect(markdownToHtml("*斜體*，然後")).toContain("<em>斜體</em>");
     expect(markdownToHtml("English **bold** text")).toContain("<strong>bold</strong>");
     expect(markdownToHtml("2 * 3 * 4")).not.toContain("<em>");
+  });
+});
+
+describe("table cells", () => {
+  it("counts CJK as double width", () => {
+    expect(cellWidth("abc")).toBe(3);
+    expect(cellWidth("台語ab")).toBe(6);
+  });
+  it("marks sentence-length cells to wrap, keeps short cells on one line", () => {
+    const html = markdownToHtml("| 模型 | 說明 |\n|---|---|\n| small | 台語音訊好收（廣播、戲劇、Podcast），但逐字稿稀少，網路字幕多是華語 |");
+    expect(html).toMatch(/<td class="md-wrap">台語音訊/);
+    expect(html).toMatch(/<td>small<\/td>/);
+    expect(html).toMatch(/<th>模型<\/th>/);
   });
 });

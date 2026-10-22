@@ -719,6 +719,7 @@ run("workflow engine", () => {
     const r = await createWorkflow(t.app, await asUser(alice.id), { request: "做進度報告簡報", playbook: "slides", context: { studyId: other.id }, inputs: { mode: "progress" } });
     expect((await runWorkflow(deps(), r.id)).status).toBe("awaiting_input");
     expect((await getRun(t.db, r.id))!.question).toContain("不是");
-    expect(m.log.length).toBe(0);
+    // Only the requirement extraction ran (no sub-agent did any work for a study the user cannot edit).
+    expect(m.log.filter((l) => l.purpose !== "requirements")).toHaveLength(0);
   });
 });

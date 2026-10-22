@@ -20,7 +20,7 @@
   import { contextLabel } from "#lib/agent/context.ts";
   import { contextWithRefs } from "#lib/agent/hashref.ts";
   import { answersByCall, askArgs } from "#lib/agent/ask.ts";
-  import { buildTranscript } from "#lib/agent/transcript.ts";
+  import { buildTranscript, dropSupersededNotices } from "#lib/agent/transcript.ts";
   import { agentActivity } from "#lib/agent/activity.svelte.ts";
   import type { AgentSettings, Answer, Message, PageContext, StudyPlan, ToolCall } from "#lib/agent/types.ts";
   import { workflowsApi } from "#lib/workflows/api.ts";
@@ -144,10 +144,9 @@
   const answered = $derived(answersByCall(session.messages));
   const callById = $derived(new Map(session.toolCalls.map((c) => [c.id, c])));
   const replying = $derived(running || run?.status === "awaiting_llm" || session.sending);
-  const allItems = $derived(buildTranscript(session.messages, session.toolCalls, { answered: new Set(answered.keys()), live: replying }));
-  // Workflow status notices (「…需要你補充資訊」) duplicate the workflow card: only the latest one, and only while it is the
-  // last thing in the chat, stays visible (the bell keeps the notification).
-  const items = $derived(allItems.filter((e, i) => !(e.kind === "message" && e.message.role === "notice" && (e.message.kind?.startsWith("workflow_") || e.message.kind?.startsWith("goal_")) && i !== allItems.length - 1)));
+  // Superseded workflow / goal status notices are dropped first (`dropSupersededNotices`: one partial summary per run,
+  // the quiet status line only while it is the last thing in the chat).
+  const items = $derived(buildTranscript(dropSupersededNotices(session.messages), session.toolCalls, { answered: new Set(answered.keys()), live: replying }));
   const lastUserSeq = $derived(session.messages.findLast((m) => m.role === "user")?.seq ?? -1);
   // 「重新產生」 on the latest assistant reply (after the last user message, nothing running).
   const regenerateId = $derived.by(() => {
@@ -358,8 +357,10 @@
   // ---------------------------------------------------------------- question navigator
   let root = $state<HTMLElement | null>(null);
   let width = $state(0);
+  /** Width of the transcript + composer column (the whole chat minus the question rail). */
+  let mainWidth = $state(0);
   // The conversation column follows the space it has (wide screens use most of it; the side panel stays narrow).
-  const columnMax = $derived(compact ? 760 : Math.round(Math.max(760, Math.min(1200, width * 0.88))));
+  const columnMax = $derived(compact ? 760 : Math.round(Math.max(760, Math.min(1200, (mainWidth || width) * 0.88))));
   const questions = $derived(session.messages.filter((m) => m.role === "user" && !m.answers && m.text.trim()).map((m) => ({ id: m.id, text: m.text })));
   const questionKey = $derived(questions.map((q) => q.id).join(","));
   let currentQ = $state(-1);
@@ -454,7 +455,10 @@
 
 <svelte:window onkeydown={onWindowKey} />
 
-<div bind:this={root} bind:clientWidth={width} data-chat-root class="flex h-full min-h-0 flex-col">
+<div bind:this={root} bind:clientWidth={width} data-chat-root class="flex h-full min-h-0">
+  <!-- Transcript and composer share one column, so the composer lines up with the messages; the question rail
+       (wide screens) runs the full height beside both. -->
+  <div bind:clientWidth={mainWidth} class="flex min-h-0 min-w-0 flex-1 flex-col">
   {#if navVariant === "compact"}
     <div class="flex justify-end px-3 pt-2"><QuestionNav {questions} current={currentQ} variant="compact" onJump={jump} onLatest={latest} /></div>
   {/if}
@@ -536,9 +540,7 @@
       {/if}
     </div>
   </div>
-  {#if navVariant === "rail"}
-    <QuestionNav {questions} current={currentQ} variant="rail" wide={width >= 960} onJump={jump} onLatest={latest} />
-  {:else if navVariant === "sheet"}
+  {#if navVariant === "sheet"}
     <div class="absolute right-3 bottom-3 z-10"><QuestionNav {questions} current={currentQ} variant="sheet" onJump={jump} onLatest={latest} /></div>
   {/if}
   </div>
@@ -587,6 +589,10 @@
       {/snippet}
     </AiGate>
   </div>
+  </div>
+  {#if navVariant === "rail"}
+    <QuestionNav {questions} current={currentQ} variant="rail" wide={width >= 960} onJump={jump} onLatest={latest} />
+  {/if}
 </div>
 
 {#snippet attachBar()}<AttachButton draft={attachments} context={ctx} conversationId={session.id} {compact} bind:open={attachOpen} />{/snippet}

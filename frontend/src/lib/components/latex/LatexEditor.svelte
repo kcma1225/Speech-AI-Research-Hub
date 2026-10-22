@@ -5,8 +5,8 @@
   import type { EditorView } from "@codemirror/view";
   import { DropdownMenu } from "bits-ui";
   import {
-    ArrowLeft, ChevronDown, Crosshair, Download, FileArchive, FileDown, FolderTree, History, Languages, ListTree, LoaderCircle, Play, Scissors, Settings2,
-    Sparkles, SpellCheck, Wand2, Zap,
+    ArrowLeft, ChevronDown, Crosshair, Download, Ellipsis, FileArchive, FileDown, FolderTree, History, Languages, ListTree, LoaderCircle, PanelRightClose, PanelRightOpen, Play,
+    Scissors, Settings2, Sparkles, SpellCheck, Wand2, Zap,
   } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { relativeTime, t } from "#lib/i18n.svelte.ts";
@@ -21,6 +21,9 @@
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import DeleteButton from "#lib/components/ui/DeleteButton.svelte";
+  import DeleteMenuItem from "#lib/components/ui/DeleteMenuItem.svelte";
+  import SplitHandle from "#lib/components/workspace/SplitHandle.svelte";
+  import { loadFlag, loadRatio, saveFlag, saveRatio } from "#lib/workspace/split.ts";
   import { goto } from "$app/navigation";
   import { menuContent, menuItem, menuLabel, menuSeparator } from "#lib/components/ui/menu.ts";
   import Segmented from "#lib/components/ui/Segmented.svelte";
@@ -83,6 +86,15 @@
   let pane = $state<Pane>("pdf");
   type MobileView = "edit" | "pdf" | "log";
   let mobileView = $state<MobileView>("edit");
+  // Desktop: editor | PDF split (draggable, remembered per viewer); the PDF/log pane can be collapsed.
+  let splitBox = $state<HTMLDivElement | null>(null);
+  let split = $state(loadRatio("latex", 0.5));
+  let splitting = $state(false);
+  let previewHidden = $state(loadFlag("latex.previewHidden", false));
+  function togglePreview(hidden = !previewHidden) {
+    previewHidden = hidden;
+    saveFlag("latex.previewHidden", hidden);
+  }
 
   let filesOpen = $state(false);
   let versionsOpen = $state(false);
@@ -154,10 +166,12 @@
   async function compile(draft = false) {
     if (!canEdit || compiling) return;
     compiling = true;
+    if (previewHidden) togglePreview(false);
     try {
       await flushed();
       const r = await api.post<{ compile: Compile }>(`/latex/${projectId}/compile`, draft ? { draft: true } : {});
       latest = r.compile;
+      requestedId = r.compile.id;
       poll();
     } catch (e) {
       toasts.show((e as Error).message, "error");
@@ -165,6 +179,8 @@
       compiling = false;
     }
   }
+  /** Compile started here: on phones its result opens in the PDF (or log) view instead of leaving the editor shown. */
+  let requestedId: string | null = null;
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   function poll() {
     clearTimeout(pollTimer);
@@ -192,6 +208,9 @@
       if (viewport.desktop) pane = "log";
     }
     if (c.errors.length && viewport.desktop) pane = "log";
+    if (c.errors.length && previewHidden) togglePreview(false);
+    if (!viewport.desktop && c.id === requestedId && c.status !== "cancelled") mobileView = c.pdf_url && !c.errors.length ? "pdf" : "log";
+    if (c.id === requestedId) requestedId = null;
     void loadSymbols();
   }
   function onDocMessage(msg: Record<string, unknown>) {
@@ -479,8 +498,9 @@
     {#if latest?.finished_at && !running}<span class="hidden sm:inline">{t("latex.compiledAt", { when: relativeTime(latest.finished_at) })}</span>{/if}
     {#if collab}<ConnectionStatus session={collab} compact />{/if}
     <div class="ml-auto flex flex-wrap items-center gap-1">
-      <Button variant="ghost" size={viewport.desktop ? "sm" : "md"} onclick={() => (filesOpen = true)}><FolderTree />{t("latex.files.title")}</Button>
-      <Button variant="ghost" size={viewport.desktop ? "sm" : "md"} onclick={() => (versionsOpen = true)}><History /><span class="hidden sm:inline">{t("latex.versions")}</span></Button>
+      <Button variant="ghost" size={viewport.desktop ? "sm" : "md"} aria-label={t("latex.files.title")} title={t("latex.files.title")} onclick={() => (filesOpen = true)}><FolderTree /><span class="max-sm:hidden">{t("latex.files.title")}</span></Button>
+      {#if viewport.desktop}
+      <Button variant="ghost" size="sm" onclick={() => (versionsOpen = true)}><History />{t("latex.versions")}</Button>
       <DropdownMenu.Root>
         <DropdownMenu.Trigger class="inline-flex h-10 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink lg:h-8" aria-label={t("latex.download")}><Download class="size-4" /><span class="hidden sm:inline">{t("latex.download")}</span></DropdownMenu.Trigger>
         <DropdownMenu.Portal>
@@ -492,7 +512,24 @@
       </DropdownMenu.Root>
       <DeleteButton class="lg:size-8 lg:min-h-8" label={t("crud.latex.delete")} reason={canEdit ? null : t("crud.deny.study")} onclick={() => (deleteProjectOpen = true)} />
       {#if canEdit}
-        <Button variant="ghost" size={viewport.desktop ? "icon-sm" : "icon"} aria-label={t("latex.settings")} title={t("latex.settings")} onclick={() => (settingsOpen = true)}><Settings2 /></Button>
+        <Button variant="ghost" size="icon-sm" aria-label={t("latex.settings")} title={t("latex.settings")} onclick={() => (settingsOpen = true)}><Settings2 /></Button>
+      {/if}
+      {:else}
+      <!-- Phones/tablets: the secondary actions share one menu so the toolbar stays on one row. -->
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 hover:text-ink" aria-label={t("crud.more")} title={t("crud.more")}><Ellipsis class="size-4" /></DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content align="end" sideOffset={6} class="{menuContent} w-56">
+            <DropdownMenu.Item class={menuItem} onSelect={() => (versionsOpen = true)}><History />{t("latex.versions")}</DropdownMenu.Item>
+            <DropdownMenu.Item class="{menuItem} data-disabled:opacity-40" disabled={!pdfCompile?.pdf_url} onSelect={() => pdfCompile?.pdf_url && (window.location.href = `${pdfCompile.pdf_url}?download=1`)}><FileDown />{t("latex.downloadPdf")}</DropdownMenu.Item>
+            <DropdownMenu.Item class={menuItem} onSelect={() => (window.location.href = `/api/latex/${projectId}/export.zip`)}><FileArchive />{t("latex.downloadZip")}</DropdownMenu.Item>
+            {#if canEdit}<DropdownMenu.Item class={menuItem} onSelect={() => (settingsOpen = true)}><Settings2 />{t("latex.settings")}</DropdownMenu.Item>{/if}
+            <DeleteMenuItem label={t("crud.latex.delete")} reason={canEdit ? null : t("crud.deny.study")} onSelect={() => (deleteProjectOpen = true)} />
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+      </DropdownMenu.Root>
+      {/if}
+      {#if canEdit}
         <AiGate role="writing" inline>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger class="inline-flex h-10 items-center gap-1.5 rounded-full border border-line-2 px-3.5 text-[12.5px] font-semibold text-ink hover:bg-surface-3 disabled:opacity-40 lg:h-8" disabled={!!aiBusy || !active || active.generated}>
@@ -556,14 +593,29 @@
       onRename={renameSection}
       onDelete={s => askDelete(s.file_id, s.title || s.path, s.path)}
     />
+    {#if viewport.desktop}
+      <button
+        type="button"
+        class="mb-1.5 ml-auto grid size-8 shrink-0 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 hover:text-ink {previewHidden ? 'bg-surface-3 text-ink' : ''}"
+        aria-pressed={previewHidden}
+        aria-label={previewHidden ? t("latex.preview.show") : t("latex.preview.hide")}
+        title={previewHidden ? t("latex.preview.show") : t("latex.preview.hide")}
+        onclick={() => togglePreview()}
+      >
+        {#if previewHidden}<PanelRightOpen class="size-4" />{:else}<PanelRightClose class="size-4" />{/if}
+      </button>
+    {/if}
   </div>
   {#if !viewport.desktop}
     <div class="border-b border-line px-2 py-1.5">
       <Segmented bind:value={mobileView} options={mobileOptions} label={t("latex.view")} class="w-full [&_button]:h-10" />
     </div>
   {/if}
-  <div class="grid min-h-0 flex-1 {viewport.desktop ? 'grid-cols-2 divide-x divide-line' : 'grid-cols-1'}">
-    <div class="min-h-[65dvh] min-w-0 lg:min-h-0 {showEditor ? '' : 'hidden'}">
+  <div bind:this={splitBox} class="flex min-h-0 flex-1 {splitting ? 'cursor-col-resize select-none' : ''}">
+    <div
+      class="min-h-[65dvh] min-w-0 flex-1 lg:min-h-0 {showEditor ? '' : 'hidden'}"
+      style={viewport.desktop && !previewHidden ? `flex:0 0 calc(${(split * 100).toFixed(2)}% - 6px)` : undefined}
+    >
       {#if active}
         {#key active.id}
           <LatexFileEditor
@@ -585,7 +637,10 @@
         <p class="p-6 text-[13px] text-ink-3">{t("latex.noFile")}</p>
       {/if}
     </div>
-    <div class="flex min-h-[65dvh] min-w-0 flex-col lg:min-h-0 {showPdf || showLog ? '' : 'hidden'}">
+    {#if viewport.desktop && !previewHidden}
+      <SplitHandle container={splitBox} bind:ratio={split} bind:dragging={splitting} label={t("latex.split")} onCommit={r => saveRatio("latex", r)} />
+    {/if}
+    <div class="flex min-h-[65dvh] min-w-0 flex-1 flex-col lg:min-h-0 {(showPdf || showLog) && !(viewport.desktop && previewHidden) ? '' : 'hidden'} {splitting ? 'pointer-events-none' : ''}">
       {#if viewport.desktop}
         <div class="flex items-center gap-2 border-b border-line px-2 py-1.5">
           <Segmented bind:value={pane} options={paneOptions} label={t("latex.view")} class="[&_button]:h-8 [&_button]:text-[12px]" />

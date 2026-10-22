@@ -106,7 +106,8 @@
 {/if}
 
 {#if pending.length}
-  <div class="flex flex-col gap-2.5 {compact || !indent ? '' : 'sm:ml-11'}">
+  <!-- Decision cards stay a readable width in a wide column (their actions sit near their content). -->
+  <div class="flex max-w-[52rem] flex-col gap-2.5 {compact || !indent ? '' : 'sm:ml-11'}">
     {#if pending.length > 1}
       <div class="flex flex-wrap items-center justify-between gap-2 px-1">
         <p class="text-[13px] font-medium text-ink-2">{t("agent.consent.several", { n: pending.length })}</p>

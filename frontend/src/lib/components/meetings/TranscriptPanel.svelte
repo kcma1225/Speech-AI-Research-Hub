@@ -99,7 +99,7 @@
         <Button variant="secondary" size="sm" class="h-9" onclick={() => choose(asrAlternative.id)}>{t("meet.tr.useAsr")}</Button>
       </div>
     {/if}
-    <TranscriptView {cues} {currentTime} playing={video ? !videoPaused : playing} onSeek={seek} listClass="max-h-[520px]">
+    <TranscriptView {cues} {currentTime} playing={video ? !videoPaused : playing} onSeek={seek} listClass="max-h-[520px] lg:max-h-[max(520px,calc(100dvh-16rem))]">
       {#snippet actions()}
         {#if speakers.size && detail.permissions.edit}
           <Button variant="ghost" size="sm" onclick={() => (speakersOpen = true)} class="h-9"><Users />{t("meet.tr.speakers")}</Button>

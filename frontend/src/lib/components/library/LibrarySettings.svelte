@@ -102,7 +102,7 @@
         void save();
       }}
     >
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
         <TextField bind:value={contact} type="email" label={t("library.settings.contact")} hint={t("library.settings.contactHint")} error={errors.contact} placeholder="lab@example.org" />
         <TextField bind:value={unpaywall} type="email" label={t("library.settings.unpaywall")} hint={t("library.settings.unpaywallHint")} error={errors.unpaywall} />
         {@render keyField("openalex_api_key", t("library.settings.openalex"), t("library.settings.openalexHint"))}
@@ -111,13 +111,13 @@
       </div>
       <div class="flex flex-col gap-3 rounded-2xl bg-surface-2/60 p-4">
         <p class="text-[13.5px] font-semibold text-ink">{t("library.settings.zotero")}</p>
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
           {@render keyField("zotero_api_key", t("library.settings.zoteroKey"), t("library.import.zotero.keyHint"))}
           <div class="flex flex-col gap-1.5">
             <span class="text-[13px] font-medium text-ink-2">{t("library.settings.zoteroType")}</span>
             <Segmented bind:value={zType} label={t("library.settings.zoteroType")} options={[{ value: "group", label: t("library.settings.zoteroGroup") }, { value: "user", label: t("library.settings.zoteroUser") }]} class="self-start" />
-            <TextField bind:value={zId} label={t("library.settings.zoteroId")} hint={t("library.settings.zoteroIdHint")} inputmode="numeric" class="mt-2" />
           </div>
+          <TextField bind:value={zId} label={t("library.settings.zoteroId")} hint={t("library.settings.zoteroIdHint")} inputmode="numeric" />
         </div>
       </div>
       <div class="flex justify-end"><Button type="submit" variant="primary" loading={busy}>{t("library.settings.save")}</Button></div>

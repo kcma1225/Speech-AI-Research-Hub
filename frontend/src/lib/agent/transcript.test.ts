@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTranscript, workflowIdOf, categoryOf, countActivity, hasActivity, latestPlan, turnSeconds, type AssistantTurn } from "./transcript.ts";
+import { buildTranscript, dropSupersededNotices, workflowIdOf, categoryOf, countActivity, hasActivity, latestPlan, turnSeconds, type AssistantTurn } from "./transcript.ts";
 import type { Message, ToolCall } from "./types.ts";
 
 let seq = 0;
@@ -140,5 +140,22 @@ describe("transcript grouping", () => {
     const items = buildTranscript([u, a, n, c], []);
     expect(items.map((i) => i.kind)).toEqual(["message", "assistant", "message"]);
     expect(turns(items)[0]!.notices.map((m) => m.id)).toEqual([n.id]);
+  });
+});
+
+describe("dropSupersededNotices", () => {
+  const partial = (wf: string, text = "p") => msg("notice", text, { kind: "workflow_partial", items: ["a"], workflow_id: wf });
+  it("keeps only the newest partial summary per run", () => {
+    const a1 = partial("w1"), b1 = partial("w2"), a2 = partial("w1");
+    const out = dropSupersededNotices([msg("user", "q"), a1, b1, a2, msg("assistant", "ok")]);
+    expect(out).not.toContain(a1);
+    expect(out).toContain(b1);
+    expect(out).toContain(a2);
+  });
+  it("keeps a quiet status notice only when it is the last message", () => {
+    const n1 = msg("notice", "需要你補充資訊", { kind: "workflow_awaiting_input" });
+    const n2 = msg("notice", "已完成", { kind: "workflow_done" });
+    const other = msg("notice", "其他", { kind: "compaction_note" });
+    expect(dropSupersededNotices([n1, other, n2])).toEqual([other, n2]);
   });
 });

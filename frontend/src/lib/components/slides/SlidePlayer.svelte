@@ -63,6 +63,10 @@
   const total = $derived(manifest?.pageCount ?? revealTotal ?? 0);
   const current = $derived(pages.find(p => p.index === page) ?? null);
   const ratio = $derived(manifest ? `${manifest.width} / ${manifest.height}` : "16 / 10");
+  // Embedded stage: as wide as the column, but never taller than the viewport minus the control bar and
+  // thumbnails (sticky column on desktop), keeping the slide's aspect ratio (centred when height-bound).
+  const stageCap = "min(calc(100dvh - 15rem), 920px)";
+  const embeddedStyle = $derived(`aspect-ratio:${ratio};max-height:${stageCap};max-width:calc(${stageCap} * ${manifest ? manifest.width / manifest.height : 1.6})`);
   const notes = $derived(notesHtml(current));
   const canSpeak = $derived(Boolean(speaker && version?.status === "published" && (manifest || live)));
 
@@ -337,23 +341,28 @@
 >
   <!-- Stage -->
   <div
-    class="relative min-h-0 overflow-hidden {isFullscreen ? 'flex-1 bg-black' : variant === 'stage' ? 'flex-1 bg-canvas-2' : 'max-h-[min(70dvh,860px)] rounded-[22px] border border-line/70 bg-surface-2 shadow-card'}"
-    style={!isFullscreen && variant === "embedded" ? `aspect-ratio:${ratio}` : undefined}
+    class="relative min-h-0 overflow-hidden {isFullscreen ? 'flex-1 bg-black' : variant === 'stage' ? 'flex-1 bg-canvas-2' : 'mx-auto w-full rounded-[22px] border border-line/70 bg-surface-2 shadow-card'}"
+    style={!isFullscreen && variant === "embedded" ? embeddedStyle : undefined}
   >
     {#if !version}
       <div class="absolute inset-0 grid place-items-center p-6 text-center">{@render empty?.()}</div>
     {:else if live && frameSrc}
-      {#key frameSrc}
-        <iframe
-          bind:this={frame}
-          src={frameSrc}
-          {title}
-          sandbox="allow-scripts allow-pointer-lock allow-presentation"
-          allow="fullscreen"
-          referrerpolicy="no-referrer"
-          class="absolute inset-0 size-full border-0"
-        ></iframe>
-      {/key}
+      <!-- With a known page size the frame is fitted to the slide's aspect ratio (container units), so the deck's own
+           white page background doesn't show as bars beside the slide on wide or tall stages. -->
+      <div class="absolute inset-0 grid place-items-center [container-type:size]">
+        {#key frameSrc}
+          <iframe
+            bind:this={frame}
+            src={frameSrc}
+            {title}
+            sandbox="allow-scripts allow-pointer-lock allow-presentation"
+            allow="fullscreen"
+            referrerpolicy="no-referrer"
+            class="border-0 {manifest ? '' : 'absolute inset-0 size-full'}"
+            style={manifest ? `width:min(100cqw, calc(100cqh * ${manifest.width / manifest.height}));height:min(100cqh, calc(100cqw / ${manifest.width / manifest.height}))` : undefined}
+          ></iframe>
+        {/key}
+      </div>
     {:else if current}
       <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
       <div class="absolute inset-0 select-none" ontouchstart={touchStart} ontouchend={touchEnd} onclick={() => root?.focus()}>

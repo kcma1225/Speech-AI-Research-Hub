@@ -1515,7 +1515,7 @@ Tables (`0109_workflows.sql`, `0116_workflow_batches.sql`, `0117_workflow_goals.
   `batch_id` + `batch_index` (one run of a batch, below),
   `study_id`, `conversation_id` + `tool_call_id` (the chat that started it; SET NULL), `playbook`, `title`, `request` (the
   user's words), `objective`, `criteria` jsonb `[{id, text, kind: check|judge, check?, status: pending|pass|fail|skipped,
-  reason?}]`, `plan` jsonb `{summary, outline?: [{n, title, points[]}], writes: [{kind, label}], notes?}`, `inputs` jsonb
+  reason?}]`, `plan` jsonb `{summary, outline?: [{n, title, points[], item?}], writes: [{kind, label}], notes?, requirements?, edit_kind?: revise|expand, front_title?}` (requirements: see Requirements below), `inputs` jsonb
   (playbook parameters: `paper_id`, `deck_id`, `project_id`, `note_ids`, `pages`, `language`…), `context` (page context),
   `status` (below), `autopilot`, `tainted` + `taint_sources`, `budget` jsonb `{max_steps, max_calls, max_tokens,
   max_minutes, max_fix_rounds, concurrency}` (defaults 300 / 600 / 8 000 000 / 240 / 3 / 3; researcher sub-agents run up to 40–80 tool rounds, default 60), `usage` jsonb `{steps, calls,
@@ -1632,6 +1632,75 @@ the job's last attempt). Pause: `pause_requested` is honoured between steps (`pa
 `cancelled` + `cancelJob` (the job's signal aborts the current call); drafts already written stay (listed in
 `artifacts`). Guidance (「補充指示」) is appended to every task dispatched after it and to the verifier's criteria.
 
+**Requirements: the user's explicit asks as a ledger** (`src/workflows/requirements.ts`, `playbooks/slides-requirements.ts`,
+`0119_artifact_agent_prefs.sql`). Testing one dimension (e.g. the language) used to break others; every explicit
+requirement is now a typed constraint that every step must keep and that is checked on the whole artifact.
+- *Plan time* (`prepareRequirements`, before `pb.plan`, also after a redirect; recomputed only when the request, the
+  guidance or the standing preferences changed): deterministic detection on the request and every guidance line
+  (`detectLanguage` 「整份改成英文」「我整個簡報要用英文」「in English」 — 「專有名詞保留英文」 is not a language request;
+  `detectPageCount` exact / range / at least / at most, inputs.pages wins; `detectPerItemFields` 「每個方法要有架構、
+  Pros/Cons」「for each method include …」 with bilingual field aliases (Pros ⇄ 優點 / Advantages, Cons ⇄ 缺點 / Limitations,
+  架構 ⇄ Architecture…); `detectExclude` 「刪掉第 3 頁」「拿掉「卡住」這頁」) + one model call (`purpose requirements`, no
+  retry; `include_topics` with aliases, `per_item_fields` items, audience / tone / length / format / other — it may not
+  set language or page count) + the language of recent user turns of the conversation + the target artifact's
+  **standing preferences** (`decks|notes|latex_projects.agent_prefs {requirements, run_id, updated_at}`; an artifact without
+  any whose content is English (`inferLanguage`) keeps English). Merge order (single-valued types: first wins): the
+  user's plan-card edits → deterministic (guidance before request) → model → recent chat → standing. Types: `language`
+  (`en` | `zh`), `page_count`, `include_topics`, `exclude`, `per_item_fields`, `audience`, `tone`, `length`, `format`,
+  `other`; `source` request | guidance | conversation | standing | user. Stored in `state.requirements` and shown as
+  `plan.requirements` (plan card 「你的要求」 with 「沿用」 for standing ones; autopilot cards list them too).
+- *Criteria*: every requirement is a criterion `req_<id>` (`requirementCriteria`): `req_language` (en: no CJK letter or
+  full-width punctuation in visible text — front matter title / subtitle (the cover; author / date are names), slide or
+  section titles, bullets, tables, diagram / chart labels, captions, speaker notes; 〈quoted titles〉 and `allow` pass; a
+  note's fixed section headings (`fixedHeadings`) pass and are localized at commit (`localizeHeadings`); LaTeX comments
+  are ignored. zh is lenient: only a unit written entirely in English fails), `req_pages` (decks), `req_include` and
+  `req_fields` (an item's pages are the slides / sections whose title names it; `items` come from the request, the
+  model, or the outline's `item` field) with a **judged fallback** (`params.judge_fallback`: a deterministic miss goes to
+  the final verifier with the check's detail instead of failing), `req_exclude`; the rest are judged. Notes / LaTeX use
+  sections as units (`params.doc`). Checks read the whole artifact from `data.full` (slides: front matter + body).
+- *Every step gets them* (`withRequirements` in `env.call` / `callJson`, so researchers, writers, notes pass, visual fix,
+  render fix, integrators, LaTeX writers and verifiers all see one shared block; producers must follow it and it
+  overrides the default zh-TW rule, a short language reminder goes after the task; verifiers treat a violation as high
+  severity and still answer in zh-TW). Exempt: `requirements`, `goal_plan` / `goal_replan`, `locate_figure`, `blocked`,
+  `topic_plan`, `topic_select`, `visual_qa`.
+- *No-regression guard* (slides `guardRequirements`): the speaker-notes pass, every visual-QA rewrite and the render fix
+  are re-checked against the deterministic requirement criteria; a requirement that held before and fails after gets one
+  targeted rewrite of the regressed pages (`fixPages`, `purpose requirement_fix`, pages replaced by position so translated
+  titles still land), else those pages (or the whole change) are rolled back.
+- *Targeted repair*: decks get step `constraints` after the notes pass (before `visual_qa`; `max_rounds 0`, check
+  `req_ok`): the deterministic requirement checks on cover + pages, the failing pages rewritten (only those), the cover
+  title re-translated, ≤ 3 rounds, then rendered; final failures of `req_*` check criteria reopen it (`handlesRequirements`).
+  Other playbooks: the engine reopens exactly the writer steps whose own output fails the check (`requirementRepair`;
+  generic's own repair leaves `req_*` to it).
+- *Artifact language*: titles in the target language (`translateTitle`, `purpose title_translate`, cached; still CJK →
+  asked again, then the Latin part): the deck cover / new deck name (`frontTitle`, plan card `plan.front_title`), a
+  note's title (engine, after planning). Commit renames an edited deck when the language changed (`metadata.original_title`
+  keeps the old name). Built-in labels follow the language (`labelsFor`: AI-filled mark + note, skipped placeholder,
+  「由報告者補充」, 「我的想法」, the partial banner, the paper-report subtitle); an existing deck's labels (student pages filled
+  earlier, AI-filled marks, skipped placeholders) are swapped to the target language before writers see them and again
+  on writer output (`localizeLabels`), and a revision has no student-input step, so earlier answers are never re-injected
+  in the old language; a page the student left open stays open (only its prompt is localized — writer output for it is
+  replaced, never AI-written). A revision exempts pages whose original notes were short or that were left for the student
+  (「由報告者補充」 / placeholder) from the notes / placeholder checks of writers and criteria. `paper_draft` takes its language from the
+  requirement first. At the end (done or partial) the standing types (language, audience, tone) are written to every
+  deck / note / LaTeX project the run wrote (`persistStanding`), so a follow-up without the language keeps it.
+- *Edit kinds* (slides on an existing deck, `editKindOf`): `revise` (translate / polish; same pages, criterion `revised`
+  — nothing dropped except pages the user removed) or `expand` (「再詳細一點」「focus 在…」「每個方法要有…」, per-item
+  fields, or a page count well above the deck's; a new outline of `inputs.pages` / the requirement / 1.5× pages grounded
+  in the original deck + `progressContext` + up to 3 study notes matching the focus words + the paper's digest; writers
+  get the original deck as material; criterion `expanded` = depth on the requested focus, grounded). A deck edit is
+  planned when the request revises / expands or a non-standing requirement changes the deck. `plan.edit_kind` is on the
+  card. Excluded pages are dropped from the outline deterministically (`settleOutline`).
+- *Report back*: a partial run's chat notice lists the unmet items in plain words (`unmetItems`: failed / unjudged
+  criteria, else failed steps; content `{items, model: true}`, `messageView.items` + `workflow_id`) with 「要我修這幾項嗎？」
+  (→ `POST …/guidance` = 繼續改 with those items); the notice stays visible in the chat and is carried into the model's
+  next user turn (`toModelMessages`, never between a tool call and its result). Under autopilot a partial end with failed
+  criteria (not a budget stop) starts one 繼續改 round by itself (`continueRun`, `state.auto_continued`), without a notice.
+- Probe suite: `test/workflows-requirements.test.ts` (mock model that writes English only when the block reaches it:
+  translate incl. cover + render-fix regression, follow-up without the language, expand with per-item fields, remove a
+  page + include a topic, exact page count, English note with targeted repair, partial notice + autopilot 繼續改) and
+  `scripts/probe-requirements.ts` (staging, cheap model: Chinese deck → 「整份改成英文」 → follow-up).
+
 **Questions to the user** (`src/workflows/questions.ts`, `student-input.ts`). Any playbook step, the orchestrator or
 the planning phase can pause the run and ask: `await askUser(env, card)` returns the stored answers, or stores the card
 as pending (`state.asks[cardId]`, `state.ask_pending`) and throws `WorkflowStop("ask")` → running steps back to
@@ -1706,7 +1775,7 @@ plans with it.
 
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
-| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, content checks on `data.refs` (`grounded_names`, `figure_refs`, `diagram_semantics`, `chart_semantics`; see **Content checks** below), `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
+| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → `constraints` (the user's requirements, see Requirements) → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, content checks on `data.refs` (`grounded_names`, `figure_refs`, `diagram_semantics`, `chart_semantics`; see **Content checks** below), `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
 | `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection → integrate → compile-verify (new file) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
 | `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis; a study with < 2 papers gets card `lit_too_few` (改做主題調研 → `redirect` to `topic_research` / 我先加入論文 → the old question), autopilot redirects directly | new note | `table_rows` ≥ papers, `citations`, judge |
 | `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate; no resolvable paper + a topic-like request (`isTopicRequest`) → `redirect` to `topic_research` | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
@@ -1946,7 +2015,7 @@ planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
 | GET `/workflows?active=1&study=&status=&conversation=&batch=&limit=` | user (own) | `{workflows: WorkflowView[]}` newest first (`batch`: in batch order; no steps); `active` includes `queued` / `needs_pdf` |
 | GET `/workflows/:id` | owner | `{workflow, steps: StepView[], resumeFrom}` |
 | GET `/workflows/:id/events` | owner | SSE (as the agent's: `Last-Event-ID` / `?after=`, `?once=1`, 15 s ping, 5 s poll fallback) |
-| POST `/workflows/:id/approve` `{objective?, criteria?: [{id?, text}], steps?: [{key, title?, instructions?, skip?}], outline?: [{title, points[]}]}` | owner | only `awaiting_plan_approval` (409) → `{workflow}`; edits are applied first (outline edits re-derive the writer steps) |
+| POST `/workflows/:id/approve` `{objective?, criteria?: [{id?, text}] ≤ 40, steps?: [{key, title?, instructions?, skip?}], outline?: [{title, points[]}], requirements?: [{id?, type?, text}] ≤ 12}` | owner | only `awaiting_plan_approval` (409) → `{workflow}`; edits are applied first (outline edits re-derive the writer steps; `requirements` = the whole edited 「你的要求」 list: reworded / new text is typed again (`editedRequirements`), removed ones stay removed on re-plans, `req_*` criteria re-derived; a `criteria` edit never drops `req_*` criteria) |
 | POST `/workflows/:id/revise` `{feedback ≤ 2000}` | owner | 「修改」 at plan approval (or 「修改計畫」 on an autopilot-approved run: running → stops between calls then re-plans; paused → re-plans) → `planning`; the new plan waits for the user |
 | POST `/workflows/:id/pause` · `/resume {more?}` · `/cancel` | owner | pause while running; resume a paused / `needs_pdf` (re-plan) / partial (`more`: 繼續改) / failed run; cancel any active run (frees a slot → queued runs start) → `{workflow}` |
 | POST `/workflows/:id/guidance` `{text ≤ 2000}` | owner | 補充指示; on a finished `partial`/`done` run it starts 繼續改 with that guidance |

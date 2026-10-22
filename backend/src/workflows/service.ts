@@ -4,7 +4,7 @@
  * Every command checks ownership; the engine re-checks study write access before every write.
  */
 import type { FastifyInstance } from "fastify";
-import { transaction, type Queryable } from "../db.js";
+import { transaction, type Db, type Queryable } from "../db.js";
 import { insertEvent } from "../agent/events.js";
 import { envelope } from "../agent/prompt.js";
 import { conversationView, messageView, runView as agentRunView, toolCallView, type ConversationRow, type MessageRow, type RunRow as AgentRunRow, type ToolCallRow } from "../agent/views.js";
@@ -24,6 +24,8 @@ import { randomUUID } from "node:crypto";
 import { batchPapers, batchRequest, conversationContext, studyFromText } from "./context.js";
 import { lockUserSlots, MAX_ACTIVE_PER_USER, promoteAllQueued, promoteQueued, slotUsage } from "./queue.js";
 import { fixLine, loadLedger } from "./ledger.js";
+import { artifactKindOf, editedRequirements, withRequirementCriteria } from "./requirements.js";
+import type { Requirement } from "./types.js";
 
 export { MAX_ACTIVE_PER_USER } from "./queue.js";
 
@@ -165,7 +167,7 @@ export async function startFromChat(app: FastifyInstance, user: CurrentUser, inp
 
 // ---------------------------------------------------------------- plan approval
 
-type ApproveInput = { objective?: string; criteria?: { id?: string; text: string }[]; steps?: { key: string; title?: string; instructions?: string; skip?: boolean }[]; outline?: { title: string; points: string[] }[] };
+type ApproveInput = { objective?: string; criteria?: { id?: string; text: string }[]; steps?: { key: string; title?: string; instructions?: string; skip?: boolean }[]; outline?: { title: string; points: string[] }[]; requirements?: { id?: string; type?: string; text: string; params?: Record<string, unknown> }[] };
 
 export async function approveWorkflow(app: FastifyInstance, user: CurrentUser, id: string, edits: ApproveInput) {
   const r = await ownRun(app.db, user, id);
@@ -186,17 +188,28 @@ export async function approveWorkflow(app: FastifyInstance, user: CurrentUser, i
     if (locked.status !== "awaiting_plan_approval") throw conflict("這個計畫目前不能核准。");
     let criteria: Criterion[] = locked.criteria;
     if (edits.criteria) {
-      criteria = edits.criteria.slice(0, 12).map((c, i) => {
+      // Requirement criteria (`req_*`) are edited through 「你的要求」, never dropped by a criteria edit.
+      const kept = locked.criteria.filter((c) => c.id.startsWith("req_"));
+      criteria = [...edits.criteria.filter((c) => !c.id?.startsWith("req_")).slice(0, 24).map((c, i) => {
         const old = c.id ? locked.criteria.find((x) => x.id === c.id) : undefined;
         if (old) return { ...old, text: c.text.slice(0, 300) || old.text, status: "pending" as const };
         return { id: `u${i + 1}`, kind: "judge" as const, text: c.text.slice(0, 300), status: "pending" as const };
-      }).filter((c) => c.text.trim());
+      }).filter((c) => c.text.trim()), ...kept];
+    }
+    // 「你的要求」 edited on the plan card: typed again from the words, criteria re-derived, removed ones stay removed.
+    let state: Record<string, unknown> | null = null;
+    if (edits.requirements) {
+      const prev = (locked.state?.requirements as Requirement[] | undefined) ?? [];
+      const { list, removed } = editedRequirements(prev, edits.requirements, artifactKindOf(locked.playbook));
+      criteria = withRequirementCriteria(criteria, list, artifactKindOf(locked.playbook), "pending", (locked.state?.req_allow as string[] | undefined) ?? []);
+      state = { requirements: list, requirements_removed: [...new Set([...((locked.state?.requirements_removed as string[] | undefined) ?? []), ...removed])] };
     }
     if (outline && pb?.id === "slides" && edits.outline?.length) {
       const n = outline.length;
       criteria = criteria.map((c) => (c.id === "pages" ? { ...c, text: `簡報正好 ${n} 頁，頁面順序與確認的大綱一致`, check: { id: "slide_count", params: { expected: n } } } : c));
     }
-    const plan = locked.plan ? { ...locked.plan, ...(outline ? { outline } : {}) } : null;
+    const plan = locked.plan ? { ...locked.plan, ...(outline ? { outline } : {}), ...(state ? { requirements: state.requirements as Requirement[] } : {}) } : null;
+    if (state) await client.query("UPDATE workflow_runs SET state = state || $2::jsonb WHERE id=$1", [id, JSON.stringify(state)]);
     if (replacement) {
       const keep = (await getSteps(client, id)).filter((s) => s.status === "passed" && (s.key === "research" || s.key === "outline"));
       await client.query("DELETE FROM workflow_steps WHERE run_id=$1 AND NOT (key = ANY($2))", [id, keep.map((s) => s.key)]);
@@ -279,6 +292,27 @@ async function reopenForMore(client: Queryable, id: string) {
   return steps.length;
 }
 
+/** 繼續改 on a finished run: failed steps + dependents reopened, one more final round, a little more budget. */
+async function reopenRun(client: Queryable, r: RunRow, guidance: RunRow["guidance"]) {
+  const n = await reopenForMore(client, r.id);
+  const budget = { ...r.budget, max_steps: r.budget.max_steps + 120, max_calls: r.budget.max_calls + 240, max_minutes: r.budget.max_minutes + 60, max_tokens: r.budget.max_tokens + 3_000_000 };
+  await client.query(
+    "UPDATE workflow_runs SET status=$2, final_rounds=GREATEST(final_rounds-1,0), guidance=$3, budget=$4, report=NULL, error=NULL, stop_reason=NULL, finished_at=NULL, pause_requested=false, criteria=COALESCE((SELECT jsonb_agg(c || '{\"status\":\"pending\"}'::jsonb) FROM jsonb_array_elements(criteria) c), '[]'::jsonb), updated_at=now() WHERE id=$1",
+    [r.id, n ? "running" : "planning", JSON.stringify(guidance), JSON.stringify(budget)],
+  );
+}
+
+/** The engine's autopilot 繼續改 (one round after a partial end): same as the user's, from inside the running job. */
+export async function continueRun(db: Db, id: string, guidanceText: string) {
+  await transaction(db, async (client) => {
+    const r = await getRun(client, id, true);
+    if (!r || r.status !== "partial") return;
+    await reopenRun(client, r, [...r.guidance, { at: new Date().toISOString(), text: guidanceText, applied: false }]);
+  });
+  await insertWorkflowEvent(db, id, "log", { level: "info", text: "繼續改：針對未通過的部分再修正一輪。" });
+  await emitRun(db, id);
+}
+
 export async function resumeWorkflow(app: FastifyInstance, user: CurrentUser, id: string, opts: { more?: boolean; guidance?: string } = {}) {
   await transaction(app.db, async (client) => {
     const r = await ownRun(client, user, id, true);
@@ -293,12 +327,7 @@ export async function resumeWorkflow(app: FastifyInstance, user: CurrentUser, id
       const hasSteps = (await getSteps(client, id)).length > 0;
       await client.query("UPDATE workflow_runs SET status=$3, question=NULL, guidance=$2, state = state - 'ask_pending', updated_at=now() WHERE id=$1", [id, JSON.stringify(guidance), hasSteps ? "running" : "planning"]);
     } else if (r.status === "partial" || r.status === "done" || r.status === "failed" || (r.status === "cancelled" && opts.more)) {
-      const n = await reopenForMore(client, id);
-      const budget = { ...r.budget, max_steps: r.budget.max_steps + 120, max_calls: r.budget.max_calls + 240, max_minutes: r.budget.max_minutes + 60, max_tokens: r.budget.max_tokens + 3_000_000 };
-      await client.query(
-        "UPDATE workflow_runs SET status=$2, final_rounds=GREATEST(final_rounds-1,0), guidance=$3, budget=$4, report=NULL, error=NULL, stop_reason=NULL, finished_at=NULL, pause_requested=false, criteria=COALESCE((SELECT jsonb_agg(c || '{\"status\":\"pending\"}'::jsonb) FROM jsonb_array_elements(criteria) c), '[]'::jsonb), updated_at=now() WHERE id=$1",
-        [id, n ? "running" : "planning", JSON.stringify(guidance), JSON.stringify(budget)],
-      );
+      await reopenRun(client, r, guidance);
     } else if (r.status === "running" || r.status === "verifying" || r.status === "planning") {
       if (opts.guidance) await client.query("UPDATE workflow_runs SET guidance=$2, updated_at=now() WHERE id=$1", [id, JSON.stringify(guidance)]);
     } else throw conflict("這個工作流程目前不能繼續。");
@@ -341,10 +370,10 @@ export async function patchWorkflow(app: FastifyInstance, user: CurrentUser, id:
     const r = await ownRun(client, user, id, true);
     if (!["awaiting_plan_approval", "paused", "done", "partial", "failed"].includes(r.status)) throw conflict("執行中無法修改目標，請先暫停。");
     const criteria = input.criteria
-      ? input.criteria.slice(0, 12).map((c, i) => {
+      ? [...input.criteria.filter((c) => !c.id?.startsWith("req_")).slice(0, 24).map((c, i) => {
           const old = c.id ? r.criteria.find((x) => x.id === c.id) : undefined;
           return old ? { ...old, text: c.text.slice(0, 300), status: "pending" as const } : { id: `u${i + 1}`, kind: "judge" as const, text: c.text.slice(0, 300), status: "pending" as const };
-        })
+        }), ...r.criteria.filter((c) => c.id.startsWith("req_"))]
       : r.criteria;
     const objective = input.objective?.trim() ? input.objective.slice(0, 1000) : r.objective;
     const changed = objective !== r.objective;

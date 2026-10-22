@@ -128,7 +128,7 @@
     <span class="ml-auto"><ExportMenu studyRef={detail.study.id} disabled={!data?.counts.total} /></span>
   </div>
   <div class="flex flex-col gap-2 lg:flex-row lg:items-center">
-    <label class="relative min-w-0 flex-1 lg:max-w-sm">
+    <label class="relative min-w-0 flex-1">
       <span class="sr-only">{t("library.tab.search")}</span>
       <Search class="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-ink-3" />
       <input
@@ -139,10 +139,13 @@
       />
       {#if q}<button type="button" class="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("library.filter.clear")} onclick={() => (q = "")}><X class="size-4" /></button>{/if}
     </label>
-    <div class="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0">
-      <Segmented bind:value={status} label={t("library.status")} options={statusOptions} />
+    <!-- Status and tag filters share one row under the search on phones/tablets, beside it from lg. -->
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <div class="-mx-4 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:shrink-0 sm:px-0">
+        <Segmented bind:value={status} label={t("library.status")} options={statusOptions} />
+      </div>
+      {#if data?.tags.length}<Select bind:value={tag} label={t("library.tags")} options={tagOptions} class="w-full min-w-0 sm:w-48" />{/if}
     </div>
-    {#if data?.tags.length}<Select bind:value={tag} label={t("library.tags")} options={tagOptions} class="w-full min-w-0 sm:w-48" />{/if}
   </div>
 </div>
 

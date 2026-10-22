@@ -69,6 +69,8 @@
   const maxErr = $derived(Math.max(1, ...(stats?.errors.map(e => e.count) ?? [1])));
   const windows: Win[] = ["1h", "24h", "7d", "30d"];
   const winLabel = { "1h": "aiAdmin.traffic.window.1h", "24h": "aiAdmin.traffic.window.24h", "7d": "aiAdmin.traffic.window.7d", "30d": "aiAdmin.traffic.window.30d" } as const;
+  // The log lists calls in the order they finished: show the finish time so the times read in order.
+  const finishedAt = (c: { started_at: string; latency_ms?: number | null }) => new Date(new Date(c.started_at).getTime() + (c.latency_ms ?? 0)).toISOString();
 </script>
 
 {#snippet rateBar(r: StatRow)}
@@ -177,7 +179,41 @@
     {#if !calls}<Skeleton class="h-40" />
     {:else if !calls.length}<p class="py-6 text-center text-[13px] text-ink-3">{t("aiAdmin.traffic.noData")}</p>
     {:else}
-      <ul class="flex flex-col divide-y divide-line/70">
+      <!-- Wide screens: one aligned row per call (phones keep the two-line list below). -->
+      <div class="hidden text-[13px] xl:block" role="table" aria-label={t("aiAdmin.traffic.recent")}>
+        <div class="sticky top-0 z-10 grid grid-cols-[1.25rem_6.5rem_minmax(8.5rem,0.9fr)_minmax(0,2.6fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_4.5rem_6.5rem] gap-3 border-b border-line bg-surface py-2 text-[12px] font-medium text-ink-3" role="row">
+          <span role="columnheader"><span class="sr-only">{t("aiAdmin.traffic.result")}</span></span>
+          <span role="columnheader">{t("aiAdmin.traffic.col.time")}</span>
+          <span role="columnheader">{t("aiAdmin.traffic.role")}</span>
+          <span role="columnheader">{t("aiAdmin.traffic.model")}</span>
+          <span role="columnheader">{t("aiAdmin.traffic.col.group")}</span>
+          <span role="columnheader">{t("aiAdmin.traffic.col.source")}</span>
+          <span role="columnheader">{t("aiAdmin.traffic.col.detail")}</span>
+          <span role="columnheader" class="text-right">{t("aiAdmin.traffic.col.latency")}</span>
+          <span role="columnheader" class="text-right">Tokens</span>
+        </div>
+        {#each calls as c (c.id)}
+          {@const source = c.user_name ? displayName(c.user_name) : c.job_id ? t("aiAdmin.traffic.job") : "—"}
+          <div class="grid grid-cols-[1.25rem_6.5rem_minmax(8.5rem,0.9fr)_minmax(0,2.6fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_4.5rem_6.5rem] items-center gap-3 border-b border-line/60 py-2 last:border-0 hover:bg-surface-2/50" role="row">
+            <span role="cell">{#if c.ok}<CircleCheck class="size-4 text-success" aria-label={t("aiAdmin.traffic.ok")} />{:else}<CircleX class="size-4 text-danger" aria-label={c.error_code ?? ""} />{/if}</span>
+            <span role="cell" class="truncate text-ink-2"><time datetime={finishedAt(c)} title={formatDate(finishedAt(c), { dateStyle: "medium", timeStyle: "medium" })}>{relativeTime(finishedAt(c))}</time></span>
+            <span role="cell" class="truncate font-medium" title={roleLabel(c.role)}>{roleLabel(c.role)}</span>
+            <span role="cell" class="flex min-w-0 items-center gap-1.5" title={c.provider_name ? `${c.provider_name} / ${c.model}` : undefined}>
+              {#if c.provider_name}<ProviderIcon kind={c.provider_kind} label={c.provider_name} size="xs" /><span class="truncate"><span class="font-mono text-[12px]">{c.model}</span><span class="ml-1.5 text-[12px] text-ink-3">· {c.provider_name}</span></span>{:else}<span class="text-ink-3">—</span>{/if}
+            </span>
+            <span role="cell" class="truncate text-ink-2" title={c.group_name ?? undefined}>{c.group_name ?? "—"}</span>
+            <span role="cell" class="truncate text-ink-2" title={source}>{source}</span>
+            <span role="cell" class="truncate text-[12px] text-ink-3">
+              {#if !c.ok && c.error_code}<code class="text-danger" title={c.error_code}>{c.error_code}</code>{/if}
+              {#if c.fallback_index > 0}{#if !c.ok && c.error_code} · {/if}{t("aiAdmin.traffic.fallbackN", { n: c.fallback_index })}{/if}
+              {#if c.retries}{#if (!c.ok && c.error_code) || c.fallback_index > 0} · {/if}{t("aiAdmin.traffic.retries", { n: c.retries })}{/if}
+            </span>
+            <span role="cell" class="text-right text-ink-2 tabular-nums">{ms(c.latency_ms)}</span>
+            <span role="cell" class="text-right text-[12px] text-ink-3 tabular-nums">{#if c.tokens_in != null || c.tokens_out != null}{num(c.tokens_in ?? 0)} / {num(c.tokens_out ?? 0)}{:else}—{/if}</span>
+          </div>
+        {/each}
+      </div>
+      <ul class="flex flex-col divide-y divide-line/70 xl:hidden">
         {#each calls as c (c.id)}
           <li class="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0.5 py-2.5 text-[13px]">
             <span class="mt-0.5">{#if c.ok}<CircleCheck class="size-4 text-success" aria-label={t("aiAdmin.traffic.ok")} />{:else}<CircleX class="size-4 text-danger" aria-label={c.error_code ?? ""} />{/if}</span>
@@ -187,7 +223,7 @@
                 {#if c.provider_name}<span class="text-ink-3"> · </span><ProviderIcon kind={c.provider_kind} label={c.provider_name} size="xs" class="mx-0.5 inline-grid align-middle" /><span class="text-ink-3"> {c.provider_name} / </span><span class="font-mono text-[12px]">{c.model}</span>{/if}{#if c.group_name}<span class="text-ink-3"> · {t("aiAdmin.traffic.inGroup", { name: c.group_name })}</span>{/if}
               </p>
               <p class="truncate text-[12px] text-ink-3">
-                <time datetime={c.started_at} title={formatDate(c.started_at)}>{relativeTime(c.started_at)}</time>
+                <time datetime={finishedAt(c)} title={formatDate(finishedAt(c), { dateStyle: "medium", timeStyle: "medium" })}>{relativeTime(finishedAt(c))}</time>
                 {#if !c.ok && c.error_code} · <code class="text-danger">{c.error_code}</code>{/if}
                 {#if c.fallback_index > 0} · {t("aiAdmin.traffic.fallbackN", { n: c.fallback_index })}{/if}
                 {#if c.retries} · {t("aiAdmin.traffic.retries", { n: c.retries })}{/if}

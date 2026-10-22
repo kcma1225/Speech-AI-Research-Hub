@@ -214,6 +214,13 @@
     text-align: left;
     white-space: nowrap;
   }
+  /* Sentence-length cells (lib/markdown.ts `md-wrap`) wrap instead of pushing the table off-screen. */
+  .md :global(:is(th, td).md-wrap) {
+    white-space: normal;
+    min-width: 12em;
+    max-width: 36em;
+    overflow-wrap: anywhere;
+  }
   .md :global(th) {
     background: var(--surface-2);
     font-weight: 600;

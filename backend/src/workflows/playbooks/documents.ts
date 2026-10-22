@@ -16,7 +16,8 @@ import type { WorkflowEnv } from "../env.js";
 import { STEP_ROLES, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRole, type StepRow, type StepSpec } from "../types.js";
 import { clipText, depOutputs, isTopicRequest, paperOf, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
 import { askUser } from "../questions.js";
-import { AI_FILLED_MARK, askStudentView, isAiFilled } from "../student-input.js";
+import { askStudentView, isAiFilled } from "../student-input.js";
+import { localizeHeadings, runLabels } from "../requirements.js";
 import { ensurePaperPdf } from "../paper-pdf.js";
 import { buildContentRefs, contentRefsOf } from "../content-refs.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
@@ -85,7 +86,9 @@ export async function commitNote(env: WorkflowEnv, outcome: "done" | "partial", 
   }
   const title = clipText(env.state<string>("note_title") ?? env.run.title, 190);
   const unmet = env.run.criteria.filter((c) => c.status !== "pass");
-  const body = outcome === "partial" && unmet.length ? `> 這份筆記由工作流程產生，**尚未通過**這些驗收標準：${unmet.map((c) => c.text).join("；")}\n\n${doc}` : doc;
+  // The playbook's fixed section headings in the note's language (an English note gets no Chinese headings).
+  const localized = await localizeHeadings(env, doc);
+  const body = outcome === "partial" && unmet.length ? `${runLabels(env).partialBanner(unmet.map((c) => c.text))}\n\n${localized}` : localized;
   const id = await transaction(env.db, async (client) => {
     const locked = await loadStudyAccess(client, access.study.id, env.user, { forUpdate: true });
     if (!locked.canEdit) throw new WorkflowInputError("你已經不是這個研究的成員。");
@@ -194,7 +197,8 @@ const readingNote: WorkflowPlaybook = {
       });
       const lines = [...(got.view ?? []), ...(got.use ?? [])];
       const ai = isAiFilled(env, "my_view") && lines.length > 0;
-      return { summary: lines.length ? (ai ? `自動駕駛代填（${lines.length} 點，待你確認）` : `收到你的想法（${lines.length} 點）`) : "你選擇先跳過", text: `## 我的想法\n\n${ai ? `> **${AI_FILLED_MARK}**：以下是 AI 依研究資料草擬的建議，不是你確認過的看法。\n\n` : ""}${lines.length ? lines.map((l) => `- ${l}`).join("\n") : "（之後自己補上）"}\n` };
+      const L = runLabels(env);
+      return { summary: lines.length ? (ai ? `自動駕駛代填（${lines.length} 點，待你確認）` : `收到你的想法（${lines.length} 點）`) : "你選擇先跳過", text: `## ${L.myView}\n\n${ai ? `> **${L.aiFilled}**：${L.aiDraftBanner}\n\n` : ""}${lines.length ? lines.map((l) => `- ${l}`).join("\n") : L.laterOwn}\n` };
     }
     const title = (env.state<string[]>("sections") ?? [])[Number(step.key.slice(5)) - 1] ?? step.title;
     const paperId = String(step.inputs.paper_id ?? env.run.inputs.paper_id ?? "");
@@ -530,9 +534,12 @@ const generic: WorkflowPlaybook = {
     return { text: env.state<string>("doc") ?? "", data: null };
   },
   async repair(env, failing) {
+    // The user's requirements (`req_*`) are repaired by the engine on exactly the writers that fail them.
+    const own = failing.filter((c) => !c.id.startsWith("req_"));
+    if (!own.length) return [];
     const steps = await getSteps(env.db, env.run.id);
     const writers = steps.filter((s) => s.kind === "task" && s.role !== "researcher").slice(-2);
-    return writers.map((s) => ({ key: s.key, issues: failing.map((c) => `${c.text}：${c.reason ?? ""}`) }));
+    return writers.map((s) => ({ key: s.key, issues: own.map((c) => `${c.text}：${c.reason ?? ""}`) }));
   },
   commit: (env, outcome) => commitNote(env, outcome, "custom"),
 };

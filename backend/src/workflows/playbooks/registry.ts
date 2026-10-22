@@ -40,6 +40,8 @@ export interface WorkflowPlaybook {
   finalText(env: WorkflowEnv): Promise<{ text: string; data: unknown }>;
   /** Failing criteria → steps to reopen with these issues (their dependents are re-run too). */
   repair?(env: WorkflowEnv, failing: Criterion[]): Promise<{ key: string; issues: string[] }[]>;
+  /** `repair` maps failing requirement criteria (`req_*`) itself; otherwise the engine reopens the writers whose output fails them. */
+  handlesRequirements?: boolean;
   /** At the end (done or partial): write the artifact once (notes) and return a short line for the report. */
   commit?(env: WorkflowEnv, outcome: "done" | "partial"): Promise<string | null>;
 }

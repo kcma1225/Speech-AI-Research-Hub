@@ -173,9 +173,11 @@
   const iconButton = "grid size-10 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent";
 </script>
 
-<div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+<div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 lg:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_400px]">
   <div class="flex min-w-0 flex-col gap-4 sm:gap-5">
     <StudyWorkflows study={detail.study.slug} />
+    <!-- Very wide screens: summary (kept at a readable measure) and the stage timeline side by side; the editor takes the row. -->
+    <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 {editingSummary ? '' : 'min-[1800px]:grid-cols-[minmax(0,1fr)_340px]'}">
     <!-- Summary -->
     <Card>
       <CardHeader title={t("studies.summary")}>
@@ -269,9 +271,11 @@
         {/each}
       </ol>
     </Card>
+    </div>
   </div>
 
-  <div class="flex min-w-0 flex-col gap-4 sm:gap-5">
+  <!-- Tablets: milestones and settings side by side under the main column; desktop: the side column. -->
+  <div class="grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 md:grid-cols-2 lg:flex lg:flex-col">
     <!-- Milestones -->
     <Card>
       <CardHeader title={t("studies.milestones")}>

@@ -44,14 +44,16 @@ const createInput = z.object({
 const listQuery = z.object({ active: z.enum(["0", "1"]).optional(), study: z.string().max(80).optional(), status: z.string().max(40).optional(), conversation: uuid.optional(), batch: uuid.optional(), limit: z.coerce.number().int().min(1).max(100).optional() });
 const approveInput = z.object({
   objective: z.string().trim().max(1000).optional(),
-  criteria: z.array(z.object({ id: z.string().max(40).optional(), text: z.string().trim().min(1).max(300) })).max(12).optional(),
+  criteria: z.array(z.object({ id: z.string().max(40).optional(), text: z.string().trim().min(1).max(300) })).max(40).optional(),
+  // 「你的要求」 (requirements.ts): the full edited list (an empty list removes them all).
+  requirements: z.array(z.object({ id: z.string().max(40).optional(), type: z.string().max(40).optional(), text: z.string().trim().max(300), params: z.record(z.string(), z.unknown()).optional() })).max(12).optional(),
   steps: z.array(z.object({ key: z.string().max(40), title: z.string().max(200).optional(), instructions: z.string().max(4000).optional(), skip: z.boolean().optional() })).max(60).optional(),
   outline: z.array(z.object({ title: z.string().trim().min(1).max(120), points: z.array(z.string().max(200)).max(8) })).min(1).max(40).optional(),
 });
 const textInput = z.object({ text: z.string().trim().min(1).max(2000) });
 const feedbackInput = z.object({ feedback: z.string().trim().min(1).max(2000) });
 const resumeInput = z.object({ more: z.boolean().optional() }).optional();
-const patchInput = z.object({ objective: z.string().trim().max(1000).optional(), criteria: z.array(z.object({ id: z.string().max(40).optional(), text: z.string().trim().min(1).max(300) })).max(12).optional() });
+const patchInput = z.object({ objective: z.string().trim().max(1000).optional(), criteria: z.array(z.object({ id: z.string().max(40).optional(), text: z.string().trim().min(1).max(300) })).max(40).optional() });
 
 /** Tests: whether role `assistant` can take a workflow (default: AI status ok/degraded). */
 let availability: (() => Promise<boolean>) | null = null;

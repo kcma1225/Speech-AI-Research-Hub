@@ -26,6 +26,7 @@ import { clipText, planningStep, systemFor, taskPrompt } from "./common.js";
 import { commitNote, finalSpec, studyOrQuestion } from "./documents.js";
 import { latexHeadings, verificationCompile } from "./latex.js";
 import { registerWorkflowPlaybook, type ApprovalEdits, type PlanResult, type WorkflowPlaybook } from "./registry.js";
+import { targetLanguage } from "../requirements.js";
 import { languageOf, OUTLINE_TITLE_RE, templateFor, type Capability } from "../goals/capabilities.js";
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
@@ -149,7 +150,7 @@ const paperOutline: WorkflowPlaybook = {
     if ("question" in access) return { kind: "question", question: access.question };
     const src = await gatherSources(env, access.study.id);
     if (!src.keys.length && !src.noteIds.length) return { kind: "question", question: `〈${access.study.title}〉的文獻庫與筆記都是空的，沒有資料可以擬大綱。請先加入論文或做一次主題調研，再按「繼續」。` };
-    const lang = (env.run.inputs.language as "zh" | "en" | undefined) ?? languageOf(env.run.request);
+    const lang = targetLanguage(env.requirements()) ?? (env.run.inputs.language as "zh" | "en" | undefined) ?? languageOf(env.run.request);
     await env.setState({ brief: src.brief.slice(0, 30_000), keys: src.keys, language: lang, note_title: `論文大綱：${clipText(env.run.request.replace(/^為論文「|」.*$/gs, ""), 60)}` });
     const minCites = Math.min(3, src.keys.length);
     const verify = { checks: [{ id: "sections_present", params: { sections: OUTLINE_HEADINGS } }, { id: "outline_sections", params: { min: 4 } }, ...(src.keys.length ? [{ id: "citations", params: { keys: src.keys, min: minCites } }] : []), { id: "no_placeholder" }, { id: "not_truncated" }], judge: true };
@@ -279,7 +280,7 @@ async function draftPlan(env: WorkflowEnv): Promise<PlanResult> {
   )).rows;
   const outlineNote = candidates.map((n) => ({ n, o: parseOutline(n.content_md) })).find((x) => x.o && (OUTLINE_TITLE_RE.test(x.n.title) || /##\s*章節規劃/.test(x.n.content_md))) ?? null;
   const src = await gatherSources(env, studyId, { exclude: outlineNote ? [outlineNote.n.id] : [] });
-  const lang = (env.run.inputs.language as "zh" | "en" | undefined) ?? languageOf(env.run.request);
+  const lang = targetLanguage(env.requirements()) ?? (env.run.inputs.language as "zh" | "en" | undefined) ?? languageOf(env.run.request);
   const template = ((env.run.inputs.template as LatexTemplateId | undefined) && ["zh-thesis", "ieee-conference", "article-zh", "article-en"].includes(env.run.inputs.template as string) ? env.run.inputs.template : templateFor(env.run.request, lang)) as LatexTemplateId;
   let outline = outlineNote?.o ?? null;
   const research: StepSpec = { key: "research", role: "researcher", title: "讀大綱、調研筆記與文獻庫", instructions: "整理論文大綱、交接的筆記與研究文獻庫（含 cite key）。", expected: "撰寫依據", verify: { checks: [], judge: false }, done: { output: { summary: `${outlineNote ? `大綱〈${outlineNote.n.title}〉、` : ""}${src.noteIds.length} 份筆記、${src.keys.length} 篇文獻`, text: src.brief.slice(0, 20_000) } } };

@@ -7,6 +7,8 @@ export type ApproveEdits = {
   criteria?: { id?: string; text: string }[];
   steps?: { key: string; title?: string; instructions?: string; skip?: boolean }[];
   outline?: { title: string; points: string[] }[];
+  /** 「你的要求」: the whole edited list (types are detected again from reworded text). */
+  requirements?: { id?: string; type?: string; text: string }[];
 };
 
 export const workflowsApi = {

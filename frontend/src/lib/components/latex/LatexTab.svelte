@@ -98,7 +98,7 @@
 {#if error}
   <Card><EmptyState title={t("common.error")} hint={error} /></Card>
 {:else if !projects}
-  <div class="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
+  <div class="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3 2xl:grid-cols-4">
     {#each [0, 1, 2] as i (i)}
       <div class="overflow-hidden rounded-[22px] border border-line/70 bg-surface">
         <Skeleton class="aspect-[16/10] rounded-none" />
@@ -116,7 +116,7 @@
     </EmptyState>
   </Card>
 {:else}
-  <div class="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
+  <div class="grid gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3 2xl:grid-cols-4">
     {#each projects as project (project.id)}
       <ProjectCard
         {project}

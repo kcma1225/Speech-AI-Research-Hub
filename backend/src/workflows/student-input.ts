@@ -17,6 +17,7 @@
  * Other playbooks can use `askStudentView(env, step, {...})` for a single 「我的想法」-style section.
  */
 import { titleMatches } from "./checks.js";
+import { labelsFor, type Labels } from "./requirements.js";
 import { AI_OPTIONS_INTRO, answerLines, asksOf, askUser, groundedQuestions, isSkipped, normaliseCard, SKIP_VALUE, validateCardAnswers, type QuestionDraft, type StoredAnswer } from "./questions.js";
 import { finishNotice } from "./notify.js";
 import { getSteps } from "./store.js";
@@ -29,7 +30,7 @@ export const STUDENT_CARD_ID = "student_pages";
 export type StudentPage = { title: string; lines: string[]; skipped: boolean; source: "option" | "own" | "mixed" | "skipped"; /** Autopilot picked the AI's grounded options (「AI 代填，待你確認」). */ ai_filled?: boolean };
 
 /** Marker on AI-filled student pages (slide + speaker note). */
-export const AI_FILLED_MARK = "AI 代填，待你確認";
+export const AI_FILLED_MARK = labelsFor("zh").aiFilled;
 
 /**
  * Autopilot: the AI picks from its own study-grounded options instead of stopping — choice questions get their first
@@ -125,22 +126,18 @@ export async function studentPagesOf(env: WorkflowEnv): Promise<StudentPage[]> {
   return ((s?.output?.data as { pages?: StudentPage[] } | undefined)?.pages) ?? [];
 }
 
-export const SKIPPED_PLACEHOLDER = "〔　這頁留給你自己寫：之後補上你的想法　〕";
+export const SKIPPED_PLACEHOLDER = labelsFor("zh").skipped;
 
-/** Markdown of one student page (bullets = the student's words; notes say who wrote it). */
-export function studentPageMarkdown(p: StudentPage, attrs = ""): string {
+/** Markdown of one student page (bullets = the student's words; notes say who wrote it), labels in the deck's language. */
+export function studentPageMarkdown(p: StudentPage, attrs = "", L: Labels = labelsFor("zh")): string {
   const lines = p.lines.map((l) => `- ${l}`).join("\n");
-  const body = p.skipped ? SKIPPED_PLACEHOLDER : p.ai_filled ? `[${AI_FILLED_MARK}]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}\n\n${lines}` : lines;
-  const notes = p.skipped
-    ? "（由報告者補充）"
-    : p.ai_filled
-      ? `（${AI_FILLED_MARK}：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）`
-      : "（報告者自己的看法，依報告者在工作流程中確認的回答整理）";
+  const body = p.skipped ? L.skipped : p.ai_filled ? `[${L.aiFilled}]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}\n\n${lines}` : lines;
+  const notes = p.skipped ? L.skippedNote : p.ai_filled ? L.aiFilledNote : L.ownNote;
   return `## ${p.title}${attrs}\n\n${body}\n\n::: {.notes}\n${notes}\n:::\n`;
 }
 
 /** Replaces each owned page (by title) with the student's content; pages not in the body are left alone. */
-export function applyStudentPages(body: string, pages: StudentPage[]): string {
+export function applyStudentPages(body: string, pages: StudentPage[], L: Labels = labelsFor("zh")): string {
   if (!pages.length) return body;
   const parts = body.split(/^(?=## )/m);
   return parts
@@ -151,7 +148,7 @@ export function applyStudentPages(body: string, pages: StudentPage[]): string {
       const attrs = /\s*(\{[^}]*\})\s*$/.exec(head)?.[1];
       const title = head.replace(/\{[^}]*\}\s*$/, "").trim();
       const hit = pages.find((p) => titleMatches(p.title, title));
-      return hit ? `${studentPageMarkdown(hit, attrs ? ` ${attrs}` : "")}\n` : part;
+      return hit ? `${studentPageMarkdown(hit, attrs ? ` ${attrs}` : "", L)}\n` : part;
     })
     .join("")
     .replace(/\n{3,}/g, "\n\n");

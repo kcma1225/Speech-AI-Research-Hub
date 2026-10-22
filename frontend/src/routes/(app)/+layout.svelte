@@ -10,7 +10,7 @@
   import BottomTabs from "#lib/components/shell/BottomTabs.svelte";
   import CommandPalette from "#lib/components/shell/CommandPalette.svelte";
   import { t } from "#lib/i18n.svelte.ts";
-  import { ADMIN_HOME, adminMayOpen } from "#lib/nav.ts";
+  import { ADMIN_HOME, adminMayOpen, hidesPageBanner } from "#lib/nav.ts";
   import { people } from "#lib/people.svelte.ts";
   import NamesConfirmBanner from "#lib/components/people/NamesConfirmBanner.svelte";
 
@@ -18,6 +18,9 @@
 
   // Admin accounts are system-only: workspace pages send them to the admin home.
   const assistant = $derived(page.url.pathname === "/assistant" || page.url.pathname.startsWith("/assistant/") && !page.url.pathname.startsWith("/assistant/workflows"));
+  // Source editors (LaTeX, Quarto) are full workspaces too: whole width (U3, additive).
+  const editor = $derived(/^\/studies\/[^/]+\/(latex\/[^/]+|decks\/[^/]+\/edit)\/?$/.test(page.url.pathname));
+  const noBanner = $derived(hidesPageBanner(page.url.pathname));
   const adminElsewhere = $derived(session.user?.role === "admin" && !adminMayOpen(page.url.pathname));
   $effect(() => {
     if (!session.user) void goto(`/login?next=${encodeURIComponent(page.url.pathname + page.url.search)}`, { replace: true });
@@ -36,12 +39,13 @@
     <Sidebar />
     <div class="flex min-w-0 flex-1 flex-col lg:pr-6">
       <Topbar />
-      <main id="main" tabindex="-1" class="flex-1 outline-none px-4 pt-2 pb-[calc(96px+env(safe-area-inset-bottom))] sm:px-6 lg:px-0 {assistant ? 'lg:pt-4 lg:pb-3' : 'lg:pt-7 lg:pb-10'}">
-        <!-- A collapsed sidebar frees ~190px; wide screens give it to the content (max-width eases with the rail).
-             The assistant is a full-height workspace: it takes the whole width. -->
-        <div class="mx-auto w-full transition-[max-width] duration-[220ms] ease-[cubic-bezier(.2,.8,.2,1)] {assistant ? 'max-w-none' : sidebar.collapsed ? 'max-w-[1280px] lg:max-w-[1600px]' : 'max-w-[1280px]'}">
-          <!-- Not on /assistant: its workspace fills the viewport, a banner above it would push the composer off screen. -->
-          {#if !page.url.pathname.startsWith("/settings") && !page.url.pathname.startsWith("/assistant")}<NamesConfirmBanner />{/if}
+      <main id="main" tabindex="-1" class="flex-1 outline-none px-4 pt-2 pb-[calc(96px+env(safe-area-inset-bottom))] sm:px-6 lg:px-0 {assistant || editor ? 'lg:pt-4 lg:pb-3' : 'lg:pt-7 lg:pb-10'}">
+        <!-- Content uses wide screens (1600px, 1760px with the rail collapsed) instead of leaving empty margins; pages
+             cap long prose themselves. The max-width eases with the rail. The assistant takes the whole width. -->
+        <div class="mx-auto w-full transition-[max-width] duration-[220ms] ease-[cubic-bezier(.2,.8,.2,1)] {assistant || editor ? 'max-w-none' : sidebar.collapsed ? 'max-w-[1760px]' : 'max-w-[1600px]'}">
+          <!-- Not on /settings (where the names are edited) nor on full-height workspaces (assistant, note / LaTeX / deck
+               editors): they size themselves to the viewport and a banner above would make the page scroll while typing. -->
+          {#if !noBanner}<NamesConfirmBanner />{/if}
           {@render children()}
         </div>
       </main>

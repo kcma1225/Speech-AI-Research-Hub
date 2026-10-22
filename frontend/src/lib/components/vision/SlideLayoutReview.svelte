@@ -22,6 +22,7 @@
     hasSource = false,
     version = null,
     size = "md",
+    iconOnlyMobile = false,
     onOpenFile,
     onSuggested,
     onPage,
@@ -30,6 +31,8 @@
     hasSource?: boolean;
     version?: { id: string; version: number; pageCount: number | null; thumb?: (n: number) => string | null } | null;
     size?: "sm" | "md";
+    /** Phones: icon-only trigger (the label stays as its accessible name and tooltip). */
+    iconOnlyMobile?: boolean;
     onOpenFile?: (ref: { fileId: string | null; path: string; line: number | null }) => void;
     onSuggested?: (fileId: string) => void;
     onPage?: (page: number) => void;
@@ -121,7 +124,7 @@
 
 {#if usable}
   {#if vision}
-    <Button variant="secondary" {size} onclick={show}><ScanEye />{t("vision.slides.button")}</Button>
+    <Button variant="secondary" {size} title={iconOnlyMobile ? t("vision.slides.button") : undefined} onclick={show}><ScanEye /><span class={iconOnlyMobile ? "max-sm:sr-only" : ""}>{t("vision.slides.button")}</span></Button>
   {:else if aiStatus.available("slides")}
     <span class="inline-flex h-9 max-w-full items-center gap-1.5 rounded-full border border-dashed border-line-2 px-3 text-[12.5px] text-ink-3" title={t("vision.unsupported")}>
       <EyeOff class="size-3.5 shrink-0" aria-hidden="true" /><span class="truncate">{t("vision.unsupported")}</span>

@@ -89,7 +89,7 @@
         {#if user.id === session.user?.id}<span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-medium text-ink-3">{t("manage.members.you")}</span>{/if}
       </p>
       <p class="truncate text-[12px] text-ink-3">
-        {#if compact}<span class="font-mono">@{user.username}</span> · {@render lastLogin(user)}{:else}{t("manage.members.joined", { date: formatDate(user.created_at) })}{/if}
+        {#if compact}<span class="font-mono">@{user.username}</span> · {@render lastLogin(user)}{:else}<span class="font-mono lg:hidden">@{user.username}</span><span class="hidden lg:inline">{t("manage.members.joined", { date: formatDate(user.created_at) })}</span>{/if}
       </p>
     </div>
   </div>
@@ -154,27 +154,27 @@
   <p class="mb-3 text-[13px] text-ink-3">
     {tc("manage.members.count", users.length)}{#if disabledCount} · {t("manage.members.disabledCount", { n: disabledCount })}{/if}
   </p>
-  <Card padded={false} class="overflow-hidden">
-    <table class="hidden w-full text-left text-[13.5px] md:table">
+  <Card padded={false} class="overflow-clip">
+    <table class="hidden w-full table-fixed text-left text-[13.5px] md:table">
       <thead>
-        <tr class="border-b border-line bg-surface-2/60 text-[12px] text-ink-3">
-          <th class="w-[26%] py-2.5 pl-6 font-medium">{t("manage.members.col.member")}</th>
-          <th class="w-[16%] py-2.5 font-medium">{t("manage.members.col.username")}</th>
-          <th class="w-[18%] py-2.5 font-medium">{t("manage.members.col.role")}</th>
-          <th class="w-[13%] py-2.5 font-medium">{t("manage.members.col.lastLogin")}</th>
-          <th class="py-2.5 font-medium">{t("manage.members.col.status")}</th>
-          <th class="py-2.5 pr-6 text-right font-medium"><span class="sr-only">{t("manage.members.col.actions")}</span></th>
+        <tr class="border-b border-line bg-surface-2/60 text-[12px] text-ink-3 lg:[&>th]:sticky lg:[&>th]:top-0 lg:[&>th]:z-10 lg:[&>th]:bg-surface-2">
+          <th class="py-2.5 pr-4 pl-6 font-medium">{t("manage.members.col.member")}</th>
+          <th class="hidden w-[16%] py-2.5 pr-3 font-medium lg:table-cell">{t("manage.members.col.username")}</th>
+          <th class="w-32 py-2.5 pr-3 font-medium">{t("manage.members.col.role")}</th>
+          <th class="w-28 py-2.5 pr-3 font-medium whitespace-nowrap">{t("manage.members.col.lastLogin")}</th>
+          <th class="w-24 py-2.5 pr-3 font-medium whitespace-nowrap">{t("manage.members.col.status")}</th>
+          <th class="w-44 py-2.5 pr-6 text-right font-medium lg:w-[21rem]"><span class="sr-only">{t("manage.members.col.actions")}</span></th>
         </tr>
       </thead>
       <tbody>
         {#each users as user (user.id)}
           <tr class="border-b border-line last:border-0 hover:bg-surface-2/60 {user.is_owner ? 'bg-surface-2/40' : ''}">
-            <td class="max-w-0 py-3 pl-6">{@render who(user)}</td>
-            <td class="max-w-0 truncate py-3 pr-3 font-mono text-[13px] text-ink-2">{user.username}</td>
-            <td class="py-3">{@render role(user)}</td>
-            <td class="py-3 whitespace-nowrap text-ink-2">{@render lastLogin(user)}</td>
-            <td class="py-3">{@render status(user)}</td>
-            <td class="py-3 pr-6 text-right"><div class="flex items-center justify-end gap-1">{@render action(user)}</div></td>
+            <td class="py-3 pr-4 pl-6">{@render who(user)}</td>
+            <td class="hidden truncate py-3 pr-3 font-mono text-[13px] text-ink-2 lg:table-cell">{user.username}</td>
+            <td class="py-3 pr-3">{@render role(user)}</td>
+            <td class="truncate py-3 pr-3 whitespace-nowrap text-ink-2">{@render lastLogin(user)}</td>
+            <td class="py-3 pr-3 whitespace-nowrap">{@render status(user)}</td>
+            <td class="py-3 pr-6 text-right whitespace-nowrap"><div class="flex items-center justify-end gap-1">{@render action(user)}</div></td>
           </tr>
         {/each}
       </tbody>

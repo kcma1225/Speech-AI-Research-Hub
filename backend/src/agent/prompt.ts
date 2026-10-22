@@ -211,10 +211,22 @@ export function toModelMessages(rows: StoredMessage[], opts: { summary?: string 
   }
   // A seeded opening (the interview's first question card) starts with an assistant turn; vendors want a user turn first.
   if (!out.length && live[0]?.role === "assistant") out.push({ role: "user", content: [{ type: "text", text: "（開始對話）" }] });
+  // Workflow notices meant for the model too (a partial run's unmet items): carried into the next user turn, so the
+  // model knows what 「好，修」 refers to; never placed between a tool call and its result.
+  const carried = new Set(rows.filter((r) => r.role === "notice" && (r.content[0] as { model?: boolean } | undefined)?.model && !(opts.summaryUntil && Number(r.seq) <= opts.summaryUntil)).map((r) => r.id));
+  let pending: string[] = [];
+  const noticeBefore = new Map<string, string[]>();
+  for (const r of rows) {
+    if (carried.has(r.id)) pending.push(`（系統通知，不是使用者說的話）${r.text}`);
+    else if (r.role === "user" && pending.length && live.includes(r)) {
+      noticeBefore.set(r.id, pending);
+      pending = [];
+    }
+  }
   live.forEach((r, i) => {
     if (r.role === "user") {
       // Text plus attached images (`hub-s3:` refs, inlined or replaced by attachments/images.ts).
-      const blocks = r.content.filter((b): b is TextBlock | ImageBlock => b.type === "text" || b.type === "image");
+      const blocks = [...(noticeBefore.get(r.id) ?? []).map((text) => ({ type: "text" as const, text })), ...r.content.filter((b): b is TextBlock | ImageBlock => b.type === "text" || b.type === "image")];
       const prev = out.at(-1);
       // Merge into the summary/previous user turn: some vendors reject two user turns in a row.
       if (prev && prev.role === "user" && Array.isArray(prev.content)) prev.content.push(...blocks);

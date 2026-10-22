@@ -196,6 +196,16 @@
           </button>
         </div>
         <p class="mt-1 text-[12.5px] leading-relaxed text-ink-3">{t("wf.auto.desc")}{#if w.auto_approved?.tainted} {t("wf.auto.tainted")}{/if}</p>
+        {#if w.plan.requirements?.length}
+          <!-- 「你的要求」 stay visible under autopilot: what every step follows and what is checked at the end. -->
+          <div class="mt-2" data-wf-requirements>
+            <p class="text-[12.5px] font-medium text-ink">{t("wf.req.title")}</p>
+            <ul class="mt-0.5 flex flex-col gap-0.5 text-[12.5px] text-ink-2">
+              {#each w.plan.requirements as r (r.id)}<li class="break-words">· {r.text}{#if r.source === "standing"} <span class="text-ink-3">（{t("wf.req.inherited")}）</span>{/if}</li>{/each}
+            </ul>
+            {#if w.plan.edit_kind}<p class="mt-0.5 text-[12px] text-ink-3">{t(w.plan.edit_kind === "expand" ? "wf.edit.expand" : "wf.edit.revise")}</p>{/if}
+          </div>
+        {/if}
         {#if planOpen}
           <div class="mt-2 flex flex-col gap-2 text-[13px] text-ink-2">
             <p class="break-words">{w.plan.summary}</p>

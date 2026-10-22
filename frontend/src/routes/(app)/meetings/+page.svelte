@@ -145,7 +145,7 @@
           {#if group.key === "upcoming"}<CalendarClock class="size-4" />{/if}{group.label}
           <span class="font-normal tabular-nums">{group.items.length}</span>
         </h2>
-        <div class="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">
+        <div class="grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2 2xl:grid-cols-3">
           {#each group.items as meeting (meeting.id)}<MeetingCardView {meeting} onDeleted={id => (meetings = meetings?.filter(m => m.id !== id) ?? null)} />{/each}
         </div>
       </section>

@@ -2,7 +2,7 @@
   import { displayName } from "#lib/people.svelte.ts";
   import { Trash2 } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
-  import { t } from "#lib/i18n.svelte.ts";
+  import { formatDate, t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
@@ -106,7 +106,7 @@
       <dl class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-4 gap-y-3 pt-1 text-[14px]">
         <dt class="text-ink-3">{t("tasks.field.status")}</dt><dd>{t(`tasks.status.${task.status}` as MessageKey)}</dd>
         <dt class="text-ink-3">{t("tasks.field.assignee")}</dt><dd>{task.assignee ? displayName(task.assignee) : t("tasks.unassigned")}</dd>
-        <dt class="text-ink-3">{t("tasks.field.due")}</dt><dd>{task.due_on ?? "—"}</dd>
+        <dt class="text-ink-3">{t("tasks.field.due")}</dt><dd>{task.due_on ? formatDate(task.due_on) : "—"}</dd>
       </dl>
       {#if task.detail_md.trim()}<div class="mt-4 border-t border-line pt-4"><MarkdownView source={task.detail_md} /></div>{/if}
     {/if}

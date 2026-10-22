@@ -1,6 +1,6 @@
 <script lang="ts">
   import { displayName } from "#lib/people.svelte.ts";
-  import { Bot, UsersRound } from "@lucide/svelte";
+  import { Bot, UserRound, UsersRound } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
   import CheckCircle from "#lib/components/ui/CheckCircle.svelte";
@@ -27,7 +27,7 @@
     onToggle={done => onToggle?.(task, done)}
   />
   {#snippet body()}
-    <span class="min-w-0 flex-1 truncate text-[14px] {closed ? 'text-ink-3 line-through' : 'text-ink'}">{task.title}</span>
+    <span class="min-w-0 flex-1 truncate text-[14px] {closed ? 'text-ink-3 line-through' : 'text-ink'}" title={task.title}>{task.title}</span>
     <span class="flex min-w-0 shrink-0 items-center gap-2">
       {#if showStudy && task.study}<Pill tone={toneFor(task.study.id)} size="sm" class="max-w-40">{task.study.title}</Pill>{/if}
       {#if task.source === "meeting"}<span title={t("tasks.source.meeting")}><UsersRound class="size-3.5 text-ink-3" /></span>{/if}
@@ -43,6 +43,6 @@
   {#if task.assignee}
     <span title={displayName(task.assignee)}><Avatar name={task.assignee.name} id={task.assignee.id} size={26} class="ring-0" /></span>
   {:else}
-    <span class="grid size-[26px] shrink-0 place-items-center rounded-full border border-dashed border-line-2 text-[10px] text-ink-3" title={t("tasks.unassigned")} aria-label={t("tasks.unassigned")}>?</span>
+    <span class="grid size-[26px] shrink-0 place-items-center rounded-full border border-dashed border-line-2 text-ink-3" title={t("tasks.unassigned")} role="img" aria-label={t("tasks.unassigned")}><UserRound class="size-3.5" /></span>
   {/if}
 </div>

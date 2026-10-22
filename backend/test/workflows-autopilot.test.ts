@@ -314,7 +314,8 @@ run("workflow autopilot", () => {
     await t.db.query("UPDATE workflow_runs SET pause_requested=true WHERE id=$1", [id]);
     expect((await runWorkflow(deps(), id)).status).toBe("paused");
     await t.db.query("UPDATE workflow_steps SET attempts=6 WHERE run_id=$1 AND key='a'", [id]);
-    await t.db.query("UPDATE workflow_runs SET status='running', pause_requested=false WHERE id=$1", [id]);
+    // The autopilot's one automatic 繼續改 round already used: the cap alone decides.
+    await t.db.query("UPDATE workflow_runs SET status='running', pause_requested=false, state = state || '{\"auto_continued\":true}'::jsonb WHERE id=$1", [id]);
     expect((await runWorkflow(deps(), id)).status).toBe("partial");
     expect((await getSteps(t.db, id)).find((s) => s.key === "a")!.error).toContain("停止重試");
     expect(m.count("w:blk")).toBe(0);

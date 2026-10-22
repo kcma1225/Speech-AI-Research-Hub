@@ -41,7 +41,8 @@
 </a>
 {#if onRename || onDelete}
   {#if onDelete && canDelete}
-    <div class="absolute top-1.5 right-12.5 rounded-full bg-surface/90 shadow-card backdrop-blur"><DeleteButton reveal label={t("crud.latex.delete")} onclick={onDelete} /></div>
+    <!-- The backdrop chip fades in with the button (an always-visible empty chip looked like a broken icon). -->
+    <div class="absolute top-1.5 right-12.5 rounded-full bg-surface/90 opacity-0 shadow-card backdrop-blur transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"><DeleteButton reveal label={t("crud.latex.delete")} onclick={onDelete} /></div>
   {/if}
   <DropdownMenu.Root>
     <DropdownMenu.Trigger class="absolute top-1.5 right-1.5 grid size-10 cursor-pointer place-items-center rounded-full bg-surface/90 text-ink-2 shadow-card backdrop-blur hover:bg-surface hover:text-ink" aria-label={t("crud.more")} title={t("crud.more")}>

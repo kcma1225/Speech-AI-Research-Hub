@@ -153,7 +153,7 @@
 {#if error}
   <Card><EmptyState title={t("common.error")} hint={error} /></Card>
 {:else if !studies}
-  <div class="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
+  <div class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-4 sm:gap-5">
     {#each [0, 1, 2] as i (i)}<Skeleton class="h-[230px] rounded-[22px]" />{/each}
   </div>
 {:else if !studies.length && scope === "mine" && !filtering}
@@ -178,7 +178,7 @@
     </EmptyState>
   </Card>
 {:else}
-  <div class="grid grid-cols-[minmax(0,1fr)] gap-4 sm:grid-cols-2 sm:gap-5 xl:grid-cols-3">
+  <div class="grid grid-cols-[repeat(auto-fill,minmax(min(100%,320px),1fr))] gap-4 sm:gap-5">
     {#each studies as study (study.id)}<StudyCard {study} />{/each}
   </div>
 {/if}

@@ -144,8 +144,8 @@
       </EmptyState>
     </Card>
   {:else}
-    <div class="overflow-hidden rounded-[var(--radius-card)] border border-line/70 bg-surface shadow-card">
-      <div class="hidden grid-cols-[minmax(0,2.2fr)_repeat(4,minmax(0,1fr))_auto] gap-3 border-b border-line px-4 py-2 text-[12px] font-medium text-ink-3 lg:grid">
+    <div class="overflow-clip rounded-[var(--radius-card)] border border-line/70 bg-surface shadow-card">
+      <div class="sticky top-0 z-10 hidden gap-3 border-b border-line bg-surface-2 px-4 py-2 text-[12px] font-medium text-ink-3 lg:grid lg:grid-cols-[minmax(0,2.4fr)_6.5rem_6.5rem_minmax(10.5rem,1fr)_minmax(7rem,1fr)_5.75rem]">
         <span>{t("aiAdmin.models.col.model")}</span>
         <span>{t("aiAdmin.field.context_window")}</span>
         <span>{t("aiAdmin.field.max_output_tokens")}</span>
@@ -157,7 +157,7 @@
         {#each list.slice(0, limit) as m (m.id)}
           {@const s = statFor(adminStore.stats?.models, m)}
           {@const h = modelHealth(m, adminStore.providers, adminStore.bindings)}
-          <li class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 lg:grid-cols-[minmax(0,2.2fr)_repeat(4,minmax(0,1fr))_auto] {m.enabled ? '' : 'opacity-60'}">
+          <li class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 px-4 py-3 lg:grid-cols-[minmax(0,2.4fr)_6.5rem_6.5rem_minmax(10.5rem,1fr)_minmax(7rem,1fr)_5.75rem] {m.enabled ? '' : 'opacity-60'}">
             <div class="flex min-w-0 items-start gap-2.5">
               <ProviderIcon kind={m.provider_kind} size="xs" class="mt-px" />
               <div class="min-w-0">

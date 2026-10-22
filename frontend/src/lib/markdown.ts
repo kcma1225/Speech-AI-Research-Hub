@@ -132,6 +132,24 @@ function displayMath(raw: string, attrs = "") {
   return `<div class="md-math" data-tex="${escapeHtml(tex)}"${attrs}><div class="md-math-body">${renderMath(tex, true)}</div><button type="button" class="md-math-copy" aria-label="${label}" title="${label}">${COPY_ICON}</button></div>\n`;
 }
 
+/** Display width of a table cell's text: CJK / full-width characters count double. */
+export function cellWidth(text: string): number {
+  let n = 0;
+  for (const ch of text) n += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/.test(ch) ? 2 : 1;
+  return n;
+}
+
+/** Table cells with sentence-length text wrap (`md-wrap`); short cells (numbers, names) stay on one line. */
+function tableCells(state: StateCore) {
+  const tokens = state.tokens;
+  for (let i = 0; i < tokens.length - 1; i++) {
+    const open = tokens[i]!;
+    if (open.type !== "td_open" && open.type !== "th_open") continue;
+    const inline = tokens[i + 1]!;
+    if (inline.type === "inline" && cellWidth(inline.content) > 28) open.attrJoin("class", "md-wrap");
+  }
+}
+
 /** `- [ ] item` / `- [x] item` → custom glyph + `md-task-item` class on the list item. */
 function taskLists(state: StateCore) {
   const tokens = state.tokens;
@@ -207,6 +225,7 @@ function createParser(withLines: boolean) {
   md.block.ruler.after("blockquote", "math_block", mathBlock, { alt: ["paragraph", "reference", "blockquote", "list"] });
   md.core.ruler.push("task_lists", taskLists); // after text_join, so "[ ]" is one text token
   md.core.ruler.push("callouts", callouts);
+  md.core.ruler.push("table_cells", tableCells);
   if (withLines) md.core.ruler.push("source_lines", sourceLines);
   const line = (token: Token) => (token.attrGet("data-line") ? ` data-line="${token.attrGet("data-line")}"` : "");
   md.renderer.rules.math_inline = (tokens: Token[], idx: number) => renderMath(tokens[idx]!.content, false);

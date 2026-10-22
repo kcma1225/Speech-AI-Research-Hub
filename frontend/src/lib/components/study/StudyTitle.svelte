@@ -64,10 +64,8 @@
     <button type="button" class={iconButton} aria-label={t("action.cancel")} onmousedown={e => e.preventDefault()} onclick={cancel}><X /></button>
   </div>
 {:else}
-  <div class="group flex items-start gap-1.5">
-    <h1 class="min-w-0 font-display text-[32px] leading-[1.06] text-balance break-words text-ink sm:text-[44px]">{title}</h1>
-    {#if canEdit}
-      <button type="button" class="{iconButton} mt-0.5 sm:mt-1.5 sm:opacity-60 sm:group-hover:opacity-100 sm:focus-visible:opacity-100" aria-label={t("studies.rename")} title={t("studies.rename")} onclick={start}><PenLine /></button>
-    {/if}
+  <!-- The pencil follows the last line of the title (inline), not the far edge of the header. -->
+  <div class="group min-w-0 font-display text-[32px] leading-[1.06] text-balance break-words text-ink sm:text-[44px]">
+    <h1 class="inline">{title}</h1>{#if canEdit}<button type="button" class="{iconButton} ml-1 inline-grid -translate-y-1 align-middle font-sans sm:opacity-60 sm:group-hover:opacity-100 sm:focus-visible:opacity-100" aria-label={t("studies.rename")} title={t("studies.rename")} onclick={start}><PenLine /></button>{/if}
   </div>
 {/if}

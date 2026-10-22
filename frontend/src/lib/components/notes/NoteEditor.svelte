@@ -287,15 +287,26 @@
 <header class="mb-3 flex flex-col gap-2.5 sm:mb-4">
   <div class="flex items-start gap-3">
     {#if canEdit}
-      <input
+      <!-- A one-line field that wraps long titles instead of clipping them (field-sizing grows it; Enter commits). -->
+      <textarea
         bind:value={title}
+        rows="1"
         onfocus={() => (titleFocused = true)}
         onblur={commitTitle}
-        onkeydown={e => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
+        oninput={e => {
+          const el = e.currentTarget as HTMLTextAreaElement;
+          if (/[\r\n]/.test(el.value)) title = el.value.replace(/[\r\n]+/g, " ");
+        }}
+        onkeydown={e => {
+          if (e.key !== "Enter" || e.isComposing) return;
+          e.preventDefault();
+          (e.currentTarget as HTMLTextAreaElement).blur();
+        }}
         maxlength={200}
         aria-label={t("notes.titleLabel")}
-        class="-mx-1.5 min-w-0 flex-1 rounded-xl bg-transparent px-1.5 font-display text-[28px] leading-tight text-ink outline-none hover:bg-surface-2/70 focus:bg-surface sm:text-[36px]"
-      />
+        title={title}
+        class="-mx-1.5 min-w-0 flex-1 resize-none overflow-hidden rounded-xl bg-transparent px-1.5 font-display text-[28px] leading-tight text-ink outline-none [field-sizing:content] hover:bg-surface-2/70 focus:bg-surface sm:text-[36px]"
+      ></textarea>
     {:else}
       <h1 class="min-w-0 flex-1 font-display text-[28px] leading-tight text-balance text-ink sm:text-[36px]">{note.title}</h1>
     {/if}
@@ -383,7 +394,7 @@
   {/snippet}
   {#snippet aside()}
     {#if showAside}
-      <aside class="hidden w-[340px] shrink-0 overflow-y-auto border-l border-line bg-surface-2/50 p-3 lg:block" aria-label={t("suggest.title")}>
+      <aside class="hidden w-[300px] shrink-0 overflow-y-auto border-l 2xl:w-[360px] border-line bg-surface-2/50 p-3 lg:block" aria-label={t("suggest.title")}>
         <div class="mb-2 flex items-center justify-between px-1">
           <h2 class="text-[13px] font-semibold text-ink-2">{t("suggest.title")}</h2>
           <button type="button" class="grid size-8 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("common.close")} onclick={() => (panelOpen = false)}><X class="size-4" /></button>

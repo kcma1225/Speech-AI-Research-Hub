@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AudioLines, Check, FileText, Sparkles, Wrench, X } from "@lucide/svelte";
+  import { AudioLines, Check, FileText, Sparkles, UserCheck, Wrench, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
@@ -75,7 +75,7 @@
       { key: "content", label: t("meet.pipe.content"), state: content, icon: AudioLines },
       { key: "transcribe", label: t("meet.pipe.transcribe"), state: tr, icon: FileText },
       { key: "analyze", label: t("meet.pipe.analyze"), state: an, icon: Sparkles },
-      { key: "review", label: t("meet.pipe.review"), state: rv, icon: Check },
+      { key: "review", label: t("meet.pipe.review"), state: rv, icon: UserCheck },
     ];
   });
 </script>

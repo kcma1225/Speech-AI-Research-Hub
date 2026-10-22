@@ -88,7 +88,12 @@
 {/each}
 
 {#each turn.notices as n (n.id)}
-  <MessageItem message={n} {onContinue} />
+  {#if n.items?.length}
+    <!-- A partial run's summary lines up with the workflow card it belongs to. -->
+    <div class={compact ? "" : "sm:ml-11"}><MessageItem message={n} {onContinue} /></div>
+  {:else}
+    <MessageItem message={n} {onContinue} />
+  {/if}
 {/each}
 
 {#if turn.live && turn.pending.length}

@@ -23,25 +23,25 @@
   href="/studies/{study.slug}"
   class="group flex min-w-0 flex-col gap-4 rounded-[22px] border border-line/70 bg-surface p-4 shadow-card transition-[border-color,transform] duration-200 hover:-translate-y-0.5 hover:border-line-2 motion-reduce:transition-none motion-reduce:hover:translate-y-0 sm:p-5"
 >
-  <div class="flex items-start justify-between gap-3">
-    <div class="min-w-0">
-      <h3 class="line-clamp-2 text-[16px] leading-snug font-semibold text-ink group-hover:underline">{study.title}</h3>
-      {#if owner}
-        <p class="mt-1.5 flex min-w-0 items-center gap-1.5 text-[12.5px] text-ink-3">
-          <Avatar name={owner.name} id={owner.id} size={18} />
-          <span class="min-w-0 truncate"><span class="sr-only">{t("studies.role.owner")}: </span>{displayName(owner)}</span>
-        </p>
+  <div class="flex min-w-0 flex-col gap-1.5">
+    <div class="flex items-start justify-between gap-3">
+      <h3 class="line-clamp-2 min-w-0 text-[16px] leading-snug font-semibold text-ink group-hover:underline" title={study.title}>{study.title}</h3>
+      {#if study.my_role || study.status !== "active"}
+        <div class="flex shrink-0 flex-col items-end gap-1.5">
+          {#if study.my_role}
+            <Pill tone="mint" size="sm" class="shrink-0"><Check class="size-3" />{t("studies.scope.badge", { role: t(`studies.role.${study.my_role}` as MessageKey) })}</Pill>
+          {/if}
+          {#if study.status !== "active"}<Pill tone={statusTone[study.status]} size="sm" class="shrink-0">{t(`studies.status.${study.status}` as MessageKey)}</Pill>{/if}
+        </div>
       {/if}
-      {#if study.summary_excerpt}<p class="mt-1.5 line-clamp-2 text-[13px] leading-relaxed text-ink-3">{study.summary_excerpt}</p>{/if}
     </div>
-    {#if study.my_role || study.status !== "active"}
-      <div class="flex shrink-0 flex-col items-end gap-1.5">
-        {#if study.my_role}
-          <Pill tone="mint" size="sm" class="shrink-0"><Check class="size-3" />{t("studies.scope.badge", { role: t(`studies.role.${study.my_role}` as MessageKey) })}</Pill>
-        {/if}
-        {#if study.status !== "active"}<Pill tone={statusTone[study.status]} size="sm" class="shrink-0">{t(`studies.status.${study.status}` as MessageKey)}</Pill>{/if}
-      </div>
+    {#if owner}
+      <p class="flex min-w-0 items-center gap-1.5 text-[12.5px] text-ink-3">
+        <Avatar name={owner.name} id={owner.id} size={18} />
+        <span class="min-w-0 truncate"><span class="sr-only">{t("studies.role.owner")}: </span>{displayName(owner)}</span>
+      </p>
     {/if}
+    {#if study.summary_excerpt}<p class="line-clamp-2 text-[13px] leading-relaxed text-ink-3">{study.summary_excerpt}</p>{/if}
   </div>
 
   <div class="flex flex-col gap-2">

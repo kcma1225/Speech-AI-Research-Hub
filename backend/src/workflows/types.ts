@@ -29,7 +29,29 @@ export type OutlineItem = { n: number; title: string; points: string[] };
  */
 export type WriteEffect = "new" | "draft_own" | "suggestion" | "overwrite" | "publish" | "delete" | "outbound";
 export type PlannedWrite = { kind: string; label: string; effect?: WriteEffect };
-export type Plan = { summary: string; outline?: OutlineItem[]; writes: PlannedWrite[]; notes?: string };
+/**
+ * A requirement the user stated explicitly (requirements.ts): typed so it can be checked deterministically where possible
+ * (`language`, `page_count`, `include_topics`, `exclude`, `per_item_fields`) and judged otherwise. `source`: where it came
+ * from — the request, a guidance, a recent chat turn, the artifact's standing preferences (「沿用」), or the user's edit on
+ * the plan card. Every requirement is a criterion (`req_<id>`) and is injected into every sub-agent prompt.
+ */
+export type RequirementType = "language" | "page_count" | "include_topics" | "exclude" | "per_item_fields" | "audience" | "tone" | "length" | "format" | "other";
+export type RequirementTerm = { name: string; aliases?: string[] };
+export type Requirement = {
+  id: string; type: RequirementType; text: string;
+  params?: {
+    language?: "en" | "zh"; exact?: number; min?: number; max?: number; topics?: RequirementTerm[]; terms?: RequirementTerm[]; scope?: "page" | "content";
+    pages?: number[]; item_kind?: string; items?: string[]; fields?: RequirementTerm[]; allow?: string[];
+  };
+  source: "request" | "guidance" | "conversation" | "standing" | "user";
+};
+/** `revise` = translate / polish an existing artifact (structure kept); `expand` = a deeper or restructured version (new outline). */
+export type EditKind = "revise" | "expand";
+export type Plan = {
+  summary: string; outline?: OutlineItem[]; writes: PlannedWrite[]; notes?: string;
+  /** The user's requirements (「你的要求」, editable at approval) — mirrors `state.requirements`. */
+  requirements?: Requirement[]; edit_kind?: EditKind; /** Cover title in the target language (decks). */ front_title?: string;
+};
 
 export type Budget = { max_steps: number; max_calls: number; max_tokens: number; max_minutes: number; max_fix_rounds: number; concurrency: number };
 export const DEFAULT_BUDGET: Budget = { max_steps: 300, max_calls: 600, max_tokens: 8_000_000, max_minutes: 240, max_fix_rounds: 3, concurrency: 3 };

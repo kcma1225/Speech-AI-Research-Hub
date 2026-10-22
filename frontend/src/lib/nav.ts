@@ -44,3 +44,11 @@ export function isActive(href: string, pathname: string) {
 /** Paths an admin account may open; every other app page redirects admins to /admin. */
 export const ADMIN_HOME = "/admin";
 export const adminMayOpen = (pathname: string) => /^\/(admin|settings)(\/|$)/.test(pathname);
+
+/**
+ * Pages that size themselves to the viewport (assistant, note / LaTeX / deck editors) or edit the names themselves
+ * (settings): the shell shows no page banner above them, so typing never scrolls the page.
+ */
+export function hidesPageBanner(path: string): boolean {
+  return /^\/(settings|assistant)(\/|$)|^\/studies\/[^/]+\/(notes|latex)\/[^/]+|^\/studies\/[^/]+\/decks\/[^/]+\/edit(\/|$)/.test(path);
+}

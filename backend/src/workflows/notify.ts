@@ -10,6 +10,7 @@ import type { Db } from "../db.js";
 import { Notifier } from "../lib/notify.js";
 import { focusHref } from "./active.js";
 import type { WorkflowEnv } from "./env.js";
+import type { RunRow } from "./types.js";
 
 const silent = { warn() {}, info() {}, error() {}, debug() {}, trace() {}, fatal() {}, child() { return silent; }, level: "silent" } as unknown as FastifyBaseLogger;
 let notifier: Notifier | null | undefined;
@@ -37,17 +38,35 @@ const TEXT: Record<NoticeKind, (t: string) => { notice: string; title: string } 
   cancelled: () => null,
 };
 
+/**
+ * What a partial run left unmet, in plain words (failed / unjudged criteria, else failed steps), ≤ 6 items: the chat
+ * notice lists them with 「要我修這幾項嗎？」 (→ 繼續改 with these items as guidance).
+ */
+export function unmetItems(run: Pick<RunRow, "criteria">, failedSteps: { title: string; error: string | null }[] = []): string[] {
+  const plain = (s: string) => s.replace(/^你的要求：/, "").replace(/\s+/g, " ").trim();
+  const items = run.criteria.filter((c) => c.status !== "pass").map((c) => `${plain(c.text)}${c.reason && c.status === "fail" ? `：${plain(c.reason).slice(0, 160)}` : c.status !== "fail" ? "（還沒驗收）" : ""}`);
+  if (!items.length) for (const s of failedSteps) items.push(`「${s.title}」沒有完成${s.error ? `：${s.error.slice(0, 120)}` : ""}`);
+  return items.slice(0, 6);
+}
+
 export async function finishNotice(env: WorkflowEnv, kind: NoticeKind) {
   const run = env.run;
-  const t = TEXT[kind](run.title || "工作流程");
+  let t = TEXT[kind](run.title || "工作流程");
   if (!t) return;
+  // Partial: say what is still wrong and offer to fix exactly those items (the user should not have to hunt for them).
+  let items: string[] = [];
+  if (kind === "partial") {
+    const failed = (await env.db.query<{ title: string; error: string | null }>("SELECT title, error FROM workflow_steps WHERE run_id=$1 AND status='failed' ORDER BY position", [run.id]).catch(() => ({ rows: [] as { title: string; error: string | null }[] }))).rows;
+    items = unmetItems(run, failed);
+    if (items.length) t = { ...t, notice: `工作流程「${run.title || "工作流程"}」已結束，還有 ${items.length} 項沒有達成：\n${items.map((i) => `・${i}`).join("\n")}\n要我修這幾項嗎？` };
+  }
   // Deep link to the run's card in its conversation (scrolled to + highlighted), or the expanded run on /assistant/workflows.
   const url = run.goal_id ? focusHref(run.conversation_id, `goal:${run.goal_id}`, run.id) : focusHref(run.conversation_id, `workflow:${run.id}`, run.id);
   try {
     if (run.conversation_id) {
       const m = (await env.db.query<MessageRow>(
         "INSERT INTO agent_messages(conversation_id,role,content,text) VALUES($1,'notice',$2,$3) RETURNING *",
-        [run.conversation_id, JSON.stringify([{ type: "notice", kind: `workflow_${kind}`, workflowId: run.id }]), t.notice],
+        [run.conversation_id, JSON.stringify([{ type: "notice", kind: `workflow_${kind}`, workflowId: run.id, ...(items.length ? { items, model: true } : {}) }]), t.notice],
       )).rows[0]!;
       await insertEvent(env.db, run.conversation_id, null, "message", { message: messageView(m) });
     }

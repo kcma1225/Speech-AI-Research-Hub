@@ -54,6 +54,16 @@
   });
 
   const tab = $derived(tabByKey(page.url.searchParams.get("tab")));
+  // Phones scroll the tab bar sideways: keep the active tab (e.g. a deep link to 成員) in view.
+  let tabBar = $state<HTMLElement | null>(null);
+  $effect(() => {
+    void tab.key;
+    const active = tabBar?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (active && tabBar && tabBar.scrollWidth > tabBar.clientWidth) {
+      const left = tabBar.scrollLeft + active.getBoundingClientRect().left - tabBar.getBoundingClientRect().left - (tabBar.clientWidth - active.offsetWidth) / 2;
+      tabBar.scrollTo({ left: Math.max(0, left), behavior: "instant" });
+    }
+  });
   const tabHref = (key: string) => (key === "overview" ? `/studies/${slug}` : `/studies/${slug}?tab=${key}`);
   const current = $derived(detail?.stages.find(s => s.is_current) ?? null);
   const done = $derived(detail?.stages.filter(s => s.completed_at).length ?? 0);
@@ -105,7 +115,7 @@
     {/if}
   </header>
 
-  <nav class="-mx-4 mb-5 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0" aria-label={t("studies.tabs")}>
+  <nav bind:this={tabBar} class="-mx-4 mb-5 overflow-x-auto px-4 [scrollbar-width:none] sm:mx-0 sm:px-0" aria-label={t("studies.tabs")}>
     <ul class="flex w-max gap-1 rounded-full border border-line bg-surface-2 p-1">
       {#each studyTabs as item (item.key)}
         {@const active = item.key === tab.key}

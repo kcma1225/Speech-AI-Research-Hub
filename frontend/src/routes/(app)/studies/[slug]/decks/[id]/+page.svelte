@@ -228,10 +228,12 @@
   </div>
 {:else}
   {@const d = detail}
-  <header class="mb-5 flex flex-col gap-4 lg:mb-6 2xl:flex-row 2xl:items-end 2xl:justify-between">
-    <div class="min-w-0">
-      <h1 class="font-display text-[30px] leading-[1.08] text-balance text-ink sm:text-[40px]">{d.project.title}</h1>
-      <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-ink-3">
+  <!-- Title on its own row; meta and actions share the next row on wide screens (a side-by-side title got squeezed). -->
+  <header class="mb-5 flex flex-col gap-3 lg:mb-6">
+    <h1 class="max-w-[60ch] font-display text-[30px] leading-[1.08] text-balance text-ink sm:text-[40px]">{d.project.title}</h1>
+    <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+    <div class="min-w-0 xl:flex-1">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] text-ink-3">
         {#if author}<span class="inline-flex items-center gap-2 text-ink-2"><Avatar name={author} size={22} class="ring-0" />{displayName(author)}</span><span aria-hidden="true">·</span>{/if}
         {#if d.activeVersion}
           <span>{t("slides.version", { n: d.activeVersion.version })}</span><span aria-hidden="true">·</span>
@@ -261,11 +263,13 @@
           onPage={n => player?.goto(n)}
         />
       {/if}
-      <Button variant="secondary" disabled={!canPlay} onclick={() => player?.fullscreen()}><Expand />{t("slides.fullscreen")}</Button>
+      <!-- Phones: the player's own control bar has fullscreen; keep the header to one or two rows. -->
+      <Button variant="secondary" class="max-sm:hidden" disabled={!canPlay} onclick={() => player?.fullscreen()}><Expand />{t("slides.fullscreen")}</Button>
       <Button variant="secondary" href={d.activeVersion ? d.project.playerUrl : undefined} disabled={!d.activeVersion}><Play />{t("slides.player")}</Button>
       {#if d.pdfUrl}<Button variant="primary" href={d.pdfUrl}><Download />PDF</Button>{/if}
       {#if d.permissions.manage}
-        <DeleteButton class="hidden border border-line bg-surface sm:inline-flex" label={t("crud.deck.delete")} onclick={() => (deleteOpen = true)} />
+        <!-- Phones: delete stays in the ⋯ menu (DeleteButton's own display class beats a passed `hidden`). -->
+        <span class="hidden sm:contents"><DeleteButton class="border border-line bg-surface" label={t("crud.deck.delete")} onclick={() => (deleteOpen = true)} /></span>
       {/if}
       <DropdownMenu.Root>
         <DropdownMenu.Trigger class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-full border border-line bg-surface text-ink-2 hover:bg-surface-2 hover:text-ink" aria-label={t("crud.more")} title={t("crud.more")}>
@@ -279,9 +283,10 @@
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
     </div>
+    </div>
   </header>
 
-  <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_400px]">
+  <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_400px] 2xl:grid-cols-[minmax(0,1fr)_440px]">
     <div class="flex min-w-0 flex-col gap-3 lg:sticky lg:top-6">
       {#if d.project.source && !d.activeVersion && !(latest && (isBusy(latest.status) || latest.status === "review"))}
         <!-- In-app source without a playable version (e.g. a finished AI draft): show the draft, not just 「還沒有發布的版本」. -->

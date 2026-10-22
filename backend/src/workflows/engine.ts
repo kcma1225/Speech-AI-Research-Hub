@@ -18,6 +18,7 @@ import { asksOf, blockedQuestion, pendingAsk } from "./questions.js";
 import { autoApproval, autoApprovalNote } from "./autopilot.js";
 import { promoteQueued } from "./queue.js";
 import { runChecks } from "./checks.js";
+import { artifactKindOf, fixedHeadings, persistStanding, prepareRequirements, requirementRepair, translateTitle, withRequirementCriteria } from "./requirements.js";
 import { budgetFor, WorkflowStop, type Criterion, type RunRow, type StepOutput, type StepRow, type WorkflowStatus } from "./types.js";
 
 export class WorkflowInputError extends Error {}
@@ -133,6 +134,9 @@ export async function runWorkflow(deps: EnvDeps, workflowId: string, opts: { las
 async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<WorkflowPlaybook> {
   await env.deps.progress?.("planning", 5).catch(() => undefined);
   await env.note("理解目標並蒐集資料，準備工作計畫。");
+  // The user's explicit requirements first (requirements.ts): playbooks read them while planning (target language,
+  // edit kind, per-item fields), and every sub-agent call from here on gets them.
+  await prepareRequirements(env, pb.id);
   let res = await pb.plan(env);
   // The playbook hands over to a better-fitting one (reading note → topic research): switch once and plan with it.
   if (res.kind === "redirect") {
@@ -144,6 +148,7 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
     await env.refresh();
     await env.note(res.message);
     pb = next;
+    await prepareRequirements(env, pb.id);
     res = await pb.plan(env);
   }
   // The user answered, yet the playbook would ask the very same question again (e.g. a reading note picked for a topic
@@ -181,7 +186,19 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   }
   await env.db.query("DELETE FROM workflow_steps WHERE run_id=$1", [env.run.id]);
   await insertSteps(env.db, env.run.id, res.steps);
-  const criteria: Criterion[] = res.criteria.map((c) => ({ ...c, status: "pending" }));
+  // Every requirement is a criterion and is shown on the plan card (「你的要求」).
+  const reqs = env.requirements();
+  const kind = artifactKindOf(pb.id);
+  res.plan = { ...res.plan, requirements: reqs };
+  // Notes: the title in the target language; the playbook's fixed section headings are localized at commit instead.
+  const noteTitle = env.state<string>("note_title");
+  if (kind !== "deck" && noteTitle) {
+    const t = await translateTitle(env, noteTitle);
+    if (t !== noteTitle) await env.setState({ note_title: t });
+  }
+  const allow = kind === "doc" ? fixedHeadings(env) : [];
+  await env.setState({ req_allow: allow });
+  const criteria: Criterion[] = withRequirementCriteria(res.criteria, reqs, kind, undefined, allow).map((c) => ({ ...c, status: "pending" }));
   await env.db.query(
     "UPDATE workflow_runs SET objective=$2, criteria=$3, plan=$4, title=CASE WHEN $5::text IS NULL THEN title ELSE $5 END, study_id=coalesce($6, study_id), question=NULL, updated_at=now() WHERE id=$1",
     [env.run.id, res.objective, JSON.stringify(criteria), JSON.stringify(res.plan), res.title?.slice(0, 160) ?? null, res.studyId ?? null],
@@ -427,9 +444,17 @@ async function finalStep(env: WorkflowEnv, pb: WorkflowPlaybook, step: StepRow) 
     await setStatus(env, "running");
     return;
   }
-  if (env.run.final_rounds < MAX_FINAL_ROUNDS && pb.repair) {
-    const reopen = await pb.repair(env, failing);
+  if (env.run.final_rounds < MAX_FINAL_ROUNDS) {
+    let reopen = pb.repair ? await pb.repair(env, failing) : [];
     const steps = await getSteps(env.db, env.run.id);
+    // Requirement criteria the playbook does not map itself: reopen the writers whose own output fails them.
+    if (!pb.handlesRequirements) {
+      for (const r of requirementRepair(failing, steps)) {
+        const same = reopen.find((x) => x.key === r.key);
+        if (same) same.issues = [...same.issues, ...r.issues];
+        else reopen = [...reopen, r];
+      }
+    }
     const targets = reopen.filter((r) => steps.some((s) => s.key === r.key && s.kind !== "final"));
     if (targets.length) {
       await env.note(`最終驗收有 ${failing.length} 項未達成，針對 ${targets.length} 個步驟派出修正。`);
@@ -513,8 +538,21 @@ async function finish(env: WorkflowEnv, pb: WorkflowPlaybook, stop: WorkflowStop
     commitLine = `寫入成果時發生錯誤：${(e as Error).message ?? ""}`.slice(0, 300);
   }
   await env.refresh();
+  // The artifact keeps the run's standing requirements (language, audience, tone): the next edit inherits them.
+  await persistStanding(env).catch((e) => env.deps.log.warn({ err: e, workflowId: env.run.id }, "workflow preferences not saved"));
   const report = buildReport(env.run, steps, outcome, stop, commitLine);
+  // Autopilot: a run that ends with unmet criteria (not a budget stop) gets one more 繼續改 round by itself.
+  const unmet = env.run.criteria.filter((c) => c.status === "fail");
+  const autoMore = outcome === "partial" && !stop && env.run.autopilot && unmet.length > 0 && !env.state<boolean>("auto_continued");
   await setStatus(env, outcome, { report, stop_reason: stop?.reason ?? null, finished_at: new Date().toISOString() });
+  if (autoMore) {
+    await env.setState({ auto_continued: true });
+    const { continueRun } = await import("./service.js");
+    await continueRun(env.db, env.run.id, `修正未達成的驗收標準：${unmet.map((c) => `${c.text}${c.reason ? `（${c.reason.slice(0, 160)}）` : ""}`).join("；")}`.slice(0, 2000));
+    await env.note(`自動駕駛：還有 ${unmet.length} 項驗收標準未達成，自動再修一輪。`);
+    await env.refresh();
+    return;
+  }
   await finishNotice(env, outcome);
 }
 

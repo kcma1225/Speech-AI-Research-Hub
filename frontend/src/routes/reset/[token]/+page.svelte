@@ -79,7 +79,7 @@
       <div class="flex flex-col gap-4" aria-busy="true"><Skeleton class="h-11 w-48" /><Skeleton class="h-5 w-72" /></div>
     {:else if status === "invalid"}
       <span class="mb-6 grid size-12 place-items-center rounded-2xl" style="background:var(--pill-rose);color:var(--pill-rose-ink)"><LinkIcon class="size-5" /></span>
-      <h1 class="font-display text-[34px] leading-[1.08]">{t("crud.resetPage.title")}</h1>
+      <h1 class="font-display text-[34px] leading-[1.08]">{t("crud.resetPage.invalidTitle")}</h1>
       <p class="mt-3 text-[14px] leading-relaxed text-ink-3">{t("crud.resetPage.invalid")}</p>
       <Button href="/login" variant="primary" size="lg" class="mt-8 w-full">{t("crud.resetPage.toLogin")}</Button>
     {:else if status === "error"}

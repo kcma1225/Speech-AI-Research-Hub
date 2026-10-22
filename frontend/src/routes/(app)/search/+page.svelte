@@ -104,7 +104,8 @@
 
 <svelte:head><title>{q.trim() ? `${q.trim()} · ` : ""}{t("search.title")} · Speech-AI Hub</title></svelte:head>
 
-<div class="mx-auto w-full max-w-[860px]">
+<!-- Grows with the viewport; on very wide screens the result groups flow into two columns. -->
+<div class="mx-auto w-full max-w-[1180px] 2xl:max-w-none">
   <header class="mb-4 sm:mb-6">
     <h1 class="text-[26px] leading-tight font-semibold tracking-[-0.02em] text-ink sm:text-[30px]">{t("search.title")}</h1>
     <p class="mt-1 text-[14px] text-ink-3">{t("search.subtitle")}</p>
@@ -170,13 +171,13 @@
         </EmptyState>
       </Card>
     {:else}
-      <div class="flex flex-col gap-4 transition-opacity motion-reduce:transition-none {loading ? 'opacity-60' : ''}">
+      <div class="transition-opacity motion-reduce:transition-none {loading ? 'opacity-60' : ''} {!type && groups.length > 1 ? '2xl:columns-2 2xl:gap-4' : ''}">
         {#if type}
-          <button type="button" class="-mb-1 flex h-10 items-center gap-1.5 self-start rounded-full px-2 text-[13px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink" onclick={() => setType("")}><ArrowLeft class="size-4" />{t("search.backToAll")}</button>
+          <button type="button" class="mb-3 flex h-10 items-center gap-1.5 self-start rounded-full px-2 text-[13px] font-medium text-ink-2 hover:bg-surface-3 hover:text-ink" onclick={() => setType("")}><ArrowLeft class="size-4" />{t("search.backToAll")}</button>
         {/if}
         {#each groups as g (g.type)}
           {@const m = typeMeta(g.type)}
-          <section aria-labelledby="sr-{g.type}">
+          <section aria-labelledby="sr-{g.type}" class="mb-4 break-inside-avoid">
             <Card padded={false} class="overflow-hidden">
               <h2 id="sr-{g.type}" class="flex items-center gap-2 border-b border-line px-4 py-3 text-[13px] font-semibold text-ink sm:px-5">
                 <m.icon class="size-4 text-ink-3" />{t(m.label)}<span class="font-normal text-ink-3 tabular-nums">{g.results.length}{g.has_more ? "+" : ""}</span>

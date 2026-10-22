@@ -12,6 +12,7 @@
   import { session } from "#lib/stores/session.svelte.ts";
   import { deviceSubscribed, disablePush, enablePush, pushSupported } from "#lib/push.ts";
   import type { Locale, Preferences, SessionRow, ThemePref } from "#lib/types.ts";
+  import { visibleSessions } from "#lib/settings/sessions.ts";
   import type { MessageKey } from "#lib/messages.ts";
   import Avatar from "#lib/components/ui/Avatar.svelte";
   import Button from "#lib/components/ui/Button.svelte";
@@ -135,6 +136,8 @@
   $effect(() => {
     if (tab === "sessions" && !sessions) api.get<{ sessions: SessionRow[] }>("/auth/sessions").then(r => (sessions = r.sessions));
   });
+  let sessionsExpanded = $state(false);
+  const shownSessions = $derived(sessions ? visibleSessions(sessions, sessionsExpanded) : null);
   let revoking = $state<string | null>(null);
   async function revoke(id: string) {
     revoking = id;
@@ -237,7 +240,7 @@
         {@render row(t("settings.appearance"), t("settings.appearance.hint"), themeControl)}
         {@render row(t("settings.language"), t("settings.language.hint"), localeControl)}
       </Card>
-      <div class="mt-5 grid grid-cols-3 gap-3 sm:gap-4">
+      <div class="mt-5 grid max-w-3xl grid-cols-3 gap-3 sm:gap-4">
         {#each ["system", "light", "dark"] as const as option (option)}
           <button
             type="button"
@@ -383,7 +386,7 @@
           <div class="flex flex-col gap-2">{#each [0, 1] as i (i)}<Skeleton class="h-16" />{/each}</div>
         {:else}
           <ul class="flex flex-col">
-            {#each sessions as s (s.id)}
+            {#each shownSessions?.rows ?? [] as s (s.id)}
               {@const d = describe(s.user_agent)}
               <li class="flex items-center gap-3.5 border-b border-line py-3.5 last:border-0">
                 <span class="grid size-10 shrink-0 place-items-center rounded-xl bg-surface-2 text-ink-2">
@@ -396,10 +399,13 @@
                   </p>
                   <p class="mt-0.5 truncate text-[12.5px] text-ink-3">{s.ip ?? ""}{s.ip ? " · " : ""}{t("settings.sessions.lastSeen", { when: relativeTime(s.last_seen_at) })}</p>
                 </div>
-                {#if !s.current}<Button size="sm" variant="secondary" loading={revoking === s.id} onclick={() => revoke(s.id)}>{t("settings.sessions.revoke")}</Button>{/if}
+                {#if !s.current}<Button size="sm" variant="secondary" class="shrink-0 max-sm:h-10" loading={revoking === s.id} onclick={() => revoke(s.id)}>{t("settings.sessions.revoke")}</Button>{/if}
               </li>
             {/each}
           </ul>
+          {#if shownSessions?.hidden}
+            <Button variant="ghost" class="mt-2 w-full" onclick={() => (sessionsExpanded = true)}>{t("settings.sessions.showAll", { n: shownSessions.hidden })}</Button>
+          {/if}
         {/if}
       </Card>
     </Tabs.Content>

@@ -17,6 +17,7 @@
   import StageBar from "#lib/components/study/StageBar.svelte";
   import TaskRow from "#lib/components/study/TaskRow.svelte";
   import type { DashboardData, Task } from "#lib/studies/types.ts";
+  import { groupActivity } from "#lib/studies/activity.ts";
 
   let data = $state<DashboardData | null>(null);
   let error = $state<string | null>(null);
@@ -48,6 +49,16 @@
   const c = $derived(data?.counts);
   const kindOf = (kind: string) => kinds[kind] ?? { icon: ArrowUpRight, tone: "stone" as Tone };
   const kindLabel = (kind: string) => (kind in kinds ? t(`dash.kind.${kind}` as MessageKey) : t("dash.kind.other"));
+
+  // Bursts (ten papers imported, a dozen note edits) collapse into one entry; older ones load on demand.
+  const activityGroups = $derived(groupActivity(data?.activity ?? []));
+  let activityLimit = $state(10);
+  let expanded = $state(new Set<string>());
+  function toggleGroup(key: string) {
+    const next = new Set(expanded);
+    if (!next.delete(key)) next.add(key);
+    expanded = next;
+  }
 
   async function toggle(task: Task, done: boolean) {
     if (!task.study) return;
@@ -82,20 +93,18 @@
     {#snippet stat(label: string, value: number | undefined, icon: typeof Flag, tone: Tone, foot: string, href: string, cls = "", footHref = "")}
       {@const Icon = icon}
       <!-- The whole card links to `href` (stretched link); an optional foot line links elsewhere. -->
-      <div class="group relative flex flex-col justify-between gap-4 rounded-[22px] border border-line/70 bg-surface p-4 shadow-card transition-colors hover:border-line-2 sm:p-5 {cls}">
-        <div class="flex items-center justify-between">
-          <span class="grid size-9 place-items-center rounded-xl" style="background:var(--pill-{tone});color:var(--pill-{tone}-ink)"><Icon class="size-[18px]" /></span>
-          <ArrowUpRight class="size-4 text-ink-3 opacity-0 transition-opacity group-hover:opacity-100" />
-        </div>
-        <div>
-          {#if value === undefined}<Skeleton class="h-9 w-14" />{:else}<p class="font-display text-[38px] leading-none tabular-nums">{value}</p>{/if}
-          <a {href} class="mt-1.5 block text-[13px] font-medium text-ink-2 after:absolute after:inset-0 after:rounded-[22px] after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ink">{label}</a>
+      <div class="group relative flex items-start justify-between gap-3 rounded-[22px] border border-line/70 bg-surface p-4 shadow-card transition-colors hover:border-line-2 sm:p-5 {cls}">
+        <div class="min-w-0 flex-1">
+          {#if value === undefined}<Skeleton class="h-9 w-14" />{:else}<p class="font-display text-[34px] leading-none tabular-nums sm:text-[38px]">{value}</p>{/if}
+          <a {href} class="mt-2 block text-[13px] font-medium text-ink-2 after:absolute after:inset-0 after:rounded-[22px] after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ink">{label}</a>
           {#if foot && footHref}
             <a href={footHref} class="relative z-10 -mx-1 -my-2 inline-flex min-h-10 max-w-full items-center truncate rounded-full px-1 text-[12px] text-ink-3 underline-offset-2 hover:text-ink hover:underline">{foot}</a>
           {:else}
             <p class="mt-0.5 truncate text-[12px] text-ink-3">{foot || "\u00a0"}</p>
           {/if}
         </div>
+        <span class="grid size-9 shrink-0 place-items-center rounded-xl" style="background:var(--pill-{tone});color:var(--pill-{tone}-ink)"><Icon class="size-[18px]" /></span>
+        <ArrowUpRight class="absolute right-4 bottom-4 size-4 text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 sm:right-5 sm:bottom-5" />
       </div>
     {/snippet}
     {@render stat(t("dash.stat.myStudies"), c?.myStudies, FlaskConical, "peach", c ? t("dash.stat.labStudies", { n: c.labStudies }) : "", "/studies?scope=mine", "", "/studies?scope=lab")}
@@ -103,7 +112,7 @@
     {@render stat(t("dash.stat.dueWeek"), c?.dueThisWeek, CalendarClock, "butter", "", "#my-tasks", "col-span-2 lg:col-span-1")}
   </div>
 
-  <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
+  <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_400px] 2xl:grid-cols-[minmax(0,1fr)_460px]">
     <!-- My studies -->
     <Card>
       <CardHeader title={t("dash.myStudies")}>
@@ -212,28 +221,52 @@
         <EmptyState title={t("dash.activity.empty")} class="py-8" />
       {:else}
         <ul class="-mx-2 flex flex-col">
-          {#each data.activity as item (item.id)}
-            {@const meta = kindOf(item.kind)}
+          {#each activityGroups.slice(0, activityLimit) as group (group.key)}
+            {@const meta = kindOf(group.kind)}
             {@const Icon = meta.icon}
-            <li>
-              <a href={item.url ?? `/studies/${item.study.slug}`} class="flex min-w-0 items-start gap-3 rounded-2xl px-2 py-2.5 hover:bg-surface-2">
-                <span class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl" style="background:var(--pill-{meta.tone});color:var(--pill-{meta.tone}-ink)"><Icon class="size-4" /></span>
-                <div class="min-w-0 flex-1">
-                  <p class="text-[13.5px] leading-snug text-ink">
-                    {#if item.actor}<span class="font-semibold">{displayName(item.actor)}</span>{/if}
-                    <span class="text-ink-2">{kindLabel(item.kind)}</span>
-                    <span class="font-medium break-words">{item.kind === "member_added" ? displayName(item.title) : item.title}</span>
-                  </p>
-                  <p class="mt-1 flex min-w-0 items-center gap-2 text-[12px] text-ink-3">
-                    <Pill tone={toneFor(item.study.id)} size="sm" class="max-w-[60%]">{item.study.title}</Pill>
-                    <span class="shrink-0">{relativeTime(item.at)}</span>
-                  </p>
-                </div>
-                {#if item.actor}<span class="hidden sm:block"><Avatar name={item.actor.name} id={item.actor.id} size={28} class="ring-0" /></span>{/if}
-              </a>
+            {@const first = group.items[0]!}
+            {@const many = group.items.length > 1}
+            {@const open = expanded.has(group.key)}
+            {@const shown = many ? group.items.slice(0, open ? group.items.length : 3) : []}
+            {@const titleOf = (item: typeof first) => (item.kind === "member_added" ? displayName(item.title) : item.title)}
+            <li class="relative flex min-w-0 items-start gap-3 rounded-2xl px-2 py-2.5 {many ? '' : 'hover:bg-surface-2'}">
+              <span class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-xl" style="background:var(--pill-{meta.tone});color:var(--pill-{meta.tone}-ink)"><Icon class="size-4" /></span>
+              <div class="min-w-0 flex-1">
+                <p class="text-[13.5px] leading-snug text-ink">
+                  {#if group.actor}<span class="font-semibold">{displayName(group.actor)}</span>{/if}
+                  <span class="text-ink-2">{kindLabel(group.kind)}</span>
+                  {#if many}
+                    <span class="font-medium">{t("dash.activity.count", { n: group.items.length })}</span>
+                  {:else}
+                    <a href={first.url ?? `/studies/${group.study.slug}`} class="font-medium break-words after:absolute after:inset-0 after:rounded-2xl after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ink">{titleOf(first)}</a>
+                  {/if}
+                </p>
+                {#if many}
+                  <ul class="mt-1 flex flex-col">
+                    {#each shown as item (item.id)}
+                      <li class="min-w-0">
+                        <a href={item.url ?? `/studies/${group.study.slug}`} title={titleOf(item)} class="-mx-1.5 flex min-h-10 sm:min-h-7 min-w-0 items-center rounded-lg px-1.5 text-[13px] text-ink-2 hover:bg-surface-2 hover:text-ink"><span class="truncate">{titleOf(item)}</span></a>
+                      </li>
+                    {/each}
+                  </ul>
+                  {#if group.items.length > 3}
+                    <button type="button" class="-mx-1.5 mt-0.5 inline-flex min-h-10 sm:min-h-7 items-center rounded-lg px-1.5 text-[12.5px] font-medium text-ink-3 hover:bg-surface-2 hover:text-ink" aria-expanded={open} onclick={() => toggleGroup(group.key)}>
+                      {open ? t("dash.activity.fewerItems") : t("dash.activity.moreItems", { n: group.items.length - 3 })}
+                    </button>
+                  {/if}
+                {/if}
+                <p class="mt-1 flex min-w-0 items-center gap-2 text-[12px] text-ink-3">
+                  <Pill tone={toneFor(group.study.id)} size="sm" class="max-w-[60%]">{group.study.title}</Pill>
+                  <span class="shrink-0">{relativeTime(group.at)}</span>
+                </p>
+              </div>
+              {#if group.actor}<span class="hidden sm:block"><Avatar name={group.actor.name} id={group.actor.id} size={28} class="ring-0" /></span>{/if}
             </li>
           {/each}
         </ul>
+        {#if activityGroups.length > activityLimit}
+          <div class="mt-2 flex justify-center"><Button size="sm" variant="ghost" onclick={() => (activityLimit += 10)}>{t("dash.activity.showMore")}</Button></div>
+        {/if}
       {/if}
     </Card>
   </div>

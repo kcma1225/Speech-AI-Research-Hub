@@ -124,6 +124,26 @@ export { workflowIdOf };
 const isResult = (c: ToolCall) => c.status === "done" && c.risk !== "read" && c.tool !== "remember" && !START_TOOLS.has(c.tool);
 
 /**
+ * Workflow / goal status notices that a later message supersedes are dropped:
+ * - a partial run's summary (「還沒達成的項目」 + 「要我修這幾項嗎？」, `items` + `workflow_id`) stays, but only the newest
+ *   one per run (every 繼續改 round that ends partial posts a new one);
+ * - the quiet one-line status notices (「…需要你補充資訊」) duplicate the workflow card: only the very last message
+ *   of the chat keeps one (the bell keeps the notification).
+ */
+export function dropSupersededNotices(messages: Message[]): Message[] {
+  const isStatus = (m: Message) => m.role === "notice" && (!!m.kind?.startsWith("workflow_") || !!m.kind?.startsWith("goal_"));
+  const lastPartial = new Map<string, string>();
+  for (const m of messages) if (isStatus(m) && m.items?.length && m.workflow_id) lastPartial.set(m.workflow_id, m.id);
+  const last = messages.at(-1);
+  return messages.filter((m) => {
+    if (!isStatus(m)) return true;
+    if (m.items?.length && m.workflow_id) return lastPartial.get(m.workflow_id) === m.id;
+    if (m.items?.length) return true;
+    return m === last;
+  });
+}
+
+/**
  * Builds the transcript items. `answered` = ask_user call ids that already have an answer message; `live` = a run of
  * the conversation is working right now (the last turn is then still in progress).
  */

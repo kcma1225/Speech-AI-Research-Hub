@@ -21,12 +21,13 @@
     ghost: "bg-transparent text-ink-2 hover:bg-surface-3 hover:text-ink",
     danger: "bg-danger-soft text-danger hover:brightness-95",
   };
+  // Small sizes grow to a 40px touch target on touch screens (coarse pointers); mouse layouts stay compact.
   const sizes = {
-    sm: "h-8 px-3 text-[13px] gap-1.5",
+    sm: "h-8 pointer-coarse:h-10 px-3 text-[13px] gap-1.5",
     md: "h-10 px-4 text-sm gap-2",
     lg: "h-12 px-6 text-[15px] gap-2",
     icon: "size-10 justify-center",
-    "icon-sm": "size-8 justify-center",
+    "icon-sm": "size-8 pointer-coarse:size-10 justify-center",
   };
   const classes = $derived(
     `inline-flex shrink-0 select-none items-center justify-center rounded-full font-medium whitespace-nowrap transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-[1.05em] [&_svg]:shrink-0 ${variants[variant]} ${sizes[size]} ${cls}`,

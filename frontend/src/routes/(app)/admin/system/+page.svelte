@@ -20,7 +20,7 @@
 
 {#if isAdmin}
   <PageHeader title={t("pages.adminSystem.title")} subtitle={t("pages.adminSystem.subtitle")} />
-  <div class="flex max-w-4xl flex-col gap-5">
+  <div class="flex flex-col gap-5">
     <LibrarySettings />
     <AiUsageSection />
   </div>

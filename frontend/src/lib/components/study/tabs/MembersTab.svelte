@@ -59,7 +59,7 @@
   async function add() {
     if (!picked) return;
     adding = true;
-    const ok = await run(() => api.post(base, { userId: picked.id, role }), t("members.added", { name: picked.name }));
+    const ok = await run(() => api.post(base, { userId: picked.id, role }), t("members.added", { name: displayName(picked) }));
     adding = false;
     if (ok) addOpen = false;
   }
@@ -80,20 +80,20 @@
     const { kind, member } = confirm;
     if (kind === "transfer") {
       await api.post(`/studies/${detail.study.id}/transfer`, { userId: member.id });
-      toasts.show(t("members.transferred", { name: member.name }), "success");
+      toasts.show(t("members.transferred", { name: displayName(member) }), "success");
       await reload();
     } else {
       await api.del(`${base}/${member.id}`);
-      toasts.show(kind === "leave" ? t("members.left") : t("members.removed", { name: member.name }), "success");
+      toasts.show(kind === "leave" ? t("members.left") : t("members.removed", { name: displayName(member) }), "success");
       if (kind === "leave") await goto(`/studies/${detail.study.slug}`, { replace: true });
       await reload();
     }
   }
   const confirmTitle = $derived(
-    !confirm ? "" : confirm.kind === "transfer" ? t("members.transferConfirm", { name: confirm.member.name }) : confirm.kind === "leave" ? t("members.leaveConfirm", { title: detail.study.title }) : t("members.removeConfirm", { name: confirm.member.name }),
+    !confirm ? "" : confirm.kind === "transfer" ? t("members.transferConfirm", { name: displayName(confirm.member) }) : confirm.kind === "leave" ? t("members.leaveConfirm", { title: detail.study.title }) : t("members.removeConfirm", { name: displayName(confirm.member) }),
   );
   const confirmDesc = $derived(
-    !confirm ? "" : confirm.kind === "transfer" ? t("members.transferDesc", { name: confirm.member.name }) : confirm.kind === "leave" ? t("members.leaveDesc") : t("members.removeDesc"),
+    !confirm ? "" : confirm.kind === "transfer" ? t("members.transferDesc", { name: displayName(confirm.member) }) : confirm.kind === "leave" ? t("members.leaveDesc") : t("members.removeDesc"),
   );
   const hasActions = (m: StudyMember) => m.role !== "owner" && (canManage || m.id === me);
 </script>
@@ -102,9 +102,10 @@
   <CardHeader title={t("members.title")} subtitle={t("members.subtitle")}>
     {#snippet actions()}{#if canManage}<Button size="sm" variant="primary" onclick={() => (addOpen = true)}><UserPlus />{t("members.add")}</Button>{/if}{/snippet}
   </CardHeader>
-  <ul class="-mx-2 flex flex-col divide-y divide-line">
+  <!-- Tiles fill the row on wide screens instead of one long line per person with the role far to the right. -->
+  <ul class="grid grid-cols-[minmax(0,1fr)] gap-2 md:grid-cols-2 2xl:grid-cols-3">
     {#each detail.members as member (member.id)}
-      <li class="flex items-center gap-3 px-2 py-3">
+      <li class="flex min-w-0 items-center gap-3 rounded-2xl border border-line/70 py-2.5 pr-1.5 pl-3">
         <Avatar name={member.name} id={member.id} size={38} class="ring-0 {member.disabled ? 'opacity-50 grayscale' : ''}" />
         <div class="min-w-0 flex-1">
           <p class="flex flex-wrap items-center gap-1.5 text-[14.5px] font-medium text-ink">
@@ -114,10 +115,10 @@
           </p>
           <p class="truncate text-[12.5px] text-ink-3">{t(`role.${member.account_role}` as MessageKey)} · {formatDate(member.added_at)}</p>
         </div>
-        <Pill tone={memberRoleTone[member.role]} class="shrink-0">{roleLabel(member.role)}</Pill>
+        <Pill tone={memberRoleTone[member.role]} size="sm" class="shrink-0">{roleLabel(member.role)}</Pill>
         {#if hasActions(member)}
           <DropdownMenu.Root>
-            <DropdownMenu.Trigger class="-mr-1 grid size-10 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("members.changeRole", { name: member.name })}>
+            <DropdownMenu.Trigger class="-mr-1 grid size-10 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("members.changeRole", { name: displayName(member) })}>
               <Ellipsis class="size-4" />
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal>

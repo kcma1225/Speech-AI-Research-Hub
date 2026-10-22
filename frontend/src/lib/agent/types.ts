@@ -59,6 +59,9 @@ export type Message = {
   status: "complete" | "cancelled";
   page_context: (PageContext & { studyTitle?: string }) | null;
   kind: string | null;
+  /** A partial workflow notice: what is still unmet (「要我修這幾項嗎？」) and its run. */
+  items?: string[];
+  workflow_id?: string | null;
   memories: { id: string; content: string }[];
   /** `ask_user` answers sent as this user turn. */
   answers?: StoredAnswers | null;

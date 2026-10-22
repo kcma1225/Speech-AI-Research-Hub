@@ -1,6 +1,7 @@
 <script lang="ts">
   import { ChevronDown, ChevronUp, Plus, X } from "@lucide/svelte";
-  import { t } from "#lib/i18n.svelte.ts";
+  import { hasMessage, t } from "#lib/i18n.svelte.ts";
+  import type { MessageKey } from "#lib/messages.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import Switch from "#lib/components/ui/Switch.svelte";
   import Textarea from "#lib/components/ui/Textarea.svelte";
@@ -19,6 +20,10 @@
   const original = $derived(workflow.plan?.outline);
   let outline = $state<EditableOutline>([]);
   let criteria = $state<{ id?: string; text: string }[]>([]);
+  // 「你的要求」: typed requirements (language, pages, topics…); `standing` ones are kept from the artifact (沿用).
+  let reqs = $state<{ id?: string; type?: string; text: string; source?: string }[]>([]);
+  const reqType = (type?: string) => (hasMessage(`wf.req.type.${type ?? "other"}`) ? `wf.req.type.${type ?? "other"}` : "wf.req.type.other") as MessageKey;
+  const ownCriteria = $derived(workflow.criteria.filter((c) => !c.id.startsWith("req_")));
   let stepEdits = $state<Record<string, { instructions: string; skip: boolean }>>({});
   let editingStep = $state<string | null>(null);
   let seeded = $state("");
@@ -34,16 +39,20 @@
     if (key === seeded || busy) return;
     seeded = key;
     outline = (workflow.plan?.outline ?? []).map((p) => ({ title: p.title, points: [...p.points] }));
-    criteria = workflow.criteria.map((c) => ({ id: c.id, text: c.text }));
+    criteria = ownCriteria.map((c) => ({ id: c.id, text: c.text }));
+    reqs = (workflow.plan?.requirements ?? []).map((r) => ({ id: r.id, type: r.type, text: r.text, source: r.source }));
     stepEdits = Object.fromEntries(steps.filter((s) => s.kind === "task").map((s) => [s.key, { instructions: s.instructions, skip: false }]));
   });
 
   function edits(): ApproveEdits {
     const out: ApproveEdits = {};
     if (original && outlineChanged(original, outline)) out.outline = cleanOutline(outline);
-    const before = workflow.criteria.map((c) => ({ id: c.id, text: c.text }));
+    const before = ownCriteria.map((c) => ({ id: c.id, text: c.text }));
     const cleaned = criteria.map((c) => ({ ...c, text: c.text.trim() })).filter((c) => c.text);
     if (JSON.stringify(before) !== JSON.stringify(cleaned)) out.criteria = cleaned;
+    const reqBefore = (workflow.plan?.requirements ?? []).map((r) => ({ id: r.id, text: r.text }));
+    const reqNow = reqs.map((r) => ({ id: r.id, text: r.text.trim() })).filter((r) => r.text);
+    if (JSON.stringify(reqBefore) !== JSON.stringify(reqNow)) out.requirements = reqNow.map((r) => ({ ...r, type: reqs.find((x) => x.id && x.id === r.id)?.type }));
     const changed = tasks
       .map((s) => ({ s, e: stepEdits[s.key] }))
       .filter(({ s, e }) => e && (e.skip || e.instructions.trim() !== s.instructions))
@@ -85,6 +94,25 @@
     <p class="mt-0.5 text-[12.5px] text-ink-3">{t("wf.planHint")}</p>
     {#if workflow.plan?.summary}<p class="mt-2 text-[13.5px] leading-relaxed text-ink-2">{workflow.plan.summary}</p>{/if}
     {#if workflow.plan?.notes}<p class="mt-1 text-[12.5px] text-[var(--pill-peach-ink)]">{workflow.plan.notes}</p>{/if}
+  </div>
+
+  <div data-wf-requirements>
+    <p class="text-[13px] font-semibold text-ink">{t("wf.req.title")}</p>
+    <p class="mb-2 text-[12px] text-ink-3">{t("wf.req.hint")}</p>
+    {#if workflow.plan?.edit_kind}<p class="mb-1.5 text-[12.5px] text-ink-2">{t(workflow.plan.edit_kind === "expand" ? "wf.edit.expand" : "wf.edit.revise")}</p>{/if}
+    {#if workflow.plan?.front_title}<p class="mb-1.5 text-[12.5px] break-words text-ink-2">{t("wf.frontTitle", { title: workflow.plan.front_title })}</p>{/if}
+    <ul class="flex flex-col gap-1">
+      {#each reqs as r, i (i)}
+        <li class="flex items-center gap-1.5">
+          <span class="shrink-0 rounded-full bg-surface-3 px-2 py-0.5 text-[11.5px] text-ink-2">{t(reqType(r.type))}</span>
+          {#if r.source === "standing"}<span class="shrink-0 rounded-full bg-[var(--pill-sky)] px-2 py-0.5 text-[11.5px] text-[var(--pill-sky-ink)]">{t("wf.req.inherited")}</span>{/if}
+          <label class="sr-only" for="wf-req-{workflow.id}-{i}">{t("wf.req.title")} {i + 1}</label>
+          <input id="wf-req-{workflow.id}-{i}" class="h-10 min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 text-[13.5px] text-ink outline-none hover:border-line focus:border-ink" bind:value={r.text} placeholder={t("wf.req.placeholder")} />
+          <button type="button" class="grid size-9 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("wf.req.remove")} onclick={() => (reqs = reqs.filter((__, k) => k !== i))}><X class="size-3.5" /></button>
+        </li>
+      {/each}
+    </ul>
+    {#if reqs.length < 12}<button type="button" class="mt-1 inline-flex min-h-9 items-center gap-1 rounded-full px-2 text-[12.5px] text-ink-3 hover:bg-surface-3 hover:text-ink" onclick={() => (reqs = [...reqs, { text: "" }])}><Plus class="size-3.5" />{t("wf.req.add")}</button>{/if}
   </div>
 
   {#if original}
