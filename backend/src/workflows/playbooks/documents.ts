@@ -189,7 +189,7 @@ const readingNote: WorkflowPlaybook = {
     const title = (env.state<string[]>("sections") ?? [])[Number(step.key.slice(5)) - 1] ?? step.title;
     const paperId = String(step.inputs.paper_id ?? env.run.inputs.paper_id ?? "");
     const user = taskPrompt(env, step, { context: { paper: `論文：〈${env.state<string>("paper_title") ?? ""}〉，paper_id ${paperId}（呼叫 read_paper / view_paper_pages 時用這個 paper_id）${env.run.study_id ? `；研究 study id ${env.run.study_id}` : ""}` }, format: `只輸出「## ${title}」這一段的 Markdown（可以有 ### 小標），不要其他段落。` }, fix);
-    const r = await env.researcher(step, { system: systemFor("researcher", "你讀完需要的內容後，直接寫出筆記的這一段。"), user, tools: ["read_paper", "view_paper_pages", "get_paper", "get_study"], maxToolSteps: 5, maxTokens: 10_000, purpose: "reading_part" });
+    const r = await env.researcher(step, { system: systemFor("researcher", "你讀完需要的內容後，直接寫出筆記的這一段。"), user, tools: ["read_paper", "view_paper_pages", "get_paper", "get_study"], maxToolSteps: 50, maxTokens: 10_000, purpose: "reading_part" });
     return { summary: `讀了 ${r.toolCalls} 次，寫了 ${r.text.length} 字`, text: r.text };
   },
   async finalText(env) {
@@ -276,7 +276,7 @@ const litReview: WorkflowPlaybook = {
     if (step.key === "assemble") return assembleDoc(env, step);
     if (step.key.startsWith("read_")) {
       const user = taskPrompt(env, step, { format: "Markdown 條列，開頭寫 `### [@key] 論文標題`。" }, fix);
-      const r = await env.researcher(step, { system: systemFor("researcher"), user, tools: ["read_paper", "get_paper", "view_paper_pages"], maxToolSteps: 4, purpose: "lit_read" });
+      const r = await env.researcher(step, { system: systemFor("researcher"), user, tools: ["read_paper", "get_paper", "view_paper_pages"], maxToolSteps: 40, purpose: "lit_read" });
       return { summary: `讀了 ${r.toolCalls} 次，摘要 ${r.text.length} 字`, text: r.text };
     }
     const steps = await getSteps(env.db, env.run.id);
@@ -492,7 +492,7 @@ const generic: WorkflowPlaybook = {
     const context = Object.fromEntries(Object.entries(deps).map(([k, v]) => [`step_${k}`, `【${v.title}】\n${v.text}`]));
     if (step.role === "researcher") {
       const user = taskPrompt(env, step, { context, format: "Markdown，每個重點標註出處。" }, fix);
-      const r = await env.researcher(step, { system: systemFor("researcher"), user, tools: RESEARCH_TOOLS, maxToolSteps: 6, purpose: "generic_research" });
+      const r = await env.researcher(step, { system: systemFor("researcher"), user, tools: RESEARCH_TOOLS, maxToolSteps: 60, purpose: "generic_research" });
       return { summary: `讀了 ${r.toolCalls} 次，整理 ${r.text.length} 字`, text: r.text };
     }
     return writePart(env, step, fix, context, step.role === "integrator" ? "一份完整的 Markdown 文件（# 標題開頭）。" : "Markdown。");

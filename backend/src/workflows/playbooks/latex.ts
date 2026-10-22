@@ -125,7 +125,7 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
       env.guidanceText(),
       fix ? `上一版的問題：${fix.issues.join("；")}` : "",
     ].filter(Boolean).join("\n\n");
-    const r = await env.researcher({ id: "plan-research", key: "research" }, { system: systemFor("researcher"), user, tools: ["list_notes", "get_note", "list_papers", "get_paper", "read_paper", "get_study_bibtex", "latex_list_projects", "latex_read_file", "get_study"], maxToolSteps: 7, purpose: "latex_research" });
+    const r = await env.researcher({ id: "plan-research", key: "research" }, { system: systemFor("researcher"), user, tools: ["list_notes", "get_note", "list_papers", "get_paper", "read_paper", "get_study_bibtex", "latex_list_projects", "latex_read_file", "get_study"], maxToolSteps: 70, purpose: "latex_research" });
     return { summary: `讀了 ${r.toolCalls} 次，整理 ${r.text.length} 字`, text: r.text };
   });
   const brief = research.output.text ?? "";

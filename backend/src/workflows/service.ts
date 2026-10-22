@@ -127,7 +127,7 @@ export async function startFromChat(app: FastifyInstance, user: CurrentUser, inp
       "INSERT INTO agent_messages(conversation_id,role,content,text,page_context) VALUES($1,'user',$2,$3,$4) RETURNING *",
       [conv.id, JSON.stringify([{ type: "text", text: `（交給 Agent）${input.request}` }]), input.request, Object.keys(ctx).length ? JSON.stringify(ctx) : null],
     )).rows[0]!;
-    const agentRun = (await client.query<AgentRunRow>("INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,stop_reason,finished_at) VALUES($1,$2,'done',25,'workflow',now()) RETURNING *", [conv.id, user.id])).rows[0]!;
+    const agentRun = (await client.query<AgentRunRow>("INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,stop_reason,finished_at) VALUES($1,$2,'done',250,'workflow',now()) RETURNING *", [conv.id, user.id])).rows[0]!;
     await client.query("UPDATE agent_messages SET run_id=$2 WHERE id=$1", [msg.id, agentRun.id]);
     const callId = `wf_${agentRun.id.slice(0, 8)}`;
     const args = { request: input.request, ...(input.playbook ? { playbook: input.playbook } : {}) };
@@ -289,7 +289,7 @@ export async function resumeWorkflow(app: FastifyInstance, user: CurrentUser, id
       await client.query("UPDATE workflow_runs SET status=$3, question=NULL, guidance=$2, state = state - 'ask_pending', updated_at=now() WHERE id=$1", [id, JSON.stringify(guidance), hasSteps ? "running" : "planning"]);
     } else if (r.status === "partial" || r.status === "done" || r.status === "failed" || (r.status === "cancelled" && opts.more)) {
       const n = await reopenForMore(client, id);
-      const budget = { ...r.budget, max_steps: r.budget.max_steps + 12, max_calls: r.budget.max_calls + 24, max_minutes: r.budget.max_minutes + 15, max_tokens: r.budget.max_tokens + 300_000 };
+      const budget = { ...r.budget, max_steps: r.budget.max_steps + 120, max_calls: r.budget.max_calls + 240, max_minutes: r.budget.max_minutes + 60, max_tokens: r.budget.max_tokens + 3_000_000 };
       await client.query(
         "UPDATE workflow_runs SET status=$2, final_rounds=GREATEST(final_rounds-1,0), guidance=$3, budget=$4, report=NULL, error=NULL, stop_reason=NULL, finished_at=NULL, pause_requested=false, criteria=COALESCE((SELECT jsonb_agg(c || '{\"status\":\"pending\"}'::jsonb) FROM jsonb_array_elements(criteria) c), '[]'::jsonb), updated_at=now() WHERE id=$1",
         [id, n ? "running" : "planning", JSON.stringify(guidance), JSON.stringify(budget)],
@@ -440,7 +440,7 @@ export async function answerWorkflow(app: FastifyInstance, user: CurrentUser, id
     const finished = FINISHED_STATUSES.includes(r.status);
     const planningAsk = !card.step_key && !steps.length;
     const status = r.status === "awaiting_plan_approval" || r.status === "paused" ? r.status : planningAsk ? "planning" : "running";
-    const budget = finished ? { ...r.budget, max_steps: r.budget.max_steps + 10, max_calls: r.budget.max_calls + 20, max_minutes: r.budget.max_minutes + 15, max_tokens: r.budget.max_tokens + 200_000 } : r.budget;
+    const budget = finished ? { ...r.budget, max_steps: r.budget.max_steps + 100, max_calls: r.budget.max_calls + 200, max_minutes: r.budget.max_minutes + 60, max_tokens: r.budget.max_tokens + 2_000_000 } : r.budget;
     await client.query(
       `UPDATE workflow_runs SET status=$2, state=$3, guidance=$4, budget=$5, question=NULL, report=CASE WHEN $6 THEN NULL ELSE report END, finished_at=CASE WHEN $6 THEN NULL ELSE finished_at END,
          stop_reason=CASE WHEN $6 THEN NULL ELSE stop_reason END, error=NULL,

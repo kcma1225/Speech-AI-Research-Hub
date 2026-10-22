@@ -192,7 +192,7 @@ export class WorkflowEnv {
     const tools = defs.filter((d) => vision || d.name !== "view_paper_pages").map((d) => ({ name: d.name, description: d.description, inputSchema: toolJsonSchema(d) }));
     const messages: ChatMessage[] = [{ role: "system", content: opts.system }, { role: "user", content: opts.user }];
     let calls = 0;
-    const max = opts.maxToolSteps ?? 6;
+    const max = opts.maxToolSteps ?? 60;
     const seen = new Map<string, number>();
     for (let i = 0; i < max; i++) {
       const res = await this.call({ purpose: opts.purpose ?? "research", role: "researcher", messages, tools, maxTokens: opts.maxTokens ?? 6000 }, step.id);

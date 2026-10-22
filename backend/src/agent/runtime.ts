@@ -60,7 +60,7 @@ export type AgentLimits = {
   approvalTtlMs: number;
   llmRetries: number;
 };
-export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 25, maxActiveMs: 10 * 60_000, maxTokens: 400_000, autopilotWrites: 20, repeat: 3, approvalTtlMs: 24 * 3600_000, llmRetries: 5 };
+export const DEFAULT_LIMITS: AgentLimits = { maxSteps: 250, maxActiveMs: 60 * 60_000, maxTokens: 4_000_000, autopilotWrites: 200, repeat: 3, approvalTtlMs: 24 * 3600_000, llmRetries: 5 };
 
 export type AgentOptions = {
   model?: ModelCall;

@@ -1079,7 +1079,7 @@ Tables (`0070_agent.sql`):
   branches `0104_agent_branches.sql`: `version_of` (first message of a user message's version group), `hidden_by`
   (NULL = current branch), `answers` (`ask_user` answers of this user turn `{toolCallId, answers:[{id,value,other?,skipped?}]}`)).
   The transcript is always valid: every assistant `tool_use` gets one `tool` message with a result per call.
-- `agent_runs` (`status running|awaiting_approval|awaiting_llm|done|cancelled|failed`, `step`/`max_steps` 25, `tainted` +
+- `agent_runs` (`status running|awaiting_approval|awaiting_llm|done|cancelled|failed`, `step`/`max_steps` 250, `tainted` +
   `taint_sources` (provenance labels), `autopilot_writes`, tokens, `active_ms`, `stop_reason
   limit_steps|limit_time|limit_tokens|limit_output|repeat|stuck|expired|cancelled|superseded`, `error {error,code,hint}`, `llm_waits`,
   `next_retry_at`, lease `lease_owner/lease_expires_at`; also `awaiting_input` = ended after an `ask_user` card, `superseded` =
@@ -1097,7 +1097,7 @@ Tables (`0070_agent.sql`):
 `awaiting_llm` runs, expires 24 h-old approvals (`expired`, run `done`) and prunes events):
 1. Open step (last assistant message with `tool_use` and no tool message): run its `approved` calls in order; if any call is
    `pending_approval` → run `awaiting_approval` and the executor ends (no open model request); otherwise append the tool message.
-2. Limits: 25 steps, 10 min active time, 400 k tokens per run, 20 autopilot writes, the same tool + args 3× → stop with a
+2. Limits: 250 steps, 60 min active time, 4 M tokens per run, 200 autopilot writes, the same tool + args 3× → stop with a
    `notice` message (`kind` = stop reason; the UI offers 「繼續」 = `POST …/continue`). At the step / time limit the model
    first gets one **wrap-up** call (`toolChoice: "none"`, hidden prompt: what is done, what is left, 「繼續」; tool calls in
    it are dropped). Loop guards (`src/agent/guards.ts`): an identical read repeated once gets a 「完全相同」 note appended to
@@ -1468,7 +1468,7 @@ passed — otherwise `partial` with the reasons and 「繼續改」. The AI assi
 for, asks only when blocked, never adds schedules.
 
 **Execution.** A run is a row in `workflow_runs`; it executes in the **ai-worker** as job `ai_workflow {workflowId}`
-(`src/ai-jobs/workflows/register.ts`, roles `["assistant"]`, concurrency 2, timeout 40 min, `max_attempts` 3,
+(`src/ai-jobs/workflows/register.ts`, roles `["assistant"]`, concurrency 2, timeout 7 h, `max_attempts` 3,
 `created_by` = owner so it shows in the jobs tray with `fileName` 「Agent：<title>」). One job advances the run until it
 must wait (plan approval, input, pause) or ends; every state change is persisted first (steps are the checkpoints), so a
 restarted / reaped job resumes from the database: a step left `running` goes back to `pending` (its attempt counts).
@@ -1485,7 +1485,7 @@ Tables (`0109_workflows.sql`, `0116_workflow_batches.sql`):
   reason?}]`, `plan` jsonb `{summary, outline?: [{n, title, points[]}], writes: [{kind, label}], notes?}`, `inputs` jsonb
   (playbook parameters: `paper_id`, `deck_id`, `project_id`, `note_ids`, `pages`, `language`…), `context` (page context),
   `status` (below), `autopilot`, `tainted` + `taint_sources`, `budget` jsonb `{max_steps, max_calls, max_tokens,
-  max_minutes, max_fix_rounds, concurrency}` (defaults 30 / 60 / 800 000 / 40 / 2 / 3), `usage` jsonb `{steps, calls,
+  max_minutes, max_fix_rounds, concurrency}` (defaults 300 / 600 / 8 000 000 / 240 / 3 / 3; researcher sub-agents run up to 40–80 tool rounds, default 60), `usage` jsonb `{steps, calls,
   tokens_in, tokens_out, active_ms, fix_rounds}`, `artifacts` jsonb `[{kind: deck|note|latex_project|latex_file|paper,
   id, url, title, role: draft|suggestion|primary, preview_url?, revision?}]`, `guidance` jsonb `[{at, text, applied}]`,
   `report` jsonb `{summary_md, done[], issues[], next?}`, `stop_reason`, `error {error, code?, hint?}`, `job_id`,
@@ -1646,7 +1646,7 @@ detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step
 
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
-| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 100 calls / 2 M tokens / 75 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
+| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
 | `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection → integrate → compile-verify (new file) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
 | `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis | new note | `table_rows` ≥ papers, `citations`, judge |
 | `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |

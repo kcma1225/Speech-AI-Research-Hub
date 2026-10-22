@@ -22,7 +22,8 @@ let shim: FastifyInstance | null = null;
 registerAiJob<WorkflowJobPayload>(WORKFLOW_JOB, {
   roles: ["assistant"],
   concurrency: 2,
-  timeoutMs: 45 * 60_000,
+  // Above the largest workflow budget (slides: 360 active minutes); the run budget stops it first.
+  timeoutMs: 7 * 3600_000,
   async run(ctx) {
     if (!ctx.job.payload?.workflowId) return { status: "missing" };
     if (!shim) {

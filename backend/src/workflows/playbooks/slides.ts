@@ -175,7 +175,7 @@ async function paperBrief(env: WorkflowEnv, paper: { id: string; title: string; 
     env.run.request ? `使用者的要求：${env.run.request}` : "",
     fix ? `上一版的問題：\n${fix.issues.map((i) => `- ${i}`).join("\n")}\n請補讀需要的章節後輸出完整的新版本。\n${dataBlock("previous_version", (fix.previous.text ?? "").slice(0, 12_000))}` : "",
   ].filter(Boolean).join("\n\n");
-  const r = await env.researcher({ id: `plan-research`, key: "research" }, { system: systemFor("researcher"), user, tools: ["read_paper", "view_paper_pages", "get_paper"], maxToolSteps: 8, purpose: "research_paper" });
+  const r = await env.researcher({ id: `plan-research`, key: "research" }, { system: systemFor("researcher"), user, tools: ["read_paper", "view_paper_pages", "get_paper"], maxToolSteps: 80, purpose: "research_paper" });
   return { summary: `讀了論文全文（${r.toolCalls} 次工具呼叫），整理研究摘要 ${r.text.length} 字`, text: r.text };
 }
 
