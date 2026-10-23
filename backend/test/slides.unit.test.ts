@@ -170,3 +170,15 @@ describe("outline point cleanup", () => {
     expect(out.endsWith("。")).toBe(true);
   });
 });
+
+describe("expanded outline", () => {
+  it("merges repeated page titles", async () => {
+    const { _test } = await import("../src/workflows/playbooks/slides.js");
+    const o = _test.dedupeOutline([
+      { n: 1, title: "Table 1 現況", points: ["a"] },
+      { n: 2, title: "對帳", points: ["b"] },
+      { n: 3, title: "Table 1 現況", points: ["c"] },
+    ]);
+    expect(o.map((p) => [p.n, p.title, p.points.join()])).toEqual([[1, "Table 1 現況", "a,c"], [2, "對帳", "b"]]);
+  });
+});

@@ -25,7 +25,7 @@ registerAgentTool({
     "writing a thesis/LaTeX section, a literature review, a topic survey (which approaches exist for X), a deep reading note, an experiment report note, meeting preparation, or another task-oriented request. " +
     "An orchestrator gathers context, writes objective + acceptance criteria + a plan (for decks: the page-by-page outline) that the user approves on a card, " +
     "then sub-agents do the parts, every part is verified and fixed, and the result is checked against the objective. Use it when the user asks you to create such a thing " +
-    "(only use create_deck with generate:true when the user explicitly wants a quick one-shot draft). Put the user's request with all agreed details (page count, structure, emphasis, language) in `request`. " +
+    "(only use create_deck with generate:true when the user explicitly wants a quick one-shot draft). Put the user's request with all agreed details (page count, structure, emphasis, language) in `request` — only what the user said or agreed to: never add a language, page count or length the user did not ask for (pass `pages` only when the user gave a number). " +
     "After calling it, end your turn with one short sentence; do not describe results — the card shows progress and the workflow reports back. " +
     "One deck / reading note per paper (「把每一篇文獻都做成簡報」): call it ONCE — pass the study (or all paper_ids) and the request; it creates one run per paper as a batch " +
     "(runs over the limit of 3 working runs queue and start automatically). Papers without a PDF are handled by the workflow (open-access lookup, the record's URL, then it asks or skips) — do not drop them yourself. " +

@@ -504,7 +504,18 @@ export const runLabels = (env: Pick<WorkflowEnv, "run">) => labelsFor(targetLang
 
 // ---------------------------------------------------------------- plan time
 
-type Ctx = { request: string; guidance: string[]; recent: string[]; standing: Omit<Requirement, "id">[]; kind: ArtifactKind; pages?: unknown };
+type Ctx = { request: string; guidance: string[]; recent: string[]; standing: Omit<Requirement, "id">[]; kind: ArtifactKind; pages?: unknown; userWords?: string[] };
+
+/**
+ * The user's own words when the run's request was written by the assistant (a start_workflow call from a chat turn), else
+ * null (the request is the user's: 「交給 Agent」, the API, a plan-card edit). The user's latest turns, newest first, + guidance.
+ */
+export function ownWords(env: Pick<WorkflowEnv, "run">, recent: string[], guidance: string[]): string[] | null {
+  if (!env.run.tool_call_id || !recent.length) return null;
+  const head = env.run.request.replace(/\s+/g, " ").slice(0, 60);
+  if (recent.some((t) => t.replace(/\s+/g, " ").includes(head))) return null;
+  return [...recent.slice(-3).reverse(), ...guidance];
+}
 
 const EXTRACT_SYSTEM = [
   "你從使用者的話裡整理出他對這次成果的「明確要求」，讓後續每一步都遵守、最後逐條驗收。只輸出 JSON。",
@@ -569,9 +580,16 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string): P
   const key = hashOf(JSON.stringify([env.run.request, guidance, standing.list, kind]));
   const prev = env.state<Requirement[]>("requirements");
   if (prev && env.state<string>("requirements_key") === key) return prev;
-  const ctx: Ctx = { request: env.run.request, guidance, recent, standing: standing.list, kind, pages: (env.run.inputs as { pages?: unknown }).pages };
+  // The request of a run the assistant started is ITS paraphrase (production: it added 「所有內容使用繁體中文」 and pages: 12
+  // that the user never said). Single-valued requirements (language, page count) then come from the user's own words only.
+  const userWords = ownWords(env, recent, guidance);
+  const paraphrase = userWords !== null;
+  const inputPages = (env.run.inputs as { pages?: unknown }).pages;
+  const ctx: Ctx = { request: env.run.request, guidance, recent, standing: standing.list, kind, pages: paraphrase && !detectPageCount(userWords!.join("\n")) ? undefined : inputPages, ...(paraphrase ? { userWords: userWords! } : {}) };
+  const fromRequest = detectRequirements(ctx.request, { pages: ctx.pages, kind }).filter((r) => !paraphrase || (r.type !== "language" && r.type !== "page_count"));
+  const fromUser = paraphrase ? userWords!.flatMap((t) => detectRequirements(t, { pages: ctx.pages, kind }).filter((r) => r.type === "language" || r.type === "page_count")) : [];
   const det = [
-    ...detectRequirements(ctx.request, { pages: ctx.pages, kind }).map((r) => ({ ...r, source: "request" as const })),
+    ...[...fromUser, ...fromRequest].map((r) => ({ ...r, source: "request" as const })),
     ...guidance.flatMap((g) => detectRequirements(g, { kind }).map((r) => ({ ...r, source: "guidance" as const }))),
   ];
   // Guidance is newer than the request: its single-valued statements win.
@@ -598,7 +616,8 @@ async function extractWithModel(env: WorkflowEnv, ctx: Ctx): Promise<Omit<Requir
   const res = await env.call({ purpose: "requirements", role: "planner", messages: [{ role: "system", content: EXTRACT_SYSTEM }, { role: "user", content: user }], maxTokens: 2500 });
   const v = parseJson<{ requirements?: unknown[] }>(res.text);
   const list = Array.isArray(v?.requirements) ? v!.requirements : [];
-  const words = [ctx.request, ...ctx.guidance, ...ctx.recent].join("\n");
+  // Grounding: the user's own words (not the assistant's paraphrase) when the request is a paraphrase.
+  const words = (ctx.userWords ?? [ctx.request, ...ctx.guidance, ...ctx.recent]).join("\n");
   // The model may not change what the user's words settle deterministically (language / page count come from the text).
   return list
     .filter((r) => groundedInWords(r, words))

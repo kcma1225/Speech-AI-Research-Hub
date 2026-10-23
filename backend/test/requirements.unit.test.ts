@@ -238,3 +238,16 @@ describe("model-extracted requirements stay grounded in the user's words", () =>
     expect(said.params!.topics!.map((t) => t.name)).toEqual(["限制"]);
   });
 });
+
+describe("assistant paraphrases are not the user's words", () => {
+  it("uses the user's turns when the request was written by the assistant", async () => {
+    const { ownWords } = await import("../src/workflows/requirements.js");
+    const user = "我覺得這個簡報還不夠細，每一頁的重點要寫得更具體";
+    const paraphrase = { run: { tool_call_id: "tc", request: "修改現有進度簡報。所有內容使用繁體中文，保留必要的英文術語。" } } as never;
+    expect(ownWords(paraphrase, [user], [])).toEqual([user]);
+    // 「交給 Agent」 / API: the request is the user's own words.
+    const own = { run: { tool_call_id: "tc", request: user } } as never;
+    expect(ownWords(own, [`（交給 Agent）${user}`], [])).toBeNull();
+    expect(ownWords({ run: { tool_call_id: null, request: "x" } } as never, [user], [])).toBeNull();
+  });
+});

@@ -182,6 +182,18 @@ export function cleanPoint(x: string, max = 240): string {
   return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trim()}…`;
 }
 
+/** Pages with the same (normalized) title merged into the first one, renumbered. */
+export function dedupeOutline(outline: SlideOutline[]): SlideOutline[] {
+  const seen = new Map<string, SlideOutline>();
+  for (const p of outline) {
+    const k = p.title.toLowerCase().replace(/\s+/g, "");
+    const first = seen.get(k);
+    if (first) first.points = [...new Set([...first.points, ...p.points])].slice(0, 6);
+    else seen.set(k, { ...p, points: [...p.points] });
+  }
+  return [...seen.values()].map((p, i) => ({ ...p, n: i + 1 }));
+}
+
 const toOutline = (pages: OutlineJson["pages"], revise = false): SlideOutline[] =>
   pages.map((p, i) => ({ n: i + 1, title: cleanPoint(p.title, 120), points: (p.points ?? []).filter((x) => typeof x === "string").map((x) => cleanPoint(x)).filter(Boolean).slice(0, 6), ...(!revise && (p.student_owned || STUDENT_TITLE_RE.test(p.title)) ? { student_owned: true } : {}), ...(typeof p.item === "string" && p.item.trim() ? { item: p.item.trim().slice(0, 80) } : {}) }));
 
@@ -552,7 +564,8 @@ async function expandOutline(env: WorkflowEnv, src: ReviseSource, brief: string,
   const { value, text } = await env.callJson<OutlineJson>({ purpose: "outline", role: "planner", messages: [{ role: "system", content: systemFor("planner") }, { role: "user", content: user }], maxTokens: 12_000 }, isOutline);
   const pagesJson = value?.pages ?? outlineFromText(text);
   if (!pagesJson.length) return { summary: "大綱不是有效的 JSON", text: "", data: { outline: [], raw: text.slice(0, 2000) } };
-  const outline = toOutline(pagesJson, true);
+  // A page title appears once (production: the expanded outline repeated 「Table 1 現況」「對帳」… → 22 pages for 12).
+  const outline = dedupeOutline(toOutline(pagesJson, true));
   return { summary: `${outline.length} 頁大綱`, text: outline.map((p) => `## ${p.title}\n${p.points.map((x) => `- ${x}`).join("\n")}`).join("\n\n"), data: { outline } };
 }
 
@@ -1093,4 +1106,4 @@ export const slidesPlaybook: WorkflowPlaybook = {
 
 registerWorkflowPlaybook(slidesPlaybook);
 
-export const _test = { cleanPoint, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps };
+export const _test = { cleanPoint, dedupeOutline, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps };
