@@ -65,6 +65,7 @@ export async function goalView(db: Queryable, g: GoalRow) {
     request: g.request,
     objective: g.objective,
     deliverable: g.deliverable,
+    brief: g.brief ? { version: g.brief.version, user_words: g.brief.user_words, requirements: g.brief.requirements, unspecified: g.brief.unspecified } : null,
     status: g.status,
     needs_you: !!action,
     action,

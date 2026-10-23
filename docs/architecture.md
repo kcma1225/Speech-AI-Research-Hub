@@ -1510,11 +1510,12 @@ Approve / resume / guidance / 繼續改 enqueue a new job when none is queued or
 steps get their step attempt back so an outage never reaches the per-step attempt cap; the card shows
 「等待模型恢復」 from the job stage). Sub-agent roles that are unconfigured/unavailable fall back to `assistant`.
 
-Tables (`0109_workflows.sql`, `0116_workflow_batches.sql`, `0117_workflow_goals.sql` → Goals below):
+Tables (`0109_workflows.sql`, `0116_workflow_batches.sql`, `0117_workflow_goals.sql` → Goals below, `0120_workflow_brief.sql` → Brief below):
 - `workflow_runs` — `user_id` (owner; the run acts with exactly their permissions, re-checked before every write),
   `batch_id` + `batch_index` (one run of a batch, below),
   `study_id`, `conversation_id` + `tool_call_id` (the chat that started it; SET NULL), `playbook`, `title`, `request` (the
-  user's words), `objective`, `criteria` jsonb `[{id, text, kind: check|judge, check?, status: pending|pass|fail|skipped,
+  user's words, or the assistant's paraphrase when start_workflow started it — `brief.paraphrase`), `brief` + `brief_versions`
+  (the Brief, below), `objective`, `criteria` jsonb `[{id, text, kind: check|judge, check?, status: pending|pass|fail|skipped,
   reason?}]`, `plan` jsonb `{summary, outline?: [{n, title, points[], item?}], writes: [{kind, label}], notes?, requirements?, edit_kind?: revise|expand, front_title?}` (requirements: see Requirements below), `inputs` jsonb
   (playbook parameters: `paper_id`, `deck_id`, `project_id`, `note_ids`, `pages`, `language`…), `context` (page context),
   `status` (below), `autopilot`, `tainted` + `taint_sources`, `budget` jsonb `{max_steps, max_calls, max_tokens,
@@ -1568,29 +1569,39 @@ the budget):
    `speaker_notes`, `no_placeholder` (〔　〕, 待補, TODO, TBD, lorem, XXX unless allowed), `not_truncated` (unclosed
    `:::`/fences/`\begin`, last slide cut off), `length` (chars/bullets per slide), `sections_present`, `citations`
    (`[@key]` / `\cite{}` keys ∈ the study BibTeX), `equations`, `table_rows`, `chart_blocks` (valid ```chart JSON),
-   `numbers_from_source`, `source_refs`, `render_ok`, `compile_ok`) then, when `verify.judge` and the checks passed, the
-   **verifier** sub-agent (role `analysis`) judges the output against the step's expected output and the run's criteria
-   and answers `{verdict, issues[{severity, confidence 0–1, kind error|missing|unclear, text, where, quote,
-   source_quote}]}`. Any failed check, or an open ledger issue, → **fix round**: the same role gets its previous output
-   + the exact issues (`[i1] where：text（原文：「quote」）`) and returns the full corrected output (≤ `max_fix_rounds`,
-   then the step is `failed` and the run will end `partial`). A fix round whose output is identical to the previous one
-   stops fixing that step (no progress).
-   **Issue ledger** (`src/workflows/ledger.ts`, `workflow_steps.inputs.ledger {reviewed, next, items[{id, status
-   open|fixed|unresolved|invalid, severity, text, where?, quote?, source_quote?, rounds, opened, closed?, evidence?,
-   note?}]}`): the first judged round of a step is a full review whose actionable issues (high/medium, confidence ≥ 0.6)
-   are recorded with stable ids; later rounds of the same step are a **re-check** — the verifier answers per open id
-   `fixed` (evidence quoted from the new version) or still open (the offending text quoted), and may add only **new
-   high** issues (new medium/low ones are shown as low, never fixed). A bare `pass` closes every open issue; an error
-   issue whose quoted text is gone and that the verifier does not re-quote counts as fixed. Pass = checks pass + no
-   open issue. A new draft (a step re-run without fix issues) starts a full review again (closed items stay for the
-   report). **False-positive filter** (deterministic): an issue whose `quote` is not in the output (whitespace /
-   punctuation / Markdown ignored, 「…」 splits, ≥ 80 % 4-gram match for long quotes), whose `source_quote` is not in the
-   sources, an error/unclear issue without a quote, or a self-contradictory text (「第 2 頁而非…第 2 頁」, 「把『A』改為
-   『A』」) is recorded `invalid` (「驗收者判斷無效」) and never fixed. **Convergence guard** (`CONVERGENCE_ROUNDS` = 3): an
-   issue still open after 3 fix rounds is no longer fixed — medium/low → `unresolved` (the step can pass; a report
-   item), high → the step fails now (「同一個問題修正 3 輪仍未解決」). A high issue that would fail the step (its last
-   round, or stuck) first gets one **second opinion** (`purpose verify_second`, `{real, reason}`); `real: false` →
-   `invalid`. 繼續改 re-opens `unresolved` / stuck issues of failed steps with a fresh round count.
+   `numbers_from_source`, `source_refs`, `render_ok`, `compile_ok`) — **checks first, judges second**: only when
+   `verify.judge` and every check passed, the **judge** (role `analysis`, `purpose verify`, `src/workflows/verify.ts`
+   `judgeChecklist`) answers a fixed **YES/NO checklist** of the step's own scope — `task` (what its instructions /
+   expected output name), `grounded` (when it had sources) and the run's judged criteria of **unit** scope (`scopeOf`:
+   `criteria[].scope`, else requirements by type — language, tone, audience, exclude, format — and `grounded` / `assist`
+   / `analysis`; page count, coverage, per-item fields… are **artifact** scope and only the final verification sees
+   them; the step judge also gets only the unit requirements, never the whole request). No holistic score, no "find
+   the gaps". Format `{items[{id, problems[{kind wrong|missing, output_quote, required_quote, source_quote, where,
+   fix}], answer yes|no}]}` — evidence before the verdict. **Source parity**: the judge gets exactly the source blocks
+   its writer got this round (`env.stepSources`, captured from the producer's `<data>` blocks except
+   `previous_version` / `output`; same blocks, same order, no shorter cut — fallback the step brief / run brief /
+   researcher outputs, whole). Every NO is screened deterministically (`ledger.ts screenProblem`): `wrong` needs an
+   `output_quote` that is in the output (whitespace / punctuation / Markdown ignored, 「…」 splits, ≥ 80 % 4-gram match
+   for long quotes), a `source_quote` that is in the sources, and is dropped when the quoted text is in the sources
+   verbatim (「被指為沒有依據的這段在來源中找得到」); `missing` needs a `required_quote` found in the task / checklist /
+   sources, and a `source_quote` showing the sources hold the content — otherwise it is a **「資料未提供」 note**
+   (ledger status `note`, a report item, never a fix); a self-contradictory fix text (「第 2 頁而非…第 2 頁」) is
+   dropped. Dropped ones are `invalid` (「驗收者判斷無效」). Pass = checks pass + no fixable NO. A bare
+   `{"verdict":"pass"}` or an unanswered item counts as YES (no evidence of a failure).
+   **Convergence** (`engine.ts executeStep`, `ledger.ts nextMove / recordRound`, `workflow_steps.inputs.conv {since,
+   rounds[{round, score, total, failures[]}], best{round, score, total, output, verdict, seed?}, stop?}`): every round
+   is scored (checks passed + judged items passed, out of both) and gets a failure signature (failed checks with their
+   detail, fixable problems by item + quote). A failing round gets a **fix round** (the same role, its previous output +
+   the exact problems `[i1] where：text（原文：「quote」）`) unless: the failures are the same as the round before
+   (`same_failure`), the score does not beat the best earlier version (`no_improvement`), or the session's fix rounds
+   are used up (`cap`: `max_rounds`, else `budget.max_fix_rounds` = **2**, hard cap **3**); an identical output stops it
+   too (`unchanged`). A unit that stops without passing **keeps its best-scoring version** (not the last round) as its
+   output and verdict, is `failed`, and its open problems become `unresolved` report items. A session starts with a
+   fresh draft, a final repair (seeded with the version before it: a repair that scores worse gives way to it) or the
+   user's 繼續改. **Issue ledger** (`inputs.ledger {reviewed, next, items[{id, key, status open|fixed|unresolved|
+   invalid|note, severity, text, where?, quote?, rounds, opened, closed?, note?}]}`): fixable problems are `open`
+   until a later round no longer reports them (`fixed`). 繼續改 re-opens `unresolved` items of failed steps with a fresh
+   count.
    Sub-agents see only their brief (never the chat) and cannot delegate (depth 1). A sub-agent that lacks required data
    answers `BLOCKED: <what is missing>` instead of inventing content → the step goes back to `pending` and the
    orchestrator turns the blocker into a **question card** with grounded options (below; `purpose: blocked`, the answer
@@ -1599,31 +1610,44 @@ the budget):
    完成，缺的寫『資料未提供』」 (`BEST_EFFORT_ISSUE`), and the same BLOCKED again (or past the step's fix rounds) fails the
    step instead of looping. Every step has an attempt cap (`attemptCap` = fix rounds + 3; user-driven re-runs —
    「修改答案」, 繼續改 — reset `attempts` to the round). Sub-agent rule: BLOCKED only when nothing can be started; missing
-   details / examples / numbers → 「資料未提供」. The step verifier gets the run's sources (`state.brief` or the researcher
-   outputs) and may only ask for what they contain (「資料未提供」 is correct, not an issue). Researchers: the same read call a
+   details / examples / numbers → 「資料未提供」. Researchers: the same read call a
    third time is not executed (stuck guard). From 50 % of the pooled budget every brief says so (「請直接、精簡」).
    A reply cut off with no text (reasoning models) is retried once with a doubled budget and a nudge.
 4. *Integration* (playbook): writes the artifact — always a **draft or suggestion**, never a direct overwrite of user
    content: a new deck (or the run's own draft deck; a deck the user edited during the run is never overwritten —
    optimistic `baseVersion`, conflict → `partial`), a new note, a new LaTeX section file or a `latex_file` suggestion.
    Each write emits an `artifact` event.
-5. *Final verification* against the objective: every criterion is evaluated (deterministic ones by their check, the
-   rest by the verifier over the integrated artifact, in the order delivery → matches the approved plan → faithful to
-   sources → consistent → usable → no placeholders) and turns `pass`/`fail` on the card. A judged criterion passes only
-   with quoted evidence (`criteria[].evidence`); one the verifier could not judge is `skipped`, never `pass` (the run
-   then ends `partial`). Failing criteria map back to
-   steps and get one more targeted fix round while the budget allows (`final_rounds` ≤ 2), then re-integrate.
-   Final rounds share a ledger (`state.final_ledger {sections: hash[], items: {<id>: {status, evidence?, reason?, fails,
-   invalid?}}}`): a criterion that passed is not judged again when no section (Markdown heading / slide, LaTeX
-   section, else paragraph) changed, and otherwise only against the changed sections (`<changed>`; a fail must quote
-   them, else it keeps its pass). A fail quoting evidence that is not in the artifact or with a self-contradictory
-   reason is asked once more, then `skipped` with 「驗收者判斷無效」 (no repair round is spent on it).
+5. *Final verification* against the objective (`verify.ts verifyCriteria`, `purpose verify_final`): every criterion
+   (the Brief's checklist, `brief.ts checklistOf` — the criteria share its ids) is evaluated — deterministic ones by their
+   check, the rest by the judge over the integrated artifact with the run's whole material (the brief as the writers got
+   it and the approved outline; `<sources>` / `<approved_outline>`), YES/NO with quoted `evidence` first. A fail must be
+   evidence-backed: `wrong` quotes the artifact; `missing` quotes the sources (`source_quote`) — missing content the
+   sources do not hold is a 「資料未提供」 note and the criterion passes with `note`; a fail quoting text that is not in
+   the artifact or with a self-contradictory reason is asked once more, then dropped (the criterion passes with
+   `note` 「驗收者判斷無效」, listed in `report.ledger.invalid`). One the judge could not judge is `skipped` (「未驗收」).
+   **Final repair runs at most once** (`MAX_FINAL_ROUNDS` = 1) and only for failing criteria no repair has targeted yet
+   (`state.repaired_criteria`; the user's 繼續改 clears it): they map back to steps (`pb.repair` / `requirementRepair`),
+   each gets one repair round (+ its own fix when the repair breaks a check; the version before it is the baseline),
+   dependents re-run (decks: `assemble` merges only the pages the writers changed into the current deck and skips the
+   render when nothing changed; the visual QA re-scores only changed pages). Final rounds share a ledger
+   (`state.final_ledger {sections: hash[], items: {<id>: {status, evidence?, reason?, fails, invalid?, note?}}}`): a
+   criterion that passed is not judged again when no section (Markdown heading / slide, LaTeX section, else paragraph)
+   changed, and otherwise only against the changed sections (`<changed>`; a fail must quote them, else it keeps its pass).
+   **Outcome** (`outcomeOf`): `done` = no stop, every criterion `pass` (notes allowed) and no step's kept version fails a
+   deterministic check; a step that stopped only on judged items is a report item, "every step passed" is not required.
+   **Autopilot** never adds a round for unchanged failures: its one automatic 繼續改 only runs for failing criteria no
+   repair has tried (and repairs only those).
 6. *Report*: `report.summary_md` (what was done, verification results, remaining issues, links) + a `notice` message
    (`kind workflow_done|workflow_partial|workflow_failed`) in the conversation + a notification (in-app always, Web Push
-   to the owner). The summary counts the ledger issues (「驗收問題：已修正 n 個、仍未解決 m 個、判定無效 k 個」),
-   `report.ledger {fixed[], unresolved[], invalid[]}` lists them (the card shows them as collapsible groups; a passed
-   step's unresolved items are also in `issues` as 「仍未解決」). `partial` lists the unmet criteria (「未達成」 = failed, 「未驗收」 = never evaluated, e.g. the budget ran out) and offers 「繼續改」 (`POST …/resume {more: true}`: +1 fix round per
-   failed step, +1 final round).
+   to the owner). The summary counts the ledger issues (「驗收問題：已修正 n 個、仍未解決 m 個、判定無效 k 個」), names
+   the units that stopped and why (「停止修正的步驟：…（同樣的問題重複出現，保留第 k 輪的較佳版本）」), lists the
+   「資料未提供」 notes, and has a per-step line (time, fix rounds, kept version and score, stop reason). `report.ledger
+   {fixed[], unresolved[], invalid[], notes?[]}` lists them (the card shows them as collapsible groups; a passed step's
+   unresolved items are also in `issues` as 「仍未解決」); `report.steps[{key, title, status, ms, rounds, best_round?,
+   best_score?, kept_best?, stop?, stop_label?}]`; the step view carries `convergence {rounds, score?, best_round?,
+   best_score?, kept_best?, stop?}` (timeline chip 「同樣的問題重複」…). `partial` lists the unmet criteria (「未達成」 =
+   failed, 「未驗收」 = never evaluated, e.g. the budget ran out) and offers 「繼續改」 (`POST …/resume {more: true}`: +1
+   fix round per failed step, +1 final round).
 Budgets are checked before each dispatch: steps, sub-agent calls, tokens, wall time (`active_ms`); exhaustion → the
 remaining steps are `skipped` and the run integrates what passed and ends `partial` (`stop_reason budget_*`).
 A worker shutdown / lost lease aborts the job without touching the run: interrupted steps go back to `pending` and the
@@ -1632,20 +1656,78 @@ the job's last attempt). Pause: `pause_requested` is honoured between steps (`pa
 `cancelled` + `cancelJob` (the job's signal aborts the current call); drafts already written stay (listed in
 `artifacts`). Guidance (「補充指示」) is appended to every task dispatched after it and to the verifier's criteria.
 
+**The Brief: the one fixed statement of the task** (`src/workflows/brief.ts`, `0120_workflow_brief.sql`). Production
+runs re-interpreted the user's intent at ~7 layers and decks / LaTeX silently became notes (50b49d80, c1b9a129, a3b59ddd);
+now every run (and goal) carries one Brief, built once before any playbook-specific planning and injected into every
+sub-agent call:
+`Brief = {version, deliverable: {kind: deck|note|latex|lit_review|reading_note|other, label, hard: true}, user_words[],
+base, paraphrase, requirements: Requirement[] (each with its verbatim quote), unspecified[], checklist: ChecklistItem[],
+source: start|plan|guidance|edit|clarify|deliverable, clarified?, key?, at}`,
+`ChecklistItem = {id, text, kind: check|judge, check?, requirement_id?, source: user|playbook}`.
+- *Sources*: `user_words` = the user's own turns, verbatim (`collectUserWords`: the conversation's latest user messages
+  since its previous start_workflow / start_goal, ≤ 3, newest kept whole, ≤ 1500 chars; the composer / API request
+  itself) + their guidance, clarifying answers and choices (the autopilot's own 繼續改 guidance lines carry `system: true`
+  and are not the user's words). The assistant's start_workflow / start_goal `request` is stored as `paraphrase` — shown
+  on the plan card as a reference, labelled as such in prompts (`requestLine`), **never a source of requirements**; an
+  assistant-given `pages` is dropped unless the user's words have a page count.
+- *Deliverable (hard)*: from the user's words (`deliverableFromWords`: an explicit target 「整理成筆記」「做成簡報」 first,
+  then `deliverableOf` — 「presentation」 is a deck), else the assistant's request, else the playbook's product. Creation
+  without an explicit playbook picks one that produces it (`playbookFor`: an English "presentation surveying the state of
+  the art" is `slides`, not `topic_research`); `start_workflow` / `start_goal` route on the user's words
+  (`routeWorkflowRequest`). **Invariant** (`switchGuard`, engine `planPhase`): a playbook redirect or the repeated-question
+  fallback to `generic` that would change the kind (notes of different flavours are one family: reading note → topic note
+  is allowed and logged) stops and asks a card `deliverable_<n>` (also under autopilot): 「仍做簡報：用研究的文獻庫與筆記
+  整理」 (slides → `inputs.mode = topic`), 「改做<kind>」 (the user's choice → a new version, source `deliverable`), 「先停下
+  來」 (run `cancelled`, `stop_reason skipped`) or 「其他」 text (→ guidance, plan again).
+- *Requirements*: requirements.ts (below), grounded in `user_words` only; the artifact's standing preferences fill what
+  the user did not restate; language last resort: an English message (≥ 5 English words, no Chinese) → English
+  (`messageLanguage`), a Chinese one sets nothing (繁體中文 is the default). `unspecified` = 語言 (no language), 頁數
+  (decks without a page count), 篇幅 (documents without a length) — shown as 「未指定」, never turned into a requirement
+  (a deck's working page count is a plan note 「頁數：未指定，大綱暫定 N 頁」).
+- *Clarify once* (`clarifyOnce`): the deliverable is genuinely ambiguous (`ambiguousKinds`: the user's newest turn names
+  two incompatible kinds without a sequence, 「整理成簡報或筆記」 → card `clarify_deliverable`, the choice is a new version
+  and picks the producing playbook, `clarifyDeliverable` in planPhase), or a must-have input is genuinely missing (slides:
+  a paper report with no paper given or named → card `clarify_paper`: the study's papers, 「不指定論文：用文獻庫做主題簡報」, 「改做進度報告」, 「其他」 =
+  a title) is ONE card with options before planning; the answer joins `user_words`; at most one clarifying card per run;
+  under autopilot (or skipped) the item goes to `unspecified` and the playbook takes the deliverable-keeping default.
+- *Versions, immutability*: version 0 = the seed written with the run (`insertWorkflows`), 1 = built at planning
+  (`prepareBrief`, before `pb.plan`; the plan's criteria then fill its checklist), later versions only from the user:
+  guidance / 修改 (source `guidance`), plan-card edits of 「你的要求」 or the criteria (`editedBrief`, `edit`), a clarifying
+  answer (`clarify`), a deliverable choice (`deliverable`). A DB trigger (`workflow_brief_guard`) rejects any change to a
+  written version (only its empty checklist may be filled once) and a lower version; earlier versions go to
+  `brief_versions` (≤ 10). Playbooks read it via `env.brief()`; nothing writes it outside brief.ts.
+- *Injection*: `withRequirements` (env.ts) puts `briefBlock` (deliverable, 「使用者的原話」 verbatim, 「使用者沒有指定」;
+  verifiers: judge only by the user's words, requirements and the approved plan) before the requirements block in every
+  model call except those in `NO_REQUIREMENTS` (requirement extraction, goal planning, figure location, the blocked
+  question, topic query planning / selection, visual QA, the step judge `verify`, which gets its own scope's requirements).
+  `taskPrompt` states the step's own scope (`scopeLine`: `inputs.scope`, else the page range of a page-group step 「只寫第
+  1–3 頁（共 3 頁）…不要寫其他頁」, else 「只完成〈title〉這一部分」 for producer steps).
+- *Checklist (verification contract)*: `checklistOf(run)` = `brief.checklist` (ids = `run.criteria` ids; statuses stay in
+  `run.criteria`), else the criteria of a run planned before the Brief.
+- *Goals*: `workflow_goals.brief` (version 1 at planning; deterministic requirements only; a deliverable change via
+  `update_goal` is a new version); the goal's deliverable, language and template come from the user's words
+  (`planGoal {userWords}`); every stage run gets the goal's `user_words` with the request as paraphrase and its own stage
+  deliverable, so a stage's fallback cannot change its kind without asking.
+- *Plan card*: 「任務簡報」 (version, deliverable 「固定」, 「你的原話」, the assistant's summary collapsed, 「未指定」 chips that
+  add a requirement row) above 「你的要求」 (each with 「你說：「…」」 from its quote).
+
 **Requirements: the user's explicit asks as a ledger** (`src/workflows/requirements.ts`, `playbooks/slides-requirements.ts`,
 `0119_artifact_agent_prefs.sql`). Testing one dimension (e.g. the language) used to break others; every explicit
 requirement is now a typed constraint that every step must keep and that is checked on the whole artifact.
-- *Plan time* (`prepareRequirements`, before `pb.plan`, also after a redirect; recomputed only when the request, the
-  guidance or the standing preferences changed): deterministic detection on the request and every guidance line
+- *Plan time* (`prepareRequirements` inside `prepareBrief`, before `pb.plan`, also after a redirect; recomputed only when
+  the user's words, the guidance or the standing preferences changed): deterministic detection on the Brief's start words
+  (the user's own turns — never the assistant's paraphrase; each item keeps its `quote`) and every guidance line
   (`detectLanguage` 「整份改成英文」「我整個簡報要用英文」「in English」 — 「專有名詞保留英文」 is not a language request;
   `detectPageCount` exact / range / at least / at most, inputs.pages wins; `detectPerItemFields` 「每個方法要有架構、
   Pros/Cons」「for each method include …」 with bilingual field aliases (Pros ⇄ 優點 / Advantages, Cons ⇄ 缺點 / Limitations,
   架構 ⇄ Architecture…); `detectExclude` 「刪掉第 3 頁」「拿掉「卡住」這頁」) + one model call (`purpose requirements`, no
   retry; `include_topics` with aliases, `per_item_fields` items, audience / tone / length / format / other — it may not
-  set language or page count) + the language of recent user turns of the conversation + the target artifact's
+  set language or page count; its items must quote the user's words verbatim, `groundedInWords`) + (runs without a Brief)
+  the language of recent user turns of the conversation + the target artifact's
   **standing preferences** (`decks|notes|latex_projects.agent_prefs {requirements, run_id, updated_at}`; an artifact without
   any whose content is English (`inferLanguage`) keeps English). Merge order (single-valued types: first wins): the
-  user's plan-card edits → deterministic (guidance before request) → model → recent chat → standing. Types: `language`
+  user's plan-card edits → deterministic (guidance before request) → model → recent chat → standing → the message's
+  language (`messageLanguage`). Types: `language`
   (`en` | `zh`), `page_count`, `include_topics`, `exclude`, `per_item_fields`, `audience`, `tone`, `length`, `format`,
   `other`; `source` request | guidance | conversation | standing | user. Stored in `state.requirements` and shown as
   `plan.requirements` (plan card 「你的要求」 with 「沿用」 for standing ones; autopilot cards list them too).
@@ -1771,7 +1853,19 @@ the hub except the open-world search query rules of the assistant.
 detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step, env), integrate(env), finalize?(env)}`).
 `plan()` returns a plan, a question, `needs_pdf`, `skip`, or `redirect {playbook, message}` — another playbook fits
 better (a topic survey asked as a reading note): the engine switches `workflow_runs.playbook` once, logs the message and
-plans with it.
+plans with it — only when the new playbook delivers the Brief's kind, else it asks (Brief → `switchGuard`).
+
+**Slides: which deck** (`deckModeOf`, on the user's words): an explicit progress report (`PROGRESS_RE`: 進度, 週報, 組會,
+progress, weekly) → `progress`; a report on ONE paper (`PAPER_REPORT_RE`: 論文報告, 這篇論文, paper report, journal club,
+present this paper, an arXiv id), or a paper given / named while the words are not about a subject → `paper_report`
+(none given → the `clarify_paper` card); a deck about a subject (`TOPIC_DECK_RE` / `isTopicRequest`: about, 關於, 介紹,
+methods, approaches, survey, literature, 文獻…) → **topic deck**; else `progress`. A word such as "paper title" never
+forces a paper report and the study's only paper is not a reason for one (its fallback pick is forgotten). Topic decks
+(minimal; a full topic pipeline with online search is P2): stored as a `progress`-kind deck with `state.deck_style =
+topic`, `TOPIC_RULES` instead of Lab-Hub's fixed pages (no student-owned pages), research = the study's library (≤ 30
+papers: title, year, venue, abstract) + its newest research / reading notes + progress data (`topicContext`), default 10
+pages, title from the user's words (`topicTitleOf`), grounded criterion against the library; the plan note says no
+online search is done and suggests 「主題調研」 first when needed.
 
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
@@ -1900,23 +1994,28 @@ materialises it into the deck tree:
 - Theme: generated decks add `css: hub-deck.css` (written into the tree, rewritten while it is still the generated
   theme): title 40 px, body 26 px, tables 22 px, captions 16 px at 1280×800; `.columns`, `.takeaway`, `.big-number(-label)`,
   `.figure-frame`, blockquote claim, `img.hub-diagram/.hub-chart` (max-height 600 px).
-- `visual_qa` (after the notes pass, before final, ≤ 3 rounds, `max_rounds: 0` so the engine does not re-run it on its
-  own): render with `shots: true` → per page the worker's layout metrics + (when vision) the verifier scoring batches of
-  6 screenshots on readability / crowding / layout / visual / diagrams / overflow / consistency / professional (1–5;
-  pass = all ≥ 3, mean ≥ 4 and no `high`-severity issue). A metric issue always fails the page: raw diagram code, Mermaid
-  error, overflow > 6 px on any edge, labels outside their box, HTML font < 16 px, diagram/chart text rendered < 16 px,
-  an empty band > 35 % of the body (content pages), > 75 words, > 6 bullets; so do source issues (`sourceIssues`: a chart
-  and a table sharing ≥ 2 numbers on one slide, 「資料未提供」/N/A on the slide, a result / ablation page without the
-  paper's numbers, a comparison diagram whose boxes hold sentences, a diagram that would render < 16 px in its slide box,
-  the same paper figure on two slides, two or more paper figures on one slide) and verifier issues naming a defect (`DEFECT_RE`: cut-off figure/text, raw
-  code, unrendered markup, overflow, body text in a crop, duplicated presentation). Text-only pages beyond the 60 % visual
-  share fail too. Every failing page gets issue-specific fix instructions (`fixFor`) plus the verifier's own; it goes back
-  to a writer (`replaceSlides`, titles unchanged) and the deck is re-rendered; a broken render keeps the last good body.
-  Student-owned / title pages fail only on rendering problems. Without vision the step title says so and only metrics are
-  used (a verifier that returns nothing is logged, and those pages show 「通過（僅量測）」 with no score); a capture that
-  returns no screenshots is retried once, and a final round without screenshots fails criterion `visual_qa` (`unseen`). State `deck.qa` (`{round, scores[], vision, failed[]}`) feeds
-  criterion `visual_qa`; the per-page score table is appended to the report, so pages still failing after 3 rounds are
-  listed honestly.
+- `visual_qa` (after the notes pass, before final; **per page, not an all-pages gate**; ≤ 3 scoring cycles, each page
+  rewritten at most `QA_PAGE_FIXES` = 2 times; `max_rounds: 0` so the engine does not re-run it on its own): render with
+  `shots: true` → the worker's layout metrics for every page + (when vision) the verifier scoring the screenshots of
+  **only the pages whose source changed** since they were scored (`pagesToScore`: verdicts cached by `pageHash`
+  (title + visible body; notes are not on the screenshot) in `state.visual_qa {cache, fixes, best}`; unchanged pages
+  keep their verdict, also across a repair re-run) in batches of 6 on readability / crowding / layout / visual /
+  diagrams / overflow / consistency / professional (1–5; pass = all ≥ 3, mean ≥ 4 and no `high`-severity issue).
+  `combineScores`: **hard** problems fail the page whatever the score — raw diagram code, Mermaid error, overflow > 6 px,
+  labels outside their box, HTML font < 16 px, diagram/chart text < 16 px, a severe empty band (> 60 %), > 120 words,
+  and verifier issues naming a defect (`DEFECT_RE`: cut-off figure/text, raw code, unrendered markup, overflow, body
+  text in a crop, duplicated presentation). **Soft** metric signals (an empty band of 35–60 %, > 75 words, > 6
+  bullets) fail a page only when no passing vision score outweighs them (a 4.9/5 page never fails on a borderline empty
+  band alone; the issue stays in the score table); without vision the metrics decide. Source issues (`sourceIssues`: a
+  chart and a table sharing ≥ 2 numbers, 「資料未提供」/N/A on the slide, a result page without the paper's numbers, a
+  comparison diagram of sentences, a diagram < 16 px in its box, the same paper figure twice, two paper figures on one
+  slide) and text-only pages beyond the 60 % visual share fail the page (soft: fixed, not gating). Failing pages with
+  rewrites left get issue-specific fix instructions (`fixFor`) plus the verifier's own and go back to a writer
+  (`replaceSlides`, titles unchanged); a rewrite that scores worse than the page's best version is rolled back to it;
+  a broken render keeps the last good body. Student-owned / title pages fail only on rendering problems. A capture that
+  returns no screenshots is retried once, and a final round without screenshots fails criterion `visual_qa`
+  (`unseen`). State `deck.qa` (`{round, scores[], vision, failed[] = hard, soft[]}`) feeds criterion `visual_qa`, which
+  fails **only on hard defects**; soft pages left are named in its detail and the per-page score table in the report.
 
 **Goals: deliverable-first roadmaps** (`src/workflows/goals/`, table `workflow_goals` (`0117_workflow_goals.sql`),
 `workflow_runs.goal_id` + `goal_stage`; routes `routes/goals.ts`). One request → one fixed **deliverable** (`paper` = a
@@ -1984,7 +2083,7 @@ silently substituted: when no playbook produces it, `deliverable.direct = false`
 | Method & path | Access | Notes |
 |---|---|---|
 | POST `/goals` `{request ≤ 4000, deliverable?, playbook?, conversation_id?, context?, inputs?: {study?, paper_id?, project_id?, note_ids?}, autopilot?}` | user | plans → 201 `{goal: GoalView, workflow: null}` or, for one stage, `{goal: null, workflow: WorkflowView}` |
-| GET `/goals?conversation=&active=1&limit=` · GET `/goals/:id` | owner | `{goals}` / `{goal}`; `GoalView = {id, title, request, objective, deliverable, status, needs_you, action: approve_plan\|answer\|null, question, stages: (Stage & {playbook_title(_en), run_status, gaps[]})[], current, autopilot, readiness: string[], planner, history[≤ 20], report, conversation_id, study, finished, …timestamps}` (a stage's status follows its run live: waiting ⇄ running) |
+| GET `/goals?conversation=&active=1&limit=` · GET `/goals/:id` | owner | `{goals}` / `{goal}`; `GoalView = {id, title, request, objective, deliverable, brief: {version, user_words, requirements, unspecified} | null, status, needs_you, action: approve_plan\|answer\|null, question, stages: (Stage & {playbook_title(_en), run_status, gaps[]})[], current, autopilot, readiness: string[], planner, history[≤ 20], report, conversation_id, study, finished, …timestamps}` (a stage's status follows its run live: waiting ⇄ running) |
 | POST `/goals/:id/approve` `{stages?}` | owner | only `awaiting_approval` (409) → the first pending stage starts → `{goal}` |
 | PUT `/goals/:id/stages` `{stages: [{id?, playbook?, title?, request?, why?, skip?}] ≤ 8}` | owner | edits the stages that have not started (400 unknown playbook / empty request / > 8) |
 | POST `/goals/:id/resume` `{action: retry\|skip}` | owner | only `awaiting_input` (409) |
@@ -1994,7 +2093,9 @@ silently substituted: when no playbook produces it, `deliverable.direct = false`
 **Chat integration.** The assistant prompt (`WORKFLOW_RULES`) says: for multi-step creation, propose and call
 `start_workflow` instead of producing the result in one reply; for a quick one-shot draft only when the user explicitly
 asks for it (`create_deck {generate: true}` stays as that fast path). Tools: `start_workflow {request, playbook?, study?,
-paper_id?, deck_id?, project_id?, note_ids?, paper_ids? ≤ 10, pages?}` (its description routes topic / survey requests to
+paper_id?, deck_id?, project_id?, note_ids?, paper_ids? ≤ 10, pages?}` (`request` = the assistant's short summary; the
+tool passes the user's own chat turns verbatim as the Brief's `user_words` and the prompt tells the model not to add a
+language, page count, length, structure or format the user did not state; its description routes topic / survey requests to
 `topic_research`, never reading_note / lit_review; risk read: it only plans; nothing is written
 before the plan is approved — by the user, or by autopilot for draft-only plans; not on MCP; study/paper default to the
 conversation's context) → `{workflow_id, status, playbook}` or, for a batch, `{batch_id, workflow_ids, workflows:
@@ -2029,6 +2130,7 @@ type WorkflowStatus = "queued"|"planning"|"awaiting_plan_approval"|"running"|"ve
 type WorkflowView = { id, title, playbook, playbook_title, playbook_title_en, status, request, objective,
   criteria: {id, text, kind, status: "pending"|"pass"|"fail"|"skipped", reason?}[],
   plan: { summary, outline?: {n, title, points: string[]}[], writes: {kind, label}[], notes? } | null,
+  brief: {version, deliverable: {kind, label, hard}, user_words: string[], paraphrase, requirements, unspecified: string[], source} | null,
   study: {id, slug, title} | null, conversation_id, autopilot, tainted, taint_sources: string[],
   budget, usage: {steps, calls, tokens_in, tokens_out, active_ms, fix_rounds}, artifacts: Artifact[],
   guidance: {at, text, applied}[], report: {summary_md, done: string[], issues: string[]} | null, stop_reason, error,
@@ -2297,7 +2399,11 @@ fallbackIndex, routeId}` (`routeId` = deprecated alias of `groupId ?? ""`). Embe
 of one logical call share `call_id`; `final` marks the outcome (an extra final row without a member when every member
 failed: `error_code llm_unavailable`). Columns: role, capability, `group_id` (group holding the member; null for a
 direct binding), `model_ref`, provider/kind/model, stream, started_at, latency_ms, ttft_ms, tokens in/out, ok,
-error_code, retries, fallback_index, job_id, user_id. Buffered inserts; kept 90 days. Stats: per role (final rows) and
+error_code, retries, fallback_index, job_id, user_id, and (`0121_ai_call_log_purpose.sql`) `purpose` (what the call was
+for: `write_slides`, `verify`, `verify_final`, `visual_qa`, `research_paper`…; every workflow call sets it, other
+callers may leave it null), `workflow_id`, `step_key` and `round` (the step's fix round) — so a run's cost splits by
+phase (draft / judge / fix / vision) and step (`SELECT purpose, step_key, round, count(*), sum(latency_ms) FROM
+ai_call_log WHERE workflow_id=$1 AND final GROUP BY 1,2,3`). Buffered inserts; kept 90 days. Stats: per role (final rows) and
 per provider/model/`model_ref` (all rows): calls, success rate, p50/p95, TTFT p50, tokens, retries, fallbacks,
 `last_used`; error distribution; time series.
 

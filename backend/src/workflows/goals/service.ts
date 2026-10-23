@@ -19,6 +19,12 @@ import { goalNotice, moveOn, newStageId, nextPending, startStage } from "./advan
 import { MAX_STAGES, planGoal } from "./planner.js";
 import { getGoal, goalLog, goalView, saveGoal } from "./store.js";
 import { GOAL_ACTIVE, GOAL_FINISHED, type GoalPlan, type GoalRow, type Stage } from "./types.js";
+import { briefKindOf, goalBrief, playbookKind, saveBrief } from "../brief.js";
+import { detectRequirements } from "../requirements.js";
+
+/** The goal's Brief from its plan (deliverable kind fixed by the planner; requirements from the user's words only). */
+const briefOfPlan = (request: string, userWords: string[] | null | undefined, plan: GoalPlan, prev?: GoalRow["brief"]) =>
+  goalBrief(request, userWords, { kind: briefKindOf(plan.deliverable.kind), label: plan.deliverable.label }, (t) => detectRequirements(t, { kind: plan.deliverable.kind === "deck" ? "deck" : plan.deliverable.kind === "paper" || plan.deliverable.kind === "paper_section" ? "latex" : "doc" }), prev);
 
 /** Tests replace the planner's model (null = templates only). */
 let modelOverride: ModelPort | null | undefined;
@@ -59,10 +65,12 @@ export async function createGoal(app: FastifyInstance, user: CurrentUser, input:
   if (!studyRef) studyRef = (await studyFromText(app.db, user, input.request)) ?? undefined;
   const studyId = studyRef ? (await loadStudyAccess(app.db, studyRef, user)).study.id : null;
   const readiness = await readinessOf(app.db, studyId);
-  const plan = await planGoal(goalModel(app), user.id, { request: input.request, readiness, inputs: (input.inputs ?? {}) as Record<string, unknown>, playbook: input.playbook, deliverable: input.deliverable });
+  const plan = await planGoal(goalModel(app), user.id, { request: input.request, readiness, inputs: (input.inputs ?? {}) as Record<string, unknown>, playbook: input.playbook, deliverable: input.deliverable, userWords: input.userWords });
   if (plan.stages.length === 1) {
     const only = plan.stages[0]!;
-    const out = await transaction(app.db, (client) => insertWorkflows(client, user, { ...input, playbook: only.playbook, context: ctx }));
+    // The one stage produces the deliverable (validStages): the run's Brief keeps the goal's deliverable label.
+    const deliverable = playbookKind(only.playbook) === briefKindOf(plan.deliverable.kind) ? { kind: briefKindOf(plan.deliverable.kind), label: plan.deliverable.label } : null;
+    const out = await transaction(app.db, (client) => insertWorkflows(client, user, { ...input, playbook: only.playbook, context: ctx, briefDeliverable: deliverable }));
     await announceRuns(app.db, out.runs);
     return { kind: "workflow", runs: out.runs, batchId: out.batchId };
   }
@@ -70,9 +78,9 @@ export async function createGoal(app: FastifyInstance, user: CurrentUser, input:
   const auto = autoRoadmap(!!input.autopilot, stages);
   const { goal, started } = await transaction(app.db, async (client) => {
     const row = (await client.query<GoalRow>(
-      `INSERT INTO workflow_goals(user_id,study_id,conversation_id,tool_call_id,title,request,objective,deliverable,status,stages,autopilot,context,readiness,state)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,'awaiting_approval',$9,$10,$11,$12,$13) RETURNING *`,
-      [user.id, studyId, input.conversationId ?? null, input.toolCallId ?? null, plan.title.slice(0, 160), input.request.slice(0, 4000), plan.objective, JSON.stringify(plan.deliverable), JSON.stringify(stages), !!input.autopilot, JSON.stringify(ctx), JSON.stringify(readiness), JSON.stringify({ template: plan.template, planner: plan.planner, replans: 0, rounds: {} })],
+      `INSERT INTO workflow_goals(user_id,study_id,conversation_id,tool_call_id,title,request,objective,deliverable,status,stages,autopilot,context,readiness,state,brief)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,'awaiting_approval',$9,$10,$11,$12,$13,$14) RETURNING *`,
+      [user.id, studyId, input.conversationId ?? null, input.toolCallId ?? null, plan.title.slice(0, 160), input.request.slice(0, 4000), plan.objective, JSON.stringify(plan.deliverable), JSON.stringify(stages), !!input.autopilot, JSON.stringify(ctx), JSON.stringify(readiness), JSON.stringify({ template: plan.template, planner: plan.planner, replans: 0, rounds: {} }), JSON.stringify(briefOfPlan(input.request, input.userWords, plan))],
     )).rows[0]!;
     await goalLog(client, row.id, "plan", `擬好 ${stages.length} 個階段的路線圖（${plan.planner === "llm" ? "由規劃者依準備狀況排出" : "依常見做法的範本"}），最終成果：${plan.deliverable.label}。`);
     if (!auto) return { goal: row, started: [] as RunRow[] };
@@ -162,7 +170,7 @@ export async function resumeGoal(app: FastifyInstance, user: CurrentUser, id: st
  * outputs are inputs of the new roadmap), the rest is re-planned for the new deliverable; the new roadmap waits for
  * the user's approval unless a stage is running (it then continues with the new roadmap).
  */
-export async function updateGoal(app: FastifyInstance, user: CurrentUser, id: string, input: { request: string; deliverable?: DeliverableKind | null }) {
+export async function updateGoal(app: FastifyInstance, user: CurrentUser, id: string, input: { request: string; deliverable?: DeliverableKind | null; userWords?: string[] | null }) {
   const g = await ownGoal(app.db, user, id);
   if (g.status === "cancelled") throw conflict("這個目標已經停止，請開始一個新的。");
   // The same deliverable again (「最後要給我一個 latex 論文」 while the paper goal waits): the roadmap already ends with it.
@@ -173,7 +181,7 @@ export async function updateGoal(app: FastifyInstance, user: CurrentUser, id: st
   }
   const readiness = await readinessOf(app.db, g.study_id);
   const request = `${g.request}\n\n（使用者更新了目標）${input.request}`.slice(0, 4000);
-  const plan = await planGoal(goalModel(app), user.id, { request: input.request.length > 20 ? `${input.request}\n（原本的目標：${g.request.slice(0, 600)}）` : `${g.request}\n${input.request}`, readiness, deliverable: input.deliverable });
+  const plan = await planGoal(goalModel(app), user.id, { request: input.request.length > 20 ? `${input.request}\n（原本的目標：${g.request.slice(0, 600)}）` : `${g.request}\n${input.request}`, readiness, deliverable: input.deliverable, userWords: input.userWords });
   await transaction(app.db, async (client) => {
     const cur = await ownGoal(client, user, id, true);
     const kept = cur.stages.filter((s) => s.status !== "pending");
@@ -184,6 +192,8 @@ export async function updateGoal(app: FastifyInstance, user: CurrentUser, id: st
     const working = kept.some((s) => s.status === "running" || s.status === "waiting");
     const status = working ? "running" : "awaiting_approval";
     await saveGoal(client, cur.id, { request, deliverable: plan.deliverable, objective: plan.objective, title: plan.title.slice(0, 160), stages, readiness, status, question: null, report: null, finished_at: null });
+    // The user changed the deliverable: a new version of the goal's Brief (their new words added).
+    await saveBrief(client, cur.id, briefOfPlan(input.request, input.userWords, plan, cur.brief ?? null), "workflow_goals");
     await goalLog(client, cur.id, "update", `最終成果改為「${plan.deliverable.label}」，重新排了剩下的 ${fresh.length} 個階段${working ? "（目前的階段完成後接著做）" : "，請確認後按「開始」"}。`);
   });
   const after = (await getGoal(app.db, id))!;

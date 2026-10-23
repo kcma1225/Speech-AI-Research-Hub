@@ -21,7 +21,17 @@
   let outline = $state<EditableOutline>([]);
   let criteria = $state<{ id?: string; text: string }[]>([]);
   // 「你的要求」: typed requirements (language, pages, topics…); `standing` ones are kept from the artifact (沿用).
-  let reqs = $state<{ id?: string; type?: string; text: string; source?: string }[]>([]);
+  let reqs = $state<{ id?: string; type?: string; text: string; source?: string; quote?: string }[]>([]);
+  // The Brief (backend brief.ts): deliverable + the user's own words + what they left unspecified (read-only here).
+  const brief = $derived(workflow.brief ?? null);
+  const kindLabel = $derived(brief ? (hasMessage(`wf.brief.kind.${brief.deliverable.kind}`) ? t(`wf.brief.kind.${brief.deliverable.kind}` as MessageKey) : brief.deliverable.label) : "");
+  const UNSPEC: Record<string, string> = { 語言: "language", 頁數: "pages", 篇幅: "length", 要報告的論文: "paper" };
+  const unspecLabel = (u: string) => (UNSPEC[u] ? t(`wf.brief.unspec.${UNSPEC[u]}` as MessageKey) : u);
+  // 「未指定」 → a new requirement row the user fills in (「頁數：」).
+  function specify(u: string) {
+    reqs = [...reqs, { text: `${unspecLabel(u)}：` }];
+    requestAnimationFrame(() => document.getElementById(`wf-req-${workflow.id}-${reqs.length - 1}`)?.focus());
+  }
   const reqType = (type?: string) => (hasMessage(`wf.req.type.${type ?? "other"}`) ? `wf.req.type.${type ?? "other"}` : "wf.req.type.other") as MessageKey;
   const ownCriteria = $derived(workflow.criteria.filter((c) => !c.id.startsWith("req_")));
   let stepEdits = $state<Record<string, { instructions: string; skip: boolean }>>({});
@@ -40,7 +50,7 @@
     seeded = key;
     outline = (workflow.plan?.outline ?? []).map((p) => ({ title: p.title, points: [...p.points] }));
     criteria = ownCriteria.map((c) => ({ id: c.id, text: c.text }));
-    reqs = (workflow.plan?.requirements ?? []).map((r) => ({ id: r.id, type: r.type, text: r.text, source: r.source }));
+    reqs = (workflow.plan?.requirements ?? []).map((r) => ({ id: r.id, type: r.type, text: r.text, source: r.source, quote: r.quote }));
     stepEdits = Object.fromEntries(steps.filter((s) => s.kind === "task").map((s) => [s.key, { instructions: s.instructions, skip: false }]));
   });
 
@@ -96,6 +106,44 @@
     {#if workflow.plan?.notes}<p class="mt-1 text-[12.5px] text-[var(--pill-peach-ink)]">{workflow.plan.notes}</p>{/if}
   </div>
 
+  {#if brief}
+    <div data-wf-brief class="flex max-w-[52rem] flex-col gap-2 rounded-xl border border-line bg-surface p-2.5 sm:p-3">
+      <div class="flex flex-wrap items-baseline gap-x-2">
+        <p class="text-[13px] font-semibold text-ink">{t("wf.brief.title")}</p>
+        <span class="text-[11.5px] text-ink-3 tabular-nums">{t("wf.brief.version", { n: brief.version })}</span>
+      </div>
+      <p class="-mt-1 text-[12px] text-ink-3">{t("wf.brief.hint")}</p>
+      <p class="text-[13px] text-ink-2"><span class="font-medium text-ink">{t("wf.brief.deliverable")}：</span>{kindLabel}<span class="ml-1 text-[12px] text-ink-3">{t("wf.brief.hard")}</span></p>
+      {#if brief.user_words.length}
+        <div>
+          <p class="mb-1 text-[12.5px] font-medium text-ink">{t("wf.brief.words")}</p>
+          <ul class="flex flex-col gap-1">
+            {#each brief.user_words as w, i (i)}
+              <li class="border-l-2 border-[var(--pill-butter-ink)]/50 pl-2.5 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-ink">「{w}」</li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+      {#if brief.paraphrase}
+        <details class="text-[12.5px] text-ink-3">
+          <summary class="min-h-9 cursor-pointer py-2">{t("wf.brief.paraphrase")}</summary>
+          <p class="break-words whitespace-pre-wrap">{brief.paraphrase}</p>
+        </details>
+      {/if}
+      {#if brief.unspecified.length}
+        <div>
+          <p class="text-[12.5px] font-medium text-ink">{t("wf.brief.unspecified")}</p>
+          <p class="mb-1 text-[12px] text-ink-3">{t("wf.brief.unspecifiedHint")}</p>
+          <div class="flex flex-wrap gap-1.5">
+            {#each brief.unspecified as u (u)}
+              <button type="button" class="inline-flex min-h-9 items-center gap-1 rounded-full border border-dashed border-line-2 px-3 text-[12.5px] text-ink-2 hover:border-ink hover:text-ink" onclick={() => specify(u)}><Plus class="size-3.5" />{unspecLabel(u)}：{t("wf.brief.unset")}</button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
   <div data-wf-requirements>
     <p class="text-[13px] font-semibold text-ink">{t("wf.req.title")}</p>
     <p class="mb-2 text-[12px] text-ink-3">{t("wf.req.hint")}</p>
@@ -111,6 +159,7 @@
           <textarea id="wf-req-{workflow.id}-{i}" rows="1" class="point min-h-10 min-w-0 flex-1 resize-none rounded-lg border border-transparent bg-transparent px-2 py-2 text-[13.5px] leading-snug text-ink outline-none hover:border-line focus:border-ink" bind:value={r.text} placeholder={t("wf.req.placeholder")} onkeydown={(e) => e.key === "Enter" && !e.isComposing && e.preventDefault()}></textarea>
           <button type="button" class="grid size-9 shrink-0 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink" aria-label={t("wf.req.remove")} onclick={() => (reqs = reqs.filter((__, k) => k !== i))}><X class="size-3.5" /></button>
         </li>
+        {#if r.quote}<li class="-mt-1 pl-[4.25rem] text-[11.5px] break-words text-ink-3">{t("wf.req.quote", { quote: r.quote })}</li>{/if}
       {/each}
     </ul>
     {#if reqs.length < 12}<button type="button" class="mt-1 inline-flex min-h-9 items-center gap-1 rounded-full px-2 text-[12.5px] text-ink-3 hover:bg-surface-3 hover:text-ink" onclick={() => (reqs = [...reqs, { text: "" }])}><Plus class="size-3.5" />{t("wf.req.add")}</button>{/if}

@@ -19,6 +19,7 @@
     {@const working = step.status === "running" || step.status === "verifying"}
     {@const fixedCount = (step.ledger ?? []).filter((i) => i.status === "fixed").length}
     {@const unresolvedCount = (step.ledger ?? []).filter((i) => i.status === "unresolved").length}
+    {@const conv = step.convergence}
     <li class="step rounded-2xl {working ? 'bg-surface-2' : ''}" data-status={step.status}>
       <button
         type="button"
@@ -47,6 +48,7 @@
             {/if}
             {#if fixedCount && !working}<span class="chip led-fixed">{t("wf.ledger.fixed")} {fixedCount}</span>{/if}
             {#if unresolvedCount && !working}<span class="chip led-unresolved">{t("wf.ledger.unresolved")} {unresolvedCount}</span>{/if}
+            {#if conv?.stop && conv.stop !== "converged" && !working}<span class="chip chip-butter" title={conv.kept_best ? t("wf.keptBest", { n: conv.best_round ?? 0, score: conv.best_score ?? "" }) : undefined}>{t(`wf.stop.${conv.stop}` as MessageKey)}</span>{/if}
           </span>
           {#if working && live}
             <span class="live mt-0.5 block truncate text-[12px] text-ink-2" aria-live="polite">{t("wf.activity", { text: live.text })}</span>
@@ -101,6 +103,9 @@
           {/if}
           {#if step.history.length > 1}
             <p class="text-ink-3">{t("wf.rounds", { n: step.history.length - 1 })}：{step.history.map((h) => (h.verdict.verdict === "pass" ? "✓" : "✗")).join(" → ")}</p>
+          {/if}
+          {#if conv?.stop && conv.stop !== "converged"}
+            <p class="text-ink-3">{t(`wf.stop.${conv.stop}` as MessageKey)}{#if conv.kept_best}{t("wf.keptBestSep")}{t("wf.keptBest", { n: conv.best_round ?? 0, score: conv.best_score ?? "" })}{/if}</p>
           {/if}
           {#if step.output?.excerpt}
             <pre class="max-h-48 overflow-auto rounded-lg bg-surface-2 p-2 text-[12px] leading-relaxed whitespace-pre-wrap">{step.output.excerpt}</pre>
@@ -176,6 +181,10 @@
   .led-invalid {
     background: var(--surface-3);
     color: var(--ink-3);
+  }
+  .led-note {
+    background: var(--pill-sky);
+    color: var(--pill-sky-ink);
   }
   .sev {
     margin-top: 6px;

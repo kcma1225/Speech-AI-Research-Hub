@@ -37,13 +37,19 @@ export type CallLogRow = {
   fallback_index: number;
   job_id: string | null;
   user_id: string | null;
+  /** What the call was for (workflow calls: write_slides, verify, visual_qa…), its run, step key and fix round. */
+  purpose: string | null;
+  workflow_id: string | null;
+  step_key: string | null;
+  round: number | null;
 };
 
-export type CallContext = { userId?: string | null; jobId?: string | null };
+export type CallContext = { userId?: string | null; jobId?: string | null; purpose?: string | null; workflowId?: string | null; stepKey?: string | null; round?: number | null };
 
 const COLS: (keyof CallLogRow)[] = [
   "call_id", "final", "role", "capability", "group_id", "model_ref", "provider_id", "provider_kind", "model", "stream", "probe", "started_at",
   "latency_ms", "ttft_ms", "tokens_in", "tokens_out", "ok", "error_code", "retries", "fallback_index", "job_id", "user_id",
+  "purpose", "workflow_id", "step_key", "round",
 ];
 
 export class CallLogger {
@@ -119,6 +125,10 @@ export class CallRecorder {
       fallback_index: 0,
       job_id: this.base.ctx?.jobId ?? null,
       user_id: this.base.ctx?.userId ?? null,
+      purpose: this.base.ctx?.purpose?.slice(0, 80) ?? null,
+      workflow_id: this.base.ctx?.workflowId ?? null,
+      step_key: this.base.ctx?.stepKey?.slice(0, 80) ?? null,
+      round: typeof this.base.ctx?.round === "number" ? this.base.ctx.round : null,
       ...o,
     };
   }

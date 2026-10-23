@@ -45,6 +45,8 @@ export type GoalRow = {
   autopilot: boolean; context: Record<string, unknown>; readiness: Readiness | null;
   state: { template?: string | null; replans?: number; rounds?: Record<string, number>; planner?: "template" | "llm" };
   history: { at: string; kind: string; text: string }[]; question: string | null;
+  /** The goal's fixed Brief (brief.ts): deliverable, the user's words, their deterministic requirements. */
+  brief?: import("../brief.js").Brief | null;
   report: { summary_md: string; done: string[]; issues: string[] } | null;
   created_at: string; updated_at: string; finished_at: string | null;
 };

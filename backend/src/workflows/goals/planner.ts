@@ -15,6 +15,7 @@ import {
   type DeliverableKind, type Readiness,
 } from "./capabilities.js";
 import type { Deliverable, GoalPlan, GoalRow, Stage, StageDraft } from "./types.js";
+import { deliverableFromWords } from "../brief.js";
 
 export const MAX_STAGES = 8;
 /** A paper needs this many read papers; fewer → topic research first. */
@@ -144,14 +145,16 @@ function plannerPrompt(request: string, kind: DeliverableKind | null, r: Readine
 }
 
 /** Plans a goal. `model` null (or a failing call) → the template, else one stage of the detected playbook. */
-export async function planGoal(model: ModelPort | null, userId: string, input: { request: string; readiness: Readiness; inputs?: Record<string, unknown>; playbook?: string | null; deliverable?: DeliverableKind | null }): Promise<GoalPlan> {
+export async function planGoal(model: ModelPort | null, userId: string, input: { request: string; readiness: Readiness; inputs?: Record<string, unknown>; playbook?: string | null; deliverable?: DeliverableKind | null; userWords?: string[] | null }): Promise<GoalPlan> {
   const { request, readiness: r } = input;
   const inputs = input.inputs ?? {};
-  const named = input.deliverable ?? deliverableOf(request);
+  // The user's own words decide the deliverable and its language / template; the assistant's request is a fallback.
+  const words = input.userWords?.length ? input.userWords.join("\n") : null;
+  const named = input.deliverable ?? (input.userWords?.length ? deliverableFromWords(input.userWords) : null) ?? deliverableOf(request);
   const explicit = input.playbook && getWorkflowPlaybook(input.playbook) ? input.playbook : null;
   const fallbackPb = explicit ?? detectPlaybook(request, inputs);
   const kind: DeliverableKind = named ?? capabilityOf(fallbackPb)?.produces ?? "note";
-  const deliverable = deliverableFor(kind, request);
+  const deliverable = deliverableFor(kind, words ?? request);
   const title = clip(kind === "paper" ? `論文：${topicOf(request)}` : request.split("\n")[0]!.trim(), 80);
   const objective = kind === "paper" ? `完成一篇 LaTeX 論文「${topicOf(request)}」（內建 LaTeX 專案，各節寫好並能編譯）。` : clip(request.replace(/\s+/g, " "), 300);
   const tpl = templatePlan(kind, request, r, inputs);
@@ -171,7 +174,7 @@ export async function planGoal(model: ModelPort | null, userId: string, input: {
       const llmKind = named ?? ((DELIVERABLE_KINDS as readonly string[]).includes(value?.deliverable ?? "") ? (value!.deliverable as DeliverableKind) : kind);
       const stages = value ? validStages(value.stages, llmKind, request) : null;
       if (value && stages) {
-        const d = llmKind === kind ? deliverable : deliverableFor(llmKind, request);
+        const d = llmKind === kind ? deliverable : deliverableFor(llmKind, words ?? request);
         return {
           title: clip(value.title?.trim() || title, 80), objective: clip(value.objective?.trim() || objective, 400),
           deliverable: value.cannot ? { ...d, direct: false, note: clip(value.cannot, 300) } : d,

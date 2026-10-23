@@ -5,6 +5,7 @@ import { dataBlock } from "../llm.js";
 import { verifyStep } from "../verify.js";
 import { getSteps } from "../store.js";
 import { studyFromText } from "../context.js";
+import { scopeLine } from "../brief.js";
 import type { WorkflowEnv } from "../env.js";
 import type { StepOutput, StepRole, StepRow, StepSpec, Verdict } from "../types.js";
 
@@ -46,12 +47,16 @@ export function workRefs(env: WorkflowEnv): string {
   return refs.length ? `工作對象（讀取工具用這些 id）：${refs.join("；")}` : "";
 }
 
-/** User message for a writing-type step: instructions, guidance, inputs as data, and the fix request when revising. */
+/**
+ * User message for a writing-type step: instructions + the step's own scope, guidance, inputs as data, and the fix request
+ * when revising. The Brief (deliverable, the user's words, requirements, 「未指定」) is in the system prompt (env.call).
+ */
 export function taskPrompt(env: WorkflowEnv, step: StepRow, parts: { context?: Record<string, string>; format?: string }, fix: { previous: StepOutput; issues: string[] } | null) {
   return [
-    `目標：${env.run.objective}`,
+    `整個工作流程的目標：${env.run.objective}`,
     workRefs(env),
     `你的任務：${step.title}\n${step.instructions}`,
+    scopeLine(step),
     step.expected ? `預期產出：${step.expected}` : "",
     env.guidanceText(),
     env.budgetHint(),

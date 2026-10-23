@@ -270,6 +270,11 @@ run("workflow requirements (probe suite)", () => {
     expect(planned.plan!.outline!.length).toBe(4);
     expect(planned.criteria.find((c) => c.check?.id === "req_pages")!.check!.params).toMatchObject({ exact: 4 });
     expect(status, JSON.stringify(r.report?.issues)).toBe("done");
+    // Each writer states its own page range (brief.ts scopeLine) and gets the user's words (the Brief).
+    const writers = m.prompts("write_slides");
+    expect(writers.some((p) => p.includes("這一步的範圍：只寫第 1–3 頁（共 3 頁）"))).toBe(true);
+    expect(writers.some((p) => p.includes("這一步的範圍：只寫第 4 頁（共 1 頁）"))).toBe(true);
+    expect(writers.every((p) => p.includes("「幫我做這個研究的進度報告簡報，做成 4 頁」"))).toBe(true);
   });
 
   it("5. an English note: a Chinese draft fails the language criterion, only that writer is repaired; title + headings in English", async () => {
@@ -299,7 +304,7 @@ run("workflow requirements (probe suite)", () => {
     expect(note.agent_prefs.requirements.map((x) => x.type)).toEqual(["language"]);
   });
 
-  it("6. partial: the chat notice lists the unmet items (also for the model); autopilot starts one 繼續改 round by itself", async () => {
+  it("6. partial: the chat notice lists the unmet items (also for the model); autopilot adds no round for a failure the repair already tried", async () => {
     let calls = 0;
     registerWorkflowPlaybook({
       id: "test_req", title: "要求測試", titleEn: "Req", description: "", descriptionEn: "", autoApprovable: true, detect: () => 0,
@@ -315,8 +320,8 @@ run("workflow requirements (probe suite)", () => {
         return { text: (await getSteps(env.db, env.run.id)).find((s) => s.key === "w")?.output?.text ?? "", data: null };
       },
     });
-    // Chinese for the first draft and both final repair rounds; English afterwards.
-    m.set("w", () => (++calls <= 3 ? "## 結果\n\n中文的結果段落。" : "## Results\n\nThe results paragraph in English."));
+    // Chinese for the first draft and the (single) final repair round; English afterwards.
+    m.set("w", () => (++calls <= 2 ? "## 結果\n\n中文的結果段落。" : "## Results\n\nThe results paragraph in English."));
     const conv = (await t.db.query<{ id: string }>("INSERT INTO conversations(user_id,mode,context) VALUES($1,'chat','{}') RETURNING id", [alice.id])).rows[0]!.id;
     const manual = await planAndRun("用英文寫結果", { playbook: "test_req", conversationId: conv });
     expect(manual.status).toBe("partial");
@@ -338,8 +343,10 @@ run("workflow requirements (probe suite)", () => {
     const created = await createWorkflow(t.app, await asUser(alice.id), { request: "用英文寫結果", playbook: "test_req", context: { studyId: study.id }, autopilot: true });
     const out = await runWorkflow(deps(), created.id);
     const auto = (await getRun(t.db, created.id))!;
-    expect(out.status, JSON.stringify(auto.report?.issues)).toBe("done");
-    expect(auto.state.auto_continued).toBe(true);
-    expect(calls).toBe(4);
+    // The final repair already targeted the language failure once and it is unchanged: no autopilot 繼續改 round
+    // (P1: no zero-sum re-runs). The user's own 繼續改 still can.
+    expect(out.status, JSON.stringify(auto.report?.issues)).toBe("partial");
+    expect(auto.state.auto_continued).toBeUndefined();
+    expect(calls).toBe(2);
   });
 });

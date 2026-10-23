@@ -175,13 +175,18 @@ export const CHECKS: Record<string, CheckFn> = {
     const need = Math.ceil(slides.length * ratio);
     return have >= need ? { ok: true, detail: `${have}/${slides.length} 頁有視覺元素` } : { ok: false, detail: `只有 ${have}/${slides.length} 頁有圖、表或圖表（至少需要 ${need} 頁）。這些頁面只有文字：${without.slice(0, 8).map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請改用 Mermaid 流程圖、\`\`\`chart 圖表、論文圖（paper-fig）或表格。` };
   },
-  /** Result of the slides playbook's screenshot QA (`data.visualQa`). */
+  /**
+   * Result of the slides playbook's screenshot QA (`data.visualQa`): fails only on hard defects (`failed`: overflow, raw
+   * diagram code, text < 16 px, a defect on the screenshot); soft problems left (`soft`) are report notes.
+   */
   visual_qa(_text, { data }) {
-    const qa = (data as { visualQa?: { failed?: number[]; scored?: number; vision?: boolean; unseen?: boolean } } | null)?.visualQa;
+    const qa = (data as { visualQa?: { failed?: number[]; soft?: number[]; scored?: number; vision?: boolean; unseen?: boolean } } | null)?.visualQa;
     if (!qa) return { ok: false, detail: "還沒有做逐頁視覺檢查。" };
     if (qa.unseen) return { ok: false, detail: "最後一輪沒有擷取到投影片截圖，版面沒有真的檢查過；請重新編譯預覽後再檢查。" };
     const failed = qa.failed ?? [];
-    return failed.length ? { ok: false, detail: `這些頁面沒有通過視覺檢查：${failed.map((n) => `第 ${n} 頁`).join("、")}。` } : { ok: true, detail: `${qa.scored ?? 0} 頁都通過${qa.vision ? "截圖" : "版面量測"}檢查` };
+    const soft = qa.soft ?? [];
+    if (failed.length) return { ok: false, detail: `這些頁面有版面硬傷（超出、原始碼外露、字太小或截圖上看到的缺陷）：${failed.map((n) => `第 ${n} 頁`).join("、")}。` };
+    return { ok: true, detail: `${qa.scored ?? 0} 頁沒有版面硬傷（${qa.vision ? "截圖" : "版面量測"}檢查）${soft.length ? `；${soft.map((n) => `第 ${n} 頁`).join("、")}的版面建議列入報告` : ""}` };
   },
   sections_present(text, { params }) {
     const want = strs(params.sections);

@@ -333,14 +333,14 @@
         <p class="mb-1 text-[12px] font-medium text-ink-3">{t("wf.report")}</p>
         <AgentMarkdown source={w.report.summary_md} />
       </div>
-      {#if detailed && w.report.ledger && (w.report.ledger.fixed.length || w.report.ledger.unresolved.length || w.report.ledger.invalid.length)}
-        {@const groups = (["unresolved", "fixed", "invalid"] as const).filter((k) => w.report!.ledger![k].length)}
+      {#if detailed && w.report.ledger && (w.report.ledger.fixed.length || w.report.ledger.unresolved.length || w.report.ledger.invalid.length || w.report.ledger.notes?.length)}
+        {@const groups = (["unresolved", "notes", "fixed", "invalid"] as const).filter((k) => w.report!.ledger![k]?.length)}
         <div class="mt-2 flex flex-col gap-1 text-[12.5px]" aria-label={t("wf.ledger")}>
           {#each groups as k (k)}
             <details class="rounded-xl border border-line bg-surface px-3 py-1.5" open={k === "unresolved"}>
-              <summary class="min-h-8 cursor-pointer py-1 font-medium text-ink-2">{t(`wf.ledger.${k}` as MessageKey)} · {w.report.ledger[k].length}</summary>
+              <summary class="min-h-8 cursor-pointer py-1 font-medium text-ink-2">{t(`wf.ledger.${k === "notes" ? "note" : k}` as MessageKey)} · {w.report.ledger[k]?.length ?? 0}</summary>
               <ul class="mb-1 flex flex-col gap-0.5 text-ink-2">
-                {#each w.report.ledger[k] as line, i (i)}<li class="break-words {k === 'invalid' ? 'text-ink-3' : ''}">{line}</li>{/each}
+                {#each w.report.ledger[k] ?? [] as line, i (i)}<li class="break-words {k === 'invalid' ? 'text-ink-3' : ''}">{line}</li>{/each}
               </ul>
             </details>
           {/each}

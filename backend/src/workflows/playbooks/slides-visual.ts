@@ -6,7 +6,7 @@
  *  - the mandatory final visual QA: every page screenshot + the worker's layout metrics → per-page rubric scores
  *    (vision verifier in batches; deterministic checks always) → failing pages rewritten → re-render (bounded).
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { transaction } from "../../db.js";
 import { MAX_CROP_PAGE_WIDTH, renderPdfPages } from "../../lib/library/page-images.js";
 import { figureRefOf, locateFigureByLayout } from "../../lib/library/figure-locate.js";
@@ -284,10 +284,19 @@ async function locateFigure(env: WorkflowEnv, pdf: Buffer, f: FigureRef): Promis
 export type SlideMetrics = { words: number; bullets: number; minFont: number | null; maxFont: number | null; overflowY: number; overflowX: number; visuals: number; tables: number; diagrams: number; diagramErrors: number; rawDiagramCode: number; codeBlocks: number; textOverflow?: number; overflowLabels?: string[]; minVisualFont?: number | null; emptyBand?: number; contentBottom?: number };
 export type ShotPage = { index: number; title?: string; metrics?: SlideMetrics };
 export const RUBRIC = ["readability", "crowding", "layout", "visual", "diagrams", "overflow", "consistency", "professional"] as const;
-export type PageScore = { page: number; title: string; scores: Partial<Record<(typeof RUBRIC)[number], number>>; score: number; pass: boolean; issues: string[]; fix: string; source: "vision" | "metrics" };
+/**
+ * One page's visual verdict. `hard` = a defect no slide may have (raw diagram code, overflow, text out of its box, text
+ * < 16 px, a severe empty band, a defect the vision model saw): only these fail the deck's visual criterion. Soft
+ * problems (a little too much text, a borderline empty band, a low rubric score without a defect) are fixed when the
+ * page still has fix rounds, then listed in the report. `hash` = the slide source it scored (unchanged pages are not
+ * re-scored).
+ */
+export type PageScore = { page: number; title: string; scores: Partial<Record<(typeof RUBRIC)[number], number>>; score: number; pass: boolean; issues: string[]; fix: string; source: "vision" | "metrics"; hard?: boolean; hash?: string };
 
-/** Layout thresholds (deck coordinates at 1280×800). */
-export const LAYOUT_LIMITS = { minFont: 16, maxBodyWords: 75, maxBullets: 6, overflowPx: 6, emptyBand: 0.35 };
+/** Layout thresholds (deck coordinates at 1280×800). `emptyBand` is a soft signal; `severeEmptyBand` / `severeWords` are hard. */
+export const LAYOUT_LIMITS = { minFont: 16, maxBodyWords: 75, maxBullets: 6, overflowPx: 6, emptyBand: 0.35, severeEmptyBand: 0.6, severeWords: 120 };
+/** Metric issues that fail a page whatever the vision score says (the rest are soft signals). */
+export const HARD_METRIC_RE = /原始碼|語法錯誤|超出|字太小|一大片空白（嚴重）|文字遠超過/;
 /** Vision rubric: a page passes only with every score ≥ 3, a mean ≥ 4 and no high-severity issue. */
 export const VISION_PASS = { min: 3, mean: 4 };
 
@@ -302,9 +311,11 @@ export function metricIssues(p: ShotPage, opts: { allowed?: boolean } = {}): str
   if ((m.textOverflow ?? 0) > 0) out.push(`圖中有 ${m.textOverflow} 個標籤超出方框${m.overflowLabels?.length ? `（${m.overflowLabels.map((l) => `「${l}」`).join("、")}）` : ""}`);
   if (m.minFont !== null && m.minFont < LAYOUT_LIMITS.minFont) out.push(`有文字太小（${m.minFont}px，< ${LAYOUT_LIMITS.minFont}px）`);
   if (typeof m.minVisualFont === "number" && m.minVisualFont < LAYOUT_LIMITS.minFont - 0.5) out.push(`圖或圖表裡的字太小（約 ${m.minVisualFont}px，< ${LAYOUT_LIMITS.minFont}px）`);
-  if (!opts.allowed && m.words > LAYOUT_LIMITS.maxBodyWords) out.push(`文字太多（約 ${m.words} 字詞，上限 ${LAYOUT_LIMITS.maxBodyWords}）`);
+  if (!opts.allowed && m.words > LAYOUT_LIMITS.severeWords) out.push(`文字遠超過一頁的份量（約 ${m.words} 字詞，上限 ${LAYOUT_LIMITS.maxBodyWords}）`);
+  else if (!opts.allowed && m.words > LAYOUT_LIMITS.maxBodyWords) out.push(`文字太多（約 ${m.words} 字詞，上限 ${LAYOUT_LIMITS.maxBodyWords}）`);
   if (!opts.allowed && m.bullets > LAYOUT_LIMITS.maxBullets) out.push(`條列太多（${m.bullets} 個，上限 ${LAYOUT_LIMITS.maxBullets}）`);
-  if (!opts.allowed && typeof m.emptyBand === "number" && m.emptyBand > LAYOUT_LIMITS.emptyBand) out.push(`版面有一大片空白（約 ${Math.round(m.emptyBand * 100)}% 的內容區沒有東西）`);
+  if (!opts.allowed && typeof m.emptyBand === "number" && m.emptyBand > LAYOUT_LIMITS.severeEmptyBand) out.push(`版面有一大片空白（嚴重）（約 ${Math.round(m.emptyBand * 100)}% 的內容區沒有東西）`);
+  else if (!opts.allowed && typeof m.emptyBand === "number" && m.emptyBand > LAYOUT_LIMITS.emptyBand) out.push(`版面有一大片空白（約 ${Math.round(m.emptyBand * 100)}% 的內容區沒有東西）`);
   return out;
 }
 
@@ -462,23 +473,39 @@ export const VISION_PARALLEL = 4;
 export const DEFECT_RE = /裁切|被切|硬切|截斷|切掉|被截|原始碼|未渲染|未編譯|Syntax error|語法錯誤|超出(投影片|版面|範圍|方框|框)|cut off|overflow|正文段落|重複呈現/i;
 
 /**
- * Combines vision scores with the deterministic metric issues: a metric issue always fails the page, as do source
- * issues (`sourceIssues`, by slide title) and verifier issues naming a defect.
+ * Combines vision scores with the deterministic metric issues. A hard metric issue or a defect the verifier saw always
+ * fails the page (`hard`). Soft metric issues and content issues (`sourceIssues`, by slide title) fail it only when no
+ * passing vision score outweighs them: a page the vision model scored 4.9/5 never fails on a borderline empty band
+ * alone (the issue stays as a note). Without a vision score the metrics decide.
  */
 export function combineScores(pages: ShotPage[], vision: PageScore[], allowed: (title: string) => boolean, source: Map<string, string[]> = new Map()): PageScore[] {
   return pages.map((p) => {
     const v = vision.find((x) => x.page === p.index);
     const ok = allowed(p.title ?? "");
     const si = ok ? [] : ([...source.entries()].find(([t]) => titleMatches(t, p.title ?? ""))?.[1] ?? []);
-    const mi = [...metricIssues(p, { allowed: ok }), ...si];
-    const hard = mi.filter((x) => /原始碼|語法錯誤|超出/.test(x));
-    const issues = [...mi, ...(v?.issues ?? [])];
-    // Student-owned / title pages only fail on rendering problems, never on missing content.
+    const metric = metricIssues(p, { allowed: ok });
+    const hardMetric = metric.filter((x) => HARD_METRIC_RE.test(x));
+    const softMetric = metric.filter((x) => !HARD_METRIC_RE.test(x));
     // Defects the verifier saw that are never acceptable on a slide (cut-off figure/text, raw code, unrendered markup).
     const defect = (v?.issues ?? []).some((x) => DEFECT_RE.test(x) || x.startsWith("［嚴重］"));
-    const pass = ok ? hard.length === 0 : mi.length === 0 && !defect && (v ? v.pass : true);
-    const fix = [fixFor(issues), v?.fix ?? ""].filter(Boolean).join(" ").slice(0, 900) || (mi.length ? "依量測問題修正：精簡文字、拆頁或縮小圖。" : "");
-    return { page: p.index, title: p.title ?? "", scores: v?.scores ?? {}, score: v?.score ?? 0 /* no rubric score without the verifier (the table shows —) */, pass, issues: [...new Set(issues)].slice(0, 6), fix, source: v ? "vision" : "metrics" };
+    const hard = hardMetric.length > 0 || (!ok && defect);
+    // Student-owned / title pages only fail on rendering problems, never on missing content.
+    // Content faults (`si`) fail the page either way (the screenshot cannot show them); soft metrics only without a passing vision score.
+    const pass = ok ? hardMetric.length === 0 : !hard && !si.length && (v ? v.pass : softMetric.length === 0);
+    const issues = [...hardMetric, ...si, ...softMetric, ...(v?.issues ?? [])];
+    const fix = [fixFor(issues), v?.fix ?? ""].filter(Boolean).join(" ").slice(0, 900) || (metric.length ? "依量測問題修正：精簡文字、拆頁或縮小圖。" : "");
+    return { page: p.index, title: p.title ?? "", scores: v?.scores ?? {}, score: v?.score ?? 0 /* no rubric score without the verifier (the table shows —) */, pass, hard, issues: [...new Set(issues)].slice(0, 6), fix, source: v ? "vision" : "metrics" };
+  });
+}
+
+/** A page's source (title + visible body): what the visual verdict depends on (speaker notes are not on the screenshot). */
+export const pageHash = (s: { title: string; body: string }) => createHash("sha1").update(`${s.title}\n${s.body}`).digest("hex").slice(0, 16);
+
+/** Pages whose source changed since they were scored (or never were): the only ones sent to the vision model again. */
+export function pagesToScore(slides: { title: string; body: string }[], cache: Record<string, PageScore>, offset = 1): { index: number; hash: string; cached: PageScore | null }[] {
+  return slides.map((s, i) => {
+    const hash = pageHash(s);
+    return { index: i + 1 + offset, hash, cached: cache[hash] ?? null };
   });
 }
 

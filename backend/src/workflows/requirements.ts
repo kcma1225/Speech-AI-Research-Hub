@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { CHECKS, parseSlides, runChecks } from "./checks.js";
 import { dataBlock, parseJson } from "./llm.js";
 import type { WorkflowEnv } from "./env.js";
+import { baseWords, userGuidance, type Brief } from "./brief.js";
 import type { Criterion, Requirement, RequirementTerm, RequirementType, StepRow } from "./types.js";
 
 export type ArtifactKind = "deck" | "doc" | "latex";
@@ -156,17 +157,32 @@ const termHit = (hay: string, t: RequirementTerm) => [t.name, ...(t.aliases ?? [
 // ---------------------------------------------------------------- deterministic detection
 
 /** Output language the user explicitly asks for (「整份改成英文」「我整個簡報要用英文」「in English」); null = not said. */
+const LANG_ZH_RE = /(?:用|改成|改為|改回|換成|換回|轉成|翻成|翻譯成|寫成|做成|全部|整份|都(?:要)?用?)\s*(?:繁體|正體)?中文|(?:繁體|正體)?中文(?:版|簡報|投影片|報告|筆記)|\b(?:in|into|to) (?:traditional )?chinese\b|chinese version/i;
+const LANG_EN_RE = /(?:用|改成|改為|換成|轉成|翻成|翻譯成|寫成|做成|全部|整份|整個|都(?:要)?用?|純|全)\s*英文|英文(?:版|簡報|投影片|報告|筆記|論文)|\b(?:in|into|to) (?:(?:clear|plain|academic|fluent|formal|natural|proper|simple)\s+)*english\b|\benglish (?:(?:research|academic|technical)\s+)?(?:version|deck|slides|slide deck|presentation|talk|report|note|paper)\b|\ball[- ]english\b/i;
 export function detectLanguage(text: string): "en" | "zh" | null {
-  const zh = /(?:用|改成|改為|改回|換成|換回|轉成|翻成|翻譯成|寫成|做成|全部|整份|都(?:要)?用?)\s*(?:繁體|正體)?中文|(?:繁體|正體)?中文(?:版|簡報|投影片|報告|筆記)|\b(?:in|into|to) (?:traditional )?chinese\b|chinese version/i;
-  const en = /(?:用|改成|改為|換成|轉成|翻成|翻譯成|寫成|做成|全部|整份|整個|都(?:要)?用?|純|全)\s*英文|英文(?:版|簡報|投影片|報告|筆記|論文)|\b(?:in|into|to) (?:(?:clear|plain|academic|fluent|formal|natural|proper|simple)\s+)*english\b|\benglish (?:version|deck|slides|presentation|report|note|paper)\b|\ball[- ]english\b/i;
-  const z = zh.test(text);
-  const e = en.test(text);
+  const z = LANG_ZH_RE.test(text);
+  const e = LANG_EN_RE.test(text);
   if (e && !z) return "en";
   if (z && !e) return "zh";
   return null;
 }
 
+/** The clause of `text` around the first match of `re` (≤ 120 chars): the user's own words a requirement quotes. */
+export function clauseOf(text: string, re: RegExp | null): string | undefined {
+  const m = re ? new RegExp(re.source, re.flags.replace("g", "")).exec(text) : null;
+  if (!m) return undefined;
+  const stop = /[。！？!?\n；;]/;
+  let a = m.index;
+  let b = m.index + m[0].length;
+  while (a > 0 && !stop.test(text[a - 1]!) && m.index - a < 50) a--;
+  while (b < text.length && !stop.test(text[b]!) && b - (m.index + m[0].length) < 50) b++;
+  return text.slice(a, b).replace(/\s+/g, " ").trim().slice(0, 120) || undefined;
+}
+
 /** Explicit page counts: 「做成 20 頁」「15–20 頁」「至少 10 頁」「12 slides」; inputs.pages wins. */
+/** Any page-count phrase (for the quote of a page requirement). */
+const PAGE_PHRASE_RE = /\d{1,2}\s*(?:[-–~到至]|to)?\s*\d{0,2}\s*(?:頁|張|pages?\b|slides?\b)/i;
+
 export function detectPageCount(text: string, pages?: unknown): Requirement["params"] | null {
   if (typeof pages === "number" && pages > 0) return { exact: Math.round(pages) };
   const range = /(\d{1,2})\s*(?:[-–~到至]|to)\s*(\d{1,2})\s*(?:頁|張|pages?\b|slides?\b)/i.exec(text);
@@ -231,16 +247,17 @@ export function detectExclude(text: string): Requirement["params"] | null {
 /** Deterministic requirements of one text (the request, a guidance line, or an edited requirement). */
 export function detectRequirements(text: string, opts: { pages?: unknown; kind?: ArtifactKind } = {}): Omit<Requirement, "id" | "source">[] {
   const out: Omit<Requirement, "id" | "source">[] = [];
+  const q = (re: RegExp) => { const c = clauseOf(text, re); return c ? { quote: c } : {}; };
   const lang = detectLanguage(text);
-  if (lang) out.push({ type: "language", text: `成果全部用${LANGUAGE_LABEL[lang]}${lang === "en" ? "（封面、標題、內文、圖表標籤與講稿都不留中文）" : ""}`, params: { language: lang } });
+  if (lang) out.push({ type: "language", text: `成果全部用${LANGUAGE_LABEL[lang]}${lang === "en" ? "（封面、標題、內文、圖表標籤與講稿都不留中文）" : ""}`, params: { language: lang }, ...q(lang === "en" ? LANG_EN_RE : LANG_ZH_RE) });
   if (opts.kind !== "doc" && opts.kind !== "latex") {
     const pc = detectPageCount(text, opts.pages);
-    if (pc) out.push({ type: "page_count", text: pageText(pc), params: pc });
+    if (pc) out.push({ type: "page_count", text: pageText(pc), params: pc, ...q(PAGE_PHRASE_RE) });
   }
   const fields = detectPerItemFields(text);
-  if (fields) out.push({ type: "per_item_fields", text: `每個${fields.item_kind}都要有：${fields.fields!.map((f) => f.name).join("、")}`, params: fields });
+  if (fields) out.push({ type: "per_item_fields", text: `每個${fields.item_kind}都要有：${fields.fields!.map((f) => f.name).join("、")}`, params: fields, ...q(/每|各|each|every/i) });
   const ex = detectExclude(text);
-  if (ex) out.push({ type: "exclude", text: `刪掉：${[...(ex.pages ?? []).map((p) => `第 ${p} 頁`), ...(ex.terms ?? []).map((t) => `「${t.name}」`)].join("、")}`, params: ex });
+  if (ex) out.push({ type: "exclude", text: `刪掉：${[...(ex.pages ?? []).map((p) => `第 ${p} 頁`), ...(ex.terms ?? []).map((t) => `「${t.name}」`)].join("、")}`, params: ex, ...q(/刪掉|刪除|拿掉|去掉|移除|不要|remove|delete|drop/i) });
   return out;
 }
 
@@ -572,24 +589,29 @@ const hashOf = (s: string) => createHash("sha256").update(s).digest("hex").slice
  * and the artifact's standing preferences fill what the request did not say. Recomputed only when the request, the
  * guidance or the standing preferences changed; the user's own edits on the plan card are kept, removed ones stay removed.
  */
-export async function prepareRequirements(env: WorkflowEnv, playbook: string): Promise<Requirement[]> {
+export async function prepareRequirements(env: WorkflowEnv, playbook: string, briefArg?: Brief | null): Promise<Requirement[]> {
   const kind = artifactKindOf(playbook);
-  const guidance = (env.run.guidance ?? []).map((g) => g.text);
+  const brief = briefArg ?? env.run.brief ?? null;
+  // The user's guidance only (the autopilot's own 繼續改 lines are not the user's words).
+  const guidance = brief ? userGuidance(env.run) : (env.run.guidance ?? []).map((g) => g.text);
   const standing = await standingOf(env);
-  const recent = await recentTurns(env);
-  const key = hashOf(JSON.stringify([env.run.request, guidance, standing.list, kind]));
+  // With a Brief its `user_words` are the conversation turns that asked; older runs read the recent turns themselves.
+  const recent = brief ? [] : await recentTurns(env);
+  // The request of a run the assistant started is ITS paraphrase (production: it added 「所有內容使用繁體中文」 and pages: 12
+  // that the user never said): requirements come from the user's own words only, never from the paraphrase.
+  const legacyOwn = brief ? null : ownWords(env, recent, guidance);
+  const start: string[] = brief ? baseWords(brief) : legacyOwn ? legacyOwn.slice(0, legacyOwn.length - guidance.length) : [env.run.request];
+  const paraphrase = brief ? !!brief.paraphrase : legacyOwn !== null;
+  const key = hashOf(JSON.stringify([start, guidance, standing.list, kind]));
   const prev = env.state<Requirement[]>("requirements");
   if (prev && env.state<string>("requirements_key") === key) return prev;
-  // The request of a run the assistant started is ITS paraphrase (production: it added 「所有內容使用繁體中文」 and pages: 12
-  // that the user never said). Single-valued requirements (language, page count) then come from the user's own words only.
-  const userWords = ownWords(env, recent, guidance);
-  const paraphrase = userWords !== null;
+  const startText = start.join("\n");
   const inputPages = (env.run.inputs as { pages?: unknown }).pages;
-  const ctx: Ctx = { request: env.run.request, guidance, recent, standing: standing.list, kind, pages: paraphrase && !detectPageCount(userWords!.join("\n")) ? undefined : inputPages, ...(paraphrase ? { userWords: userWords! } : {}) };
-  const fromRequest = detectRequirements(ctx.request, { pages: ctx.pages, kind }).filter((r) => !paraphrase || (r.type !== "language" && r.type !== "page_count"));
-  const fromUser = paraphrase ? userWords!.flatMap((t) => detectRequirements(t, { pages: ctx.pages, kind }).filter((r) => r.type === "language" || r.type === "page_count")) : [];
+  // An assistant-given page count counts only when the user's words have one.
+  const pages = paraphrase && !detectPageCount(startText) ? undefined : inputPages;
+  const ctx: Ctx = { request: startText, guidance, recent, standing: standing.list, kind, pages, userWords: [...start, ...guidance] };
   const det = [
-    ...[...fromUser, ...fromRequest].map((r) => ({ ...r, source: "request" as const })),
+    ...start.flatMap((t) => detectRequirements(t, { pages, kind })).map((r) => ({ ...r, source: "request" as const })),
     ...guidance.flatMap((g) => detectRequirements(g, { kind }).map((r) => ({ ...r, source: "guidance" as const }))),
   ];
   // Guidance is newer than the request: its single-valued statements win.
@@ -598,16 +620,29 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string): P
   const llm = await extractWithModel(env, ctx).catch(() => [] as Omit<Requirement, "id">[]);
   const removed = new Set(env.state<string[]>("requirements_removed") ?? []);
   const userEdits = (prev ?? []).filter((r) => r.source === "user").map(({ id: _id, ...r }) => r);
-  const merged = mergeRequirements(userEdits, det, llm, fromChat, standing.list).filter((r) => !removed.has(keyOf(r)));
+  // Last resort for the language (after the artifact's own): the user wrote the request in English → English.
+  const fromMessage = messageLanguage(start);
+  const merged = mergeRequirements(userEdits, det, llm, fromChat, standing.list, fromMessage).filter((r) => !removed.has(keyOf(r)));
   const reqs = merged.map((r, i) => ({ ...r, id: `r${i + 1}` }));
   await env.setState({ requirements: reqs, requirements_key: key });
   return reqs;
 }
 
+/**
+ * The language of the user's own message when they set none (and the artifact has none): an English request (≥ 5 English
+ * words, no Chinese) → English. A Chinese message sets nothing: 繁體中文 is the default anyway (「語言：未指定」).
+ */
+export function messageLanguage(words: string[]): Omit<Requirement, "id">[] {
+  const text = words.join("\n").replace(/https?:\/\/\S+/g, " ").replace(/```[\s\S]*?```/g, " ");
+  if ((text.match(HAN_G) ?? []).length || latinWords(text) < 5) return [];
+  const quote = words.findLast((w) => latinWords(w) >= 3)?.replace(/\s+/g, " ").trim().slice(0, 80);
+  return [{ type: "language", text: "成果用 English（你用英文提出這個要求）", params: { language: "en" }, source: "request", ...(quote ? { quote } : {}) }];
+}
+
 async function extractWithModel(env: WorkflowEnv, ctx: Ctx): Promise<Omit<Requirement, "id">[]> {
   const user = [
     `成果類型：${ctx.kind === "deck" ? "簡報" : ctx.kind === "latex" ? "LaTeX 論文" : "筆記／文件"}`,
-    dataBlock("request", ctx.request.slice(0, 4000)),
+    dataBlock("user_words", ctx.request.slice(0, 4000)),
     ctx.guidance.length ? dataBlock("guidance", ctx.guidance.join("\n").slice(0, 3000)) : "",
     ctx.recent.length ? dataBlock("recent_turns", ctx.recent.map((t) => `- ${t}`).join("\n").slice(0, 5000)) : "",
     ctx.standing.length ? `這份成果先前確認過的設定（沒有被這次的要求推翻就沿用，不必重複列出）：${ctx.standing.map((s) => s.text).join("；")}` : "",
@@ -621,7 +656,10 @@ async function extractWithModel(env: WorkflowEnv, ctx: Ctx): Promise<Omit<Requir
   // The model may not change what the user's words settle deterministically (language / page count come from the text).
   return list
     .filter((r) => groundedInWords(r, words))
-    .map((r) => cleanRequirement(r, "request", ctx.kind))
+    .map((r) => {
+      const c = cleanRequirement(r, "request", ctx.kind);
+      return c ? ({ ...c, quote: str((r as { quote?: unknown }).quote, 200) } as Omit<Requirement, "id">) : null;
+    })
     .filter((r): r is Omit<Requirement, "id"> => !!r && r.type !== "language" && r.type !== "page_count")
     .map((r) => anchorTerms(r, words));
 }
@@ -646,15 +684,15 @@ export function anchorTerms(r: Omit<Requirement, "id">, words: string): Omit<Req
   const p = r.params ?? {};
   if (r.type === "include_topics") {
     const topics = keep(p.topics);
-    return topics.length ? { ...r, params: { ...p, topics } } : { type: "other", text: r.text, source: r.source };
+    return topics.length ? { ...r, params: { ...p, topics } } : { type: "other", text: r.text, source: r.source, ...(r.quote ? { quote: r.quote } : {}) };
   }
   if (r.type === "per_item_fields") {
     const fields = keep(p.fields);
-    return fields.length ? { ...r, params: { ...p, fields } } : { type: "other", text: r.text, source: r.source };
+    return fields.length ? { ...r, params: { ...p, fields } } : { type: "other", text: r.text, source: r.source, ...(r.quote ? { quote: r.quote } : {}) };
   }
   if (r.type === "exclude" && !p.pages?.length) {
     const t = keep(p.terms);
-    return t.length ? { ...r, params: { ...p, terms: t } } : { type: "other", text: r.text, source: r.source };
+    return t.length ? { ...r, params: { ...p, terms: t } } : { type: "other", text: r.text, source: r.source, ...(r.quote ? { quote: r.quote } : {}) };
   }
   return r;
 }

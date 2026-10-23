@@ -18,7 +18,7 @@ import { previewImages } from "../../lib/vision/slides.js";
 import { normalizeDiagrams } from "../../lib/slides/deck-visuals.js";
 import { figureSyntax } from "../../lib/slides/content-lint.js";
 import { buildContentRefs, contentRefsOf, paperFigures } from "../content-refs.js";
-import { bodyIssues, closeOpenBlocks, combineScores, fixContent, fixFor, materializeVisuals, pruneGeneratedFiles, replaceSlides, scoreTable, sourceIssues, visionScores, visualShare, VISUAL_RULES, type PageScore, type ShotPage } from "./slides-visual.js";
+import { bodyIssues, closeOpenBlocks, combineScores, fixContent, fixFor, materializeVisuals, pagesToScore, pruneGeneratedFiles, replaceSlides, scoreTable, sourceIssues, visionScores, visualShare, VISUAL_RULES, type PageScore, type ShotPage } from "./slides-visual.js";
 import { parseSlides, PLACEHOLDER_RE, titleMatches } from "../checks.js";
 import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
@@ -26,7 +26,8 @@ import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { WorkflowStop, type CheckSpec, type Criterion, type OutlineItem, type PlannedWrite, type StepOutput, type StepRow, type StepSpec } from "../types.js";
 import { abstractBrief, ensurePaperPdf } from "../paper-pdf.js";
-import { clipText, paperIdOf, paperOf, planningStep, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { clipText, isTopicRequest, matchPaperTitle, paperIdOf, paperOf, planningStep, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { clarifyOnce, requestLine, userGuidance } from "../brief.js";
 import { batchPapers } from "../context.js";
 import { registerWorkflowPlaybook, type WorkflowPlaybook } from "./registry.js";
 import { applyStudentPages, runStudentInput, STUDENT_INPUT_KEY, studentInputStep, studentPagesOf } from "../student-input.js";
@@ -36,15 +37,78 @@ import type { EditKind, Requirement } from "../types.js";
 
 /** `item` = the method / model this page presents (expand plans with per-item fields: the check finds its pages by it). */
 type SlideOutline = OutlineItem & { student_owned?: boolean; item?: string };
-type DeckState = { qa?: { round: number; scores: PageScore[]; vision: boolean; failed: number[]; unseen?: boolean }; last_written?: string; deck_id?: string; deck_slug?: string; deck_title?: string; body?: string; revision?: number; file_version?: number; render_error?: string | null; render_timed_out?: boolean; preview_id?: string | null };
+type DeckState = { qa?: { round: number; scores: PageScore[]; vision: boolean; /** hard defects */ failed: number[]; /** soft problems left (report notes) */ soft?: number[]; unseen?: boolean }; last_written?: string; deck_id?: string; deck_slug?: string; deck_title?: string; body?: string; revision?: number; file_version?: number; render_error?: string | null; render_timed_out?: boolean; preview_id?: string | null };
 
 export const PAGES_PER_WRITER = 3;
 /** Section titles of experiments / results / ablations (their text gets most of the excerpt budget). */
 const RESULTS_SECTION_RE = /experiment|result|evaluation|ablation|analysis|discussion|comparison|實驗|結果|分析/i;
 // Reasoning models spend part of the budget thinking; 9000 truncated ~40 % of first drafts on staging.
 const WRITER_TOKENS = 16_000;
+/** The source material every writer (and its judge, the same blocks) gets: the brief is built to fit, nothing is cut after it. */
+export const SOURCE_CHARS = 30_000;
 
 const modeOf = (env: WorkflowEnv): DeckMode => (env.state<DeckMode>("mode") ?? "progress");
+/** A topic deck (stored as a progress-kind deck): free structure over the study's library and notes, not Lab-Hub's fixed pages. */
+const isTopicDeck = (env: WorkflowEnv) => env.state<string>("deck_style") === "topic";
+/** Format rules of the deck: the topic rules, else Lab-Hub's for the mode. */
+const deckRules = (env: WorkflowEnv, mode: DeckMode) => (isTopicDeck(env) ? TOPIC_RULES : LABHUB_RULES[mode]);
+
+/**
+ * A topic / literature deck. There is no dedicated topic-deck pipeline yet (no online search here): the deck is built from
+ * the study's library (titles, years, abstracts) and its research / reading notes, and the plan says so.
+ */
+export const TOPIC_RULES = `主題簡報規則（不是 Lab-Hub 固定格式）：
+- 依使用者要的主題安排頁面，通常是：題目與動機 → 問題定義 → 做法分類或比較 → 代表方法（一個方法一頁）→ 結果或特性比較 → 開放問題 → 小結；頁數依計畫。
+- 內容只用提供的研究資料：文獻庫的論文（標題、作者、年份、摘要）與研究筆記。提到論文時寫出它的標題或簡稱與年份；資料沒有的數字或結論不要寫。
+- 每頁下方放 ::: {.notes} 講稿 :::。
+- 沒有學生自填頁（student_owned 一律 false）。`;
+export const TOPIC_DEFAULT_PAGES = 10;
+/** 「論文報告」「這篇論文做成簡報」「present this paper」: a report on ONE paper (a mention of "paper title(s)" is not). */
+export const PAPER_REPORT_RE = /論文報告|文獻報告|paper report|journal club|報告(?:這|那|一)篇|(?:這|那|此|該)篇(?:論文|paper|文章)|(?:present|presenting|report on|summari[sz]e|walk through) (?:this|the|that|one|a single) (?:paper|article)\b|(?:this|the) paper'?s? (?:slides|deck|presentation)|\b\d{4}\.\d{4,5}\b/i;
+/** A deck about a subject — a topic, methods, the literature (「關於…」「介紹…」"about …"), not one paper and not a progress report. */
+export const TOPIC_DECK_RE = /literature|related work|state[- ]of[- ]the[- ]art|\bsurvey|overview|\bapproach(?:es)?\b|\bmethods?\b|\btechniques?\b|\btrends?\b|landscape|\babout\b|\bintroduc(?:e|ing|tion to)\b|研究現況|文獻(?!報告)|有哪些|做法|方法|技術|調研|趨勢|主題|關於|有關|介紹|探討/i;
+/** An explicit progress report (wins over a topic: 「介紹這週的進度」 is a progress deck). */
+export const PROGRESS_RE = /進度|週報|週會|組會|group meeting|progress|weekly|this week'?s? (?:work|results)/i;
+
+/**
+ * Which deck: an explicit progress report → progress; a report on one paper (asked for, or a paper given / named while
+ * the words are not about a topic) → paper_report; a topic / literature deck → topic; else progress. A word like "paper
+ * title" never forces a paper report (production 50b49d80), and the study's only paper is not a reason for one.
+ */
+export function deckModeOf(words: string, opts: { inputMode?: string; explicitPaper: boolean; progressAsked: boolean }): DeckMode | "topic" {
+  if (opts.inputMode === "topic" || opts.inputMode === "progress" || opts.inputMode === "paper_report") return opts.inputMode as DeckMode | "topic";
+  if (opts.progressAsked) return "progress";
+  const topic = isTopicRequest(words) || TOPIC_DECK_RE.test(words);
+  if (PAPER_REPORT_RE.test(words) || (opts.explicitPaper && !topic)) return "paper_report";
+  return topic ? "topic" : "progress";
+}
+
+/** A topic deck's working title from the user's words: 「幫我做一份關於 X 的簡報」 / "Make a presentation about X" → X. */
+export function topicTitleOf(words: string): string {
+  const first = words.replace(/\s+/g, " ").trim().split(/(?<=[。！？!?])\s*|(?<=\.)\s+/)[0] ?? words;
+  const t = first
+    .replace(/^(?:please\s+)?(?:make|create|prepare|build|give me|do|write)\s+(?:me\s+)?(?:an?\s+)?(?:(?:english|chinese|short|brief|research|academic|technical)\s+)*(?:presentation|deck|slide deck|slides|talk)\s+(?:about|on|for|of|introducing)\s+/i, "")
+    .replace(/^(?:請|幫我|麻煩|可以|我想|我要)*(?:做|準備|製作|整理)?(?:一份|一個)?(?:英文|中文)?(?:的)?(?:關於|有關|介紹)?/, "")
+    .replace(/(?:的)?(?:英文|中文)?(?:主題)?(?:簡報|投影片)$|[。.!！]$/, "")
+    .trim();
+  return clipText(t || first, 80);
+}
+
+/** The study's library and notes for a topic deck (the researcher's brief). */
+async function topicContext(env: WorkflowEnv, studyId: string): Promise<string> {
+  const papers = (await env.db.query<{ title: string; year: number | null; authors_text: string; venue: string | null; abstract: string | null }>(
+    "SELECT p.title, p.year, p.authors_text, p.venue, p.abstract FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 ORDER BY p.year DESC NULLS LAST, p.title LIMIT 30",
+    [studyId],
+  )).rows;
+  const notes = (await env.db.query<{ title: string; content_md: string }>("SELECT title, content_md FROM notes WHERE study_id=$1 AND kind IN ('research','reading') ORDER BY updated_at DESC LIMIT 4", [studyId])).rows;
+  return [
+    `# 研究文獻庫（${papers.length} 篇）`,
+    ...(papers.length ? papers.map((p) => `## ${p.title}（${p.year ?? "年份不詳"}${p.venue ? `，${p.venue}` : ""}）\n作者：${p.authors_text.slice(0, 160) || "不詳"}\n摘要：${(p.abstract ?? "（文獻紀錄沒有摘要）").replace(/\s+/g, " ").slice(0, 700)}`) : ["（研究文獻庫還沒有論文）"]),
+    ...(notes.length ? ["# 研究筆記", ...notes.map((n) => `## ${n.title}\n${n.content_md.slice(0, 2500)}`)] : []),
+    "# 研究進度資料",
+    (await progressContext(env.db, "00000000-0000-0000-0000-000000000000", studyId)).slice(0, 5000),
+  ].join("\n\n");
+}
 const outlineOf = (env: WorkflowEnv): SlideOutline[] => (env.run.plan?.outline as SlideOutline[] | undefined) ?? [];
 const studentOwned = (o: SlideOutline[]) => o.filter((p) => p.student_owned).map((p) => p.title);
 
@@ -136,10 +200,10 @@ function laterSteps(outline: SlideOutline[], vision: boolean): StepSpec[] {
       role: "designer",
       title: vision ? "逐頁截圖視覺檢查（看圖評分並修正）" : "逐頁版面檢查（量測，模型不能看圖）",
       instructions: vision
-        ? "編譯並擷取每一頁截圖，交給能看圖的審查者逐頁評分（易讀、擁擠、版面、視覺、圖是否正確畫出、超出、一致、專業感；平均 ≥ 4 分且沒有嚴重問題才通過），並用版面量測檢查文字超出方框或投影片、字小於 16px、大片空白、圖表與表格重複；未通過的頁面交回撰寫者依指示修正後重新編譯，最多 3 輪，仍未通過的頁面會在報告中列出。"
-        : "目前的模型不能看圖：改用版面量測（超出方框或投影片、字級 ≥ 16px、大片空白、字數、條列、圖是否編譯成功、圖表與表格重複）逐頁檢查，未通過的頁面交回撰寫者修正後重新編譯，最多 3 輪，仍未通過的頁面會在報告中列出。",
+        ? "編譯並擷取每一頁截圖，交給能看圖的審查者逐頁評分（易讀、擁擠、版面、視覺、圖是否正確畫出、超出、一致、專業感；平均 ≥ 4 分且沒有嚴重問題才通過），並用版面量測檢查文字超出方框或投影片、字小於 16px、大片空白、圖表與表格重複；只重新評分有改過的頁面，未通過的頁面交回撰寫者修正，每頁最多 2 次，改壞的頁面換回較好的版本。版面硬傷才算不通過，其他建議列入報告。"
+        : "目前的模型不能看圖：改用版面量測（超出方框或投影片、字級 ≥ 16px、大片空白、字數、條列、圖是否編譯成功、圖表與表格重複）逐頁檢查，未通過的頁面交回撰寫者修正，每頁最多 2 次，改壞的頁面換回較好的版本。版面硬傷才算不通過，其他建議列入報告。",
       depends_on: ["constraints"],
-      expected: "每一頁都通過視覺檢查",
+      expected: "沒有版面硬傷的頁面（其他版面建議列入報告）",
       verify: { checks: [{ id: "render_ok" }, { id: "visual_qa" }], judge: false },
       max_rounds: 0,
     },
@@ -161,7 +225,7 @@ function criteriaFor(n: number, mode: DeckMode, owned: string[], abstractOnly = 
     { id: "figrefs", kind: "check", text: "論文圖的圖說、內文與講稿的圖號和放的圖一致", check: { id: "figure_refs", params: { allow_titles: owned } } },
     { id: "semantics", kind: "check", text: "流程圖語意正確：trainable／frozen 只標本文訓練或凍結的元件，並列項目不畫成流程", check: { id: "diagram_semantics", params: { allow_titles: owned } } },
     { id: "charts", kind: "check", text: "每張圖表只有一種單位並標出座標軸，同一組數字只畫一次", check: { id: "chart_semantics", params: { allow_titles: owned } } },
-    { id: "visual_qa", kind: "check", text: "每一頁都通過截圖視覺檢查（字 ≥ 16px、不擁擠、沒有大片空白、文字不超出方框或投影片、圖表正確不重複）", check: { id: "visual_qa" } },
+    { id: "visual_qa", kind: "check", text: "逐頁截圖檢查沒有版面硬傷（文字不超出方框或投影片、字 ≥ 16px、圖都正確畫出）；擁擠、留白等版面建議列入報告", check: { id: "visual_qa" } },
     { id: "grounded", kind: "judge", text: abstractOnly ? "沒有全文 PDF：內容只來自論文摘要與書目資料，清楚標示「僅依摘要」，沒有捏造方法細節或數字" : mode === "paper_report" ? "內容與數字都來自論文本身，重要結果標註出處（表／§），沒有捏造" : "內容只來自研究資料（待辦、筆記、會議回饋），沒有捏造的數字或結論" },
     { id: "coverage", kind: "judge", text: `每頁都涵蓋大綱列出的重點，前後連貫，適合在組會報告${owned.length ? `（${owned.map((o) => `「${o}」`).join("、")}是學生自填頁：內容來自報告者自己的回答；報告者選擇跳過時保留提示，自動駕駛代填時標示「AI 代填，待你確認」，都可以接受，不算缺漏）` : ""}` },
   ];
@@ -223,7 +287,7 @@ async function paperBrief(env: WorkflowEnv, paper: { id: string; title: string; 
     "讀完後輸出研究摘要（Markdown，1500–3000 字）：## 問題與動機、## 方法（核心想法、關鍵公式逐一說明符號）、## 實驗設定（資料集、指標、baseline）、## 主要結果（數字照原文，標表號）、## 消融與分析、## 限制、## 圖表清單、## 數字表。每個重點後面標註出處，例如（§3.2，p. 4）或（表 2）。",
     "「## 圖表清單」逐一列出論文中重要的圖與表（架構圖、方法圖、主要結果圖表）：`Fig. N — p. 頁碼 — type（architecture／method／result／table／example）— 位置 top-bottom（頁面高度比例，例如 0.08-0.50）— 內容一句`；論文有整體架構圖或方法示意圖時一定要列出（type architecture／method）。請用 view_paper_pages 看過那一頁再填位置。「## 數字表」把主要結果與消融的數字整理成 Markdown 表格（照原文數字，標表號），之後會用來畫圖表。",
     env.guidanceText(),
-    env.run.request ? `使用者的要求：${env.run.request}` : "",
+    env.run.request ? requestLine(env) : "",
     fix ? `上一版的問題：\n${fix.issues.map((i) => `- ${i}`).join("\n")}\n請補讀需要的章節後輸出完整的新版本。\n${dataBlock("previous_version", (fix.previous.text ?? "").slice(0, 12_000))}` : "",
   ].filter(Boolean).join("\n\n");
   const r = await env.researcher({ id: `plan-research`, key: "research" }, { system: systemFor("researcher"), user, tools: ["read_paper", "view_paper_pages", "get_paper"], maxToolSteps: 80, purpose: "research_paper" });
@@ -232,13 +296,13 @@ async function paperBrief(env: WorkflowEnv, paper: { id: string; title: string; 
 
 async function makeOutline(env: WorkflowEnv, mode: DeckMode, pages: number, brief: string, fix: { previous: StepOutput; issues: string[] } | null): Promise<StepOutput> {
   const user = [
-    LABHUB_RULES[mode],
-    `請規劃一份正好 ${pages} 頁的${mode === "paper_report" ? "論文報告" : "進度報告"}簡報大綱。使用者指定的頁數優先：與 Lab-Hub 固定頁數不同時，保留最重要的固定頁（標題逐字），其餘合併或刪減，但總數一定是 ${pages} 頁。`,
+    deckRules(env, mode),
+    `請規劃一份正好 ${pages} 頁的${isTopicDeck(env) ? "主題" : mode === "paper_report" ? "論文報告" : "進度報告"}簡報大綱。使用者指定的頁數優先：與 Lab-Hub 固定頁數不同時，保留最重要的固定頁（標題逐字），其餘合併或刪減，但總數一定是 ${pages} 頁。`,
     "每頁給 2–5 個具體重點（來自資料的事實、數字要標出處）。結果與消融頁一定要寫出論文的實際數字（研究摘要沒有就從「論文原文節錄」找）；重點裡不要寫〔　〕、「資料未提供」或「待補」：資料真的沒有的重點就換成資料裡有的內容。只有規則明定由學生自己填寫的頁面（例如 My assessment、Takeaways for my work、卡住、Idea card、下週與要問）才標 student_owned: true。",
-    `使用者的要求：${env.run.request}`,
+    requestLine(env),
     env.guidanceText(),
     itemRule(env.requirements()),
-    dataBlock("research", brief.slice(0, 24_000)),
+    dataBlock("research", brief.slice(0, SOURCE_CHARS)),
     fix ? `上一版大綱的問題：\n${fix.issues.map((i) => `- ${i}`).join("\n")}` : "",
     `只輸出 JSON：{"pages":[{"title":"頁面標題","points":["重點"],"student_owned":false${perItem(env.requirements()) ? ',"item":"這頁介紹的項目名稱（沒有就省略）"' : ""}}]}，pages 正好 ${pages} 個。`,
   ].filter(Boolean).join("\n\n");
@@ -247,6 +311,39 @@ async function makeOutline(env: WorkflowEnv, mode: DeckMode, pages: number, brie
   if (!pagesJson.length) return { summary: "大綱不是有效的 JSON", text: "", data: { outline: [], raw: text.slice(0, 2000) } };
   const outline = toOutline(pagesJson);
   return { summary: `${outline.length} 頁大綱`, text: outline.map((p) => `## ${p.title}\n${p.student_owned ? "- （學生自填）" : p.points.map((x) => `- ${x}`).join("\n")}\n\n::: {.notes}\n${p.student_owned ? "學生自填" : p.points.join("；")}\n:::`).join("\n\n"), data: { outline } };
+}
+
+/**
+ * A paper report was asked for but no paper is given / named: ONE clarifying card (brief.ts `clarifyOnce`) with the study's
+ * papers as options, plus a topic deck from the library or a progress report. Unanswered (autopilot) → a topic deck,
+ * 「論文：未指定」. The chosen paper is stored in the inputs.
+ */
+async function whichPaper(env: WorkflowEnv, studyId: string): Promise<DeckMode | "topic"> {
+  const rows = (await env.db.query<{ id: string; title: string; year: number | null; has_pdf: boolean }>(
+    "SELECT p.id, p.title, p.year, (p.pdf_key IS NOT NULL) AS has_pdf FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 ORDER BY (p.pdf_key IS NOT NULL) DESC, sp.created_at DESC LIMIT 6",
+    [studyId],
+  ).catch(() => ({ rows: [] as { id: string; title: string; year: number | null; has_pdf: boolean }[] }))).rows;
+  const answer = await clarifyOnce(env, {
+    id: "paper", title: "要報告哪一篇論文？", prompt: "這份簡報要報告哪一篇論文？",
+    intro: "你要的是論文報告，但沒有指定論文。選一篇研究文獻庫裡的論文，或在「其他」寫論文標題；也可以改成用整個文獻庫做主題簡報。",
+    options: [
+      ...rows.map((r) => ({ value: r.id, label: clipText(r.title, 110), description: `${r.year ?? "年份不詳"}${r.has_pdf ? "" : "，沒有 PDF（會先找開放全文）"}` })),
+      { value: "topic", label: "不指定論文：用研究的文獻庫與筆記做主題簡報" },
+      { value: "progress", label: "改做進度報告（用研究資料）" },
+    ],
+    unspecified: "要報告的論文",
+  });
+  if (!answer) return "topic";
+  if (answer.value === "topic" || answer.value === "progress") return answer.value as "topic" | "progress";
+  let id = answer.value && rows.some((r) => r.id === answer.value) ? answer.value : null;
+  if (!id && answer.other) {
+    const all = (await env.db.query<{ id: string; title: string }>("SELECT p.id, p.title FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 LIMIT 500", [studyId])).rows;
+    id = matchPaperTitle(answer.other, all)?.id ?? null;
+  }
+  if (!id) return "paper_report";
+  await env.db.query("UPDATE workflow_runs SET inputs = inputs || jsonb_build_object('paper_id', $2::text) WHERE id=$1", [env.run.id, id]);
+  env.run.inputs = { ...env.run.inputs, paper_id: id };
+  return "paper_report";
 }
 
 async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResult> {
@@ -265,11 +362,28 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   // An existing deck with content + an edit request (translate, rewrite, restyle…) → revise it in place.
   const revise = await reviseSource(env, access.study.id);
   if (revise) return revisePlan(env, access, revise);
+  // The user's own words decide which deck (brief.ts); the assistant's request only helps to find a named paper.
+  const b = env.brief();
+  const words = [...(b ? b.user_words : [env.run.request]), ...(b ? [] : userGuidance(env.run))].join("\n");
+  // A paper given with the run (inputs / page context) — decided on the first plan, before a fallback pick is stored.
+  const explicitId = env.state<boolean>("paper_explicit") ?? !!paperIdOf(env);
+  await env.setState({ paper_explicit: explicitId });
   let paper = await paperOf(env);
+  const named = !!paper && (explicitId || !!matchPaperTitle(words, [paper]) || /\b\d{4}\.\d{4,5}\b|\b10\.\d{4,9}\//.test(words));
   // An explicit 「進度報告」 wins over a study paper picked by fallback (the study's only paper is not a reason for a paper report).
-  const progressAsked = /進度報告|進度簡報|週報|週會進度|progress report|weekly report/i.test(env.run.request);
-  if (progressAsked && paper && !paperIdOf(env)) paper = null;
-  const mode: DeckMode = inputMode ?? (!progressAsked && (paper || /論文|paper|arxiv|文獻報告/i.test(env.run.request)) ? "paper_report" : "progress");
+  const progressAsked = PROGRESS_RE.test(words);
+  let picked = deckModeOf(words, { inputMode, explicitPaper: named, progressAsked });
+  if (picked === "paper_report" && !paper) picked = await whichPaper(env, access.study.id);
+  if (picked !== "paper_report" && paper && !explicitId) {
+    // The study's only paper (paperOf's fallback) is not this deck's subject: forget it.
+    paper = null;
+    await env.db.query("UPDATE workflow_runs SET inputs = inputs - 'paper_id' WHERE id=$1", [env.run.id]);
+    env.run.inputs = Object.fromEntries(Object.entries(env.run.inputs).filter(([k]) => k !== "paper_id"));
+  }
+  const topic = picked === "topic";
+  const mode: DeckMode = picked === "topic" ? "progress" : picked;
+  await env.setState({ deck_style: topic ? "topic" : null });
+  if (picked === "paper_report") paper = await paperOf(env);
   if (mode === "paper_report" && !paper) return { kind: "question", question: "要報告哪一篇論文？請先把論文加入文獻庫（或附加它），再在補充指示寫出論文標題。" };
   // No PDF: open access + the record's URLs first; then autopilot skips (needs_pdf), otherwise the user chooses (paper-pdf.ts).
   let abstractOnly = false;
@@ -279,7 +393,8 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
     paper = d.paper;
     abstractOnly = d.kind === "abstract";
   }
-  const pages = Math.min(40, Math.max(3, Number(env.run.inputs.pages) || requiredPages(env.requirements()) || (abstractOnly ? 5 : expectedPages(mode, env.run.request))));
+  // Pages: the user's number (a requirement / inputs.pages), else a working default — 「頁數：未指定」, never a requirement.
+  const pages = Math.min(40, Math.max(3, Number(env.run.inputs.pages) || requiredPages(env.requirements()) || (abstractOnly ? 5 : topic ? TOPIC_DEFAULT_PAGES : expectedPages(mode, words))));
   await env.setState({ mode, pages, abstract_only: abstractOnly });
 
   // Research (paper: researcher sub-agent with read_paper; progress: the study's own data).
@@ -302,8 +417,15 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
     // results tables, and an outline / slide without the paper's numbers ends up with 「資料未提供」.
     const excerpt = env.state<string>("paper_digest");
     const figs = await paperFigureList(env, paper!.pdf_key!);
-    if (excerpt || figs) brief = `${brief.slice(0, r.ok ? 9_000 : 6_000)}${figs}${excerpt ? `\n\n# 論文原文節錄（自動擷取；研究摘要沒有的數字、表格、設定從這裡找，照原文引用）\n\n${excerpt}` : ""}`;
+    // Everything fits the writers' window (SOURCE_CHARS): the summary is trimmed so the excerpt (last) is never cut off
+    // — for the writers or their judges (verify.ts gives the judge exactly the writer's blocks).
+    const tail = `${figs}${excerpt ? `\n\n# 論文原文節錄（自動擷取；研究摘要沒有的數字、表格、設定從這裡找，照原文引用）\n\n${excerpt}` : ""}`;
+    if (excerpt || figs) brief = `${brief.slice(0, Math.max(3_000, Math.min(r.ok ? 12_000 : 8_000, SOURCE_CHARS - tail.length)))}${tail}`.slice(-SOURCE_CHARS);
     research = r.spec;
+  } else if (topic) {
+    const data = await topicContext(env, access.study.id);
+    brief = data;
+    research = { key: "research", role: "researcher", title: "整理研究的文獻庫與筆記", instructions: "讀研究文獻庫的論文（標題、年份、摘要）、研究與閱讀筆記和研究進度資料。", expected: "主題資料", done: { output: { summary: `文獻庫與筆記 ${data.length} 字`, text: data } } };
   } else {
     const data = await progressContext(env.db, (env.run.inputs.deck_id as string | undefined) ?? "00000000-0000-0000-0000-000000000000", access.study.id);
     brief = data;
@@ -327,19 +449,29 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   const vision = await env.vision("slides");
   const owned = studentOwned(outline);
   const date = taipeiToday();
-  const title = mode === "paper_report" ? `${paper!.title}` : progressTitle(access.study.title, date);
+  // No subject in the words (「做一份論文報告簡報」 answered with 「不指定論文」): the study's title.
+  const subject = topic ? topicTitleOf(b?.user_words.at(0) ?? env.run.request) : "";
+  const topicTitle = topic ? (PAPER_REPORT_RE.test(subject) || /簡報|投影片|presentation|slides/i.test(subject) ? access.study.title : subject) : "";
+  if (topic) await env.setState({ topic_title: topicTitle });
+  const title = mode === "paper_report" ? `${paper!.title}` : topic ? topicTitle : progressTitle(access.study.title, date);
   const steps = [research, outlineStep.spec, ...laterSteps(outline, vision)];
-  const notes = [abstractOnly ? "這篇沒有全文 PDF：依你的選擇只用摘要，簡報標題與講稿會標示「僅依摘要」。" : "", outline.length !== pages ? `大綱有 ${outline.length} 頁（要求 ${pages} 頁）；可在下方調整後再開始。` : ""].filter(Boolean).join("\n") || undefined;
+  const pagesUnset = !Number(env.run.inputs.pages) && !requiredPages(env.requirements());
+  const notes = [
+    topic ? "主題簡報：目前沒有專門的主題簡報流程（不會線上搜尋新論文），改用研究文獻庫的論文（標題、年份、摘要）與研究筆記整理。要先線上找論文，可以先做「主題調研」再做簡報。" : "",
+    abstractOnly ? "這篇沒有全文 PDF：依你的選擇只用摘要，簡報標題與講稿會標示「僅依摘要」。" : "",
+    pagesUnset ? `頁數：未指定，大綱暫定 ${pages} 頁（可在下方增刪頁面）。` : "",
+    outline.length !== pages ? `大綱有 ${outline.length} 頁（要求 ${pages} 頁）；可在下方調整後再開始。` : "",
+  ].filter(Boolean).join("\n") || undefined;
   const write = await plannedDeckWrite(env, access.study.id, title);
   const cover = await frontTitle(env, title);
   return {
     kind: "plan",
-    title: `${mode === "paper_report" ? (abstractOnly ? "論文報告（僅依摘要）" : "論文報告") : "進度報告"}簡報：${clipText(title, 60)}`,
+    title: `${mode === "paper_report" ? (abstractOnly ? "論文報告（僅依摘要）" : "論文報告") : topic ? "主題" : "進度報告"}簡報：${clipText(title, 60)}`,
     studyId: access.study.id,
-    objective: `為〈${access.study.title}〉建立一份 ${pages} 頁的${mode === "paper_report" ? `論文報告簡報（〈${clipText(paper!.title, 80)}〉）` : "進度報告簡報"}：依確認的大綱逐頁撰寫投影片與講稿，編譯成可預覽的草稿，並通過驗收。`,
-    criteria: criteriaFor(pages, mode, owned, abstractOnly),
+    objective: `為〈${access.study.title}〉建立一份 ${pages} 頁的${mode === "paper_report" ? `論文報告簡報（〈${clipText(paper!.title, 80)}〉）` : topic ? `主題簡報（${clipText(topicTitle, 60)}）` : "進度報告簡報"}：依確認的大綱逐頁撰寫投影片與講稿，編譯成可預覽的草稿，並通過驗收。`,
+    criteria: criteriaFor(pages, mode, owned, abstractOnly).map((c) => (topic && c.id === "grounded" ? { ...c, text: "內容只來自研究文獻庫的論文（標題、年份、摘要）與研究筆記，提到的論文都在文獻庫裡，沒有捏造的數字或結論" } : topic && c.id === "coverage" ? { ...c, text: "每頁都涵蓋大綱列出的重點，前後連貫，切合使用者要的主題" } : c)),
     plan: {
-      summary: `先讀${mode === "paper_report" ? "論文全文" : "研究資料"}並規劃 ${pages} 頁大綱（下方可修改），再由 ${Math.ceil(outline.length / PAGES_PER_WRITER)} 個撰寫者平行寫投影片與講稿，每段都經過檢查與驗收；整合後編譯預覽${vision ? "、看截圖檢查版面" : ""}、補齊講稿，最後逐條驗收。`,
+      summary: `先讀${mode === "paper_report" ? "論文全文" : topic ? "研究文獻庫與筆記" : "研究資料"}並規劃 ${pages} 頁大綱（下方可修改），再由 ${Math.ceil(outline.length / PAGES_PER_WRITER)} 個撰寫者平行寫投影片與講稿，每段都經過檢查與驗收；整合後編譯預覽${vision ? "、看截圖檢查版面" : ""}、補齊講稿，最後逐條驗收。`,
       outline,
       writes: [write],
       ...(notes ? { notes } : {}),
@@ -643,7 +775,7 @@ async function ensureDeck(env: WorkflowEnv): Promise<DeckState & { deck_id: stri
   }
   // A revision of a deck the user edited keeps that deck's name (in the target language), not a fresh template title.
   const edited = want && env.state<boolean>("revise") ? (await env.db.query<{ title: string }>("SELECT title FROM decks WHERE id=$1", [want])).rows[0]?.title : undefined;
-  const baseTitle = await frontTitle(env, edited ?? (mode === "paper_report" ? (paper?.title ?? "論文報告") : progressTitle(access.study.title, date)));
+  const baseTitle = await frontTitle(env, edited ?? (mode === "paper_report" ? (paper?.title ?? "論文報告") : env.state<string>("topic_title") || progressTitle(access.study.title, date)));
   const title = clipText(want ? `${baseTitle}${targetLanguage(env.requirements()) === "en" ? " (Agent draft)" : "（Agent 草稿）"}` : baseTitle, 160);
   const deckId = randomUUID();
   const slug = await freeSlug(env.db, title, date);
@@ -723,7 +855,7 @@ async function frontOf(env: WorkflowEnv): Promise<string> {
 
 const renderData = (s: DeckState) => ({
   renderError: s.render_error ?? null, renderTimedOut: !!s.render_timed_out, revision: s.revision, previewId: s.preview_id,
-  ...(s.qa ? { visualQa: { failed: s.qa.failed, scored: s.qa.scores.length, vision: s.qa.vision, round: s.qa.round, ...(s.qa.unseen ? { unseen: true } : {}) } } : {}),
+  ...(s.qa ? { visualQa: { failed: s.qa.failed, soft: s.qa.soft ?? [], scored: s.qa.scores.length, vision: s.qa.vision, round: s.qa.round, ...(s.qa.unseen ? { unseen: true } : {}) } } : {}),
 });
 
 // ---------------------------------------------------------------- step execution
@@ -746,11 +878,11 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
     context: original && expand
       ? {
           // Expanding: the new outline is the plan; the original deck and the study's sources are the material.
-          request: `使用者的要求：${env.run.request}\n依新的大綱寫出這幾頁，深入要求的焦點；原本的簡報是素材（適合的圖、圖表規格、paper-fig 語法、數字與出處照原文沿用），其他內容只能來自研究資料，不要編造。`,
-          format_rules: `${LABHUB_RULES[mode]}\n\n${VISUAL_RULES}`,
+          request: `${requestLine(env)}\n依新的大綱寫出這幾頁，深入要求的焦點；原本的簡報是素材（適合的圖、圖表規格、paper-fig 語法、數字與出處照原文沿用），其他內容只能來自研究資料，不要編造。`,
+          format_rules: `${deckRules(env, mode)}\n\n${VISUAL_RULES}`,
           full_outline: outlineText(outline),
           your_pages: outlineText(pages),
-          research: brief.slice(0, 30_000),
+          research: brief.slice(0, SOURCE_CHARS),
         }
       : original
       ? {
@@ -761,10 +893,10 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
           format_rules: VISUAL_RULES,
         }
       : {
-          format_rules: `${LABHUB_RULES[mode]}\n\n${VISUAL_RULES}`,
+          format_rules: `${deckRules(env, mode)}\n\n${VISUAL_RULES}`,
           full_outline: outlineText(outline),
           your_pages: outlineText(pages),
-          research: brief.slice(0, 24_000),
+          research: brief.slice(0, SOURCE_CHARS),
         },
     format,
   }, fix);
@@ -799,6 +931,16 @@ async function assembledBody(env: WorkflowEnv): Promise<string> {
 async function assemble(env: WorkflowEnv, step: StepRow, fix: { previous: StepOutput; issues: string[] } | null): Promise<StepOutput> {
   let body = await assembledBody(env);
   const prevState = env.state<DeckState>("deck");
+  // Re-run after a repair: the deck keeps the later passes' work (notes, requirement fixes, visual fixes) on every page
+  // the writers did not change; only the changed pages come from the new merge. Nothing changed → no new render.
+  const merged = body;
+  if (!fix && prevState?.body && step.output?.text) {
+    const changed = changedPages(step.output.text, merged);
+    if (changed && !changed.length && prevState.preview_id && !prevState.render_error && !prevState.render_timed_out) {
+      return { summary: `頁面沒有改變，沿用上次的草稿（修訂 ${prevState.revision}）`, text: merged, data: renderData(prevState) };
+    }
+    if (changed?.length && parseSlides(prevState.body).length === parseSlides(merged).length) body = replaceSlides(prevState.body, changed.join("\n\n"));
+  }
   // A fix round of the assembly = a render error: ask once for a syntax fix of the whole body (pages unchanged).
   if (fix && prevState?.render_error && prevState.body) {
     await env.activity(step.key, "integrator", "依編譯錯誤修正語法");
@@ -808,29 +950,48 @@ async function assemble(env: WorkflowEnv, step: StepRow, fix: { previous: StepOu
   }
   const st = await writeAndRender(env, body);
   const pages = parseSlides(body).length;
-  return { summary: `合併 ${pages} 頁並寫入草稿（修訂 ${st.revision}）；${st.render_error ? "編譯失敗" : st.render_timed_out ? "編譯逾時" : "預覽編譯成功"}`, text: body, data: renderData(st) };
+  // The output is the writers' merge (what a later re-run compares against); the deck state holds the written body.
+  return { summary: `合併 ${pages} 頁並寫入草稿（修訂 ${st.revision}）；${st.render_error ? "編譯失敗" : st.render_timed_out ? "編譯逾時" : "預覽編譯成功"}`, text: fix ? body : merged, data: renderData(st) };
 }
 
+/** Pages of `next` that differ from `prev` (same titles in the same order), or null when the page list changed. */
+export function changedPages(prev: string, next: string): string[] | null {
+  const a = parseSlides(prev);
+  const b = parseSlides(next);
+  if (a.length !== b.length || a.some((p, i) => !titleMatches(p.title, b[i]!.title))) return null;
+  const raw = (x: string) => x.replace(/\r\n/g, "\n").split(/^(?=## )/m).filter((p) => p.startsWith("## ")).map((p) => p.trim());
+  const ra = raw(prev);
+  return raw(next).filter((p, i) => p !== ra[i]);
+}
+
+/** Scoring cycles of the visual QA: each page gets at most QA_PAGE_FIXES rewrites (2), so 3 cycles cover it. */
 const QA_ROUNDS = 3;
+export const QA_PAGE_FIXES = 2;
 
 type ShotsRow = { output_prefix: string; result: { shots?: { count?: number } } | null };
 
-/** Screenshots + layout metrics of the newest ready shot preview of the run's deck. */
-async function shotPages(env: WorkflowEnv, previewId: string): Promise<{ pages: ShotPage[]; images: import("../../lib/vision/review.js").ReviewImage[] } | null> {
+/** Screenshots + layout metrics of the newest ready shot preview of the run's deck; images only of the `want` pages. */
+async function shotPages(env: WorkflowEnv, previewId: string, want?: number[]): Promise<{ pages: ShotPage[]; images: import("../../lib/vision/review.js").ReviewImage[] } | null> {
   const row = (await env.db.query<ShotsRow>("SELECT p.output_prefix, j.result FROM deck_previews p JOIN jobs j ON j.id=p.job_id WHERE p.id=$1 AND p.status='ready'", [previewId])).rows[0];
   const count = row?.result?.shots?.count ?? 0;
   if (!row || !count) return null;
   const manifest = await env.storage.getBuffer(`${row.output_prefix}_hub/shots.json`).then((b) => (b ? (JSON.parse(b.toString("utf8")) as { pages?: ShotPage[] }) : null)).catch(() => null);
   const pages = (manifest?.pages ?? []).map((p) => ({ index: p.index, title: p.title, metrics: p.metrics }));
   const vision = await env.vision("slides");
-  const images = vision ? (await previewImages(env.storage, row.output_prefix, count)).images : [];
+  const images = vision && (!want || want.length) ? (await previewImages(env.storage, row.output_prefix, count, want)).images : [];
   return { pages, images };
 }
 
+/** Per-page visual QA memory across rounds and re-runs (`state.visual_qa`): scores by slide hash, rewrites and the best version per title. */
+type QaMemory = { cache: Record<string, PageScore>; fixes: Record<string, number>; best: Record<string, { raw: string; score: number; pass: boolean; hard: boolean }> };
+const rank = (s: Pick<PageScore, "pass" | "hard" | "score">) => (s.pass ? 2 : s.hard ? 0 : 1) * 10 + (s.score || 0);
+
 /**
- * Mandatory final visual QA: render with screenshots → per-page rubric (vision verifier in batches when the bound
- * model can see; the worker's layout metrics always) → failing pages rewritten by a writer with the concrete fix
- * instructions → re-render; ≤ QA_ROUNDS rounds. A rewrite that breaks the render is rolled back.
+ * Visual QA (per page, not an all-pages gate): render with screenshots → only pages whose source changed since they were
+ * scored go to the vision model (the rest keep their cached verdict; the layout metrics are re-measured for all) →
+ * failing pages that still have rewrites left (≤ QA_PAGE_FIXES each) are rewritten → re-render; ≤ QA_ROUNDS cycles. A
+ * rewrite that scores worse than the page's best version is rolled back to it. Only hard defects (overflow, raw code,
+ * text < 16 px, a defect seen on the screenshot) fail the step's check; soft problems are report notes.
  */
 async function visualQa(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
   let st = env.state<DeckState>("deck");
@@ -840,14 +1001,17 @@ async function visualQa(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
   const owned = studentOwned(outline);
   const deckTitle = env.state<string>("front_title") ?? st.deck_title ?? "";
   const allowed = (title: string) => !title || titleMatches(deckTitle, title) || owned.some((o) => titleMatches(o, title));
+  const mem: QaMemory = { cache: {}, fixes: {}, best: {}, ...(env.state<QaMemory>("visual_qa") ?? {}) };
+  // A re-run (repair / 繼續改) gives every page its rewrites again; scores of unchanged pages are kept.
+  mem.fixes = {};
   let scores: PageScore[] = [];
   // A section cut off mid-block (e.g. an unclosed notes div) hides every later slide: repair before measuring.
   let body = closeOpenBlocks(st.body);
-  let round = 0;
   let lastGood: string | null = null;
   let unseen = false;
+  let visionCalls = 0;
   const log: string[] = [];
-  for (; round < QA_ROUNDS; round++) {
+  for (let round = 0; round < QA_ROUNDS; round++) {
     await env.checkpoint();
     await env.activity(step.key, "designer", `第 ${round + 1} 輪：編譯並擷取每一頁截圖`);
     st = await writeAndRender(env, body, { shots: true });
@@ -856,29 +1020,43 @@ async function visualQa(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
       break;
     }
     lastGood = body;
-    let shots = await shotPages(env, st.preview_id);
+    const slides = parseSlides(body);
+    const plan = pagesToScore(slides, vision ? mem.cache : {});
+    const need = plan.filter((p) => !p.cached || p.cached.source !== "vision").map((p) => p.index);
+    let shots = await shotPages(env, st.preview_id, need);
     if (!shots?.pages.length) {
       // A failed capture (busy / broken Chrome) is retried once; passing pages unseen would hide every visual defect.
       await env.note(`第 ${round + 1} 輪沒有拿到截圖，重新擷取一次。`, "warn");
       st = await writeAndRender(env, body, { shots: true });
-      if (!st.render_error && st.preview_id) shots = await shotPages(env, st.preview_id);
+      if (!st.render_error && st.preview_id) shots = await shotPages(env, st.preview_id, need);
     }
     unseen = !shots?.pages.length;
     if (!shots?.pages.length) {
       // No screenshots (capture failed): fall back to the source heuristics only.
       const issues = bodyIssues(body, allowed);
-      scores = parseSlides(body).map((s, i) => { const hit = issues.find((x) => x.title === s.title); return { page: i + 2, title: s.title, scores: {}, score: hit ? 2 : 4, pass: !hit, issues: hit?.issues ?? [], fix: hit ? fixFor(hit.issues) || "精簡文字、改用視覺元素。" : "", source: "metrics" as const }; });
+      scores = slides.map((s, i) => { const hit = issues.find((x) => x.title === s.title); return { page: i + 2, title: s.title, scores: {}, score: hit ? 2 : 4, pass: !hit, hard: false, issues: hit?.issues ?? [], fix: hit ? fixFor(hit.issues) || "精簡文字、改用視覺元素。" : "", source: "metrics" as const }; });
     } else {
-      await env.activity(step.key, "verifier", vision ? `審查者看 ${shots.images.length} 張截圖逐頁評分` : `依版面量測檢查 ${shots.pages.length} 頁（模型不能看圖）`);
-      const v = vision && shots.images.length ? await visionScores(env, shots.images, shots.pages, { allowed, stepId: step.id }).catch(() => []) : [];
+      if (vision && need.length) {
+        await env.activity(step.key, "verifier", `審查者看 ${shots.images.length} 張截圖逐頁評分（${plan.length - need.length} 頁沒有改，沿用上次的評分）`);
+        visionCalls++;
+      } else await env.activity(step.key, "verifier", vision ? "每一頁都沒有改，沿用上次的評分" : `依版面量測檢查 ${shots.pages.length} 頁（模型不能看圖）`);
+      const fresh = vision && shots.images.length ? await visionScores(env, shots.images, shots.pages, { allowed, stepId: step.id }).catch(() => []) : [];
       // The verifier failing silently must not look like a pass: say the round was judged by the metrics only.
-      if (vision && shots.images.length && !v.length) await env.note(`第 ${round + 1} 輪審查者沒有回覆評分，這一輪只用版面量測判斷。`, "warn");
+      if (vision && shots.images.length && !fresh.length) await env.note(`第 ${round + 1} 輪審查者沒有回覆評分，這一輪只用版面量測判斷。`, "warn");
+      const v = [...fresh, ...plan.filter((p) => p.cached?.source === "vision" && !fresh.some((f) => f.page === p.index)).map((p) => ({ ...p.cached!, page: p.index }))];
       scores = combineScores(shots.pages, v, allowed, sourceIssues(body, { paper: modeOf(env) === "paper_report", refs: contentRefsOf(env, outline) }));
+      for (const sc of scores) {
+        const p = plan.find((x) => x.index === sc.page);
+        if (!p) continue;
+        sc.hash = p.hash;
+        const vs = v.find((x) => x.page === sc.page);
+        if (vs) mem.cache[p.hash] = { ...vs, hash: p.hash };
+      }
     }
-    // Visual share: text-only content pages beyond the allowed share fail too.
+    // Visual share: text-only content pages beyond the allowed share fail too (a soft, fixable problem).
     const share = visualShare(body, allowed);
     if (share.total && share.with / share.total < 0.6) {
-      const textOnly = parseSlides(body).filter((s) => !allowed(s.title) && !/^```\{?\.?(mermaid|chart|diagram)|!\[|^\s*\|/m.test(s.body));
+      const textOnly = slides.filter((s) => !allowed(s.title) && !/^```\{?\.?(mermaid|chart|diagram)|!\[|^\s*\|/m.test(s.body));
       for (const s of textOnly.slice(0, Math.ceil(share.total * 0.6) - share.with)) {
         const sc = scores.find((x) => titleMatches(s.title, x.title));
         if (sc) {
@@ -888,18 +1066,40 @@ async function visualQa(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
         }
       }
     }
+    // Keep the best version of every page; a rewrite that made a page worse goes back to it (re-rendered below).
+    let rolledBack = 0;
+    for (const sc of scores) {
+      const s = slides.find((x) => titleMatches(x.title, sc.title));
+      if (!s || !sc.title) continue;
+      const best = mem.best[sc.title];
+      const raw = `## ${s.title}\n${s.body}${s.notes ? `\n\n::: {.notes}\n${s.notes}\n:::` : ""}`;
+      if (!best || rank(sc) >= rank({ pass: best.pass, hard: best.hard, score: best.score })) mem.best[sc.title] = { raw, score: sc.score, pass: sc.pass, hard: !!sc.hard };
+      else if ((mem.fixes[sc.title] ?? 0) > 0) {
+        body = replaceSlides(body, best.raw);
+        Object.assign(sc, { pass: best.pass, hard: best.hard, score: best.score });
+        rolledBack++;
+      }
+    }
     const failing = scores.filter((s) => !s.pass && !allowed(s.title));
     const hardOwned = scores.filter((s) => !s.pass && allowed(s.title) && s.title && !titleMatches(deckTitle, s.title));
-    st = { ...st, qa: { round: round + 1, scores, vision, failed: [...failing, ...hardOwned].map((s) => s.page), ...(unseen ? { unseen: true } : {}) } };
-    await env.setState({ deck: st });
-    log.push(`第 ${round + 1} 輪：${scores.length - failing.length}/${scores.length} 頁通過`);
-    if (!failing.length || round === QA_ROUNDS - 1) break;
+    const hard = [...failing.filter((s) => s.hard), ...hardOwned];
+    st = { ...st, qa: { round: round + 1, scores, vision, failed: hard.map((s) => s.page), soft: failing.filter((s) => !s.hard).map((s) => s.page), ...(unseen ? { unseen: true } : {}) } };
+    await env.setState({ deck: st, visual_qa: mem });
+    log.push(`第 ${round + 1} 輪：${scores.length - failing.length}/${scores.length} 頁通過${rolledBack ? `（${rolledBack} 頁改壞了，換回較好的版本）` : ""}`);
+    if (rolledBack) {
+      // The rolled-back pages must be what the deck shows: one more render (no new scoring needed, their verdict is known).
+      st = { ...(await writeAndRender(env, body)), qa: st.qa };
+      lastGood = body;
+    }
+    // Only pages with rewrites left are fixed (≤ QA_PAGE_FIXES per page); the others stay as report items.
+    const fixable = failing.filter((f) => (mem.fixes[f.title] ?? 0) < QA_PAGE_FIXES);
+    if (!fixable.length || round === QA_ROUNDS - 1) break;
 
     // Targeted fix of the failing pages.
-    await env.activity(step.key, "writer", `修正 ${failing.length} 頁：${failing.map((f) => `第 ${f.page} 頁`).join("、")}`);
-    const slides = parseSlides(body);
-    const targets = failing.map((f) => ({ f, s: slides.find((s) => titleMatches(s.title, f.title)) })).filter((x) => x.s);
+    await env.activity(step.key, "writer", `修正 ${fixable.length} 頁：${fixable.map((f) => `第 ${f.page} 頁`).join("、")}`);
+    const targets = fixable.map((f) => ({ f, s: slides.find((s) => titleMatches(s.title, f.title)) })).filter((x) => x.s);
     if (!targets.length) break;
+    for (const { f } of targets) mem.fixes[f.title] = (mem.fixes[f.title] ?? 0) + 1;
     const user = [
       LABHUB_RULES[modeOf(env)],
       VISUAL_RULES,
@@ -920,10 +1120,11 @@ async function visualQa(env: WorkflowEnv, step: StepRow): Promise<StepOutput> {
   // Keep the last version that rendered.
   if (st.render_error && lastGood && lastGood !== body) st = { ...(await writeAndRender(env, lastGood)), qa: st.qa };
   const failed = st.qa?.failed ?? [];
+  const soft = st.qa?.soft ?? [];
   const table = scoreTable(scores);
   await env.setState({ qa_table: table });
   return {
-    summary: `${vision ? "逐頁截圖評分" : "版面量測（模型不能看圖）"}：${log.join("；")}${failed.length ? `；仍有 ${failed.length} 頁未通過` : "；全部通過"}`,
+    summary: `${vision ? "逐頁截圖評分" : "版面量測（模型不能看圖）"}：${log.join("；")}${failed.length ? `；${failed.length} 頁有版面硬傷` : "；沒有版面硬傷"}${soft.length ? `；${soft.length} 頁的版面建議列入報告` : ""}${vision ? `（看圖評分 ${visionCalls} 次）` : ""}`,
     text: st.body ?? body,
     data: renderData(st),
   };
@@ -1122,4 +1323,4 @@ export const slidesPlaybook: WorkflowPlaybook = {
 
 registerWorkflowPlaybook(slidesPlaybook);
 
-export const _test = { addedPages, cleanPoint, dedupeOutline, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps };
+export const _test = { changedPages, addedPages, cleanPoint, dedupeOutline, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps };

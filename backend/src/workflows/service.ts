@@ -24,13 +24,19 @@ import { randomUUID } from "node:crypto";
 import { batchPapers, batchRequest, conversationContext, studyFromText } from "./context.js";
 import { lockUserSlots, MAX_ACTIVE_PER_USER, promoteAllQueued, promoteQueued, slotUsage } from "./queue.js";
 import { fixLine, loadLedger } from "./ledger.js";
-import { artifactKindOf, editedRequirements, withRequirementCriteria } from "./requirements.js";
+import { artifactKindOf, detectPageCount, editedRequirements, withRequirementCriteria } from "./requirements.js";
+import { clipWords, collectUserWords, deliverableFor, editedBrief, playbookFor, playbookKind, saveBrief, seedBrief, type BriefKind } from "./brief.js";
 import type { Requirement } from "./types.js";
 
 export { MAX_ACTIVE_PER_USER } from "./queue.js";
 
 export type WorkflowInputs = { study?: string; paper_id?: string; deck_id?: string; project_id?: string; note_ids?: string[]; paper_ids?: string[]; pages?: number; mode?: "progress" | "paper_report" };
-export type CreateInput = { request: string; playbook?: string; conversationId?: string | null; toolCallId?: string | null; context?: Record<string, unknown> | null; inputs?: WorkflowInputs; autopilot?: boolean };
+/**
+ * `userWords`: the user's own words when `request` was written by the assistant (start_workflow / start_goal: the chat
+ * turns that asked, verbatim) — the Brief's source of requirements; `request` is then kept as the paraphrase. Absent =
+ * the request is the user's (composer, API). `briefDeliverable`: fixed by the caller (a goal stage), else from the words.
+ */
+export type CreateInput = { request: string; playbook?: string; conversationId?: string | null; toolCallId?: string | null; context?: Record<string, unknown> | null; inputs?: WorkflowInputs; autopilot?: boolean; userWords?: string[] | null; briefDeliverable?: { kind: BriefKind; label: string } | null };
 
 async function ownRun(db: Queryable, user: CurrentUser, id: string, forUpdate = false) {
   const r = await getRun(db, id, forUpdate);
@@ -58,7 +64,15 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
   let studyId: string | null = null;
   if (studyRef) studyId = (await loadStudyAccess(client, studyRef, user)).study.id;
   if (studyId && !inputs.study) inputs.study = studyId;
-  const playbook = input.playbook && getWorkflowPlaybook(input.playbook) ? input.playbook : detectPlaybook(input.request, inputs as Record<string, unknown>);
+  // The Brief's deliverable (hard) comes from the user's words; a playbook chosen by detection must produce it.
+  const explicit = input.playbook && getWorkflowPlaybook(input.playbook) ? input.playbook : null;
+  const words = clipWords(input.userWords?.length ? input.userWords : [input.request]);
+  const paraphrase = input.userWords?.length ? input.request : null;
+  const named = deliverableFor(words, paraphrase, explicit ?? detectPlaybook(input.request, inputs as Record<string, unknown>));
+  const deliverable = input.briefDeliverable ?? (explicit && playbookKind(explicit) !== named.kind ? deliverableFor([], null, explicit) : named);
+  const playbook = explicit ?? playbookFor(deliverable.kind, input.request, inputs as Record<string, unknown>);
+  // A page count the assistant passed counts only when the user's own words have one (production: pages: 12 nobody asked for).
+  if (paraphrase && inputs.pages && !detectPageCount(words.join("\n"))) delete inputs.pages;
   const items = await batchPapers(client, { playbook, request: input.request, studyId, paperId: inputs.paper_id, paperIds: inputs.paper_ids });
   await lockUserSlots(client, user.id);
   const usage = await slotUsage(client, user.id);
@@ -75,9 +89,10 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
     if (status === "planning") working++;
     else queuedBefore++;
     const row = (await client.query<RunRow>(
-      `INSERT INTO workflow_runs(user_id,study_id,conversation_id,tool_call_id,playbook,title,request,inputs,context,autopilot,budget,status,batch_id,batch_index)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [user.id, studyId, input.conversationId ?? null, input.toolCallId ?? null, playbook, sp.title, sp.request.slice(0, 4000), JSON.stringify(sp.inputs), JSON.stringify(ctx), !!input.autopilot, JSON.stringify(budgetFor(playbook)), status, batchId, sp.index],
+      `INSERT INTO workflow_runs(user_id,study_id,conversation_id,tool_call_id,playbook,title,request,inputs,context,autopilot,budget,status,batch_id,batch_index,brief)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      [user.id, studyId, input.conversationId ?? null, input.toolCallId ?? null, playbook, sp.title, sp.request.slice(0, 4000), JSON.stringify(sp.inputs), JSON.stringify(ctx), !!input.autopilot, JSON.stringify(budgetFor(playbook)), status, batchId, sp.index,
+        JSON.stringify(seedBrief(sp.request, playbook, { userWords: words, deliverable }))],
     )).rows[0]!;
     await enqueueWorkflow(client, row.id, user.id, row.title);
     runs.push((await getRun(client, row.id))!);
@@ -179,7 +194,9 @@ export async function startFromChat(app: FastifyInstance, user: CurrentUser, inp
        VALUES($1,$2,$3,0,0,$4,'start_workflow',$5,'read','running',$6) RETURNING *`,
       [agentRun.id, conv.id, am.id, callId, JSON.stringify(args), `交給 Agent：${titleFrom(input.request)}`],
     )).rows[0]!;
-    const created = await insertWorkflows(client, user, { ...input, context: ctx, toolCallId: tc.id, autopilot: input.autopilot ?? conv.autopilot });
+    // The user's own words: this message and the turns before it that belong to this task.
+    const userWords = await collectUserWords(client, conv.id);
+    const created = await insertWorkflows(client, user, { ...input, context: ctx, toolCallId: tc.id, autopilot: input.autopilot ?? conv.autopilot, userWords });
     const run = created.runs[0]!;
     const data = startResult(created);
     const text = envelope("start_workflow", JSON.stringify({ ...data, message: created.batchId ? `已拆成 ${created.runs.length} 個工作流程（每篇一個），超過同時上限的會排隊自動開始。不要描述結果，等工作流程回報。` : "工作流程已開始規劃；計畫卡片已顯示給使用者，確認後才會執行。不要描述結果，等工作流程回報。" }), { untrusted: false });
@@ -245,6 +262,9 @@ export async function approveWorkflow(app: FastifyInstance, user: CurrentUser, i
     }
     const plan = locked.plan ? { ...locked.plan, ...(outline ? { outline } : {}), ...(state ? { requirements: state.requirements as Requirement[] } : {}) } : null;
     if (state) await client.query("UPDATE workflow_runs SET state = state || $2::jsonb WHERE id=$1", [id, JSON.stringify(state)]);
+    // The user's edits on the plan card are a new version of the Brief (requirements + checklist); nothing else changes it.
+    const nextBrief = editedBrief(locked.brief, { ...(state ? { requirements: state.requirements as Requirement[] } : {}), criteria });
+    if (nextBrief) await saveBrief(client, id, nextBrief);
     if (replacement) {
       const keep = (await getSteps(client, id)).filter((s) => s.status === "passed" && (s.key === "research" || s.key === "outline"));
       await client.query("DELETE FROM workflow_steps WHERE run_id=$1 AND NOT (key = ANY($2))", [id, keep.map((s) => s.key)]);
@@ -332,7 +352,8 @@ async function reopenRun(client: Queryable, r: RunRow, guidance: RunRow["guidanc
   const n = await reopenForMore(client, r.id);
   const budget = { ...r.budget, max_steps: r.budget.max_steps + 120, max_calls: r.budget.max_calls + 240, max_minutes: r.budget.max_minutes + 60, max_tokens: r.budget.max_tokens + 3_000_000 };
   await client.query(
-    "UPDATE workflow_runs SET status=$2, final_rounds=GREATEST(final_rounds-1,0), guidance=$3, budget=$4, report=NULL, error=NULL, stop_reason=NULL, finished_at=NULL, pause_requested=false, criteria=COALESCE((SELECT jsonb_agg(c || '{\"status\":\"pending\"}'::jsonb) FROM jsonb_array_elements(criteria) c), '[]'::jsonb), updated_at=now() WHERE id=$1",
+    // `repaired_criteria` (engine.ts finalStep): the user's 繼續改 may repair every failure again (autopilot re-sets it).
+    "UPDATE workflow_runs SET status=$2, final_rounds=GREATEST(final_rounds-1,0), guidance=$3, budget=$4, report=NULL, error=NULL, stop_reason=NULL, finished_at=NULL, pause_requested=false, state = state - 'repaired_criteria', criteria=COALESCE((SELECT jsonb_agg(c || '{\"status\":\"pending\"}'::jsonb) FROM jsonb_array_elements(criteria) c), '[]'::jsonb), updated_at=now() WHERE id=$1",
     [r.id, n ? "running" : "planning", JSON.stringify(guidance), JSON.stringify(budget)],
   );
 }
@@ -342,7 +363,7 @@ export async function continueRun(db: Db, id: string, guidanceText: string) {
   await transaction(db, async (client) => {
     const r = await getRun(client, id, true);
     if (!r || r.status !== "partial") return;
-    await reopenRun(client, r, [...r.guidance, { at: new Date().toISOString(), text: guidanceText, applied: false }]);
+    await reopenRun(client, r, [...r.guidance, { at: new Date().toISOString(), text: guidanceText, applied: false, system: true }]);
   });
   await insertWorkflowEvent(db, id, "log", { level: "info", text: "繼續改：針對未通過的部分再修正一輪。" });
   await emitRun(db, id);
@@ -412,6 +433,9 @@ export async function patchWorkflow(app: FastifyInstance, user: CurrentUser, id:
       : r.criteria;
     const objective = input.objective?.trim() ? input.objective.slice(0, 1000) : r.objective;
     const changed = objective !== r.objective;
+    // Edited criteria = the user's edit of the Brief's checklist (a new version).
+    const nextBrief = input.criteria ? editedBrief(r.brief, { criteria }) : null;
+    if (nextBrief) await saveBrief(client, id, nextBrief);
     if (r.status === "awaiting_plan_approval" || !changed) {
       await client.query("UPDATE workflow_runs SET objective=$2, criteria=$3, updated_at=now() WHERE id=$1", [id, objective, JSON.stringify(criteria)]);
       return;

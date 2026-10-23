@@ -15,6 +15,7 @@ import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { STEP_ROLES, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRole, type StepRow, type StepSpec } from "../types.js";
 import { clipText, depOutputs, isTopicRequest, paperOf, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { requestLine } from "../brief.js";
 import { askUser } from "../questions.js";
 import { askStudentView, isAiFilled } from "../student-input.js";
 import { localizeHeadings, runLabels } from "../requirements.js";
@@ -474,7 +475,7 @@ const generic: WorkflowPlaybook = {
     if ("question" in access) return { kind: "question", question: access.question };
     const context = await env.tool("get_study", { study: access.study.id });
     const user = [
-      `使用者的要求：${env.run.request}`,
+      requestLine(env),
       env.guidanceText(),
       dataBlock("study", context.ok ? context.text.slice(0, 8000) : `研究〈${access.study.title}〉`),
       `把這個要求拆成 2–8 個步驟。role 只能是 ${STEP_ROLES.filter((r) => r !== "verifier").join("、")}（researcher 可以用唯讀工具讀研究資料、筆記、論文；writer 寫內容；integrator 整合）。最後一步要是 integrator，把成果整合成一份 Markdown 文件。`,

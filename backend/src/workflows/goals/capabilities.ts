@@ -143,7 +143,7 @@ export function gapsOf(req: Requirements, r: Readiness, inputs: Record<string, u
 // ---------------------------------------------------------------- deliverable of a request
 
 /** A deck about a paper (「論文報告」「這篇論文做成簡報」) is a deck, never a paper. */
-const DECK_RE = /簡報|投影片|slides?\b|deck|\bppt\b|論文報告|報告用的/i;
+const DECK_RE = /簡報|投影片|slides?\b|deck|\bppt\b|\bpowerpoint\b|\bpresentation\b|論文報告|報告用的/i;
 /** Writing a whole paper: 「寫一篇 paper」「可以開論文了」「給我一個 latex 論文」「論文初稿」「write a paper」. */
 const PAPER_RE = /(?:寫|撰寫|起草)[^。！？\n]{0,40}(?:論文|paper)|(?:產出|生成|給我|開|做|完成)[^。！？\n]{0,12}(?:論文|paper|latex)|latex\s*(?:的)?\s*論文|論文(?:初稿|草稿|全文)|一篇[^。！？\n]{0,6}(?:paper|論文)|write (?:a|the|my) (?:full )?paper|paper draft|full paper/i;
 const SECTION_RE = /章節|這一節|一節|\bsection\b|introduction|related work 章|方法章|實驗章|緒論|結論章/i;

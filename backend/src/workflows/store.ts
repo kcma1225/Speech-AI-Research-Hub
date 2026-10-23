@@ -7,7 +7,7 @@ import type { Db, Queryable } from "../db.js";
 import type { Artifact, RunRow, StepRow, StepSpec, Usage } from "./types.js";
 import { getWorkflowPlaybook } from "./playbooks/registry.js";
 import { asksOf } from "./questions.js";
-import { loadLedger } from "./ledger.js";
+import { loadConv, loadLedger } from "./ledger.js";
 
 export type WorkflowEventType = "workflow" | "step" | "activity" | "verdict" | "artifact" | "log";
 
@@ -74,6 +74,8 @@ export async function runView(db: Queryable, r: RunRow) {
     objective: r.objective,
     criteria: r.criteria,
     plan: r.plan,
+    // The fixed Brief (brief.ts): the plan card shows the deliverable, 「你的原話」, the requirements' quotes and 「未指定」.
+    brief: r.brief ? { version: r.brief.version, deliverable: r.brief.deliverable, user_words: r.brief.user_words, paraphrase: r.brief.paraphrase, requirements: r.brief.requirements, unspecified: r.brief.unspecified, source: r.brief.source } : null,
     inputs: r.inputs,
     study: await studyOf(db, r.study_id),
     conversation_id: r.conversation_id,
@@ -108,6 +110,18 @@ const ledgerView = (v: unknown) => {
   return items.length ? items.map((i) => ({ id: i.id, status: i.status, severity: i.severity, text: i.text.slice(0, 300), ...(i.where ? { where: i.where } : {}), ...(i.quote ? { quote: i.quote.slice(0, 160) } : {}), ...(i.evidence ? { evidence: i.evidence.slice(0, 160) } : {}), ...(i.note ? { note: i.note } : {}), rounds: i.rounds })) : null;
 };
 
+const convView = (v: unknown) => {
+  const c = loadConv(v);
+  if (!c) return null;
+  const last = c.rounds.at(-1);
+  return {
+    rounds: Math.max(0, (last?.round ?? c.since) - c.since),
+    ...(last ? { score: `${last.score}/${last.total}` } : {}),
+    ...(c.best ? { best_round: c.best.round, best_score: `${c.best.score}/${c.best.total}`, kept_best: !!last && c.best.round !== last.round } : {}),
+    ...(c.stop ? { stop: c.stop } : {}),
+  };
+};
+
 export function stepView(s: StepRow, steps?: StepRow[]) {
   const parent = s.parent_id && steps ? steps.find((x) => x.id === s.parent_id)?.key ?? null : null;
   const text = s.output?.text ?? "";
@@ -131,6 +145,8 @@ export function stepView(s: StepRow, steps?: StepRow[]) {
     history: s.history,
     // The issue ledger (ledger.ts), compact: what the card lists as 已修正 / 仍未解決 / 判定無效.
     ledger: ledgerView(s.inputs?.ledger),
+    // Convergence (ledger.ts): fix rounds of the last session, the version kept and why the unit stopped.
+    convergence: convView(s.inputs?.conv),
     tokens: { in: s.tokens_in, out: s.tokens_out },
     ms: s.ms,
     error: s.error,

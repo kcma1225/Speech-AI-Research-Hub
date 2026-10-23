@@ -14,18 +14,24 @@ import { llm, llmJson, type LlmRequest } from "./llm.js";
 import type { ChatRole } from "../ai/platform/roles.js";
 import { WorkflowStop, type ModelPort, type Requirement, type RunRow, type StepRole } from "./types.js";
 import { requirementsBlock, targetLanguage } from "./requirements.js";
+import { briefBlock, type Brief } from "./brief.js";
 
 /**
  * Calls that never get the user's requirements block: extracting them, goal planning, figure location, the blocked
- * question (shown to the user), search-query planning / paper picking and the visual scoring.
+ * question (shown to the user), search-query planning / paper picking, the visual scoring and the step judge (verify.ts
+ * gives it only the requirements of its own scope).
  */
-const NO_REQUIREMENTS = new Set(["requirements", "goal_plan", "goal_replan", "locate_figure", "blocked", "topic_plan", "topic_select", "visual_qa"]);
+const NO_REQUIREMENTS = new Set(["requirements", "goal_plan", "goal_replan", "locate_figure", "blocked", "topic_plan", "topic_select", "visual_qa", "verify"]);
 
-/** Adds the requirements block to the system prompt (and a language reminder after the task for producers). */
-export function withRequirements(req: LlmRequest, reqs: Requirement[]): LlmRequest {
-  if (!reqs.length || NO_REQUIREMENTS.has(req.purpose.split(":")[0]!)) return req;
+/**
+ * Adds the Brief (deliverable, the user's own words, 「未指定」; brief.ts) and the requirements block to the system prompt
+ * (and a language reminder after the task for producers).
+ */
+export function withRequirements(req: LlmRequest, reqs: Requirement[], brief?: Brief | null): LlmRequest {
+  if (NO_REQUIREMENTS.has(req.purpose.split(":")[0]!)) return req;
   const verifier = req.role === "verifier";
-  const block = requirementsBlock(reqs, verifier ? "verifier" : "producer");
+  const block = [briefBlock(brief, verifier ? "verifier" : "producer"), reqs.length ? requirementsBlock(reqs, verifier ? "verifier" : "producer") : ""].filter(Boolean).join("\n\n");
+  if (!block) return req;
   const messages = [...req.messages];
   const sys = messages.findIndex((m) => m.role === "system");
   const head = messages[sys];
@@ -71,10 +77,33 @@ const ACTIVITY_LABEL = (tool: string, args: Record<string, unknown>) => {
   }
 };
 
+/** Data blocks of a producer prompt that are not source material (the draft itself, earlier versions, verifier views). */
+const NOT_SOURCES = new Set(["previous_version", "output", "final", "changed", "slide", "slides"]);
+const DATA_BLOCK_RE = /<data name="([^"]+)"[^>]*>\n([\s\S]*?)\n<\/data>/g;
+
+/** The source blocks of a prompt, in order (`<data name=…>` blocks except the output / previous versions). */
+export function sourceBlocks(messages: ChatMessage[]): { name: string; text: string }[] {
+  const out: { name: string; text: string }[] = [];
+  for (const m of messages) {
+    if (m.role !== "user" || typeof m.content !== "string") continue;
+    for (const b of m.content.matchAll(DATA_BLOCK_RE)) if (!NOT_SOURCES.has(b[1]!)) out.push({ name: b[1]!, text: b[2]! });
+  }
+  return out;
+}
+
+const PRODUCER_ROLES = new Set<StepRole>(["writer", "designer", "integrator", "coder", "planner", "researcher"]);
+
 export class WorkflowEnv {
   run!: RunRow;
   private t0 = Date.now();
   private activeBase = 0;
+  /** Step id → key / fix round (ai_call_log columns), set by the engine before each round. */
+  private stepMeta = new Map<string, { key: string; round: number }>();
+  /**
+   * Step id → the source blocks its producer was given in this round (verify.ts judges with exactly these: same blocks,
+   * same order, no other truncation). Captured from the prompts of `call` / `callJson`.
+   */
+  readonly stepSources = new Map<string, { name: string; text: string }[]>();
 
   constructor(readonly deps: EnvDeps, run: RunRow, readonly user: CurrentUser) {
     this.run = run;
@@ -155,11 +184,33 @@ export class WorkflowEnv {
 
   /** One model call counted against the run (and the step when given). */
   async call(req: LlmRequest, stepId?: string): Promise<ChatResult> {
-    return llm(this.hooks(stepId), withRequirements(req, this.requirements()));
+    this.captureSources(req, stepId);
+    return llm(this.hooks(stepId), withRequirements(req, this.requirements(), this.brief()));
   }
 
   async callJson<T>(req: LlmRequest, valid: (v: unknown) => v is T, stepId?: string) {
-    return llmJson<T>(this.hooks(stepId), withRequirements(req, this.requirements()), valid);
+    this.captureSources(req, stepId);
+    return llmJson<T>(this.hooks(stepId), withRequirements(req, this.requirements(), this.brief()), valid);
+  }
+
+  /** The engine names the step (and its fix round) a call belongs to. */
+  trackStep(stepId: string, key: string, round: number) {
+    this.stepMeta.set(stepId, { key, round });
+  }
+
+  /** A producer call of a step: its source blocks (merged by name: a later call's block with the same name replaces it). */
+  private captureSources(req: LlmRequest, stepId?: string) {
+    if (!stepId || !PRODUCER_ROLES.has(req.role as StepRole) || /^(?:verify|visual_qa|requirement_fix|title_translate|ask_options|blocked|locate_figure)/.test(req.purpose)) return;
+    const blocks = sourceBlocks(req.messages);
+    if (!blocks.length) return;
+    const prev = this.stepSources.get(stepId) ?? [];
+    const merged = [...prev.filter((p) => !blocks.some((b) => b.name === p.name)), ...blocks];
+    this.stepSources.set(stepId, merged);
+  }
+
+  /** The run's fixed Brief (brief.ts): read-only for playbooks and sub-agents. */
+  brief(): Brief | null {
+    return this.run.brief ?? null;
   }
 
   /** The user's requirements (requirements.ts), injected into every sub-agent call. */
@@ -169,11 +220,15 @@ export class WorkflowEnv {
   }
 
   private hooks(stepId?: string) {
+    const meta = stepId ? this.stepMeta.get(stepId) ?? (stepId.startsWith("plan-") ? { key: stepId.slice(5), round: 0 } : undefined) : undefined;
     return {
       model: this.deps.model,
       userId: this.user.id,
       jobId: this.deps.jobId ?? undefined,
       signal: this.signal,
+      workflowId: this.run.id,
+      stepKey: meta?.key,
+      round: meta?.round,
       beforeCall: () => this.checkpoint(),
       afterCall: async (u: { tokensIn: number; tokensOut: number }) => {
         await addUsage(this.db, this.run.id, { calls: 1, tokens_in: u.tokensIn, tokens_out: u.tokensOut });

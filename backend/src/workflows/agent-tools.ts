@@ -11,6 +11,7 @@ import { getRun, getSteps } from "./store.js";
 import { announceRuns, insertWorkflows, startResult } from "./service.js";
 import { listWorkflowPlaybooks } from "./playbooks/index.js";
 import { routeWorkflowRequest } from "./goals/agent-tools.js";
+import { collectUserWords } from "./brief.js";
 
 const playbookIds = () => listWorkflowPlaybooks().map((p) => p.id);
 
@@ -25,7 +26,8 @@ registerAgentTool({
     "writing a thesis/LaTeX section, a literature review, a topic survey (which approaches exist for X), a deep reading note, an experiment report note, meeting preparation, or another task-oriented request. " +
     "An orchestrator gathers context, writes objective + acceptance criteria + a plan (for decks: the page-by-page outline) that the user approves on a card, " +
     "then sub-agents do the parts, every part is verified and fixed, and the result is checked against the objective. Use it when the user asks you to create such a thing " +
-    "(only use create_deck with generate:true when the user explicitly wants a quick one-shot draft). Put the user's request with all agreed details (page count, structure, emphasis, language) in `request` — only what the user said or agreed to: never add a language, page count or length the user did not ask for (pass `pages` only when the user gave a number). " +
+    "(only use create_deck with generate:true when the user explicitly wants a quick one-shot draft). " +
+    "The user's own chat messages are passed to the workflow verbatim and are the ONLY source of its requirements; `request` is your short summary of the task (what to make, about what, which material) — do not add requirements: no language, page count, length, structure or format the user did not say (pass `pages` only when the user gave a number). Things the user did not specify stay 「未指定」 on the plan card. " +
     "After calling it, end your turn with one short sentence; do not describe results — the card shows progress and the workflow reports back. " +
     "One deck / reading note per paper (「把每一篇文獻都做成簡報」): call it ONCE — pass the study (or all paper_ids) and the request; it creates one run per paper as a batch " +
     "(runs over the limit of 3 working runs queue and start automatically). Papers without a PDF are handled by the workflow (open-access lookup, the record's URL, then it asks or skips) — do not drop them yourself. " +
@@ -39,7 +41,7 @@ registerAgentTool({
     "Editing an existing deck (translate, rewrite, shorten, restyle) = slides with deck_id (the page's deck); it revises that deck as a new draft revision. " +
     "When unsure, omit playbook.",
   input: z.object({
-    request: z.string().trim().min(4).max(4000).describe("The task in the user's words plus the details agreed in the chat"),
+    request: z.string().trim().min(4).max(4000).describe("Short summary of the task (what to make, topic, material); never add requirements the user did not state"),
     playbook: z.string().max(40).optional(),
     study: z.string().max(80).optional().describe("Study id or slug (default: the page's study)"),
     paper_id: z.string().max(64).optional(),
@@ -51,8 +53,10 @@ registerAgentTool({
   }),
   summarize: (a) => `交給 Agent：${a.request.replace(/\s+/g, " ").slice(0, 50)}`,
   async execute(a, ctx) {
+    // The user's own words (verbatim chat turns): the Brief's source of requirements; `request` is the assistant's paraphrase.
+    const userWords = await collectUserWords(ctx.db, ctx.conversationId);
     // Deliverable first (goals/agent-tools.ts): a playbook that would not produce what the user asked for → a goal.
-    const routed = await routeWorkflowRequest(ctx, a);
+    const routed = await routeWorkflowRequest(ctx, { ...a, userWords });
     if (routed) return routed;
     const conv = ctx.conversationId ? (await ctx.db.query<{ context: Record<string, unknown>; autopilot: boolean }>("SELECT context, autopilot FROM conversations WHERE id=$1", [ctx.conversationId])).rows[0] : undefined;
     const callId = ctx.runId ? (await ctx.db.query<{ id: string }>("SELECT id FROM tool_calls WHERE run_id=$1 AND tool='start_workflow' AND status='running' ORDER BY created_at DESC LIMIT 1", [ctx.runId])).rows[0]?.id : undefined;
@@ -65,6 +69,7 @@ registerAgentTool({
         toolCallId: callId ?? null,
         context: conv?.context ?? null,
         autopilot: conv?.autopilot ?? false,
+        userWords,
         inputs: { study: a.study, paper_id: uuid(a.paper_id), deck_id: uuid(a.deck_id), project_id: uuid(a.project_id), note_ids: a.note_ids?.map(uuid).filter((x): x is string => !!x), paper_ids: a.paper_ids?.map(uuid).filter((x): x is string => !!x), pages: a.pages },
       }),
     );

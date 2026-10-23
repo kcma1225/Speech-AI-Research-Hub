@@ -21,7 +21,7 @@ export const AI_ROLE_OF: Record<StepRole | "orchestrator", ChatRole> = {
 
 export function platformPort(platform: AiPlatform): ModelPort {
   return {
-    chat: (role, req, ctx) => platform.chat(role as ChatRole, { ...req, signal: ctx.signal ?? req.signal }, { userId: ctx.userId, jobId: ctx.jobId, signal: ctx.signal }),
+    chat: (role, req, ctx) => platform.chat(role as ChatRole, { ...req, signal: ctx.signal ?? req.signal }, { userId: ctx.userId, jobId: ctx.jobId, signal: ctx.signal, purpose: ctx.purpose, workflowId: ctx.workflowId ?? null, stepKey: ctx.stepKey ?? null, round: ctx.round ?? null }),
     available: async (role) => {
       const st = (await platform.status()).roles[role]?.state;
       return st === "ok" || st === "degraded";
@@ -80,11 +80,17 @@ export type LlmHooks = {
   userId: string;
   jobId?: string;
   signal: AbortSignal;
+  /** Recorded with every call in `ai_call_log` (purpose, run, step key, fix round). */
+  workflowId?: string;
+  stepKey?: string;
+  round?: number;
   /** Called before every call: throws WorkflowStop when the budget is exhausted. */
   beforeCall(): Promise<void>;
   /** Usage after every call (also for the step's own counters). */
   afterCall(r: { tokensIn: number; tokensOut: number }): Promise<void>;
 };
+
+const callCtx = (h: LlmHooks) => ({ userId: h.userId, jobId: h.jobId, signal: h.signal, workflowId: h.workflowId, stepKey: h.stepKey, round: h.round });
 
 /** One model call with role fallback (an unavailable writer/verifier role is served by `assistant`). */
 export async function llm(h: LlmHooks, req: LlmRequest): Promise<ChatResult> {
@@ -92,7 +98,7 @@ export async function llm(h: LlmHooks, req: LlmRequest): Promise<ChatResult> {
   let role = req.aiRole ?? AI_ROLE_OF[req.role];
   if (role !== "assistant" && !(await h.model.available(role).catch(() => false))) role = "assistant";
   const max = req.maxTokens ?? 6000;
-  const res = await h.model.chat(role, { messages: req.messages, tools: req.tools, maxTokens: max, reasoning: { effort: "low" } }, { userId: h.userId, jobId: h.jobId, signal: h.signal, purpose: req.purpose });
+  const res = await h.model.chat(role, { messages: req.messages, tools: req.tools, maxTokens: max, reasoning: { effort: "low" } }, { ...callCtx(h), purpose: req.purpose });
   await h.afterCall({ tokensIn: res.usage?.inputTokens ?? 0, tokensOut: res.usage?.outputTokens ?? 0 });
   const text = cleanText(res.text ?? "");
   // Reasoning models can spend the whole budget thinking: one retry with a bigger budget and a nudge to answer.
@@ -101,7 +107,7 @@ export async function llm(h: LlmHooks, req: LlmRequest): Promise<ChatResult> {
     const again = await h.model.chat(
       role,
       { messages: [...req.messages, { role: "user", content: "（上一次在給出結果前就用完了輸出額度。請不要長篇思考，直接輸出要求的結果。）" }], tools: req.tools, maxTokens: Math.min(16_000, max * 2), reasoning: { effort: "minimal" } },
-      { userId: h.userId, jobId: h.jobId, signal: h.signal, purpose: `${req.purpose}:budget` },
+      { ...callCtx(h), purpose: `${req.purpose}:budget` },
     );
     await h.afterCall({ tokensIn: again.usage?.inputTokens ?? 0, tokensOut: again.usage?.outputTokens ?? 0 });
     return { ...again, text: cleanText(again.text ?? "") };

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { chartBlocks, chartFileName, figureRefs, fixMermaid, lintMermaid, normalizeDiagrams, parseDeckChart, renderDeckChartSvg } from "../src/lib/slides/deck-visuals.js";
 import { qmdHeader } from "../src/lib/slides/templates.js";
 import { runChecks, visibleWords } from "../src/workflows/checks.js";
-import { closeOpenBlocks, combineScores, fixFor, metricIssues, replaceSlides, scoreTable, sourceIssues, visionScores, type ShotPage } from "../src/workflows/playbooks/slides-visual.js";
+import { closeOpenBlocks, combineScores, fixFor, metricIssues, pageHash, pagesToScore, replaceSlides, scoreTable, sourceIssues, visionScores, type PageScore, type ShotPage } from "../src/workflows/playbooks/slides-visual.js";
 import type { WorkflowEnv } from "../src/workflows/env.js";
 
 const metrics = (over: Partial<NonNullable<ShotPage["metrics"]>> = {}) => ({ words: 20, bullets: 3, minFont: 20, maxFont: 40, overflowY: 0, overflowX: 0, visuals: 1, tables: 0, diagrams: 1, diagramErrors: 0, rawDiagramCode: 0, codeBlocks: 0, ...over });
@@ -277,5 +277,38 @@ describe("visionScores concurrency", () => {
     expect(maxInFlight).toBeGreaterThanOrEqual(2);
     // Batch 2 (pages 7–12) failed: pages 1–6 and 13 are scored, in order.
     expect(out.map((s) => s.page)).toEqual([1, 2, 3, 4, 5, 6, 13]);
+  });
+});
+
+describe("visual QA per page (soft signals, re-check only changed pages)", () => {
+  const vision = (page: number, score: number, issues: string[] = []): PageScore => ({ page, title: "P", scores: { readability: 5 }, score, pass: score >= 4 && !issues.length, issues, fix: "", source: "vision" });
+
+  it("a 4.9/5 page never fails on a borderline empty band alone; a severe one or overflow is a hard defect", () => {
+    const band = [{ index: 2, title: "P", metrics: { ...metrics(), emptyBand: 0.54 } }];
+    // Production 00bd5d93: the vision model gave 4.9, the deterministic 35 % rule failed the run.
+    const scored = combineScores(band, [vision(2, 4.9)], () => false)[0]!;
+    expect(scored).toMatchObject({ pass: true, hard: false });
+    expect(scored.issues.join()).toContain("大片空白"); // kept as a note
+    // Without a vision score the metrics decide, but it is a soft problem (fixable, not a gate).
+    expect(combineScores(band, [], () => false)[0]).toMatchObject({ pass: false, hard: false });
+    const severe = [{ index: 2, title: "P", metrics: { ...metrics(), emptyBand: 0.7 } }];
+    expect(combineScores(severe, [vision(2, 4.9)], () => false)[0]).toMatchObject({ pass: false, hard: true });
+    const overflow = [{ index: 2, title: "P", metrics: { ...metrics(), overflowY: 40 } }];
+    expect(combineScores(overflow, [vision(2, 4.8)], () => false)[0]).toMatchObject({ pass: false, hard: true });
+  });
+
+  it("the visual_qa check fails only on hard defects; soft pages are listed as notes", () => {
+    expect(runChecks([{ id: "visual_qa" }], "", { visualQa: { failed: [], soft: [3, 5], scored: 8, vision: true } })[0]).toMatchObject({ ok: true });
+    expect(runChecks([{ id: "visual_qa" }], "", { visualQa: { failed: [], soft: [3, 5], scored: 8, vision: true } })[0]!.detail).toContain("第 3 頁");
+    expect(runChecks([{ id: "visual_qa" }], "", { visualQa: { failed: [4], scored: 8, vision: true } })[0]!.ok).toBe(false);
+  });
+
+  it("only pages whose source changed since they were scored go to the vision model again", () => {
+    const slides = [{ title: "A", body: "a" }, { title: "B", body: "b" }, { title: "C", body: "c" }];
+    const cache: Record<string, PageScore> = { [pageHash(slides[0]!)]: vision(2, 4.5), [pageHash(slides[2]!)]: vision(4, 4.2) };
+    const plan = pagesToScore([slides[0]!, { title: "B", body: "b rewritten" }, slides[2]!], cache);
+    expect(plan.map((p) => [p.index, !!p.cached])).toEqual([[2, true], [3, false], [4, true]]);
+    // Notes are not on the screenshot: changing them keeps the cached verdict.
+    expect(pageHash({ title: "A", body: "a" })).toBe(pageHash(slides[0]!));
   });
 });

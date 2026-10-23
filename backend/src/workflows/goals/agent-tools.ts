@@ -13,6 +13,7 @@ import { capabilityOf, DELIVERABLE_KINDS, DELIVERABLE_LABEL, deliverableOf, type
 import { activeConversationGoal, createGoal, goalDetail, goalResult, updateGoal, type GoalStart } from "./service.js";
 import { getGoal } from "./store.js";
 import type { GoalRow } from "./types.js";
+import { collectUserWords, deliverableFromWords } from "../brief.js";
 
 const uuid = (v?: string) => (v && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);
 
@@ -42,16 +43,20 @@ function startedResult(out: GoalStart, autopilot: boolean) {
   return { data, text: JSON.stringify({ ...data, message }) };
 }
 
-type StartArgs = { request: string; deliverable?: string; playbook?: string; study?: string; paper_id?: string; project_id?: string; note_ids?: string[] };
+type StartArgs = { request: string; deliverable?: string; playbook?: string; study?: string; paper_id?: string; project_id?: string; note_ids?: string[]; userWords?: string[] };
+
+/** The deliverable the user's own words name, else the assistant's request (brief.ts). */
+const wantedOf = (a: StartArgs) => (a.userWords?.length ? deliverableFromWords(a.userWords) : null) ?? deliverableOf(a.request);
 
 async function startGoalFrom(ctx: AgentToolContext, a: StartArgs, tool: string) {
   const conv = await convOf(ctx);
+  const userWords = a.userWords ?? (await collectUserWords(ctx.db, ctx.conversationId));
   const kind = a.deliverable && (DELIVERABLE_KINDS as readonly string[]).includes(a.deliverable) ? (a.deliverable as DeliverableKind) : null;
   // The conversation already pursues a goal and the user now names a different deliverable: update it.
   const active = await activeConversationGoal(ctx.db, ctx.user.id, ctx.conversationId);
-  const want = kind ?? deliverableOf(a.request);
+  const want = kind ?? wantedOf({ ...a, userWords });
   if (active && want && want !== active.deliverable.kind) {
-    const g = await updateGoal(ctx.app, ctx.user, active.id, { request: a.request, deliverable: want });
+    const g = await updateGoal(ctx.app, ctx.user, active.id, { request: a.request, deliverable: want, userWords });
     const data = goalResult(g);
     return { data, text: JSON.stringify({ ...data, message: goalMessage(g, true) }) };
   }
@@ -62,7 +67,7 @@ async function startGoalFrom(ctx: AgentToolContext, a: StartArgs, tool: string) 
   }
   const out = await createGoal(ctx.app, ctx.user, {
     request: a.request, playbook: a.playbook && getWorkflowPlaybook(a.playbook) ? a.playbook : undefined, deliverable: kind,
-    conversationId: ctx.conversationId, toolCallId: (await callIdOf(ctx, tool)) ?? null, context: conv?.context ?? null, autopilot: conv?.autopilot ?? false,
+    conversationId: ctx.conversationId, toolCallId: (await callIdOf(ctx, tool)) ?? null, context: conv?.context ?? null, autopilot: conv?.autopilot ?? false, userWords,
     inputs: { study: a.study, paper_id: uuid(a.paper_id), project_id: uuid(a.project_id), note_ids: a.note_ids?.map(uuid).filter((x): x is string => !!x) },
   });
   return startedResult(out, conv?.autopilot ?? false);
@@ -74,7 +79,7 @@ async function startGoalFrom(ctx: AgentToolContext, a: StartArgs, tool: string) 
  * workflow as asked.
  */
 export async function routeWorkflowRequest(ctx: AgentToolContext, a: StartArgs & { paper_ids?: string[] }) {
-  const want = deliverableOf(a.request);
+  const want = wantedOf(a);
   if (!want) return null;
   const pb = a.playbook && getWorkflowPlaybook(a.playbook) ? a.playbook : detectPlaybook(a.request, { paper_id: a.paper_id, project_id: a.project_id, paper_ids: a.paper_ids });
   const produces = capabilityOf(pb)?.produces;
@@ -95,7 +100,7 @@ registerAgentTool({
     "deliverable: paper (whole LaTeX paper), paper_section, deck, topic_note, lit_review, reading_note, outline, experiment_report, meeting_agenda, note (auto-detected when omitted). " +
     "After calling it, end your turn with one short sentence; do not describe results.",
   input: z.object({
-    request: z.string().trim().min(4).max(4000).describe("The user's goal in their words plus agreed details (topic, language, template, length)"),
+    request: z.string().trim().min(4).max(4000).describe("Short summary of the goal (deliverable, topic); the user's own messages are passed verbatim — never add language, length or other requirements they did not state"),
     deliverable: z.enum(DELIVERABLE_KINDS).optional(),
     study: z.string().max(80).optional(),
     paper_id: z.string().max(64).optional(),
@@ -118,7 +123,8 @@ registerAgentTool({
   async execute(a, ctx) {
     const id = uuid(a.goal_id) ?? (await activeConversationGoal(ctx.db, ctx.user.id, ctx.conversationId))?.id;
     if (!id) return startGoalFrom(ctx, a, "update_goal");
-    const g = await updateGoal(ctx.app, ctx.user, id, { request: a.request, deliverable: a.deliverable ?? deliverableOf(a.request) });
+    const userWords = await collectUserWords(ctx.db, ctx.conversationId);
+    const g = await updateGoal(ctx.app, ctx.user, id, { request: a.request, deliverable: a.deliverable ?? wantedOf({ ...a, userWords }), userWords });
     const data = goalResult(g);
     return { data, text: JSON.stringify({ ...data, message: goalMessage(g, true) }) };
   },

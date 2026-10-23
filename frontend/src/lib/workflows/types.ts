@@ -9,7 +9,13 @@ export type OutlineItem = { n: number; title: string; points: string[]; student_
 export type WriteEffect = "new" | "draft_own" | "suggestion" | "overwrite" | "publish" | "delete" | "outbound";
 /** The user's explicit requirements (backend requirements.ts): 「你的要求」 on the plan card; `standing` = 沿用 from the artifact. */
 export type RequirementType = "language" | "page_count" | "include_topics" | "exclude" | "per_item_fields" | "audience" | "tone" | "length" | "format" | "other";
-export type Requirement = { id: string; type: RequirementType; text: string; params?: Record<string, unknown>; source: "request" | "guidance" | "conversation" | "standing" | "user" };
+export type Requirement = { id: string; type: RequirementType; text: string; params?: Record<string, unknown>; source: "request" | "guidance" | "conversation" | "standing" | "user"; quote?: string };
+/** The run's fixed Brief (backend brief.ts): deliverable (hard), the user's words verbatim, 「未指定」 items; versioned. */
+export type BriefKind = "deck" | "note" | "latex" | "lit_review" | "reading_note" | "other";
+export type Brief = {
+  version: number; deliverable: { kind: BriefKind; label: string; hard: true }; user_words: string[]; paraphrase: string | null;
+  requirements: Requirement[]; unspecified: string[]; source: "start" | "plan" | "guidance" | "edit" | "clarify" | "deliverable";
+};
 export type Plan = {
   summary: string; outline?: OutlineItem[]; writes: { kind: string; label: string; effect?: WriteEffect }[]; notes?: string;
   requirements?: Requirement[]; edit_kind?: "revise" | "expand"; front_title?: string;
@@ -18,9 +24,16 @@ export type Budget = { max_steps: number; max_calls: number; max_tokens: number;
 export type Usage = { steps: number; calls: number; tokens_in: number; tokens_out: number; active_ms: number; fix_rounds: number };
 export type Artifact = { kind: "deck" | "note" | "latex_project" | "latex_file" | "paper"; id: string; url: string; title: string; role: "draft" | "suggestion" | "primary"; preview_url?: string; revision?: number };
 export type Issue = { severity: "high" | "medium" | "low"; text: string; where?: string; quote?: string; id?: string };
-/** One issue of a step's verification ledger (backend ledger.ts): open → fixed / unresolved (survived 3 fix rounds) / invalid (「驗收者判斷無效」). */
-export type LedgerItem = { id: string; status: "open" | "fixed" | "unresolved" | "invalid"; severity: Issue["severity"]; text: string; where?: string; quote?: string; evidence?: string; note?: string; rounds: number };
-export type ReportLedger = { fixed: string[]; unresolved: string[]; invalid: string[] };
+/**
+ * One issue of a step's verification ledger (backend ledger.ts): open → fixed / unresolved (the unit stopped) / invalid
+ * (「驗收者判斷無效」: its evidence could not be verified) / note (「資料未提供」: the sources do not hold it, never fixed).
+ */
+export type LedgerItem = { id: string; status: "open" | "fixed" | "unresolved" | "invalid" | "note"; severity: Issue["severity"]; text: string; where?: string; quote?: string; evidence?: string; note?: string; rounds: number };
+export type ReportLedger = { fixed: string[]; unresolved: string[]; invalid: string[]; notes?: string[] };
+/** Why a unit stopped fixing (backend ledger.ts StopReason). */
+export type StopReason = "converged" | "cap" | "same_failure" | "no_improvement" | "unfixable" | "unchanged" | "blocked";
+export type Convergence = { rounds: number; score?: string; best_round?: number; best_score?: string; kept_best?: boolean; stop?: StopReason };
+export type StepReport = { key: string; title: string; status: StepStatus; ms: number; rounds: number; best_round?: number; best_score?: string; kept_best?: boolean; stop?: StopReason; stop_label?: string };
 export type Verdict = { verdict: "pass" | "revise"; issues: Issue[]; checks: { id: string; ok: boolean; detail: string }[]; judged?: boolean };
 
 export type Workflow = {
@@ -34,6 +47,7 @@ export type Workflow = {
   objective: string;
   criteria: Criterion[];
   plan: Plan | null;
+  brief?: Brief | null;
   study: { id: string; slug: string; title: string } | null;
   conversation_id: string | null;
   autopilot: boolean;
@@ -43,7 +57,7 @@ export type Workflow = {
   usage: Usage;
   artifacts: Artifact[];
   guidance: { at: string; text: string; applied: boolean }[];
-  report: { summary_md: string; done: string[]; issues: string[]; confirm?: string[]; ledger?: ReportLedger } | null;
+  report: { summary_md: string; done: string[]; issues: string[]; confirm?: string[]; ledger?: ReportLedger; steps?: StepReport[] } | null;
   stop_reason: string | null;
   error: { error: string; code?: string; hint?: string } | null;
   question: string | null;
@@ -80,6 +94,7 @@ export type Step = {
   verdict: Verdict | null;
   history: { round: number; verdict: Verdict; summary: string }[];
   ledger?: LedgerItem[] | null;
+  convergence?: Convergence | null;
   tokens: { in: number; out: number };
   ms: number;
   error: string | null;

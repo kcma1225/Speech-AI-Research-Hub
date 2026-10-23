@@ -55,6 +55,8 @@ function mockModel() {
 }
 
 const PASS = '{"verdict":"pass","issues":[]}';
+/** A judged NO on checklist item `id` with its evidence (verify.ts answer format). */
+const no = (id: string, ...problems: object[]) => JSON.stringify({ items: [{ id, problems, answer: "no" }] });
 const allPass = (req: { messages: { role: string; content: unknown }[] }) => JSON.stringify({ results: [...userText(req).matchAll(/- \[([a-z0-9_]+)\]/g)].map((m) => ({ id: m[1], pass: true, evidence: "段落的完整內容", reason: "ok" })) });
 
 // A small playbook that exercises the engine generically: steps a ∥ b → c → final.
@@ -199,12 +201,12 @@ run("workflow engine", () => {
   it("plans, waits for approval, dispatches in parallel, fixes a revise verdict and ends done", async () => {
     m.queue("w:a", "TODO 之後再寫", "A 段落的完整內容，依據資料撰寫。");
     m.queue("w:b", "B 段落的完整內容，依據資料撰寫。", "B 段落的完整內容，補上實驗設定。");
-    // The verifier asks for a revision of B once (medium issue), then passes.
+    // The judge answers NO once for B (missing what the task asks for, quoted), then YES.
     let revisedB = false;
     m.set("verify", (req) => {
       if (!revisedB && userText(req).includes("B 段落")) {
         revisedB = true;
-        return '{"verdict":"revise","issues":[{"severity":"medium","text":"B 少了實驗設定"}]}';
+        return no("task", { kind: "missing", required_quote: "寫 B", fix: "B 少了實驗設定" });
       }
       return PASS;
     });
@@ -436,16 +438,14 @@ run("workflow engine", () => {
   };
   const forStep = (req: { messages: { role: string; content: unknown }[] }, key: string) => userText(req).includes(`任務：${key.toUpperCase()}`);
 
-  it("issue ledger: a fix round re-checks the recorded issues (evidence quoted) and takes no new medium nitpicks", async () => {
+  it("issue ledger: a fix round re-judges the same scoped checklist; the fixed problem is recorded (evidence quoted)", async () => {
     m.set("w:a", "A 段：模型的 CER 是 99.9（第 {n} 版）。");
     m.set("w:b", "B 段落的完整內容。");
     const prompts: string[] = [];
     m.set("verify", (req) => {
       if (!forStep(req, "a")) return PASS;
       prompts.push(userText(req));
-      if (!isRecheck(req)) return JSON.stringify({ verdict: "revise", issues: [{ severity: "high", kind: "error", confidence: 0.9, text: "CER 數字與來源不符", quote: "模型的 CER 是 99.9" }] });
-      // The fix is confirmed; a fresh medium suggestion in the re-check is not taken.
-      return JSON.stringify({ verdict: "revise", resolved: [{ id: "i1", fixed: true, evidence: "CER 是 12.3" }], issues: [{ severity: "medium", kind: "error", confidence: 0.9, text: "語氣可以更正式", quote: "A 段" }] });
+      return prompts.length === 1 ? no("task", { kind: "wrong", output_quote: "模型的 CER 是 99.9", fix: "CER 數字與來源不符" }) : PASS;
     });
     m.queue("w:a", "A 段：模型的 CER 是 99.9（第 {n} 版）。", "A 段：模型的 CER 是 12.3（第 {n} 版）。");
     const id = await newRun("test_ledger");
@@ -454,22 +454,23 @@ run("workflow engine", () => {
     expect(a.status).toBe("passed");
     expect(a.history.length).toBe(2);
     expect(ledgerOf(a).map((i) => [i.id, i.status])).toEqual([["i1", "fixed"]]);
-    expect(prompts[1]).toContain("[i1]");
-    expect(prompts[1]).toContain("模型的 CER 是 99.9");
+    // The same fixed checklist both rounds; the run's whole-artifact criteria are not in a step's review (scope).
+    expect(prompts[1]).toContain("- [task]");
+    expect(prompts[0]).not.toContain("A 段正確");
+    expect(prompts[0]).not.toContain("整體驗收標準");
     const r = (await getRun(t.db, id))!;
     expect(r.report!.ledger!.fixed[0]).toContain("CER 數字與來源不符");
     expect(r.report!.summary_md).toContain("已修正 1 個");
   });
 
-  it("false positives: a self-contradictory issue and one quoting text that is not in the output are dropped (驗收者判斷無效)", async () => {
+  it("false positives: a self-contradictory critique, one quoting text not in the output and one without a quote are dropped (驗收者判斷無效)", async () => {
     m.set("w:a", "第 2 頁載入 Fig. 1 的裁切圖。");
     m.set("w:b", "B 段落的完整內容。");
-    m.set("verify", (req) => forStep(req, "a") && !isRecheck(req)
-      ? JSON.stringify({ verdict: "revise", issues: [
-        { severity: "high", kind: "error", confidence: 0.9, text: "會載入第 2 頁而非 Fig. 1 所在的第 2 頁", quote: "第 2 頁載入 Fig. 1" },
-        { severity: "high", kind: "error", confidence: 0.9, text: "數字錯誤", quote: "WER 降到 3.1%" },
-        { severity: "medium", kind: "error", confidence: 0.9, text: "沒有引用" },
-      ] })
+    m.set("verify", (req) => forStep(req, "a")
+      ? no("task",
+        { kind: "wrong", output_quote: "第 2 頁載入 Fig. 1", fix: "會載入第 2 頁而非 Fig. 1 所在的第 2 頁" },
+        { kind: "wrong", output_quote: "WER 降到 3.1%", fix: "數字錯誤" },
+        { kind: "wrong", fix: "沒有引用" })
       : PASS);
     const id = await newRun("test_ledger");
     expect((await go(id)).status).toBe("done");
@@ -481,46 +482,22 @@ run("workflow engine", () => {
     expect(r.report!.summary_md).toContain("判定無效 3 個");
   });
 
-  it("convergence guard: a medium issue that survives 3 fix rounds becomes a report item; the step passes", async () => {
+  it("convergence: the same failure after a fix round stops the unit at once (kept as a report item, the run can still be done)", async () => {
     m.set("w:a", "A 段落第 {n} 版的內容。");
     m.set("w:b", "B 段落的完整內容。");
-    m.set("verify", (req) => !forStep(req, "a") ? PASS : isRecheck(req)
-      ? JSON.stringify({ verdict: "revise", resolved: [{ id: "i1", fixed: false, evidence: "還是沒有實驗設定" }], issues: [] })
-      : JSON.stringify({ verdict: "revise", issues: [{ severity: "medium", kind: "missing", confidence: 0.9, text: "缺少實驗設定" }] }));
+    m.set("verify", (req) => (forStep(req, "a") ? no("task", { kind: "missing", required_quote: "寫 A", fix: "缺少實驗設定" }) : PASS));
     const id = await newRun("test_ledger");
-    // The final verification passed: done, with the unresolved item listed in the report.
+    // Only a judged failure is left on the step and the final verification passed: done, with the item in the report.
     expect((await go(id)).status).toBe("done");
     const a = (await getSteps(t.db, id)).find((s) => s.key === "a")!;
-    expect(a.status).toBe("passed");
-    expect(m.count("w:a")).toBe(4); // first try + 3 fix rounds, not 6
-    expect(ledgerOf(a)[0]).toMatchObject({ status: "unresolved", rounds: 3 });
+    expect(a.status).toBe("failed");
+    expect(m.count("w:a")).toBe(2); // first try + one fix round, then the same failure → stop (not 6 rounds)
+    expect((a.inputs as { conv?: { stop?: string } }).conv?.stop).toBe("same_failure");
+    expect(ledgerOf(a)[0]).toMatchObject({ status: "unresolved" });
     const r = (await getRun(t.db, id))!;
     expect(r.report!.ledger!.unresolved[0]).toContain("缺少實驗設定");
-    expect(r.report!.issues.join()).toContain("仍未解決");
-  });
-
-  it("convergence guard: a high issue that survives 3 fix rounds fails the step after a second opinion; a second opinion can drop it", async () => {
-    m.set("w:a", "A 段落第 {n} 版的內容。");
-    m.set("w:b", "B 段落的完整內容。");
-    m.set("verify", (req) => !forStep(req, "a") ? PASS : isRecheck(req)
-      ? JSON.stringify({ verdict: "revise", resolved: [{ id: "i1", fixed: false }], issues: [] })
-      : JSON.stringify({ verdict: "revise", issues: [{ severity: "high", kind: "missing", confidence: 0.9, text: "缺少主要結果" }] }));
-    m.set("verify_second", '{"real":true,"reason":"確實缺少"}');
-    const id = await newRun("test_ledger");
-    expect((await go(id)).status).toBe("partial");
-    const a = (await getSteps(t.db, id)).find((s) => s.key === "a")!;
-    expect(a.status).toBe("failed");
-    expect(a.error).toContain("修正 3 輪仍未解決");
-    expect(m.count("w:a")).toBe(4);
-    expect(m.count("verify_second")).toBe(1);
-
-    m.set("verify_second", '{"real":false,"reason":"第 4 版已有主要結果"}');
-    const id2 = await newRun("test_ledger");
-    expect((await go(id2)).status).toBe("done");
-    const a2 = (await getSteps(t.db, id2)).find((s) => s.key === "a")!;
-    expect(a2.status).toBe("passed");
-    expect(ledgerOf(a2)[0]!.status).toBe("invalid");
-    expect(ledgerOf(a2)[0]!.note).toContain("第二意見認為不成立");
+    expect(r.report!.summary_md).toContain("同樣的問題重複出現");
+    expect(r.report!.steps!.find((x) => x.key === "a")).toMatchObject({ stop: "same_failure", rounds: 1 });
   });
 
   it("final ledger: a criterion that passed is judged only against the changed part; a fail quoting text that is not there is invalid", async () => {
@@ -542,14 +519,14 @@ run("workflow engine", () => {
     expect(r.criteria.map((c) => c.status)).toEqual(["pass", "pass"]);
     expect(r.report!.ledger!.fixed.join()).toContain("B 段正確");
 
-    // A fail whose quoted evidence is not in the artifact (asked twice) is 「驗收者判斷無效」, not a repair round.
+    // A fail whose quoted evidence is not in the artifact (asked twice) is dropped (「驗收者判斷無效」), not a repair round.
     m.set("verify_final", '{"results":[{"id":"qa","pass":true,"evidence":"CER 12.3","reason":"ok"},{"id":"qb","pass":false,"evidence":"B 段寫成 WER 50%","reason":"數字錯"}]}');
     const id2 = await newRun("test_ledger");
-    expect((await go(id2)).status).toBe("partial");
+    expect((await go(id2)).status).toBe("done");
     const r2 = (await getRun(t.db, id2))!;
     expect(r2.final_rounds).toBe(0);
-    expect(r2.criteria.find((c) => c.id === "qb")).toMatchObject({ status: "skipped" });
-    expect(r2.criteria.find((c) => c.id === "qb")!.reason).toContain("驗收者判斷無效");
+    expect(r2.criteria.find((c) => c.id === "qb")).toMatchObject({ status: "pass", note: expect.stringContaining("驗收者判斷無效") });
+    expect(r2.report!.ledger!.invalid.join()).toContain("B 段正確");
   });
 
   it("a worker shutdown (aborted signal) is not a user cancel: the job is handed back and the run resumes", async () => {
