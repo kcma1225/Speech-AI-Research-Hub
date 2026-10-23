@@ -1,4 +1,5 @@
 import { api } from "#lib/api.ts";
+import { emitChanged, kindsOfTool } from "#lib/changes.ts";
 import type { AgentSettings, Answer, Conversation, ConversationDetail, ConversationMode, Message, PageContext, Run, ToolCall } from "./types.ts";
 
 export type Streaming = { runId: string; text: string; reasoning: string; inputs: { index: number; name: string; title: string }[]; startedAt: number };
@@ -250,6 +251,8 @@ export class ChatSession {
 
   private upsertCall(c: ToolCall) {
     const i = this.toolCalls.findIndex((x) => x.id === c.id);
+    // A write just finished (incl. ones approved later): open lists of that kind reload (changes.ts).
+    if (c.status === "done" && (i < 0 || this.toolCalls[i]!.status !== "done")) emitChanged(kindsOfTool(c.tool));
     if (i >= 0) this.toolCalls[i] = c;
     else this.toolCalls = [...this.toolCalls, c];
   }

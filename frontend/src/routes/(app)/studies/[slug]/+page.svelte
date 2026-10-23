@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from "$app/state";
+  import { onChanged } from "#lib/changes.ts";
   import { goto } from "$app/navigation";
   import { ArrowLeft, Eye, FlaskConical } from "@lucide/svelte";
   import { api, ApiError } from "#lib/api.ts";
@@ -69,6 +70,8 @@
   const done = $derived(detail?.stages.filter(s => s.completed_at).length ?? 0);
   const team = $derived(detail?.members.filter(m => m.role !== "advisor") ?? []);
   const advisors = $derived(detail?.members.filter(m => m.role === "advisor") ?? []);
+  // The AI (chat or a workflow) wrote ["study", "tasks", "papers", "notes", "decks"] in the background: reload without a page refresh (changes.ts).
+  $effect(() => onChanged(["study", "tasks", "papers", "notes", "decks"], () => void load()));
 </script>
 
 <svelte:head><title>{detail?.study.title ?? t("studies.title")} · Speech-AI Hub</title></svelte:head>

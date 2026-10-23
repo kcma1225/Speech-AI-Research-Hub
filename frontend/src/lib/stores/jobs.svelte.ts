@@ -1,4 +1,5 @@
 import { api } from "#lib/api.ts";
+import { ALL_KINDS, emitChanged, type ChangeKind } from "#lib/changes.ts";
 import type { ActiveJob } from "#lib/types.ts";
 
 let jobs = $state<ActiveJob[]>([]);
@@ -10,11 +11,36 @@ let started = false;
 
 const onVisible = () => !document.hidden && poll();
 
+/** Background jobs → the data they write (a finished one makes open lists reload, even with no chat open). */
+const JOB_KINDS: Record<string, ChangeKind[]> = {
+  ai_workflow: ALL_KINDS,
+  ai_library_import: ["papers"],
+  ai_slides_generate: ["decks"],
+  ai_meeting_transcribe: ["meetings"],
+  ai_meeting_analyze: ["meetings", "notes", "tasks"],
+  slide_render: ["decks"],
+  latex_compile: ["latex"],
+};
+const isActive = (j: ActiveJob) => j.status === "queued" || j.status === "running";
+
+/** Jobs that were active in the previous poll and are not any more. */
+export function announceFinished(prev: ActiveJob[], next: ActiveJob[]) {
+  const kinds = new Set<ChangeKind>();
+  for (const p of prev) {
+    if (!isActive(p)) continue;
+    const n = next.find((j) => j.id === p.id);
+    if (!n || !isActive(n)) for (const k of JOB_KINDS[p.kind] ?? []) kinds.add(k);
+  }
+  if (kinds.size) emitChanged([...kinds]);
+}
+
 async function poll() {
   clearTimeout(timer);
   if (!started) return;
   try {
-    jobs = (await api.get<{ jobs: ActiveJob[] }>("/jobs/active")).jobs;
+    const next = (await api.get<{ jobs: ActiveJob[] }>("/jobs/active")).jobs;
+    announceFinished(jobs, next);
+    jobs = next;
   } catch {
     // Keep the last known list; the next tick retries.
   }

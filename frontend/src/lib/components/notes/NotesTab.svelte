@@ -1,5 +1,6 @@
 <script lang="ts">
   import { displayName } from "#lib/people.svelte.ts";
+  import { onChanged } from "#lib/changes.ts";
   import { page } from "$app/state";
   import { DropdownMenu } from "bits-ui";
   import { Ellipsis, FileText, ListChecks, Plus, Search, Sparkles, Trash2, X } from "@lucide/svelte";
@@ -110,6 +111,8 @@
   ]);
   const filtered = $derived(!!debounced || template !== "all" || author !== "all");
   const href = (n: NoteCard) => `/studies/${encodeURIComponent(slug)}/notes/${n.id}`;
+  // The AI (chat or a workflow) wrote ["notes"] in the background: reload without a page refresh (changes.ts).
+  $effect(() => onChanged(["notes"], () => void load()));
 </script>
 
 <div class="mb-4 flex flex-wrap items-center gap-2 sm:mb-5">

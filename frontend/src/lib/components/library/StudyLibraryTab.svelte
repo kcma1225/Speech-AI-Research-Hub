@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { onChanged } from "#lib/changes.ts";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { BookMarked, FileText, Globe, Plus, Search, Upload, X } from "@lucide/svelte";
@@ -116,6 +117,8 @@
   ]);
   const tagOptions = $derived([{ value: "", label: t("library.tab.allTags") }, ...(data?.tags ?? []).map(x => ({ value: x.tag, label: x.tag, hint: String(x.count) }))]);
   const filtering = $derived(status !== "all" || Boolean(tag) || Boolean(q.trim()));
+  // The AI (chat or a workflow) wrote ["papers"] in the background: reload without a page refresh (changes.ts).
+  $effect(() => onChanged(["papers"], () => void load()));
 </script>
 
 <div class="mb-4 flex flex-col gap-2.5 sm:mb-5">

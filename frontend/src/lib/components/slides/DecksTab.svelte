@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { onChanged } from "#lib/changes.ts";
   import { replaceState } from "$app/navigation";
   import { page } from "$app/state";
   import { Plus, Presentation } from "@lucide/svelte";
@@ -88,6 +89,8 @@
     { value: "progress" as const, label: `${t("slides.kind.progress")} ${counts.progress}` },
     { value: "paper_report" as const, label: `${t("slides.kind.paper_report")} ${counts.paper_report}` },
   ]);
+  // The AI (chat or a workflow) wrote ["decks"] in the background: reload without a page refresh (changes.ts).
+  $effect(() => onChanged(["decks"], () => void load()));
 </script>
 
 <div class="mb-5 flex flex-wrap items-center justify-between gap-3">

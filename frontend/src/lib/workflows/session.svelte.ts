@@ -1,10 +1,13 @@
 import { ApiError } from "#lib/api.ts";
 import { notifyArtifactChanged, refFromArtifact } from "#lib/agent/viewer.ts";
 import { workflowsApi } from "./api.ts";
+import { ALL_KINDS, emitChanged, kindsOfArtifact } from "#lib/changes.ts";
 import { applyEvent, emptyState, type WorkflowState } from "./reduce.ts";
 import { ACTIVE, type Artifact, type Workflow } from "./types.ts";
 
 const EVENT_TYPES = ["workflow", "step", "activity", "verdict", "artifact", "log"] as const;
+/** Playbooks that import papers into the study library while they run. */
+const PAPER_PLAYBOOKS = new Set(["topic_research", "reading_note", "lit_review", "slides"]);
 
 /** Announces an artifact to the assistant's document viewer (window event + the viewer store when it is loaded). */
 export function announceArtifact(a: Artifact, workflowId: string, mode: "open" | "changed") {
@@ -91,7 +94,17 @@ export class WorkflowSession {
         } catch {
           return;
         }
-        if (type === "artifact" && data.artifact) announceArtifact(data.artifact as Artifact, this.id, "changed");
+        if (type === "artifact" && data.artifact) {
+          announceArtifact(data.artifact as Artifact, this.id, "changed");
+          emitChanged(kindsOfArtifact((data.artifact as Artifact).kind));
+        }
+        // Library imports happen inside steps (topic research, reading notes): a passed step may have added papers.
+        if (type === "step" && (data.step as { status?: string } | undefined)?.status === "passed" && PAPER_PLAYBOOKS.has(this.state.workflow?.playbook ?? "")) emitChanged(["papers"]);
+        // The run finished: whatever it wrote is final now.
+        if (type === "workflow") {
+          const w = data.workflow as Workflow | undefined;
+          if (w && !ACTIVE.includes(w.status) && this.state.workflow && ACTIVE.includes(this.state.workflow.status)) emitChanged(ALL_KINDS);
+        }
         this.queue.push({ type, data });
         if (!this.frame) this.frame = typeof requestAnimationFrame === "function" ? requestAnimationFrame(() => this.flush()) : (setTimeout(() => this.flush(), 16) as unknown as number);
       });

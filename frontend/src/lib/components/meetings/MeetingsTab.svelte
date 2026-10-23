@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { onChanged } from "#lib/changes.ts";
   import { Plus, UsersRound } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
@@ -31,6 +32,8 @@
   });
   const pending = $derived(meetings?.filter(m => m.studies.find(s => s.id === studyId)?.draft_status === "pending") ?? []);
   const others = $derived(meetings?.filter(m => !pending.includes(m)) ?? []);
+  // The AI (chat or a workflow) wrote ["meetings"] in the background: reload without a page refresh (changes.ts).
+  $effect(() => onChanged(["meetings"], () => void load()));
 </script>
 
 <div class="flex flex-col gap-5">

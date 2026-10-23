@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from "$app/state";
+  import { onChanged } from "#lib/changes.ts";
   import { Columns3, List, ListTodo, Plus } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
@@ -94,6 +95,8 @@
   async function saved() {
     await Promise.all([load(), reload()]);
   }
+  // The AI (chat or a workflow) wrote ["tasks"] in the background: reload without a page refresh (changes.ts).
+  $effect(() => onChanged(["tasks"], () => void load()));
 </script>
 
 <div class="mb-4 flex flex-wrap items-center gap-2 sm:mb-5">

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { onChanged } from "#lib/changes.ts";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { BookOpen, Globe, Plus, Search, SlidersHorizontal, X } from "@lucide/svelte";
@@ -123,6 +124,8 @@
   }
   let addOpen = $state(false);
   let searchOpen = $state(false);
+  // The AI (chat or a workflow) wrote ["papers"] in the background: reload without a page refresh (changes.ts).
+  $effect(() => onChanged(["papers"], () => void load()));
 </script>
 
 <svelte:head><title>{t("library.title")} · Speech-AI Hub</title></svelte:head>

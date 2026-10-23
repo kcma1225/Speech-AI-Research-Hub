@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { onChanged } from "#lib/changes.ts";
   import { page } from "$app/state";
   import { Plus, Sigma } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
@@ -86,6 +87,8 @@
   $effect(() => {
     if (page.url.searchParams.get("new") === "1" && untrack(() => canEdit)) untrack(() => (createOpen = true));
   });
+  // The AI (chat or a workflow) wrote ["latex"] in the background: reload without a page refresh (changes.ts).
+  $effect(() => onChanged(["latex"], () => void load()));
 </script>
 
 <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
