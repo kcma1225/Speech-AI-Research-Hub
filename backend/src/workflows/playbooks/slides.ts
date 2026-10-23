@@ -18,7 +18,7 @@ import { previewImages } from "../../lib/vision/slides.js";
 import { normalizeDiagrams } from "../../lib/slides/deck-visuals.js";
 import { figureSyntax } from "../../lib/slides/content-lint.js";
 import { buildContentRefs, contentRefsOf, paperFigures } from "../content-refs.js";
-import { bodyIssues, closeOpenBlocks, combineScores, fixContent, fixFor, materializeVisuals, replaceSlides, scoreTable, sourceIssues, visionScores, visualShare, VISUAL_RULES, type PageScore, type ShotPage } from "./slides-visual.js";
+import { bodyIssues, closeOpenBlocks, combineScores, fixContent, fixFor, materializeVisuals, pruneGeneratedFiles, replaceSlides, scoreTable, sourceIssues, visionScores, visualShare, VISUAL_RULES, type PageScore, type ShotPage } from "./slides-visual.js";
 import { parseSlides, PLACEHOLDER_RE, titleMatches } from "../checks.js";
 import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
@@ -379,9 +379,18 @@ const STRONG_EXPAND_RE = /詳細|細一點|不夠細|更細|擴充|擴寫|展開
  * `revise` (translate / polish: same pages, nothing dropped) or `expand` (deeper / restructured: a new outline grounded
  * in the deck and the study's sources). Per-item fields or a page count well above the deck's are expansions too.
  */
+const CN_NUM: Record<string, number> = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+/** 「加上一頁…」「新增兩頁」「add 2 slides」: how many pages the request adds to the deck (0 when none). */
+export function addedPages(text: string): number {
+  let n = 0;
+  for (const m of text.matchAll(/(?:加上|加入|新增|增加|多加|補上|再加|加)\s*(\d{1,2}|[一二兩三四五六七八九十])\s*(?:頁|張)/g)) n += Number(m[1]) || CN_NUM[m[1]!] || 0;
+  for (const m of text.matchAll(/\badd(?:ing)?\s+(?:an?|one|(\d{1,2}))\s+(?:new\s+|more\s+|extra\s+)?(?:slides?|pages?)\b/gi)) n += Number(m[1]) || 1;
+  return Math.min(n, 20);
+}
+
 export function editKindOf(request: string, reqs: Requirement[], pages: number): EditKind {
   const want = requiredPages(reqs);
-  if (reqs.some((r) => r.type === "per_item_fields") || (want && want > pages + 2)) return "expand";
+  if (reqs.some((r) => r.type === "per_item_fields") || (want && want > pages + 2) || addedPages(request)) return "expand";
   if (TRANSLATE_RE.test(request)) return STRONG_EXPAND_RE.test(request) ? "expand" : "revise";
   return EXPAND_RE.test(request) ? "expand" : "revise";
 }
@@ -484,7 +493,9 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
   const research: StepSpec = kind === "expand"
     ? { key: "research", role: "researcher", title: "讀取現有簡報與研究資料", instructions: "讀出這份簡報每一頁的原始內容，加上研究進度、和要求焦點相關的筆記與論文內容。", expected: "原始投影片 + 研究資料", done: { output: { summary: `現有簡報 ${src.slides.length} 頁 + 研究資料 ${extra.length} 字`, text: brief.slice(0, 60_000) } } }
     : { key: "research", role: "researcher", title: "讀取現有簡報", instructions: "讀出這份簡報目前每一頁的原始內容（含圖表語法與講稿）。", expected: "原始投影片", done: { output: { summary: `現有簡報 ${src.slides.length} 頁`, text: original } } };
-  const want = kind === "expand" ? Math.min(30, Math.max(3, Number(env.run.inputs.pages) || requiredPages(env.requirements()) || Math.max(src.slides.length + 2, Math.round(src.slides.length * 1.5)))) : null;
+  // 「加上一頁…」: exactly the deck's pages + the added ones (not the generic expansion size).
+  const added = addedPages([env.run.request, ...(env.run.guidance ?? []).map((g) => g.text)].join("\n"));
+  const want = kind === "expand" ? Math.min(30, Math.max(3, Number(env.run.inputs.pages) || requiredPages(env.requirements()) || (added ? src.slides.length + added : Math.max(src.slides.length + 2, Math.round(src.slides.length * 1.5))))) : null;
   const outlineStep = await planningStep(env, {
     key: "outline", role: "planner", title: kind === "expand" ? `規劃擴充後的 ${want} 頁大綱` : "規劃修改後的每一頁",
     instructions: kind === "expand" ? `依使用者的要求重新規劃正好 ${want} 頁的大綱：深入要求的焦點，內容來自原簡報與研究資料。` : "依使用者的修改要求，列出修改後每一頁的標題與重點（頁數與順序照原本，除非使用者要求改變）。",
@@ -555,6 +566,9 @@ async function expandOutline(env: WorkflowEnv, src: ReviseSource, brief: string,
     LABHUB_RULES[src.deck.kind],
     `使用者要把現有的 ${src.slides.length} 頁簡報擴充成更深入的版本：${env.run.request}`,
     env.guidanceText(),
+    addedPages([env.run.request, ...(env.run.guidance ?? []).map((g) => g.text)].join("\n"))
+      ? `使用者要「新增」頁面：原本的 ${src.slides.length} 頁都要保留（主題不變，可以改寫得更具體），另外新增使用者描述的頁面，總共 ${pages} 頁。不要把新頁的內容併進舊頁，也不要拿掉舊頁。`
+      : "",
     `規劃正好 ${pages} 頁的新大綱：可以重新組織、拆頁或加頁，深入使用者要求的焦點；每頁 2–5 個具體重點（機制、例子、數字，數字要標出處），內容只能來自原簡報與研究資料，不要編造。原本的圖、圖表、論文圖適合的就沿用（重點中寫「沿用原第 k 頁的圖」）。`,
     itemRule(env.requirements()),
     dataBlock("sources", brief.slice(0, 36_000)),
@@ -682,6 +696,8 @@ export async function writeAndRender(env: WorkflowEnv, body: string, opts: { sho
     if (e instanceof HttpError && e.status === 409) throw new WorkflowStop("conflict", "簡報在執行期間被修改了；為了不覆蓋你的內容，工作流程已停止寫入。");
     throw e;
   }
+  // Generated files the new entry no longer uses go (an earlier revision's diagrams / charts / figure crops).
+  await pruneGeneratedFiles(env, deck.deck_id, qmd).catch((e) => env.deps.log.warn({ err: e, workflowId: env.run.id }, "deck file prune failed"));
   // Record the write before waiting for the render, so an interrupted job does not mistake it for a user edit.
   await env.setState({ deck: { ...deck, body, revision, file_version: version, last_written: qmd } });
   const preview = await enqueuePreview(env.db, env.storage, deck.deck_id, env.user.id, { shots: !!opts.shots });
@@ -1106,4 +1122,4 @@ export const slidesPlaybook: WorkflowPlaybook = {
 
 registerWorkflowPlaybook(slidesPlaybook);
 
-export const _test = { cleanPoint, dedupeOutline, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps };
+export const _test = { addedPages, cleanPoint, dedupeOutline, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps };

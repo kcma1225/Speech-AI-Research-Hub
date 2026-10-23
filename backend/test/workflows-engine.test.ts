@@ -707,6 +707,16 @@ run("workflow engine", () => {
     await cancelWorkflow(t.app, await asUser(alice.id), id);
   });
 
+  it("generated deck files the entry no longer references are pruned (no pile-up to the 200-file limit)", async () => {
+    const { createTree } = await import("../src/lib/slides/sources.js");
+    const { pruneGeneratedFiles } = await import("../src/workflows/playbooks/slides-visual.js");
+    const deckId = (await t.db.query<{ id: string }>("INSERT INTO decks(study_id,kind,title,slug,share_key,created_by,updated_by) VALUES($1,'progress','剪除','prune-test','sk-prune',$2,$2) RETURNING id", [study.id, alice.id])).rows[0]!.id;
+    await createTree(t.db, deckId, alice.id, "ai", [{ path: "index.qmd", content: "## A\n\n![](diagrams/keep.svg)\n" }, { path: "diagrams/keep.svg", content: "<svg/>" }, { path: "diagrams/old.svg", content: "<svg/>" }, { path: "charts/old.svg", content: "<svg/>" }, { path: "notes.md", content: "user file" }]);
+    expect(await pruneGeneratedFiles({ db: t.db, storage: t.storage }, deckId, "## A\n\n![](diagrams/keep.svg)\n")).toBe(2);
+    const left = (await t.db.query<{ path: string }>("SELECT path FROM deck_sources WHERE deck_id=$1 ORDER BY path", [deckId])).rows.map((r) => r.path);
+    expect(left).toEqual(["diagrams/keep.svg", "index.qmd", "notes.md"]);
+  });
+
   it("slides revises an existing deck in place (「改成英文」): outline and writers start from the original pages", async () => {
     const { createTree } = await import("../src/lib/slides/sources.js");
     const deckId = (await t.db.query<{ id: string }>("INSERT INTO decks(study_id,kind,title,slug,share_key,created_by,updated_by) VALUES($1,'progress','週報','revise-test','sk-revise',$2,$2) RETURNING id", [study.id, alice.id])).rows[0]!.id;

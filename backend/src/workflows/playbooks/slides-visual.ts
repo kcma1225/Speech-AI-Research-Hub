@@ -18,7 +18,7 @@ import { contentIssues, fixDiagrams, fixFigureRefs, type ContentRefs } from "../
 export const RESULTS_TITLE_RE = /\b(main results?|results?|ablations?|key figure|evaluation)\b|主要結果|實驗結果|結果|消融/i;
 import { visualFit } from "../../lib/slides/deck-layout.js";
 import { mermaidCellsToDiagrams } from "../../lib/slides/diagram/mermaid.js";
-import { listFiles, saveBinary, saveText, sourceKeys } from "../../lib/slides/sources.js";
+import { listFiles, loadTree, saveBinary, saveText, sourceKeys } from "../../lib/slides/sources.js";
 import { imageFromBuffer, type ReviewImage } from "../../lib/vision/review.js";
 import type { ChatMessage, ImageBlock, TextBlock } from "../../ai/types.js";
 import { hasVisual, parseSlides, SLIDE_MISSING_RE, titleMatches, visibleWords } from "../checks.js";
@@ -117,9 +117,31 @@ type Ctx = { paperPdfKey?: string | null; vision: boolean };
  * tree (content-addressed paths, so unchanged visuals are not rewritten) and referenced as images. Never throws for a
  * single bad visual: an invalid chart stays as a visible note so the QA flags it.
  */
+/** Folders whose files the playbook generates (content-hashed names: every change adds new ones). */
+const GENERATED_DIRS = ["diagrams/", "charts/", "figures/"];
+
+/**
+ * Deletes generated files that `keep` (the deck's entry text) no longer references, so revisions don't pile up files until
+ * the deck hits its file limit (production: 190 old diagrams → 「最多 200 個檔案」, every later write failed). Returns the count.
+ */
+export async function pruneGeneratedFiles(env: Pick<WorkflowEnv, "db" | "storage">, deckId: string, keep: string): Promise<number> {
+  const rows = (await env.db.query<{ id: string; path: string; s3_key: string | null }>(
+    "SELECT id, path, s3_key FROM deck_sources WHERE deck_id=$1 AND (path LIKE 'diagrams/%' OR path LIKE 'charts/%' OR path LIKE 'figures/%')",
+    [deckId],
+  )).rows.filter((r) => GENERATED_DIRS.some((d) => r.path.startsWith(d)) && !keep.includes(r.path));
+  if (!rows.length) return 0;
+  await env.db.query("DELETE FROM deck_sources WHERE deck_id=$1 AND id = ANY($2::uuid[])", [deckId, rows.map((r) => r.id)]);
+  for (const r of rows) if (r.s3_key) await env.storage.delete?.(r.s3_key).catch(() => {});
+  return rows.length;
+}
+
 export async function materializeVisuals(env: WorkflowEnv, deck: DeckRef, body: string, ctx: Ctx): Promise<{ body: string; charts: number; diagrams: number; figures: number; problems: string[] }> {
   const problems: string[] = [];
   let out = normalizeDiagrams(body);
+  // Orphans first (not referenced by the deck's current entry), so new files fit under the file limit.
+  const tree = await loadTree(env.db, deck.deck_id);
+  const current = (await env.db.query<{ content: string | null }>("SELECT content FROM deck_sources WHERE deck_id=$1 AND path=$2", [deck.deck_id, tree?.entry ?? "index.qmd"])).rows[0]?.content ?? "";
+  await pruneGeneratedFiles(env, deck.deck_id, current).catch(() => 0);
   const files = await listFiles(env.db, deck.deck_id, false);
   const existing = new Set(files.map((f) => f.path));
   // The generated theme is (re)written while it is still the generated one (decks of older runs get the fixes).

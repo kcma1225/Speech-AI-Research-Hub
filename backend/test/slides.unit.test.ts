@@ -182,3 +182,13 @@ describe("expanded outline", () => {
     expect(o.map((p) => [p.n, p.title, p.points.join()])).toEqual([[1, "Table 1 現況", "a,c"], [2, "對帳", "b"]]);
   });
 });
+
+describe("added pages", () => {
+  it("counts pages the request adds", async () => {
+    const { _test } = await import("../src/workflows/playbooks/slides.js");
+    expect(_test.addedPages("每一頁的重點要寫得更具體，並加上一頁整理目前的限制與下一步")).toBe(1);
+    expect(_test.addedPages("新增兩頁 baseline 比較")).toBe(2);
+    expect(_test.addedPages("Please add 2 slides on related work")).toBe(2);
+    expect(_test.addedPages("每一頁都要有講稿")).toBe(0);
+  });
+});
