@@ -1,0 +1,317 @@
+---
+title: "Contextual Adapters for Personalized Speech Recognition in Neural Transducers"
+subtitle: "Paper report"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## One-sentence claim
+> Lightweight contextual adapters personalize pretrained neural transducers for rare words — no pretrained weights are changed.
+
+![](diagrams/diagram-7997e9fc1cb2.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="19.7"}
+
+- Adapter training takes **>86% less time** than from-scratch contextual training (§1, p. 1)
+- Adapters add only **<500k parameters**, **<1.5%** of the pretrained ASR model (§4.2, p. 3)
+
+::: {.takeaway}
+Personalization without retraining — the pretrained model stays untouched.
+:::
+
+::: {.notes}
+**【講述】**（約 1 分鐘）這頁一句話講完論文核心：在預訓練的 RNN-T 與 Conformer-Transducer（C-T）上，只加訓輕量的 contextual adapters，就能對聯絡人、專有名詞等罕見詞做個人化辨識，而且不更動任何預訓練權重。下方的流程圖就是整個做法：使用者目錄經 catalog encoder 編成向量，biasing adapter 產生偏置向量，以逐元素相加注入凍結的預訓練轉導器。第一個支持點是效率：adapter 訓練時間比從頭訓練整個 contextual 模型減少超過 86%。第二個支持點是輕量：catalog encoder 與 biasing adapter 兩個模組總共不到 500k 參數，不到預訓練 ASR 模型的 1.5%。這代表已部署的語音助理模型不必重新訓練就能獲得個人化能力，也是後續所有實驗的出發點。
+
+**【提示】**
+
+- 強調三個關鍵詞：不動原權重、>86% 時間節省、<500k 參數
+- 圖：灰色＝凍結的預訓練轉導器；強調色＝新加入的 adapter 模組（出處：Fig. 1, p. 1）
+- 出處：主張與時間數字來自摘要與 §1（p. 1）；參數量來自 §4.2（p. 3）
+- 銜接下一頁 Background：先說明 neural transducer 結構與個人化需求
+:::
+
+## Background
+
+::: {.incremental}
+- E2E ASR beats hybrid systems; deployed in commercial VAs, >20 domains (§1, p. 1)
+- Personalized requests like "call [Contact Name]" are core VA experiences (§1, p. 1)
+- Contact names and proper nouns are rare, poorly recognized (§1, p. 1)
+:::
+
+![](diagrams/diagram-29e6fafd7bfc.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="19.3"}
+
+::: {.takeaway}
+Encoder = acoustic model; prediction network = internal LM (§2, p. 2)
+:::
+
+::: {.notes}
+**【講述】**（約 1 分鐘）
+
+神經轉導器（RNN-T／C-T）是串流式端到端 ASR，由三個網路組成（§2, p. 2）：encoder 把音框編成 $h_t^{enc}$，prediction network 把已預測的 word-piece 編成 $h_u^{pre}$，joint network 融合後對 4000 個 word-piece（含 blank）softmax；直覺上 encoder 是聲學模型、prediction network 是內建 LM。E2E ASR 已超越混合式系統，並部署於橫跨 20 多個領域的商用語音助理（§1, p. 1；§4.1, p. 3）。而「call [Contact Name]」這類個人化請求是語音助理的核心體驗，接觸人名與專有名詞卻因訓練資料稀少而辨識得很差——這正是下一頁的痛點。
+
+**【提示】**
+
+- 三網路分工：encoder＝聲學模型、prediction network＝LM（出處：§2, p. 2）
+- 個人化請求：「call [Contact Name]」「turn on [Device Name]」（出處：§1, p. 1）
+:::
+
+## Pain point
+
+![](diagrams/diagram-cedbf1c4e6c2.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+- SF / OTF rescoring: works on pretrained models, but overboosting degrades accuracy
+- Neural biasing (LAS / RNN-T): needs training the entire contextual model from scratch
+
+::: {.takeaway}
+Gap is real: General WER <10% vs Proper Names 10–20% — need lightweight, pretrained-compatible neural contextualization
+:::
+
+::: {.notes}
+**【講述】**（約 1 分鐘）
+面對個人化罕見詞的問題，既有解法分成兩大陣營，各自卡在一個關鍵缺陷。第一類在推論時整合外部 LM，主流是 shallow fusion（SF）與 on-the-fly（OTF）rescoring：用使用者專屬 n-gram FST 提高 contextual entities 的分數，可直接套用在預訓練模型上，但對 contextual LM 權重非常敏感，deterministic boosting 很容易 overboost，反而讓整體表現退化。第二類在訓練時整合個人化脈絡（LAS 注意力、RNN-T 神經偏置），建模能力較好，卻必須從頭訓練整個 contextual 模型，無法重用已經訓練好的模型。這個缺口是真實存在的：baseline 在 General set 絕對 WER 低於 10%，但在 Specific（proper names）set 高達 10–20%。因此論文的目標是兼具神經方法建模能力、又可直接套用在預訓練模型上的輕量個人化，這正是下一頁 contextual adapters 的設計動機。
+
+**【提示】**
+- 推論時（SF／OTF rescoring）：user-dependent FSTs 提升 contextual entities 分數，可用於預訓練模型，但對 contextual LM 權重敏感、易 overboost 退化（出處：§1, p. 1）
+- 訓練時（LAS／RNN-T neural biasing）：建模能力較好，但須從頭訓練整個 contextual 模型，無法套用已訓練模型（出處：§1, p. 1）
+- 缺口真實存在：baseline General set 絕對 WER <10%，Specific（proper names）set 10–20%（出處：§5, p. 3）
+- 目標：輕量、可套用於預訓練模型、具神經建模能力的 contextualization（出處：§1, p. 1）
+:::
+
+## Architecture
+
+:::: {.columns}
+::: {.column width="62%"}
+::: {.figure-frame}
+![Fig. 1: Pretrained transducer with contextual adapters, Enc-Pred Query (p. 1)](figures/p1-26-46-59-84.png){fig-align="center"}
+:::
+:::
+::: {.column width="38%"}
+- **Catalog Encoder:** per-entity sub-word tokenizer + BiLSTM → $C^e \in \mathbb{R}^{K \times D}$ (§3.1)
+- **Biasing Adapter:** cross-attention over $C^e$; bias $b$ added element-wise ⊕ (§3.2)
+- \<no_bias\> token: learns when **not** to bias (§3.1)
+- Gray = frozen pretrained; green = new trained modules (Fig. 1)
+:::
+::::
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+這頁用論文自己的 Fig. 1 看整體架構：在預訓練神經轉導器（RNN-T 或 Conformer-Transducer）外掛兩個輕量模組。Catalog Encoder 把使用者目錄中的每個實體，用與 prediction network 相同的 sub-word tokenizer 切詞，經 embedding lookup 與 BiLSTM，輸出實體嵌入 $C^e \in \mathbb{R}^{K \times D}$。Biasing Adapter 以 encoder／prediction network 的中間表示當 query，對 $C^e$ 做 scaled dot-product cross-attention，得到偏置向量 $b=\sum_i \alpha_i W^v c_i^e$，再以逐元素相加 ⊕ 注入中間表示，因此預訓練模型的架構完全不變。圖中灰色是凍結的預訓練參數、綠色是隨機初始化後才訓練的新模組，整個 adapter 不到 500k 參數（不到預訓練模型的 1.5%）。另外，目錄中加入特殊 \<no_bias\> token，讓模型學會「何時不該偏置」，例如天氣領域的語句就不需要偏向聯絡人。
+
+**【提示】**
+
+- 圖：灰＝凍結預訓練參數、綠＝新訓練模組，⊕ 為逐元素相加（出處：Fig. 1, p. 1）
+- Catalog Encoder 的 tokenizer 與 prediction network 相同，確保詞彙相容（出處：§3.1, p. 2）
+- 四種 query 變體：Enc／Pred／Enc-Pred／Joint；Fig. 1 畫的是 Enc-Pred Query（出處：§3.2, p. 2）
+- \<no_bias\> token 很關鍵：移除後 General set WERR 由 -3.11 惡化到 -15.31（出處：表 3, p. 4）
+:::
+
+## Training
+![](diagrams/diagram-f9236e008fd6.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="16.8"}
+
+::: {.takeaway}
+Freeze the transducer, train <1.5% new parameters — training time drops >86%.
+:::
+
+::: {.notes}
+**【講述】**（約 1 分鐘）
+
+這頁的重點是 adapter-style training：預訓練的 RNN-T 與 C-T 參數全部凍結，只隨機初始化 catalog encoder 與 biasing adapter 兩個新模組來訓練（§3.3, p. 2）。圖中灰色是凍結的 encoder、prediction network、joint network；強調色是從零訓練的新 adapter，偏置向量以 ⊕ 逐元素相加注入 encoder 與 prediction network 的中間表示，預訓練模型架構完全不用改。訓練資料只需要約 290 小時的 Mixed Dataset，Specific:General = 1.5:1（比例 m 由超參數搜尋選出），遠小於預訓練用的 114k 小時（§4.1–4.2, p. 3）。優化用 Adam、學習率 5e-4 加 early stopping，adapter 總參數不到 500k（<1.5%），整體訓練時間比從頭訓練 contextual 模型減少超過 86%（§4.2, p. 3；§1, p. 1）。
+
+**【提示】**
+
+- 灰色＝凍結的預訓練轉導器；強調色＝從零訓練的新 adapter（出處：Fig. 1, p. 1；§3.3, p. 2）
+- 資料：~290 h Mixed Dataset，Specific:General = 1.5:1（出處：§4.1–4.2, p. 3）
+- Adam、lr 5e-4、early stopping；訓練時間減少 >86%（出處：§4.2, p. 3；§1, p. 1）
+:::
+
+## Inference
+
+![](diagrams/diagram-a27d3ec34ca8.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="18.2"}
+
+- Catalog encoded once; bias added per frame / step (§3.2)
+- Standard beam search, size 8 — no architectural change (§4.2)
+- Enc-Pred Query: best single variant (Table 1)
+- CA + SF: NE-WERR **+39.70** / **+46.68** (Table 1)
+
+::: {.takeaway}
+Zero architectural change — bias vectors are simply added to frozen model outputs.
+:::
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）推論時，使用者目錄經 sub-word tokenizer 與 BiLSTM catalog encoder 只編碼一次，整段音訊共用（§3.1–3.2, p. 2）。Biasing adapter 以逐框 encoder 狀態與逐步 prediction 狀態為 query 做 cross-attention，偏置向量以逐元素相加注入，預訓練架構完全不變（§3.2, p. 2）。解碼就是標準 RNN-T / C-T beam search，beam size 8（§4.2, p. 3）。單一變體以 Enc-Pred Query 最好（NE-WERR +34.10 / +44.33），與 shallow fusion 併用達 +39.70 / +46.68 最佳，但 General 退化略增至 -4.43 / -2.92 WERR，作者推測為 overbiasing（Table 1, p. 4）。
+
+**【提示】**
+
+- 賣點：目錄編碼一次、逐元素相加、零架構改動（出處：§3.2, p. 2）
+- Enc-Pred Query 最佳單一變體；CA＋SF 整體最佳（出處：Table 1, p. 4）
+- 結尾提問「偏置如何落到輸出詞？」銜接下一頁
+:::
+
+## Trace one example
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- 用老師姓名跑一遍 Enc-Pred Query：從我的 320 個課程熱詞挑一個老師姓名，手算 catalog 嵌入、cross-attention 到偏置向量逐元素相加注入，對照我在 Zipformer 上的流程畫出來。
+- 追蹤課程術語的注意力權重變化：挑一個課程術語實體，畫出各解碼步驟的 attention 分數，說明偏置何時被觸發，呼應我 lookahead 只有 320ms 的誤觸發問題。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+
+## Why it works
+:::: {.columns}
+::: {.column width="38%"}
+- Cross-attention locks onto the right entity
+- Frozen base avoids catastrophic forgetting
+- Type embedding separates catalog types
+:::
+::: {.column width="62%"}
+![](charts/chart-f1eb54fe7bc0.svg){.hub-chart fig-align="center" fig-alt="chart" data-font="16"}
+:::
+::::
+
+::: {.takeaway}
+Three mechanisms, three ablations — each one confirms the design (Tables 2–4).
+:::
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+這一頁用三個消融實驗回答「為什麼有效」，右圖把三組對照畫在一起（深色為完整方法、淺色為消融版）。第一，注意力真的學會看對實體：把目錄換成隨機 word pieces 後，Proper Names WERR 從 +31.29 崩落到 +6.82，說明改善來自正確的實體比對，而不是無差別加分。第二，凍結預訓練參數避免災難性遺忘：在 290 小時 Mixed Dataset 上全參數微調會使 General set 暴跌 -19.23 WERR（來自分佈偏移），adapter 訓練只退化 -3.11，且 Proper Names 進步 +31.29 遠勝全微調的 +2.19。第三，可學習的 type embedding 讓共享的 catalog encoder 區分人名、裝置、地點等目錄類型，Proper Names NE-WERR 從 +27.53 提升到 +38.66。
+
+**【提示】**
+
+- 隨機目錄對照：Proper Names WERR +31.29 → +6.82（出處：Table 3，p. 4；§5）
+- 凍結 vs 全微調：General -3.11 vs -19.23；Proper Names +31.29 vs +2.19（出處：Table 2，p. 4；§5）
+- Type embedding：Proper Names NE-WERR +38.66 vs +27.53（出處：Table 4，p. 4；§3.4、§5）
+:::
+
+## Setup and fairness
+![](diagrams/diagram-f1869a619f4b.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21"}
+
+| Item | Setup |
+|---|---|
+| Models | RNN-T: 5 LSTM layers; C-T: 2 conv + 12 conformer blocks |
+| Decoding | 4000 word-pieces, beam size 8 |
+| Metrics | WERR, NE-WERR (higher is better) |
+| Fairness | SF weights tuned per model (like CA's mixing ratio m) |
+
+- No public contextual counterpart exists — in-house data only (footnote 1)
+
+::: {.notes}
+**【講述】**（約 1 分鐘）
+
+這一頁交代實驗設定，重點是後面所有比較都建立在公平的基礎上。資料方面，RNN-T 與 C-T 都用 114k 小時的 in-house 語音助理資料預訓練，adapter 只用約 290 小時的 Mixed Dataset（Specific 與 General 比例 m=1.5:1），測試集是 75 小時 General 加 20 小時 Specific，而作者明講沒有公開的對應 contextual 資料集（§4.1, p. 3, 註 1）。模型方面，RNN-T encoder 是 5 層 LSTM（736 單元、第 3 層 time-reduction），C-T 是 2 層卷積加 12 個 conformer blocks，兩者皆用 4000 word-pieces、beam size 8 解碼（§4.2, p. 3）。指標採用相對詞錯率下降 WERR（以基線 WER 為分母）與命名實體版 NE-WERR，兩者都是越高越好（§4.1, p. 3）。最關鍵的公平措施：SF baseline 用 sub-word FST、on-the-fly biasing 搭配 weight-pushing subtractive costs，而且 SF 權重對每個模型都做超參數搜尋，對應 CA 這邊搜尋 mixing ratio m，兩邊都調到各自最佳才比較（§4.2, p. 3；Table 1 note, p. 4）。
+
+**【提示】**
+
+- 資料：114k h 預訓練、約 290 h Mixed（m=1.5:1）訓練 adapter；測試 75 h General + 20 h Specific（出處：§4.1, p. 3, 註 1）
+- 模型：RNN-T 為 5 層 LSTM（736 單元、第 3 層 time-reduction）；C-T 為 2 卷積 + 12 conformer blocks；皆 4000 word-pieces、beam size 8（出處：§4.2, p. 3）
+- 指標：WERR =（基線 WER − 新 WER）÷ 基線 WER，另有 NE-WERR，越高越好（出處：§4.1, p. 3）
+- 公平：SF 為 sub-word FST + on-the-fly biasing + weight-pushing subtractive costs；SF 權重逐模型超參數搜尋，對應 CA 的 mixing ratio m（出處：§4.2, p. 3；Table 1 note, p. 4）
+- 無公開對應的 contextual 資料集，只能在 in-house 資料上驗證（出處：§4.1, p. 3, 註 1）
+:::
+
+## Main results
+![](charts/chart-9bf6ab721277.svg){.hub-chart fig-align="center" fig-alt="chart" data-font="16"}
+
+- Every CA query beats shallow fusion on Proper Names
+- Milder general loss: -1.14 vs -3.02 WERR on C-T (Table 1)
+
+::: {.takeaway}
+Adapters beat SF alone on names with less general damage; combining CA + SF is best.
+:::
+
+::: {.notes}
+**【講述】**（約 1.5 分鐘）
+
+這頁是論文主結果，圖表節錄自表 1（NE-WERR 為命名實體詞錯率的相對下降，越高越好；深色為 RNN-T、淺色為 C-T）。第一個重點：各種 CA query 全都勝過 Shallow Fusion——Enc-Pred Query 在 Proper Names 達 NE-WERR +34.10（RNN-T）與 +44.33（C-T），明顯超過 SF 的 +27.70 / +38.12。第二個重點：CA 在 General set 的退化比 SF 小，C-T 上 Joint Query 只有 -1.14% WERR，SF 則是 -3.02%。論文還發現調整 encoder 輸出是關鍵：Enc 與 Enc-Pred 達 +33.60 / +34.10（RNN-T NE-WERR），遠高於只調 prediction network 的 +13.30。最後，CA 與 SF 互補，併用得到最佳 NE-WERR +39.70 / +46.68，但 General 退化略增為 -4.43 / -2.92，作者推測是兩法同用造成 overbiasing。
+
+**【提示】**
+
+- Enc-Pred Query 優於 SF：+34.10 / +44.33 vs +27.70 / +38.12 NE-WERR（出處：表 1，p. 4；§5，p. 4）
+- General 退化較小：Joint Query -1.14 vs SF -3.02 WERR（C-T）（出處：表 1，p. 4；§5，p. 4）
+- Encoder 調整是關鍵：Enc / Enc-Pred +33.60 / +34.10 ≫ Pred-only +13.30（RNN-T NE-WERR）（出處：表 1，p. 4；§5，p. 4）
+- CA + SF 互補最佳：+39.70 / +46.68 NE-WERR；General 退化 -4.43 / -2.92，推測 overbiasing（出處：表 1，p. 4；§5，p. 4）
+:::
+
+## Ablation and key figure
+
+:::: {.columns}
+::: {.column width="62%"}
+::: {.figure-frame}
+![Fig. 3: WERR vs. Catalog Size for CA vs SF (p. 3)](figures/p3-9-24-51-92.png){fig-align="center"}
+:::
+:::
+::: {.column width="38%"}
+- Fig. 3: catalog 100→1500, CA keeps WERR >25%, SF falls ~10–15
+- Drop \<no_bias\>: General WERR -3.11 → -15.31 (Table 3)
+- Random catalog: Proper Names +31.29 → +6.82 (Table 3)
+- Frozen adapters beat full fine-tuning: -3.11 vs -19.23 General (Table 2)
+:::
+::::
+
+::: {.notes}
+**【講述】**（約 1 分鐘）
+
+這一頁的關鍵圖是論文的圖 3：目錄規模從 100 擴大到 1500 時，Contextual Adapters（Enc-Pred Query）在 Proper Names 的 WERR 全程維持在 25% 以上，Shallow Fusion 卻掉到大約 10–15%；General set 的退化也是 CA 收在約 -3% 以內、SF 退化到約 -15%，說明 CA 對目錄大小明顯更魯棒。表 3 的第一個消融顯示，移除 \<no_bias\> token 會讓 General WERR 從 -3.11 惡化到 -15.31，代表這個特殊 token 教會模型「何時不該偏置」。第二個消融把目錄換成隨機 word pieces，Proper Names WERR 從 +31.29 崩落到 +6.82，證明 adapter 的 attention 確實鎖定正確的實體，而不是無差別地加強。表 2 則比較訓練方式：用 290 小時 Mixed Dataset 全參數微調會造成災難性遺忘（catastrophic forgetting），General 暴跌到 -19.23%、Proper Names 只剩 +2.19%；凍結預訓練參數、只訓練 adapter 則拿到 -3.11 / +31.29，兩個指標都大幅勝出。
+
+**【提示】**
+
+- 圖 3：目錄 100→1500，CA 的 Proper Names WERR 維持 >25%，SF 降到約 10–15%；General 退化 CA 約 -3% vs SF 約 -15%（出處：圖 3，p. 3）
+- 移除 \<no_bias\>：General WERR 由 -3.11 惡化到 -15.31，token 是學會「何時不偏置」的關鍵（出處：表 3，p. 4）
+- 隨機目錄：Proper Names WERR 由 +31.29 降到 +6.82，證明 attention 鎖定正確實體（出處：表 3，p. 4）
+- 凍結 vs 全微調：General -3.11 vs -19.23、Proper Names +31.29 vs +2.19，全微調導致災難性遺忘（出處：表 2，p. 4）
+:::
+
+## My assessment
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- 優點：免重訓且只加不到 500k 參數：凍結預訓練權重只訓 adapter，訓練時間省超過 86%，正好解決我不想重訓整個 Zipformer 的需求，而且推論架構零改動。
+- 優點：消融與公平比較做得扎實：表 2、3 證明凍結避免災難性遺忘、注意力確實看對實體（隨機目錄 +31.29 崩至 +6.82）；SF 權重也逐模型調參，比較公平。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+
+## Takeaways for my work
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- 把 CA 列為 shallow fusion 的對照組：論文顯示 CA 的 NE-WERR +34.10 優於 SF 的 +27.70，我下階段除了 trie-based shallow fusion baseline，也該規劃 adapter 式方法在同一份 320 熱詞上比較。
+- 驗證大熱詞清單下的魯棒性：圖 3 顯示目錄 100 到 1500 時本方法維持 >25% WERR 而 SF 掉到約 10-15，正好對應我 CLAS 在清單超過 300 時注意力分散的痛點，值得實測。
+- 借鑑 no_bias token 解決誤觸發：我的串流偏置 lookahead 只有 320ms 容易誤觸發；論文的 <no_bias> token 讓模型學會何時不偏置，可測試能否壓低我的誤觸發率。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+

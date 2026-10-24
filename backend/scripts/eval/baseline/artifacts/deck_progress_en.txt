@@ -1,0 +1,162 @@
+---
+title: "Agent Evaluation Set for Streaming ASR Hotword Biasing: Progress Report 261024"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## Problem Definition
+
+![](diagrams/diagram-5470d9ac9563.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### CLAS attention dilutes
+- 320-term hotword list from course recordings
+- Rare-word recall drops
+:::
+::: {.column width="50%"}
+### Streaming: 320 ms lookahead
+- Short lookahead makes bias scores false-trigger
+:::
+::::
+
+::: {.takeaway}
+Make user-provided hotwords recognizable in Zipformer + RNN-T streaming ASR — without retraining the whole model.
+:::
+
+::: {.notes}
+End-to-end ASR output is biased toward its training vocabulary, so proper nouns, personal names, and internal jargon are poorly recognized — and these words often appear only at inference time (literature review note, 2026-10-24; nakagome2025wctc; wang2023contextual). This motivates our research question: in Zipformer + RNN-T streaming ASR, can user-provided hotwords such as names and course terms be made easier to recognize without retraining the whole model (research brief; survey note, 2026-10-24)? The diagram shows this failure path: the spoken hotword enters the streaming recognizer, but decoding stays biased toward the training vocabulary, so the word comes out dropped or misspelled. Our own data makes the problem concrete. First, when we built a 320-term hotword list from course recordings, CLAS attention diluted across the list and rare-word recall dropped (weekly meeting notes, 2026-10-20). Second, streaming makes biasing harder: the lookahead is only 320 ms, so bias scores easily false-trigger and insert spurious hotwords (weekly meeting notes, 2026-10-20). Next, I will present candidate biasing routes organized by injection position and retraining cost.
+:::
+
+## Idea or Architecture
+
+- Taxonomy: injection position × retraining cost
+- Four routes: shallow fusion, CLAS, adapters, adaptive biasing
+
+![](diagrams/diagram-0f311ae53b57.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="17.1"}
+
+::: {.takeaway}
+Compare routes by injection position and retraining cost
+:::
+
+::: {.notes}
+Our organizing idea is a taxonomy of dynamic hotword biasing for streaming RNN-T, with two axes: injection position (encoder, decoder, search stage) and whether retraining is required (paper outline draft, 2026-10-24). The diagram marks the three candidate injection points on the Zipformer + RNN-T pipeline. Four routes: shallow fusion is training-free but may false-trigger (zhao2019shallow); CLAS injects hotword embeddings into the decoder and needs training (pundak2018deep); contextual adapters keep the backbone frozen and train only a small adapter (sathyendra2022contextual); adaptive biasing toggles biasing by context (xu2023adaptive). Our notes add stakes: with 320 hotwords, CLAS attention dilutes and rare-word recall drops, and the 320 ms lookahead causes false triggers (weekly meeting notes 2026-10-20).
+:::
+
+## Reconciliation
+
+![](diagrams/diagram-395cb9b0fdd9.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21.5"}
+
+- Brief still labels stage: topic ideation
+- Milestones: ICASSP submission 2026-11-15; midterm oral 2027-01-10
+- Open: trie-based baseline, recall script, experiment tables
+
+::: {.notes}
+The plan sequences this study as topic ideation, literature review, experiments, writing, and submission, and the research brief still labels the current stage as topic ideation. Actual progress has already reached literature review: the six-paper comparison note and the CLAS reading note were both completed on 2026-10-24. The milestones are unchanged: the ICASSP 2027 submission is expected on 2026-11-15, and the midterm oral on 2027-01-10, per the milestone list. Open items from the plan are the trie-based shallow fusion baseline, the rare-word recall evaluation script, and the ICASSP experiment tables, per the task list. In short, the labeled stage lags the actual work, and experiments are effectively the next stage.
+:::
+
+## Table 1 Status
+
+**Weeks since last new number: 1**
+
+| Planned row | Source | Filled value |
+|---|---|---|
+| Zipformer streaming RNN-T baseline | AISHELL-1 dev, icefall | Overall CER **5.1%** |
+| CLAS vs shallow fusion | CLAS Abstract, p.1 | Up to **68%** rel. WER gain |
+| Shallow fusion vs neural biasing | Advisor, 2026-10-20 | Same 320-term hotword list |
+| Metric columns | Advisor, 2026-10-20 | Rare-word recall, overall CER, false-trigger rate |
+
+::: {.takeaway}
+Baseline row is filled; the remaining cells wait on the shallow-fusion and neural-biasing runs.
+:::
+
+::: {.notes}
+This page tracks the ICASSP comparison table whose structure was agreed with the advisor in the weekly meeting on 2026-10-20. The only measured entry so far is the Zipformer streaming RNN-T baseline run end-to-end on icefall: 5.1% overall CER on AISHELL-1 dev, which makes it exactly one week since our last new number. The literature anchor row is already filled from the CLAS reading note: CLAS beats shallow fusion by up to 68% relative WER with hundreds of context phrases (Abstract, p.1). The metric columns are locked as rare-word recall, overall CER, and false-trigger rate, following the advisor's feedback. The method rows — shallow fusion versus neural biasing on the same 320-term hotword list — will fill the remaining cells once the trie-based shallow fusion baseline is implemented next week.
+:::
+
+## This Week's Key Results
+
+::: {.big-number}
+5.1%
+:::
+
+::: {.big-number-label}
+AISHELL-1 dev CER - Zipformer streaming RNN-T baseline ran end-to-end on icefall (meeting notes 2026-10-20)
+:::
+
+- 320 hotwords compiled from course recordings
+- CLAS and shallow fusion notes done, plus six-paper comparison
+- CLAS: up to 68% relative WER improvement over shallow fusion
+
+::: {.notes}
+The headline number this week: the Zipformer streaming RNN-T baseline ran end-to-end on icefall, scoring 5.1% CER on AISHELL-1 dev (weekly meeting notes 2026-10-20). This gives us a measured reference point before any biasing is added. We also compiled a hotword list of 320 proper nouns extracted from course recordings. On the literature side, I finished reading notes for CLAS and shallow fusion, plus a six-paper comparison covering KMP biasing, auxiliary training loss, neural biasing, dynamic-vocabulary bias tokens, and training-free mid-layer injection (notes dated 2026-10-24). As a reference point from reading, CLAS achieves up to 68% relative WER improvement over shallow fusion (CLAS reading note, Abstract p.1).
+:::
+
+## Stuck
+
+[AI draft, please confirm]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- CLAS attention dilutes once the hotword list passes 300 terms
+- Rare-word recall drops on my 320-term list
+- Streaming lookahead is only 320 ms, so bias scores false-trigger
+- This directly threatens the planned comparison runs
+
+::: {.notes}
+(AI draft, please confirm: autopilot drafted this from the study data; it is not the presenter's confirmed view. Confirm or rewrite it before presenting.) My biggest blocker is CLAS: once my hotword list passes 300 terms, its attention dilutes and rare-word recall drops on my 320-term list. In my streaming setup the lookahead is only 320 ms, so bias scores easily false-trigger. This directly threatens the planned comparison runs.
+:::
+
+## Idea card
+
+[AI draft, please confirm]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- Compare shallow fusion vs neural biasing on the same 320-term list
+- Same-list comparison isolates method differences, as my advisor suggested
+- Organize methods by injection position x retraining cost
+- Clear frame for where to inject hotwords in Zipformer
+
+::: {.notes}
+(AI draft, please confirm: autopilot drafted this from the study data; it is not the presenter's confirmed view. Confirm or rewrite it before presenting.) I find it most useful to compare shallow fusion vs neural biasing on the exact same 320-term list, so method differences are isolated, as my advisor suggested. Organizing methods by injection position x retraining cost gives me a clear frame for deciding where to inject hotwords in Zipformer.
+:::
+
+## Next Week & Questions to Ask
+
+[AI draft, please confirm]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- Implement the trie-based shallow fusion baseline on icefall
+- Fill the first method row of the ICASSP experiment table
+- Build the rare-word recall evaluation script
+- Prepare ICASSP experiment tables for the advisor-agreed metrics
+
+::: {.notes}
+(AI draft, please confirm: autopilot drafted this from the study data; it is not the presenter's confirmed view. Confirm or rewrite it before presenting.) Next week I plan to implement the trie-based shallow fusion baseline on icefall, filling the first method row of the ICASSP experiment table. I will build the rare-word recall evaluation script and prepare the ICASSP experiment tables, so the advisor-agreed metrics can be reported.
+:::
+

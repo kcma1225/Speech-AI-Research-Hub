@@ -1,0 +1,270 @@
+---
+title: "Zipformer + RNNT 動態熱詞：學術現況〔eval expand 10-23T16-41〕（Agent 草稿）"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## 問題定義
+
+- 罕見熱詞常到推論時才出現，串流 ASR 常辨識錯
+- 目標：Zipformer + RNN-T 做 dynamic hotwording
+- 指標：罕見詞 recall、整體 CER、誤觸發率
+- 現況：基線 CER 5.1%，加入熱詞效果待驗證
+
+![](diagrams/diagram-1feeba1e61cf.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+::: {.takeaway}
+不重新訓練模型，讓推論時才替換的熱詞更容易被辨識
+:::
+
+::: {.notes}
+End-to-end ASR 的輸出偏向訓練詞彙，對專有名詞、人名、內部術語等罕見詞辨識不佳，而這些熱詞常到推論時才出現 [@nakagome2025wctc][@wang2023contextual]。本研究要在 Zipformer + RNN-T 串流辨識中做 dynamic hotwording（contextual biasing），「動態」指的是推論時可替換 bias list、不需重新訓練模型。目前已從課程錄音整理出 320 個專有名詞作為熱詞清單；Zipformer 串流 RNN-T 基線已在 icefall 上跑通（AISHELL-1 dev CER 5.1%），一般解碼下罕見詞錯誤率偏高，加入熱詞的實際效果待驗證。評估指標依教授回饋（週會筆記 2026-10-20）定為罕見詞 recall、整體 CER 與誤觸發率，並計畫比較 shallow fusion 與 neural biasing 在同一份熱詞清單上的表現。研究目標為投稿 ICASSP 2027（里程碑預計 2026-11-15）。
+:::
+
+## Idea 或架構：動態熱詞的做法總覽
+
+![](diagrams/diagram-9e073455c53b.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+- 「動態」：推論時替換 bias list、不需重訓
+- 注入位置：編碼器中間層、解碼器、解碼搜尋階段
+- 訓練成本光譜：免訓練 → 凍結微調 → 需訓練
+- 五種方法，下頁起逐一展開
+
+::: {.takeaway}
+各方法差別在熱詞資訊注入的位置與訓練成本，後續五頁逐一比較架構、優點、缺點。
+:::
+
+::: {.notes}
+整體流程沿用原第 2 頁的 pipeline：語音輸入經 Zipformer 編碼器，RNN-T 解碼時對熱詞加權，最後輸出辨識結果。「動態」的意涵是以 bias list 作為輸入，推論時可直接替換熱詞、不需重訓模型（論文大綱第 2 章）。分類有兩個軸：偏置注入位置（編碼器中間層、解碼器、解碼搜尋階段）與是否需要重新訓練（論文大綱第 3 章）。接下來五頁依序展開 Shallow fusion、CLAS / Deep context、Contextual adapters、Adaptive contextual biasing、Dynamic vocabulary bias token（調研筆記＋文獻回顧）。每頁都會固定比較架構、優點與缺點三個欄位。
+:::
+
+## 方法一：Shallow fusion（解碼時加分／KMP）
+
+### 架構
+
+![](diagrams/diagram-682a8a988fdb.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="17.7"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### 優點
+
+- 免訓練、零額外參數
+- Contact-Tag WER 14.7→7.7；With-Prefix 9.6→2.4
+:::
+::: {.column width="50%"}
+### 缺點
+
+- 易誤觸發；加權需調校
+- entity 越多 OOD WER 越差：1.7→2.1–2.5
+:::
+::::
+
+::: {.takeaway}
+免訓練的低成本基準，神經方法須超越
+:::
+
+::: {.notes}
+架構上 shallow fusion 完全不改模型：解碼時把熱詞建成字首樹（trie／WFST），在 beam search 中對比對到的路徑加分（[@zhao2019shallow]）；KMP biasing（[@wang2023contextual]）進一步用 Knuth-Morris-Pratt 匹配在串流 beam search 中即時比對偏置詞組並加分，零額外參數、TPU-friendly。優點是完全不需訓練：[@wang2023contextual] 報告 Contact-Tag WER 從 14.7 降到 7.7，With-Prefix（B=150）從 9.6 降到 2.4。[@huang2024improving] 也把 shallow fusion 視為神經方法必須超越的低成本基準（LibriSpeech test-other 達 4.11，連 vanilla neural biasing 的 4.33 都還贏不過）。缺點是偏置可能誤觸發（[@zhao2019shallow]），加權與 rescoring 權重需要調校；固定線性計分下 biasing entity 越多，out-of-domain WER 越差（1.7→2.1–2.5）（[@wang2023contextual]）。與需要訓練的 CLAS 的比較見下一頁。
+:::
+
+## 方法二：CLAS / Deep context
+
+### 架構
+
+![](diagrams/diagram-61600cedcd86.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### 優點
+- 數百 phrases：相對 WER 最多改善 68%
+- 免調 rescoring 權重、可納入訓練未見 OOV
+:::
+::: {.column width="50%"}
+### 缺點
+- 需與整個模型聯合訓練
+- >300 phrases 注意力分散；數千時僅平 rescoring
+:::
+::::
+
+::: {.notes}
+CLAS（Contextual Listen, Attend and Spell）是全神經的 deep context 做法：把每個 context phrase 以字元序列嵌成固定維度向量，解碼的每一步用 attention 從 bias list 彙整情境資訊，建模目標從 P(y|x) 擴充為 P(y|x,z)（[@pundak2018deep]）。與前一頁 shallow fusion 的關鍵差別在訓練方式：contextualization 元件與整個模型聯合訓練，而不是解碼時外加分數，因此論文宣稱不需仔細調 rescoring 權重，也能納入訓練時未見的 OOV 詞。數字上，數百個情境詞組時 CLAS 顯著勝過 online rescoring（shallow fusion 基準），相對 WER 最多改善 68%（Abstract, p.1）；但數千個 phrases 時兩者僅相當。代價是這條路線需要訓練，不像 shallow fusion 零訓練即可用。週會筆記（2026-10-20）也提醒：熱詞清單超過 300 個時 attention 會分散、罕見詞召回率下降——我們從課程錄音整理出的清單正好有 320 個專有名詞，正落在這個風險區。
+:::
+
+## 方法三：Contextual adapters（凍結主模型）
+
+### 架構
+
+![](diagrams/diagram-93b43179bb58.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### 優點
+
+- B-WER 最多降 19.2%（vs biasing）
+- 最多降 49.3%（vs vanilla）
+:::
+::: {.column width="50%"}
+### 缺點
+
+- N=2000 時降幅僅剩 20.0%
+- GA-CTC 於 N=0 無助益
+:::
+::::
+
+::: {.takeaway}
+輕量訓練路線：主模型不動即可偏置，但清單一大仍退化
+:::
+
+::: {.notes}
+這頁展開輕量訓練路線：Sathyendra 等人提出的 contextual adapters 把預訓練的 transducer 整個凍結，只訓練插入的小型 adapter 模組，主模型權重完全不動（Sathyendra et al., 2022）。Tang 等人再用 Guided Attention 輔助損失（GA-CE 與 GA-CTC）教 adapter 的 attention 對齊 bias phrase，且不新增參數（Tang et al., 2024）——上圖中 adapter 送入 transducer 的就是這個調變（modulate）訊號。效果上，B-WER 相對 biasing baseline 最多下降 19.2%，相對 vanilla transducer 最多下降 49.3%。但缺點是 bias list 一大退化就變明顯：N=2000 時 CA baseline 的降幅只剩 20.0%；GA-CTC 在完全沒有 distractor（N=0）時對 B-WER 也沒有幫助。另外，這條路線需要訓練與輔助監督的設計成本，GA 損失又綁定 Contextual Adapter 的 attention 結構，換到其他架構時通用性受限（文獻回顧差異軸三）。相較上一頁需聯合訓練整個模型的 CLAS，這裡只動小模組；下一頁則回到訓練負擔更低的作法，看如何在串流 transducer 上動態開關偏置。
+:::
+
+## 方法四：Adaptive contextual biasing（串流 transducer）
+
+### 架構
+
+![](diagrams/diagram-3ea9eee1d29a.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+- 串流 transducer 依預測分數動態開關偏置（Xu et al., 2023）
+
+:::: {.columns}
+::: {.column width="50%"}
+### 優點
+
+- 觸發策略為串流設計，減少常見詞退化
+:::
+::: {.column width="50%"}
+### 缺點
+
+- lookahead 僅 320 ms，偏置分數易誤觸發
+:::
+::::
+
+::: {.takeaway}
+動態開關可在串流下抑制誤觸發，但 lookahead 320 ms 仍是極限
+:::
+
+::: {.notes}
+Adaptive contextual biasing（Xu et al., 2023）的做法是在串流 transducer 上，依預測分數動態決定偏置要開還是關，而不是全程常開，用意是避免常見詞的辨識效能下降。優點是它的偏置觸發策略專門針對串流即時性設計，能減少常見詞退化，和我們研究的串流限制直接相關。缺點是串流模式下 lookahead 只有 320 ms，偏置分數容易誤觸發（週會筆記 2026-10-20）。另外要說明：這個方法的具體實驗數字，目前資料未提供；待確認的事項是這類方法會在 Zipformer 的哪一層注入熱詞資訊，這會直接影響我們實作時的注入位置選擇。
+:::
+
+## 方法五：Dynamic vocabulary（bias token 動態詞彙）
+
+### 架構
+
+![](diagrams/diagram-8378559b9956.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### 優點
+
+- 串流 RNN-T test-clean B-WER 14.3→3.1（N=100）
+- 未見過的詞 B-WER 73.5%→19.0%（N=1000）
+:::
+::: {.column width="50%"}
+### 缺點
+
+- 偏置權重 μ 需調（RNN-T 設 0.01）；N 變大退化
+- 加外部 LM 後僅與傳統 DB 相當
+:::
+::::
+
+::: {.notes}
+動態詞彙的做法來自 [@sudo2024contextualized]：傳統 deep biasing 把片語切成 subword，產生不自然的 token 模式、出現機率大降；這個方法改用單一 bias token 代表整個片語，在推論時動態擴充詞彙表。它架構無關，CTC、RNN-T、attention 皆可套用，訓練時只用一般 E2E-ASR 損失、免輔助損失。優點方面，串流 RNN-T 在 test-clean 的 B-WER 從 14.3 降到 3.1（N=100），對訓練未見過的詞 B-WER 從 73.5% 降到 19.0%（N=1000），英日 B-WER 相比傳統 deep biasing 改善 3.1–4.9 點。缺點是偏置權重 μ 需依領域調整（RNN-T 設 0.01、CTC/attention 設 0.8），μ 越大 B-WER 改善但 U-WER 惡化，且清單 N 增大時 B-WER 與 U-WER 同步變差。加上外部 LM 後表現僅與傳統 deep biasing 相當，優勢轉為做法簡單、不需外部文字資料。對我們的串流 Zipformer + RNN-T 場景，這是少數直接給出串流 RNN-T 數據的路線。
+:::
+
+## Table 1 現況與本週關鍵結果（對帳）
+
+| 對照 | 頭條指標 | 數字 |
+|---|---|---|
+| 本專案基線（無熱詞） | AISHELL-1 dev CER | **5.1%** |
+| KMP biasing | WER 絕對值 | 14.7→7.7 |
+| Neural biasing | B-WER 相對降幅 | −60% |
+| Dynamic vocabulary | B-WER 絕對值 | 14.3→3.1 |
+
+- 基線完成；熱詞實驗進行中
+- 熱詞清單：課程錄音 320 個專有名詞
+- 老師：shallow fusion 對 neural biasing 同清單比較
+
+::: {.takeaway}
+各方法頭條數字不可直接互比；唯一共同對照軸是 bias list 大小 N
+:::
+
+::: {.notes}
+距上次新數字：資料未提供，本頁數字來自 2026-10-20 週會筆記與 2026-10-24 文獻回顧。本週關鍵結果：在 icefall 上跑通 Zipformer 串流 RNN-T 基線，AISHELL-1 dev CER 5.1%，基線已完成、熱詞實驗進行中；熱詞清單已從課程錄音整理出 320 個專有名詞。對帳時要注意各方法頭條數字的指標互異：KMP biasing 報 WER 絕對值（Contact-Tag 14.7→7.7）[@wang2023contextual]、neural biasing 報相對降幅（test-other B-WER 相對 no biasing 降 60%）[@huang2024improving]、dynamic vocabulary 報絕對 B-WER（streaming RNN-T test-clean 14.3→3.1，N=100）[@sudo2024contextualized]、WCTC-Biasing 報關鍵詞 F1（TEDxJP-10K OOV F1 相對 +29%）[@nakagome2025wctc]，彼此不可直接互比。文獻回顧的綜合分析指出，唯一共同的對照軸是 bias list 大小 N，各篇從 N=0 到 3000 不等，且一致顯示清單越大退化越多。老師回饋是先定好罕見詞 recall、整體 CER、誤觸發率三個指標，並把 shallow fusion 與 neural biasing 放在同一份熱詞清單上比較，這就是後續 Table 1 實驗的比較基礎。
+:::
+
+## 卡住
+
+> 四個卡點集中在三件事：資料、指標、比較基準。
+
+![](diagrams/diagram-147b947b749b.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+::: {.big-number}
+4.42%
+:::
+
+::: {.big-number-label}
+SPGISpeech 中需依賴 context 才能答對的訓練語句比例（Huang et al., 2024）
+:::
+
+::: {.notes}
+本週卡點有四個。實務面兩個：標註了熱詞的串流語料太少，而且罕見詞錯誤率還沒有統一的算法，老師上次也提醒先把指標定好（罕見詞 recall、整體 CER、誤觸發率）。文獻面兩個：Huang et al. (2024) 指出 neural biasing 的訓練資料中，需依賴 context 才能答對的語句極少，SPGISpeech 上僅 4.42%，得靠 text perturbation 人為製造訓練訊號。另外各篇與 shallow fusion 的比較基準不一致，例如 vanilla neural biasing 在 LibriSpeech test-other 為 4.33，劣於 shallow fusion 的 4.11，要加上早期注入與 text perturbation 才降到 3.69。何種條件下 neural biasing 真正優於 shallow fusion，目前文獻尚無一致答案，這也會影響我們後續實驗的比較設計，想聽聽教授與大家的看法。
+:::
+
+## Idea card、下週與要問
+
+:::: {.columns}
+::: {.column width="48%"}
+### Idea card
+
+- 熱詞清單建成字首樹（trie）
+- RNN-T 解碼時對熱詞加分，免重訓
+:::
+::: {.column width="52%"}
+### 要問教授
+
+- 罕見詞 recall 用哪份測試集——待教授決定
+- 資料、baseline、截稿節奏——待教授決定
+:::
+::::
+
+![](diagrams/diagram-54f6f2e89f4b.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+::: {.takeaway}
+下週先做 trie-based shallow fusion baseline；測試集、資料與截稿節奏待教授決定
+:::
+
+::: {.notes}
+Idea card 是我自己的構想：把從課程錄音整理出的 320 個熱詞做成字首樹（trie），在 RNN-T 解碼時對熱詞加分，不需要重新訓練模型。下週的第一項工作就是實作這個 trie-based shallow fusion 作為 baseline，也對應老師建議的「在同一份熱詞清單上比較 shallow fusion 與 neural biasing」。接著會整理罕見詞 recall 的評估腳本，並準備 ICASSP 投稿要用的實驗表格。要問教授的是：罕見詞 recall 要用哪一份測試集，這需要教授決定。另外熱詞實驗的資料、baseline 與截稿節奏也待教授決定；既有計畫的里程碑為 ICASSP 2027 投稿（預計 2026-11-15）與期中口試（預計 2027-01-10）。
+:::
+

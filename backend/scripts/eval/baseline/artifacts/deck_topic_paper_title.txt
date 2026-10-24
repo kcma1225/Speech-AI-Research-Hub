@@ -1,0 +1,186 @@
+---
+title: "dynamic hotword biasing (contextual biasing) for streaming Zipformer / RNN-T ASR"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## Contextual Biasing for Streaming Transducers: A Survey
+
+Dynamic hotword biasing for streaming Zipformer / RNN-T ASR
+
+![](diagrams/diagram-43f46f555901.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+::: {.takeaway}
+A survey of study-library methods for inference-time hotword biasing
+:::
+
+::: {.notes}
+This talk surveys dynamic hotword biasing, also called contextual biasing, for streaming Zipformer and RNN-T ASR, covering the methods collected in our study library. The core problem is that end-to-end ASR outputs tend to be biased toward the training vocabulary, so proper nouns and unknown terms are recognized inaccurately (Nakagome and Hentschel, Interspeech 2025, WCTC-Biasing). Our project goal is to bias recognition toward user hotwords such as names and course terms at inference time, without retraining the whole model. This work supports our ICASSP 2027 submission target. The bias list is treated as a replaceable input, which is what makes the biasing dynamic.
+:::
+
+## Why Dynamic Hotword Biasing? Motivation and Scope
+
+- Rare words lack training data; context helps recognition
+- Use case: 320 proper nouns from course recordings
+- Baseline: streaming Zipformer RNN-T, AISHELL-1 dev CER 5.1%
+- Metrics: rare-word recall, overall CER, false-trigger rate
+
+![](diagrams/diagram-96293e3a4bc3.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+::: {.notes}
+Rare words and named entities are hard for end-to-end ASR because training data for them is lacking, and context such as contact lists and user-specified vocabulary helps recognition (Pundak et al. 2018, Deep Context; Huang et al. 2024). Our concrete use case is a hotword list of 320 proper nouns extracted from course recordings, from the lab weekly notes of 2026-10-20. The scope is streaming RNN-T with a bias list that can be replaced at inference; our baseline is a streaming Zipformer RNN-T on icefall with AISHELL-1 dev CER 5.1%. Evaluation metrics were fixed with our advisor: rare-word recall, overall CER, and false-trigger rate.
+:::
+
+## Background: Streaming Transducers and the Contextual Biasing Problem
+
+- Conformer encoders: CNNs for local, Transformers for global
+- Shallow fusion: add hotword scores at decoding, no training
+- Deep biasing: CLAS embeds context n-grams, joint training
+- Only 320 ms lookahead, so naive boosts false-trigger
+
+![](diagrams/diagram-f92dfb186e41.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+::: {.takeaway}
+Two classic routes, one streaming constraint: short lookahead
+:::
+
+::: {.notes}
+Streaming transducer encoders build on convolution-augmented designs: the Conformer (Gulati et al., 2020) combines CNNs for local features and Transformers for global interactions in a parameter-efficient way. The first biasing route is shallow fusion (Zhao et al., 2019), where hotword scores are added during decoding at inference time and no training is required. The second route is deep biasing, where context is built into the network: CLAS jointly optimizes the ASR components with embeddings of context n-grams (Pundak et al., 2018). Our setup adds a streaming constraint: only 320 ms of lookahead, so naive bias score boosts are prone to false triggers (lab weekly notes, 2026-10-20). This tension between biasing strength and streaming safety motivates the methods in the rest of the survey.
+:::
+
+## A Taxonomy of Methods in Our Study Library
+
+- Axis 1: inject bias at encoder, decoder, or beam search
+- Axis 2: retraining-free inference vs. trained bias-aware components
+
+![](diagrams/diagram-474beddc92d4.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="19.8"}
+
+::: {.takeaway}
+All nine library methods sit on these two axes.
+:::
+
+::: {.notes}
+We organize the biasing methods collected in our study library along two axes: where the bias is injected, and whether retraining is needed. On the injection axis, early context injection (Huang et al., 2024) and WCTC inter-layer biasing (Nakagome and Hentschel, 2025) work inside the encoder; CLAS (Pundak et al., 2018) and contextual adapters (Sathyendra et al., 2022) work in the decoder; shallow fusion (Zhao et al., 2019) and KMP matching (Wang et al., 2023) boost scores in the beam-search decoding stage. On the retraining axis, shallow fusion, KMP matching, and WCTC are retraining-free at inference, while CLAS, the Guided Attention loss (Tang et al., 2024), early context injection, and Dynamic Vocabulary (Sudo et al., 2024) train bias-aware components. Adaptive CATT biasing (Xu et al., 2023) adds the streaming dimension by using biased encoder and predictor embeddings to switch the bias list on and off. The rest of the survey follows these branches: search-time methods, neural context encoding, training strategies, and streaming-specific techniques.
+:::
+
+## Search-Time Biasing: Shallow Fusion and KMP Matching
+
+![](diagrams/diagram-24387eb37d5c.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+- Retraining-free: boost hotword hypotheses during beam search
+- KMP boosts token extensions extending a phrase match (Wang 2023)
+- Simulates WFST biasing without FSTs; vectorized, TPU-efficient
+- Over-weighting risks false triggers; basis of our trie baseline
+
+::: {.notes}
+Shallow fusion (Zhao et al., 2019) adds biasing scores during decoding so that hypotheses matching hotwords are boosted, and it requires no training at all. Our survey notes flag the main risk: when the boost weight is set too high, shallow fusion can false-trigger, which matters even more under our 320 ms streaming lookahead. Wang et al. (2023) reformulate the matching with the Knuth-Morris-Pratt algorithm: during beam search, the score of a token extension is boosted whenever it extends a match into the set of biasing phrases. The method simulates classical WFST-based contextual biasing while avoiding the FST language altogether, with careful attention to memory footprint and TPU efficiency through vectorization. Both methods are retraining-free, so the bias list can be swapped at inference time, which is exactly the dynamic property our project needs. Trie and KMP-style matching is therefore the basis of our planned trie-based shallow fusion baseline on the streaming Zipformer RNN-T (lab weekly notes).
+:::
+
+## Neural Context Encoding: CLAS and Dynamic Vocabulary
+
+![](diagrams/diagram-0461368777d4.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+- CLAS jointly optimizes the recognizer with context n-gram embeddings (Pundak 2018)
+- Accepts OOV context phrases unseen in training
+- Attention scatters past roughly 300 hotwords; recall drops
+- Dynamic vocabulary frees bias tokens from static subwords (Sudo 2024)
+
+::: {.notes}
+CLAS, from Deep Context (Pundak et al., 2018), is an all-neural end-to-end system that jointly optimizes the recognizer together with embeddings of context word n-grams. At inference it accepts context phrases containing OOV terms never seen during training. Our lab notes record a scaling limit: once the hotword list exceeds roughly 300 entries, and our course-recording list has 320, CLAS attention scatters and rare-word recall drops. Dynamic Vocabulary (Sudo et al., 2024) addresses a different failure mode: decomposing bias phrases with a predefined static subword vocabulary produces unnatural token patterns that significantly lower their occurrence probability in deep biasing. Letting bias tokens join a dynamic vocabulary removes that fixed constraint and avoids the extra workload of external-LM shallow fusion or rescoring modules. Unlike the search-time methods on the previous slide, both approaches require training bias-aware components.
+:::
+
+## Training and Adaptation Strategies
+
+![](diagrams/diagram-1ab7e4e2ef1c.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.6"}
+
+::: {.takeaway}
+These strategies bake bias awareness into the model at training time — trading training cost for decode-time benefit, with little inference-time overhead.
+:::
+
+::: {.notes}
+Three strategies in our library build bias awareness in during training rather than only boosting scores at decode time. The Guided Attention (GA) loss (Tang et al., 2024) is an auxiliary training objective added to the Transducer loss; it teaches the cross attention to align bias phrases with text tokens or audio frames, and adds no additional parameters. It targets the problem that the WER reduction from contextual biasing diminishes as the number of bias phrases increases. Early context injection (Huang et al., 2024) injects context into early encoder layers instead of only the last, and perturbs reference transcriptions with alternative spellings so the model must rely on context; on LibriSpeech the two techniques together reduce the rare-word error rate. Contextual adapters (Sathyendra et al., 2022) train small neural adapter modules on top of a pretrained neural transducer for personalization, biasing toward user-defined words while keeping the main model intact. The bottom row shows the trade-off: all three require some training cost — GA loss and early injection need full training runs, adapters only train small modules — yet none add heavy inference-time machinery, so the bias list stays swappable per user at decode time.
+:::
+
+## Streaming-Specific Methods: Adaptive Triggering and Retraining-Free Biasing
+
+![](diagrams/diagram-5fefc1ea918d.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="23"}
+
+- Always-on biasing degrades common-word recognition (Xu 2023)
+- CATT predicts phrase occurrences and toggles the bias list
+- WCTC is retraining-free and TTS-free
+
+::: {.takeaway}
+Selective triggering (CATT, WCTC) suits streaming constraints such as 320 ms lookahead.
+:::
+
+::: {.notes}
+In real-world voice assistants, always biasing personalized words with high prediction scores significantly degrades common-word recognition (Xu et al., Interspeech 2023). Adaptive CATT, the top row of the diagram, uses biased encoder and predictor embeddings to perform streaming prediction of contextual phrase occurrences, and uses that prediction to dynamically switch the bias list on and off. WCTC-Biasing (Nakagome and Hentschel, 2025), the bottom row, takes the retraining-free route: keyword spotting runs on acoustic features of intermediate layers during inference, and a bias is applied to the subsequent layers of the acoustic model for detected keywords, with no extra training or text-to-speech data. Its wildcard CTC keyword spotting is fast and tolerant of ambiguous matches, allowing flexible hand-written bias entries. This speaks directly to our streaming constraint: with only 320 ms of lookahead, naive score boosts are prone to false triggers, so selective triggering like CATT or WCTC is attractive (lab weekly notes, 2026-10-20).
+:::
+
+## Method Comparison: Retraining, Parameters, Streaming Fit
+
+| Method | Retraining | Extra parameters | Streaming fit |
+|---|---|---|---|
+| Shallow fusion (Zhao 2019) | None | None | Beam-search boost |
+| GA loss (Tang 2024) | Auxiliary loss | None | Joint with Transducer loss |
+| Adapters (Sathyendra 2022) | Adapter only | Small modules | Pretrained transducer |
+
+![](diagrams/diagram-0ef3d58a11ca.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="16.9"}
+
+::: {.takeaway}
+Retraining-free methods let the bias list be swapped freely at inference.
+:::
+
+::: {.notes}
+This slide lines the library methods up along three axes: whether retraining is needed, what extra parameters or modules they add, and how well they fit streaming decoding. The condensed table contrasts the three regimes: shallow fusion (Zhao 2019) needs no retraining and no extra parameters and boosts scores during beam search; the GA loss (Tang 2024) trains with an auxiliary objective yet adds no additional parameters, working jointly with the Transducer loss; contextual adapters (Sathyendra 2022) train only small modules on top of a pretrained transducer. The diagram then positions the whole library on the retraining axis: shallow fusion, KMP matching (Wang 2023), and WCTC inter-layer biasing (Nakagome 2025) are retraining-free, so the bias list can be swapped freely without touching model weights, while the GA loss, early context injection with text perturbation (Huang 2024), contextual adapters, and the dynamic vocabulary (Sudo 2024) require training. On the parameter axis, the dynamic vocabulary avoids external-LM shallow fusion and rescoring modules. On streaming fit, adaptive CATT (Xu 2023) switches biasing on and off based on streaming occurrence prediction, and KMP (Wang 2023) is designed for beam search with a vectorized, memory-aware TPU implementation.
+:::
+
+## Open Problems and Takeaways
+
+![](diagrams/diagram-490f02787927.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.2"}
+
+### Next steps
+
+::: {.incremental}
+- Build a trie-based shallow fusion baseline on streaming Zipformer RNN-T
+- Compare shallow fusion vs. neural biasing on one 320-hotword list
+- Track rare-word recall, overall CER, and false-trigger rate
+:::
+
+::: {.takeaway}
+Starting point: Zipformer RNN-T baseline at 5.1% dev CER on AISHELL-1.
+:::
+
+::: {.notes}
+Three open problems stand out from this survey. First, scale: the Guided Attention work (Tang et al., 2024) shows that the WER reduction from contextual biasing diminishes as the number of bias phrases increases, and in our lab, lists above roughly 300 hotwords scatter CLAS attention and hurt rare-word recall. Second, streaming trade-offs: with only 320 ms of lookahead in our setup, the balance between latency, accuracy, and false triggers remains open, which is why our evaluation fixes three metrics — rare-word recall, overall CER, and false-trigger rate. Third, promising open directions include integrating dynamic vocabularies (Sudo et al., 2024) with streaming transducers and low-resource settings such as Hotword Biasing for Low-Resource Taiwanese Mandarin Streaming ASR in our study library. Our takeaways for the ICASSP 2027 work follow directly: implement the trie-based shallow fusion baseline first, run the shallow-fusion-versus-neural-biasing comparison on the same 320-hotword list, and evaluate with the three fixed metrics, starting from our streaming Zipformer RNN-T, whose AISHELL-1 dev CER is 5.1%.
+:::
+

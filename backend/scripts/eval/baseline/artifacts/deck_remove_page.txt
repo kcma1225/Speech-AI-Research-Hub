@@ -1,0 +1,107 @@
+---
+title: "Zipformer + RNNT 動態熱詞：學術現況〔eval remove 10-23T16-41〕（Agent 草稿）"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## 問題定義
+
+![](diagrams/diagram-9f902f429742.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+- 串流語音辨識對人名、地名等罕見詞常常辨識錯誤
+- 一般解碼的罕見詞錯誤率偏高
+- 加入熱詞後的效果待驗證
+
+::: {.takeaway}
+目標：不重新訓練模型，讓使用者提供的熱詞更容易被辨識
+:::
+
+::: {.notes}
+這一頁說明為什麼串流辨識對罕見詞特別困難，以及我們想在不重新訓練的前提下改善這個問題。串流語音辨識的使用者常會說出人名、地名等罕見詞，這些詞在訓練資料中出現次數很少，模型因此容易辨識錯誤。圖由左到右是：語音輸入含有罕見詞，經過串流 ASR 解碼後，輸出時罕見詞辨識錯誤，一般解碼的罕見詞錯誤率偏高（具體數字資料未提供，等熱詞實驗接上後一併測量報告）。加入熱詞後的效果是本簡報後續要驗證的重點：讓使用者能提供自己的熱詞，在不重新訓練模型的情況下提升這些詞的辨識率。
+:::
+
+## 動態熱詞的做法
+
+![](diagrams/diagram-d568fd92d61c.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+::: {.incremental}
+- 熱詞加權作用在 RNN-T 解碼階段
+- 調查做法：shallow fusion、TCPGen、contextual biasing
+- 差別：熱詞資訊加在模型的哪個位置
+:::
+
+::: {.notes}
+這頁整理動態熱詞在 Zipformer + RNN-T 系統中的整體流程。語音輸入先經過 Zipformer 編碼器取得聲學表徵，再交給 RNN-T 解碼。解碼階段會對熱詞做加權，最後輸出辨識結果。目前調查到的做法有三種：shallow fusion、TCPGen 與 contextual biasing。三者的差別不在熱詞內容本身，而在於熱詞資訊加在模型的哪個位置。
+:::
+
+## 目前進度
+
+![](diagrams/diagram-0fca761d4a9a.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+- **下週里程碑**：實作字首樹加分的 baseline
+
+::: {.takeaway}
+基線已跑通；熱詞實驗進行中，下週接進解碼流程觀察罕見詞錯誤率
+:::
+
+::: {.notes}
+這週主要完成了基線的訓練與解碼，已經在 icefall 上跑通 Zipformer 串流基線。文獻方面讀完了 shallow fusion 與 TCPGen 的論文，作為熱詞方法設計的背景。熱詞實驗目前進行中。下週的里程碑有兩項：實作字首樹加分的 baseline，並把熱詞清單接進解碼流程，觀察罕見詞的錯誤率變化。時間軸由左到右對應已完成、進行中與下步驟三個階段，每個節點下方都有一行對應的具體內容。基線的具體 WER 數字資料未提供，暫不在投影片上列數字，下週與熱詞實驗一起報告。
+:::
+
+## Idea card
+
+![](diagrams/diagram-864e7fc2f138.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="16.7"}
+
+![](diagrams/diagram-3bba488d579c.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+::: {.takeaway}
+兩步驟：先離線建字首樹索引，解碼時對命中前綴的假設即時加分
+:::
+
+::: {.notes}
+這頁是核心想法：把熱詞清單建成字首樹（trie），每個熱詞依字元展開成前綴路徑，樹離線建一次就能重複使用。RNN-T 解碼時，若目前假設的字尾在字首樹上命中某個前綴，就即時給該假設額外的加分。加分讓包含熱詞的路徑更容易留在 beam 內，最終輸出更偏向熱詞。字首樹的查詢每次只沿當前前綴走一步，額外成本很低，適合串流辨識的即時解碼。下方的示意圖把整個機制拆成兩個階段對照：離線階段只做一次，把使用者提供的熱詞清單建成字首樹索引；線上階段在串流解碼中反覆進行，前綴命中後即時加分，讓輸出偏向熱詞。圖中以高亮標出與既有做法的差異處：熱詞清單、字首樹與加分模組是本週新想法，與既有的 RNN-T 串流解碼串接，最後輸出偏向熱詞的結果。
+:::
+
+## 下週與要問
+
+![](diagrams/diagram-7627f838270d.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+- 下週：實作字首樹加分的 baseline
+- 想問老師：罕見詞 recall 要用哪一份測試集
+
+::: {.takeaway}
+先用字首樹 baseline 立好比較基準，再和老師確認測試集
+:::
+
+::: {.notes}
+下週的目標是把先前的想法做成 baseline：把熱詞清單建成字首樹，在 RNN-T 解碼時對熱詞路徑加分，先跑出一個可以比較的結果。有了這個 baseline，之後的動態熱詞方法才有明確的對照對象。另外想請教老師：評估罕見詞 recall 時應該用哪一份測試集，因為測試集的選擇會直接影響結果的解讀。確認測試集之後，baseline 的數字才有固定的比較標準。
+:::

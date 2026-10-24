@@ -1,0 +1,154 @@
+---
+title: "Contextual Biasing for Streaming ASR: Where We Are [eval add 10-23T23-39] (Agent draft)"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## Problem
+
+![](diagrams/diagram-4a8834b60595.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="18.5"}
+
+- Streaming ASR misrecognizes rare user names and course terms
+- Such hotwords often appear only at inference time
+- Goal: boost user hotwords without retraining the model
+- Running example: 320 proper nouns from course recordings
+
+::: {.takeaway}
+Biasing must be swappable per user list at inference time, not baked in by full retraining.
+:::
+
+::: {.notes}
+End-to-end ASR outputs favor training vocabulary, so rare words such as user names and course terms are frequently misrecognized, and these hotwords often appear only at inference time (literature review 2026-10-24, [@nakagome2025wctc], [@wang2023contextual]). Our goal is to boost user-provided hotwords in a Zipformer + RNN-T streaming ASR system without retraining the whole model, targeting an ICASSP 2027 submission (research brief). As a running example, we compiled a bias list of 320 proper nouns from course recordings (weekly meeting notes 2026-10-20). The diagram shows streaming speech and the user hotword list both feeding the Zipformer RNN-T decoder with inference-time biasing. The key requirement is that biasing must be swappable per user list at inference time, not baked in by full retraining. Next, we look at shallow fusion, the zero-training decoding-time baseline.
+:::
+
+## Shallow fusion vs. CLAS vs. contextual adapters
+| Dimension | Shallow fusion | CLAS | Contextual adapters |
+|---|---|---|---|
+| Training required | None | Joint training with bias-list data | Small adapter only; base frozen |
+| Mechanism | Prefix-tree bonus in beam search | Attention over phrase embeddings | Adapter reads the bias list |
+| Large lists | More phrases, more false triggers | Recall drops past 300 phrases | Degrades least at **N=2000** |
+
+![](diagrams/diagram-140c6d881115.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="24.5"}
+
+::: {.takeaway}
+The three routes trade training cost against list-size robustness; the adapter route fits our no-retraining goal best.
+:::
+
+::: {.notes}
+This table answers the teacher's request to compare shallow fusion and neural biasing on the same 320-term hotword list built from course recordings (weekly meeting notes, 2026-10-20). Shallow fusion needs no training — it adds a prefix-tree bonus during beam search — but with only 320 ms of lookahead in streaming, the bias scores easily false-trigger [@zhao2019shallow]. CLAS embeds each phrase and attends over them from the decoder; trained jointly, it improves WER by up to 68% over the shallow-fusion baseline [@pundak2018deep], yet attention scatters and rare-word recall drops once the list exceeds about 300 phrases, and our 320 terms sit right at that edge. Contextual adapters freeze the base Zipformer transducer and train only a small adapter that reads the bias list [@sathyendra2022contextual]; with guided attention they cut B-WER by up to 19.2% relative to the biasing baseline and degrade far less on large lists up to N=2000 [@tang2024improving]. For our no-retraining goal, the adapter route fits best: cheap to train while the base model stays unchanged. The flow diagram shows where each route injects the bias list: a decode-time prefix-tree bonus, attention over phrase embeddings in the decoder, or a small adapter feeding the frozen Zipformer.
+:::
+
+## Deep context (CLAS)
+
+- Decoder attends over phrase embeddings at every output step
+- Trained jointly with the ASR model; needs bias-list training data
+- Up to **68%** relative WER gain vs shallow fusion [@pundak2018deep]
+- Accuracy drops past a few hundred phrases
+
+![](diagrams/diagram-2aee433c12cb.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21"}
+
+::: {.takeaway}
+Strongest context modeling of the three, but the most training-hungry and most sensitive to list size.
+:::
+
+::: {.notes}
+CLAS (Pundak et al., 2018) embeds each bias phrase with a multi-layer LSTM over subword embeddings, and the decoder attends over all phrase embeddings at every output step, with a learned no-bias vector as backoff. The context module trains jointly with the ASR model, so it needs training data paired with bias lists. In the paper it improves WER by up to 68% relative over the LAS plus contextual n-gram shallow-fusion baseline (Abstract, p. 1, [@pundak2018deep]). But accuracy drops once the list grows past a few hundred phrases; with our 320-term list the attention disperses and rare-word recall falls (weekly meeting notes 2026-10-20). Net: the strongest context modeling of the three, yet the most training-hungry and the most sensitive to list size.
+:::
+
+## Shallow fusion vs. CLAS vs. contextual adapters
+| Dimension | Shallow fusion | CLAS | Contextual adapters |
+|---|---|---|---|
+| Training required | None | Joint training with bias-list data | Small adapter only; base frozen |
+| Mechanism | Prefix-tree bonus in beam search | Attention over phrase embeddings | Adapter reads the bias list |
+| Large lists | More phrases, more false triggers | Recall drops past 300 phrases | Degrades least at **N=2000** |
+
+![](diagrams/diagram-140c6d881115.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="24.5"}
+
+::: {.takeaway}
+The three routes trade training cost against list-size robustness; the adapter route fits our no-retraining goal best.
+:::
+
+::: {.notes}
+This table answers the teacher's request to compare shallow fusion and neural biasing on the same 320-term hotword list built from course recordings (weekly meeting notes, 2026-10-20). Shallow fusion needs no training — it adds a prefix-tree bonus during beam search — but with only 320 ms of lookahead in streaming, the bias scores easily false-trigger [@zhao2019shallow]. CLAS embeds each phrase and attends over them from the decoder; trained jointly, it improves WER by up to 68% over the shallow-fusion baseline [@pundak2018deep], yet attention scatters and rare-word recall drops once the list exceeds about 300 phrases, and our 320 terms sit right at that edge. Contextual adapters freeze the base Zipformer transducer and train only a small adapter that reads the bias list [@sathyendra2022contextual]; with guided attention they cut B-WER by up to 19.2% relative to the biasing baseline and degrade far less on large lists up to N=2000 [@tang2024improving]. For our no-retraining goal, the adapter route fits best: cheap to train while the base model stays unchanged. The flow diagram shows where each route injects the bias list: a decode-time prefix-tree bonus, attention over phrase embeddings in the decoder, or a small adapter feeding the frozen Zipformer.
+:::
+
+## Shallow fusion vs. CLAS vs. contextual adapters
+| Dimension | Shallow fusion | CLAS | Contextual adapters |
+|---|---|---|---|
+| Training required | None | Joint training with bias-list data | Small adapter only; base frozen |
+| Mechanism | Prefix-tree bonus in beam search | Attention over phrase embeddings | Adapter reads the bias list |
+| Large lists | More phrases, more false triggers | Recall drops past 300 phrases | Degrades least at **N=2000** |
+
+![](diagrams/diagram-140c6d881115.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="24.5"}
+
+::: {.takeaway}
+The three routes trade training cost against list-size robustness; the adapter route fits our no-retraining goal best.
+:::
+
+::: {.notes}
+This table answers the teacher's request to compare shallow fusion and neural biasing on the same 320-term hotword list built from course recordings (weekly meeting notes, 2026-10-20). Shallow fusion needs no training — it adds a prefix-tree bonus during beam search — but with only 320 ms of lookahead in streaming, the bias scores easily false-trigger [@zhao2019shallow]. CLAS embeds each phrase and attends over them from the decoder; trained jointly, it improves WER by up to 68% over the shallow-fusion baseline [@pundak2018deep], yet attention scatters and rare-word recall drops once the list exceeds about 300 phrases, and our 320 terms sit right at that edge. Contextual adapters freeze the base Zipformer transducer and train only a small adapter that reads the bias list [@sathyendra2022contextual]; with guided attention they cut B-WER by up to 19.2% relative to the biasing baseline and degrade far less on large lists up to N=2000 [@tang2024improving]. For our no-retraining goal, the adapter route fits best: cheap to train while the base model stays unchanged. The flow diagram shows where each route injects the bias list: a decode-time prefix-tree bonus, attention over phrase embeddings in the decoder, or a small adapter feeding the frozen Zipformer.
+:::
+
+## Current progress
+
+> This week: baseline, 320-term hotword list, and reading notes are all done.
+
+![](diagrams/diagram-9ec78a84c4e1.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="22.6"}
+
+::: {.takeaway}
+Only the shallow-fusion baseline remains before the three-way comparison can start.
+:::
+
+::: {.notes}
+This week the Zipformer streaming RNN-T baseline reached 5.1% dev CER on AISHELL-1 in icefall, the 320-term hotword list was compiled from course recordings, and the CLAS and shallow-fusion reading notes were finished on 2026-10-24. The trie-based shallow-fusion baseline is the one item still in progress. With the base model and the bias list ready, the three-way comparison can start immediately, feeding toward the ICASSP 2027 submission milestone planned for 2026-11-15.
+:::
+
+## Next steps
+
+> Metrics first, then a fair 320-term comparison: shallow fusion vs. neural biasing.
+
+![](diagrams/diagram-32024c13262c.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+| Metric | Computation |
+|---|---|
+| Rare-word recall | Correct hotwords / 320 list terms |
+| Overall CER | Character errors / total characters |
+| False-trigger rate | Hotword insertions with none spoken |
+
+::: {.takeaway}
+From baseline implementation to a fair comparison on one shared hotword list.
+:::
+
+::: {.notes}
+Following the teacher's feedback from the 2026-10-20 weekly meeting, the first action is implementing the trie-based shallow fusion baseline, which is in progress and on the open to-do list. Before any experiments, we settle the evaluation metrics: rare-word recall, overall CER, and false-trigger rate. Rare-word recall is computed as correct hotwords over the 320 list terms, overall CER as character errors over total characters, and false-trigger rate as hotword insertions when no hotword was spoken. We then compile the rare-word recall evaluation script and prepare the ICASSP experiment tables, tied to the ICASSP 2027 submission milestone planned for 2026-11-15. Finally, we compare shallow fusion and neural biasing on the same 320-term hotword list, as agreed with the teacher, feeding our own numbers into the three-way comparison table. With the Zipformer baseline and the hotword list ready, these steps move us from preparation into a concrete comparison.
+:::
+

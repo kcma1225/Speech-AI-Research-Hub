@@ -115,3 +115,11 @@ describe("eval graders: run metrics", () => {
     expect(G.checkFlips(rounds, ["slide_count", "speaker_notes"])).toEqual(["speaker_notes@r1", "slide_count@r2"]);
   });
 });
+
+describe("eval judge reply parsing", () => {
+  it("finds the JSON object after LaTeX braces or prose", async () => {
+    const { json } = await import("../scripts/eval/judge.js");
+    expect(json('Looking at \\section{Intro} and {x}: {"request":2,"form":1,"rationale":"a {b}"}')).toEqual({ request: 2, form: 1, rationale: "a {b}" });
+    expect(json("no json")).toBeNull();
+  });
+});

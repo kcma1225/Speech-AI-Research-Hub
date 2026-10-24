@@ -1,0 +1,123 @@
+---
+title: "Contextual Biasing for Streaming ASR: Where We Are [eval zh 10-23T16-41]（Agent 草稿）"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## 問題（Problem）
+
+![](diagrams/diagram-a87691e59085.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+::: {.takeaway}
+不需重新訓練模型，讓使用者提供的 hotwords 更容易被正確辨出
+:::
+
+::: {.notes}
+串流 ASR 採即時解碼，對人名、課程名詞這類罕見詞特別容易誤認，因為這些詞在訓練資料中出現得少，模型難以靠語言模型先驗補救。這也是本簡報要處理的核心問題：罕見詞錯誤在串流場景下尤其明顯。圖的上方是現況：使用者說出人名或課程名詞，串流 ASR 輸出誤認的詞。下方是我們的目標：把使用者提供的 hotwords 清單透過 hotword biasing 送進解碼，讓這些詞被正確辨出。關鍵限制是不需重新訓練整個模型，只在既有模型上達成改善。
+:::
+
+## 淺層融合（Shallow fusion）
+
+![](diagrams/diagram-db2ff8d222e9.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+::: {.takeaway}
+無需訓練、可用於任何 decoder；但讀音相近的詞有誤觸發（false trigger）風險
+:::
+
+::: {.notes}
+淺層融合（Shallow fusion）是最簡單的基線（baseline），而且可以搭配任何解碼器（decoder）使用。如圖所示，它在 beam search 過程中查詢 hotword 前綴樹（prefix tree），對延伸樹的候選假設給予加分，讓包含 hotword 的路徑更容易勝出。此方法無需訓練即可使用，但讀音相近的詞容易被誤觸發（false trigger），這是它最主要的風險。
+:::
+
+## 深層上下文（Deep context, CLAS）
+
+![](diagrams/diagram-1dfafb964fc8.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+::: {.takeaway}
+聯合訓練；bias 清單超過數百個片段時，準確率會下降
+:::
+
+::: {.notes}
+CLAS 以端對端方式學習上下文 biasing。如圖所示，它為每個 bias 片段產生 embedding，並在 decoder 端對這些片段做 attention，把情境資訊注入解碼。訓練採聯合訓練的方式進行，因此 CLAS 需要含有 bias 清單的訓練資料。但當 bias 清單超過數百個片段時，準確率會下降。
+:::
+
+## 情境式 adapters（Contextual adapters）
+
+![](diagrams/diagram-0c93d52ea954.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.5"}
+
+::: {.takeaway}
+只訓練一個小型 adapter；訓練成本低，基礎模型維持不變
+:::
+
+::: {.notes}
+對我們的設定來說，adapters 特別有吸引力，因為 Zipformer 基礎模型完全凍結、不需更新。如圖所示，只有插在 transducer 上的小型 adapter 是可訓練的：它讀取 bias 清單來提供情境資訊，再回饋給凍結的 transducer。由於基礎 transducer 維持不變，訓練成本相當低。基礎模型的參數保持原樣，情境調整全部交給這個小型 adapter 完成。
+:::
+
+## 目前進度
+
+![](diagrams/diagram-fe18035839b6.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="18.5"}
+
+:::: {.columns}
+::: {.column width="32%"}
+::: {.big-number}
+2 / 3
+:::
+::: {.big-number-label}
+本週工作項目已完成
+:::
+:::
+::: {.column width="68%"}
+- 串流 baseline：Zipformer，已完成
+- Hotword 清單：320 詞，已完成
+- Shallow fusion：免訓練加分法，實作中
+:::
+::::
+
+::: {.takeaway}
+三項工作中兩項已完成，shallow fusion baseline 進行中
+:::
+
+::: {.notes}
+本週完成了兩項工作：Zipformer 串流 baseline，以及收錄 320 個詞的 hotword 清單，兩者都已完成。第三項 shallow fusion baseline 目前進行中：做法是在 beam search 時，對延伸 hotword 前綴樹的假說加分，不需要重新訓練模型，這也是它適合作為第一個 baseline 的原因。整體進度為三項工作中，兩項已完成、一項進行中；圖上 baseline 與 hotword 清單兩個輸入會一起餵進 shallow fusion 實驗。
+:::
+
+## 下一步
+
+![](diagrams/diagram-d32d1d5dcb85.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+::: {.takeaway}
+下週完成 shallow fusion baseline 實作，並確定評估指標
+:::
+
+::: {.notes}
+下週我們會實作 baseline，並確定評估指標。實作的是以 trie 為基礎的 shallow fusion。指標方面，要定義罕見詞 recall 與誤觸發率（false-trigger rate），作為後續比較各方法的依據。
+:::
+

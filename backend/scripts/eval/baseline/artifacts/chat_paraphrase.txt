@@ -1,0 +1,185 @@
+---
+title: "Agent 評估集：串流 ASR 熱詞偏置 進度報告 261024"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## 問題定義
+
+![](diagrams/diagram-54c9a0407362.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+- 背景：E2E ASR 偏向訓練詞彙，熱詞常到推論時才出現
+- 已從課程錄音整理 320 個專有名詞作 bias list
+- 進度位置：目前在「題目發想」階段
+
+::: {.takeaway}
+不重訓模型，讓推論時才出現的人名與課程術語被正確辨識
+:::
+
+::: {.notes}
+我們的研究問題：在 Zipformer 加 RNN-T 的串流語音辨識中做動態熱詞偏置（contextual biasing），過程中不重新訓練整個模型，目標是讓人名與課程術語更容易被辨識，里程碑是 ICASSP 2027 投稿（預計 2026-11-15）。背景方面，end-to-end ASR 的輸出偏向訓練詞彙，人名、內部術語這類熱詞常常到推論時才出現，所以辨識效果不佳（文獻回顧 2026-10-24）。素材已經備妥：從課程錄音整理出 320 個專有名詞作為 bias list（週會筆記 2026-10-20）。整體進度是題目發想 → 文獻探討 → 實驗 → 撰寫 → 投稿/口試，目前位於「題目發想」。圖上凍結的 Zipformer + RNN-T 代表主模型不動，強調色的動態偏置模組是我們要設計的核心；至於熱詞資訊怎麼注入，下一頁會比較幾條技術路線。
+:::
+
+## Idea 或架構
+
+![](diagrams/diagram-607ee0c7b725.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### Shallow fusion：解碼時加分
+
+- 免訓練，對熱詞 trie 加分
+- 串流下易誤觸發
+:::
+::: {.column width="50%"}
+### Deep biasing：模型內接熱詞
+
+- CLAS：attention 接解碼器
+- Contextual adapters：凍結主模型
+:::
+::::
+
+::: {.takeaway}
+待確認：Zipformer 哪一層注入？熱詞清單變大時的效率？
+:::
+
+::: {.notes}
+這頁把調研看到的四條技術路線分成兩大類：圖左是解碼時加分的 shallow fusion，圖右是把熱詞接進模型內部的 deep biasing 路線——兩張圖的差別就在注入位置：shallow fusion 是在解碼階段外加分數，deep biasing 則在模型內部、解碼器之前注入熱詞資訊。Shallow fusion 在解碼時對熱詞字首樹（trie）加分，不需訓練就能上線，但可能誤觸發（[@zhao2019shallow]）——我們的串流基線 lookahead 只有 320 ms，誤觸發率是老師指定的評估指標之一。CLAS／Deep context 用 attention 把熱詞嵌入接到解碼器，需要與 ASR 模型聯合訓練（[@pundak2018deep]）；週會筆記也記到熱詞清單一大（> 300 個）時 CLAS 的注意力會分散、罕見詞召回率下降。Contextual adapters 則是凍結主模型、只訓練小型 adapter（[@sathyendra2022contextual]）；Adaptive biasing 是在串流 transducer 上依情境開關偏置（[@xu2023adaptive]），對我們的串流場景是候選方案。待確認的架構問題有兩個：這些方法在 Zipformer 的哪一層注入熱詞資訊，以及熱詞清單變大時的效率（調研筆記 2026-10-24）——目前清單已有 320 個專有名詞，這會直接影響方法挑選。
+:::
+
+## 對帳
+
+![](diagrams/diagram-9f0c24e9cfa1.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### ✅ 已完成 ×4（2026-10-24）
+- 文獻回顧（6 篇）
+- CLAS 閱讀筆記
+- 論文大綱初稿
+- 動態熱詞方法調研
+:::
+::: {.column width="50%"}
+### 🔴 未完成 ×3
+- Shallow fusion baseline（trie）
+- 罕見詞 recall 評估腳本
+- ICASSP 實驗表格
+:::
+::::
+
+::: {.takeaway}
+目前階段：題目發想——閱讀盤點已完成，3 項待辦朝 11/15 投稿里程碑推進
+:::
+
+::: {.notes}
+這頁把計畫與實際進度對照。時間軸上，2026-10-24 完成 4 份筆記；往前看有兩個里程碑：ICASSP 2027 投稿預計 2026-11-15，期中口試預計 2027-01-10。實際進度方面，左欄是已完成的部分，都在 2026-10-24 整理好：六篇文獻回顧、CLAS 閱讀筆記、論文大綱初稿、動態熱詞方法調研。右欄是尚未完成的 3 項待辦：實作 trie-based shallow fusion baseline、整理罕見詞 recall 評估腳本、準備 ICASSP 實驗表格。目前整體仍在第一個階段「題目發想」，後續依序是文獻探討、實驗、撰寫、投稿／口試。整體來說，題目發想階段的閱讀與盤點已經完成，接下來的重點是推進這 3 項待辦，朝 11 月中的投稿里程碑前進。
+:::
+
+## Table 1 現況
+
+:::: {.columns}
+::: {.column width="32%"}
+::: {.big-number}
+5.1%
+:::
+::: {.big-number-label}
+AISHELL-1 dev CER — Zipformer 串流 RNN-T 基線（icefall）
+:::
+
+**距上次新數字：1 週**
+:::
+::: {.column width="68%"}
+### 老師已定：三項評估指標
+
+- 罕見詞 recall
+- 整體 CER
+- 誤觸發率
+:::
+::::
+
+![](diagrams/diagram-e5eafbaa6d03.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21"}
+
+::: {.takeaway}
+Table 1 設計：同一份 320 詞熱詞清單，比較 shallow fusion 與 neural biasing
+:::
+
+::: {.notes}
+目前唯一的自有數字，是在 icefall 上跑通的 Zipformer 串流 RNN-T 基線：AISHELL-1 dev 的 CER 為 5.1%，取自 2026-10-20 的週會筆記。距上次有新數字在 1 週內（數字取得日 2026-10-20，最新素材日期 2026-10-24）。下方的圖是 Table 1 的設計：在同一份 320 個專有名詞的熱詞清單上，比較兩條路線——shallow fusion 是解碼時對熱詞字首樹（trie）加分、不需訓練；neural biasing 是把熱詞嵌入接進解碼器、需要訓練（如 CLAS 一類的做法）。依老師回饋，Table 1 就在這份清單上公平比較兩者。評估指標方向也已定（右欄三項）：罕見詞 recall、整體 CER、誤觸發率，之後的實驗表格就依這三項指標填。
+:::
+
+## 本週關鍵結果
+
+![](diagrams/diagram-fe1b433b1146.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+![](charts/chart-b008b8a5a64d.svg){.hub-chart fig-align="center" fig-alt="CLAS 相對 shallow fusion 的最大 WER 改善" data-font="16"}
+
+::: {.takeaway}
+基線與熱詞素材就位；文獻顯示熱詞偏置收益可達 68%（Pundak et al., Interspeech 2018）
+:::
+
+::: {.notes}
+本週兩項關鍵素材都到位了（上方三張卡片）。第一，已在 icefall 上跑通 Zipformer 串流 RNN-T 基線，AISHELL-1 dev CER 為 5.1%（週會筆記 2026-10-20），這是後續所有偏置實驗的比較基準。第二，從課程錄音整理出 320 個專有名詞的熱詞清單，涵蓋目標場景中最容易辨錯的人名與術語。連同其他筆記，本週共完成四份筆記（週會筆記 2026-10-20；筆記清單 2026-10-24）。文獻錨點方面，下方的長條圖整理了 Pundak 等人提出的 CLAS 結果：在數百個情境詞組的情境下，相對 shallow fusion 基準的 WER 最多改善 68%（Pundak et al., Interspeech 2018，Abstract），顯示熱詞偏置一旦做對，收益空間相當可觀。基線與熱詞素材就位後，就能在同一份清單上開始比較 shallow fusion 與 neural biasing 的表現。
+:::
+
+## 卡住
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- CLAS 清單過大注意力分散：熱詞清單超過 300 個時 CLAS 的注意力會分散，罕見詞召回率下降；而我從課程錄音整理的 bias list 已有 320 個專有名詞，正好卡在這個規模。
+- 串流 320 ms lookahead 誤觸發：串流模式 lookahead 只有 320 ms，shallow fusion 的偏置分數容易誤觸發，目前還沒找到控制誤觸發又不犧牲熱詞召回的做法。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+
+## Idea card
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- CLAS 最多改善 68% 的啟發：CLAS 在數百個情境詞組下相對 shallow fusion 相對 WER 最多改善 68%（pundak2018deep），對我來說代表熱詞偏置做對了收益很大，值得投入。
+- 同一清單比較兩路線：我認為老師回饋的方向可行：在同一份 320 詞的熱詞清單上比較 shallow fusion 與 neural biasing，正好能對上我已備妥的基線與 bias list。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+
+## 下週與要問
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- 實作 trie shallow fusion baseline：下週第一優先是實作 trie-based shallow fusion 作為 baseline，這是週會筆記排定的第一項工作，也是所有比較實驗的基準。
+- 準備 ICASSP 實驗表格：我打算開始準備 ICASSP 投稿的實驗表格，指標依老師建議：罕見詞 recall、整體 CER、誤觸發率，配合 2026-11-15 投稿時程。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+

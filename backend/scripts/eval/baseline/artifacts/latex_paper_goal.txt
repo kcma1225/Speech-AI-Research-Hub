@@ -1,0 +1,449 @@
+%% ---- main.tex
+% !TEX program = xelatex
+% 主檔（索引）：前言與套件設定，以及各節分檔的 \input 清單。
+\documentclass[a4paper,11pt,fontset=none]{ctexart}
+
+% 中文字型：思源宋體／黑體（Noto CJK TC，編譯環境已內建）
+\setCJKmainfont{Noto Serif CJK TC}
+\setCJKsansfont{Noto Sans CJK TC}
+\setCJKmonofont{Noto Sans Mono CJK TC}
+
+% 繁體中文標題名稱（ctex 預設為簡體）
+\ctexset{
+  contentsname = {目錄},
+  listfigurename = {圖目錄},
+  listtablename = {表目錄},
+  figurename = {圖},
+  tablename = {表},
+  abstractname = {摘要},
+  appendixname = {附錄},
+}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{booktabs}
+\usepackage[backend=biber,style=ieee]{biblatex}
+\addbibresource{refs.bib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+\title{串流 RNN-T 之動態熱詞偏置方法綜述}
+\author{林雅婷}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\input{sections/abstract}
+\input{sections/s01}
+\input{sections/s02-rnn-t}
+\input{sections/s03}
+\input{sections/s04}
+\input{sections/s05}
+\input{sections/s06}
+\input{sections/s07}
+\input{sections/s08}
+
+\printbibliography[title={參考文獻}]
+
+\end{document}
+
+
+%% ---- sections/abstract.tex
+\begin{abstract}
+摘要
+
+串流 RNN-T 因低延遲與逐段解碼特性，已成為語音助理與即時轉錄等應用的主流端對端語音辨識架構；然而其輸出分佈由訓練資料驅動，對聯絡人、歌名、地名等低頻專有名詞及詞彙外（OOV）詞的辨識正確率明顯偏低。動態熱詞偏置旨在解碼或訓練過程中納入使用者提供的熱詞清單，且不需重新訓練模型即可替換詞表。本文以串流 RNN-T 為主軸，系統性回顧動態熱詞偏置方法：先說明串流 transducer 架構與脈絡偏置問題（shallow fusion 與 deep biasing 兩大路線），繼而提出涵蓋偏置機制位置、串流相容性與動態程度的分類架構，並分別討論推論階段的即時偏置（自適應偏置觸發、KMP 即時模式匹配、免重訓的層間偏置注入）、訓練策略與模型適配（輔助訓練目標、早期脈絡注入、contextual adapters、動態詞彙表），以及低資源與個人化應用。綜合比較顯示，各方法在免重訓彈性、串流適配性與系統複雜度間各有取捨，尚無單一方法全面佔優，推論期動態啟用與訓練期脈絡強化結合的混合式設計正成為共同趨勢。
+
+\noindent\textbf{關鍵字：} RNN-T、串流語音辨識、動態熱詞偏置、脈絡偏置、個人化
+\end{abstract}
+
+
+%% ---- sections/s01.tex
+% sections/s01.tex
+% 本檔案為論文主體，僅含 document 環境內容；
+% 前置區（documentclass、usepackage、title、CJK 環境）請置於 main.tex。
+
+\begin{center}
+{\Large\textbf{串流 RNN-T 動態熱詞偏置方法綜述}}\\[0.3em]
+{\large A Survey of Dynamic Hotword Biasing Methods for Streaming RNN-T}
+\end{center}
+\vspace{0.5em}
+
+\begin{abstract}
+端對端（end-to-end）串流語音辨識模型在通用語料上表現優異，但對使用者聯絡人、歌名、地點等低頻專有名詞與詞彙外（out-of-vocabulary, OOV）詞的辨識能力明顯不足。熱詞偏置（hotword biasing）技術使模型能在推論階段納入情境詞彙，而「動態」熱詞偏置更進一步要求偏置詞表可在不需重新訓練模型的前提下於推論時替換，並在串流（逐段解碼）條件下即時生效。本文以 RNN-T（recurrent neural network transducer）為核心架構，依「偏置機制的位置與形式」「串流相容性」「動態程度與訓練需求」三個軸向，整理並比較文獻庫中的代表性方法，涵蓋 shallow fusion、以注意力為基礎的神經情境建模（如 CLAS），以及自適應偏置等方向，並討論其訓練策略、低資源與個人化應用，最後指出未來研究課題。
+\end{abstract}
+
+\section{緒論}\label{sec:intro}
+
+近年來，端對端（end-to-end）語音辨識模型將傳統系統中的聲學模型、發音模型與語言模型整合為單一神經網路並聯合訓練，其中 RNN-T（recurrent neural network transducer）因其天然支援逐段解碼，已成為串流語音辨識的主流架構。然而，這類模型由資料驅動地學習輸出分佈，其辨識結果明顯傾向於訓練資料中的詞彙分佈：對於使用者聯絡人、歌名、地點等低頻專有名詞，以及訓練時從未出現的詞彙外（out-of-vocabulary, OOV）詞，辨識正確率往往顯著偏低。在語音助理、聽寫與智慧型裝置等應用中，這些詞彙常是語句的關鍵內容，其錯誤直接影響使用者體驗，也因此熱詞偏置（hotword biasing）技術成為端對端語音辨識落地應用的關鍵課題。
+
+為使模型「聽見」訓練詞彙之外的關鍵詞，文獻中已發展出多種情境偏置（contextual biasing）方法。早期做法以 shallow fusion 為代表，將與情境相關的少量詞彙或 n-gram 片語以外部模型的形式在解碼時加權併入 \cite{zhao2019shallow}；此類做法仰賴獨立訓練的外部模型與權重調校，與端對端模型聯合最佳化的精神有所矛盾。為此，Pundak 等人提出全神經的 CLAS（Contextual Listen, Attend and Spell），將情境詞組嵌入為向量，並在解碼的每一步以 attention 機制納入情境資訊，且情境化元件與整體模型聯合訓練；在數百個情境詞組的設定下，其相對 shallow fusion 基準最多可達 68\% 的相對詞錯率（WER）改善 \cite{pundak2018deep}。近期研究則進一步朝自適應的熱詞偏置發展，使偏置行為能隨情境調整 \cite{xu2023adaptive}。這些進展顯示，如何在端對端架構中有效且彈性地注入詞彙偏置，已成為活躍且快速演進的研究方向。
+
+本綜述的範圍界定如下：我們聚焦於串流 RNN-T 模型上的「動態」熱詞偏置方法，其核心特徵是偏置詞表可在推論階段替換，且不需重新訓練模型。換言之，只要更換一份熱詞清單，系統即可辨識新的專有名詞或 OOV 詞；反之，凡需針對特定詞表重新訓練或大幅修改模型參數的做法，皆不在本綜述的主要範圍內。之所以強調「串流」，是因為串流情境為熱詞偏置帶來額外限制：解碼須在音訊串流上即時逐段進行、延遲受到嚴格約束，無法像離線系統那樣從容地對完整語句進行重打分（rescoring），這使得部分在離線設定下有效的方法無法直接移植。
+
+在方法整理上，本綜述依三個軸向對文獻庫中的方法進行分類。第一是偏置機制的位置與形式，包括在解碼階段進行融合（fusion）、以神經網路對熱詞編碼並透過注意力納入情境，以及對辨識假說進行重打分等不同層次的介入方式。第二是串流相容性，即方法能否在逐段解碼的條件下即時生效，而不需等待完整語句。第三是動態程度與訓練需求，即熱詞清單的替換是否需要重新訓練模型，以及方法是否需要額外的訓練策略或模型適配手段來維持辨識品質。這三個軸向共同構成第~\ref{sec:taxonomy} 節分類架構的基礎。
+
+本文其餘章節組織如下：第~\ref{sec:background} 節介紹串流 RNN-T 的基本架構與脈絡偏置問題的背景；第~\ref{sec:taxonomy} 節提出上述的方法分類架構；第~\ref{sec:streaming} 節依分類架構討論串流情境下的即時熱詞偏置方法；第~\ref{sec:training} 節整理各方法涉及的訓練策略與模型適配技術；第~\ref{sec:lowres} 節探討熱詞偏置在低資源與個人化場景的應用；第~\ref{sec:discussion} 節綜合比較各類方法的優劣並指出未來研究方向；第~\ref{sec:conclusion} 節則為本綜述之結論。
+
+\section{背景：串流 RNN-T 與情境偏置問題}\label{sec:background}
+
+\subsection{RNN-T 架構與串流解碼}
+
+RNN-T \cite{graves2012sequence} 由三個元件組成：聲學編碼器（encoder）將音訊特徵序列 $\mathbf{x} = (\mathbf{x}_1,\dots,\mathbf{x}_T)$ 編碼為隱藏狀態序列；預測網路（prediction network）以自迴歸方式彙整已輸出的標籤歷史 $\mathbf{y}_{\le u}$；聯合網路（joint network）將兩者結合後輸出下一個符號（含空白符 $\varnothing$）的條件機率：
+\begin{equation}
+P(z_t \mid \mathbf{x}_{\le t},\, \mathbf{y}_{\le u}) \;=\; \mathrm{softmax}\!\left(\mathbf{W}\,\phi\!\left(\mathbf{h}^{\mathrm{enc}}_t,\, \mathbf{h}^{\mathrm{pred}}_u\right)\right),
+\end{equation}
+其中 $z_t \in \mathcal{V} \cup \{\varnothing\}$。整體轉錄條件機率為所有合法對齊路徑之和：
+\begin{equation}
+P(\mathbf{y} \mid \mathbf{x}) \;=\; \sum_{\mathbf{a} \in \mathcal{B}^{-1}(\mathbf{y})} P(\mathbf{a} \mid \mathbf{x}),
+\end{equation}
+其中 $\mathcal{B}^{-1}$ 為移除空白符的多對一映射。由於編碼器僅依賴過去與當前音訊框（或經限制的感受野），且解碼可沿 $(t,u)$ 時間—標籤網格逐段推進，RNN-T 天然支援延遲受限的串流推論，已廣泛部署於裝置端語音助理等即時系統 \cite{rao2017streaming, he2019streaming}。此「逐段推進、無法回頭重看整句」的特性，是串流熱詞偏置方法設計的核心約束。
+
+\subsection{熱詞偏置與其「動態」需求}
+
+熱詞偏置指在推論階段提供一份與當前使用者或情境相關的詞彙清單（如聯絡人姓名、播放清單歌曲），使解碼過程對這些詞彙賦予較高機率。依介入層次，可粗分為：(i) 在解碼分數上外加分數的 fusion 類方法 \cite{zhao2019shallow}；(ii) 以神經網路編碼情境詞彙並透過注意力機制融入解碼狀態的情境感知類方法 \cite{pundak2018deep}；(iii) 對已生成之 N-best 假說重打分的 rescoring 類方法。所謂「動態」熱詞偏置，進一步要求偏置詞表能在推論階段即時替換：模型參數固定，僅更換熱詞清單即可辨識新的專有名詞。此需求在個人化助理場景尤為重要——每位使用者的熱詞集不同，且可能隨時間變動，為個別詞表重新訓練模型在成本與隱私上皆不可行。
+
+\section{方法分類架構}\label{sec:taxonomy}
+
+綜合文獻庫中的方法，本文以三個正交軸向分類：
+
+\begin{enumerate}
+  \item \textbf{偏置機制的位置與形式}：解碼分數融合（fusion）、神經情境編碼與注意力注入（neural context encoding）、假說重打分（rescoring）。
+  \item \textbf{串流相容性}：方法是否能在逐段解碼下即時生效（first-pass、無前瞻），或需等待較長音訊／完整語句（second-pass）。
+  \item \textbf{動態程度與訓練需求}：熱詞表替換是否零樣本（zero-shot、不需重訓）、是否需聯合訓練情境化元件、是否需額外的訓練策略（如情境模擬資料增廣）或模型適配手段。
+\end{enumerate}
+
+第~\ref{tab:taxonomy} 表摘要在第~\ref{sec:streaming}--\ref{sec:training} 節討論的代表性方法於此三軸向的位置。
+
+\begin{table}[htbp]
+\centering
+\caption{代表性動態熱詞偏置方法之分類。}
+\label{tab:taxonomy}
+\begin{tabular}{llll}
+\toprule
+方法 & 介入位置 & 串流相容性 & 動態程度／訓練需求 \\
+\midrule
+Shallow fusion \cite{zhao2019shallow} & 解碼分數融合 & 高（可逐段） & 零樣本；需權重調校 \\
+CLAS \cite{pundak2018deep} & 神經情境編碼 & 需改造（見 \S\ref{sec:neural}） & 需聯合訓練情境元件 \\
+自適應偏置 \cite{xu2023adaptive} & 解碼分數／情境感知 & 高 & 需適配策略、詞表即時替換 \\
+Rescoring 類 & 假說重打分 & 低（偏離線） & 零樣本；受延遲限制 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{串流情境下的即時熱詞偏置方法}\label{sec:streaming}
+
+\subsection{解碼分數融合（Shallow Fusion）}\label{sec:fusion}
+
+Shallow fusion 在 RNN-T 的逐段解碼過程中，於每個 $(t,u)$ 格點將熱詞模型（例如以熱詞清單構建的 trie 或加權有限狀態轉換器）的對數機率以係數 $\lambda$ 加權後併入聯合網路輸出：
+\begin{equation}
+\log P_{\mathrm{bias}}(z_t \mid \mathbf{x}_{\le t}, \mathbf{y}_{\le u}) \;=\; \log P(z_t \mid \mathbf{x}_{\le t}, \mathbf{y}_{\le u}) \;+\; \lambda \log P_{\mathrm{hw}}(z_t \mid \mathbf{y}_{\le u}).
+\end{equation}
+由於 $P_{\mathrm{hw}}$ 僅依賴輸出歷史，此法不需前瞻未來音訊，天然串流相容，且更換熱詞表只需重建 trie，屬零樣本的動態偏置。Zhao 等人 \cite{zhao2019shallow} 的實驗顯示，適當選擇 $\lambda$ 可顯著改善情境詞的召回，但過大的 $\lambda$ 會使一般語音出現過度插入（over-injection）而推高整體 WER；權重需在情境詞命中率與一般語料退化之間調校，是此類方法的主要弱點，也與端對端聯合最佳化的精神存在張力。
+
+\subsection{神經情境編碼與注意力注入}\label{sec:neural}
+
+CLAS（Contextual Listen, Attend and Spell）\cite{pundak2018deep} 代表全神經的偏置路線：將情境片語以字元層級編碼為情境向量序列，於解碼每一步以 attention 對情境序列加權求和，得到情境表示 $\mathbf{c}_{t,u}$，並與聲學與預測狀態一併送入聯合網路：
+\begin{equation}
+P(z_t \mid \mathbf{x}_{\le t}, \mathbf{y}_{\le u}, \mathbf{C}) = \mathrm{softmax}\!\left(\mathbf{W}\,\phi\!\left(\mathbf{h}^{\mathrm{enc}}_t, \mathbf{h}^{\mathrm{pred}}_u, \mathbf{c}_{t,u}\right)\right),
+\end{equation}
+其中 $\mathbf{C}$ 為當前情境片語集合。情境化元件與整體模型聯合訓練，因此在數百個情境片語下取得相對 shallow fusion 基準最多 68\% 的相對 WER 改善 \cite{pundak2018deep}。由於情境表示 $\mathbf{C}$ 可在推論時任意替換，此路線符合「動態」需求；其代價是情境編碼器與 attention 模組必須與 RNN-T 聯合訓練，且標準的全域 attention 在串流設定下需改造（例如限制可見的情境範圍或採因果化的對齊），否則可能破壞逐段解碼的低延遲性質。後續工作（如非遞迴變體與更輕量的情境注入方式）多沿此方向在品質、延遲與參數量間折衷。
+
+\subsection{假說重打分（Rescoring）}
+
+Rescoring 類方法先以一般 RNN-T 產生 N-best 假說或部分詞格，再以外部熱詞模型或情境化模型對假說重打分。此類方法實作簡單、偏置模型可獨立更換，動態性佳；然而在串流情境下，重打分通常需要累積足夠長的音訊以產生可靠假說，會引入額外延遲或需要兩階段管線（partial result 之後再修正），與「即時逐段輸出」的產品需求衝突。因此在嚴格串流場景中，rescoring 多作為輔助手段，或在對延遲較不敏感的半串流（semi-streaming）設定中使用。
+
+\section{訓練策略與模型適配}\label{sec:training}
+
+無論採取何種介入位置，偏置機制的品質高度依賴訓練策略。文獻庫中反覆出現的技術包括：
+
+\begin{enumerate}
+  \item \textbf{聯合訓練情境化元件}：如 CLAS 將情境編碼器與 RNN-T 主幹一併訓練，使模型學會「何時聽從情境」\cite{pundak2018deep}；相對地，shallow fusion 的外部熱詞模型與主模型獨立訓練，需事後調校權重 \cite{zhao2019shallow}。
+  \item \textbf{情境模擬資料增廣}：於訓練時隨機抽取詞彙（含罕見詞與合成 OOV）作為情境片語，並將其插入訓練轉錄，使模型在推論時面對任意熱詞表均能泛化。此為零樣本情境泛化的關鍵。
+  \item \textbf{自適應偏置與權重控制}：近期工作朝自適應方向發展，使偏置強度隨音訊與情境的匹配程度動態調整，在降低一般語音退化的同時維持熱詞召回 \cite{xu2023adaptive}。這類方法可視為對 shallow fusion 固定權重缺陷的回應。
+  \item \textbf{避免一般語料退化}：以正則化、凍結部分參數或在訓練中混入無情境樣本，確保加入偏置能力後模型在通用測試集上不退化。
+\end{enumerate}
+
+\section{低資源與個人化應用}\label{sec:lowres}
+
+動態熱詞偏置的價值在低資源與個人化場景最為突出。對長尾專有名詞（人名、品牌、本地地標）而言，即使大規模訓練資料也難以充分覆蓋；透過推論時注入熱詞，可在不重訓模型的前提下大幅提升這些詞的召回 \cite{pundak2018deep, zhao2019shallow}。在個人化助理中，每位使用者只需提供（或由通訊錄、媒體庫自動匯入）一份個人熱詞清單，系統即時重建情境表示或熱詞模型；此模式亦有利於隱私——個人詞彙無需上傳參與訓練。串流相容性在此尤為關鍵：裝置端應用對延遲與記憶體皆有嚴格限制，偏好可逐段生效、無需完整語句的 first-pass 偏置機制 \cite{he2019streaming, xu2023adaptive}。
+
+\section{綜合比較與未來方向}\label{sec:discussion}
+
+綜合比較（見第~\ref{tab:taxonomy} 表）：shallow fusion 串流相容且零樣本，但固定權重導致一般語音退化風險，需調校 \cite{zhao2019shallow}；CLAS 等神經情境方法品質最佳且經聯合訓練後權衡內建於模型，但需改造以適應串流、且情境元件必須隨主幹訓練 \cite{pundak2018deep}；rescoring 彈性大但受串流延遲制約；自適應偏置 \cite{xu2023adaptive} 則在上述張力間提供折衷路徑。未來方向包括：(i) 在嚴格逐段解碼約束下將注意力式情境注入低延遲化；(ii) 免調校或自動調校的偏置權重控制；(iii) 情境表示的高效快取與增量更新，以支援大規模、多使用者詞表的即時切換；(iv) 統一品質、延遲與退化三者度量之評估協定。
+
+\section{結論}\label{sec:conclusion}
+
+本文綜述了串流 RNN-T 上動態熱詞偏置的代表性方法，依介入位置、串流相容性與動態程度三軸向整理文獻庫中的成果。整體而言，零樣本、串流相容且不需重訓的偏置能力，已成為端對端語音辨識落地個人化應用的必要條件；自適應偏置與聯合訓練的神經情境建模是目前最具潛力的兩條路線，而如何在嚴格延遲約束下兼顧熱詞召回與一般語音品質，仍是開放的研究課題。
+
+\begin{thebibliography}{9}
+
+\bibitem{graves2012sequence}
+A.~Graves, ``Sequence transduction with recurrent neural networks,'' \emph{arXiv preprint arXiv:1211.3711}, 2012.
+
+\bibitem{rao2017streaming}
+K.~Rao, H.~Sak, and R.~Prabhavalkar, ``Exploring architectures, data and units for streaming end-to-end speech recognition with RNN-T,'' in \emph{Proc. IEEE ASRU}, 2017.
+
+\bibitem{he2019streaming}
+Y.~He \emph{et al.}, ``Streaming end-to-end speech recognition for mobile devices,'' in \emph{Proc. IEEE ICASSP}, 2019.
+
+\bibitem{pundak2018deep}
+G.~Pundak, T.~N. Sainath, D.~Povey, and others, ``Deep context: End-to-end contextual speech recognition,'' in \emph{Proc. IEEE SLT}, 2018.
+
+\bibitem{zhao2019shallow}
+G.~Zhao, Y.~Guo, D.~Yang, and others, ``Shallow-fusion end-to-end contextual biasing,'' in \emph{Proc. Interspeech}, 2019.
+
+\bibitem{xu2023adaptive}
+Xu et al., 自適應熱詞偏置方法（研究文獻庫條目 xu2023adaptive；完整書目資訊資料未提供）, 2023.
+
+\end{thebibliography}
+
+
+%% ---- sections/s02-rnn-t.tex
+\section{背景：串流 RNN-T 與脈絡偏置問題}
+
+\subsection{串流 transducer 架構概述}
+
+現代端對端語音辨識系統中，RNN-T（recurrent neural network transducer）是支援串流（streaming）情境的主要架構之一。它與 CTC、LAS 等序列到序列模型同屬將聲學模型、發音模型與語言模型整合進單一神經網路、並以聯合訓練最佳化的範式 \cite{pundak2018deep}。相較於需要讀入完整音訊後才開始解碼的 encoder-decoder 結構，transducer 架構由聲學編碼器（encoder）、預測網路（prediction network）與合併兩者表示的聯合網路（joint network）組成，可在音訊串流輸入的同時逐框產生輸出標記，天然適合語音助理、聽寫等要求低延遲的即時應用。為了在串流條件下維持辨識品質，編碼器骨幹的設計是關鍵課題：近年的代表性做法之一是將 Transformer 的全域建模能力與卷積神經網路（CNN）的局部特徵抽取能力結合，如 Conformer 即以「自我注意力層搭配卷積模組」的混合設計作為編碼器骨幹，兼顧長距離相依與局部聲學細節，同時可配合因果（causal）或受限的感受野設定滿足串流限制 \cite{gulati2020conformer}。這類「Transformer 與 CNN 結合」的骨幹已成為串流 transducer 系統常見的選擇，也構成本綜述所討論各種偏置方法賴以運作的基礎架構。
+
+\subsection{脈絡偏置問題：shallow fusion 與 deep biasing}
+
+語音辨識的辨識正確與否，取決於說話者當下的情境（context）：對話狀態、所在位置，以及聯絡人姓名、歌曲名稱等個人化資訊，都可能決定哪些詞彙更可能被說出 \cite{pundak2018deep}。脈絡偏置（contextual biasing）的目標，就是讓模型偏向辨認出這類當下相關但可能稀有或詞彙外（OOV）的熱詞。依情境資訊介入模型的方式，既有研究大致可分為兩大路線：
+
+\begin{itemize}
+  \item \textbf{Shallow fusion}：在推論階段以分數加分的方式，將外部情境模型（例如由偏置片語建構的 contextual LM 或 WFST）的對數機率以可調權重 $\lambda$ 併入解碼準則，如 $\boldsymbol{y}^* = \arg\max_{\boldsymbol{y}}\; \log P(\boldsymbol{y}\mid\boldsymbol{x}) + \lambda \log P_C(\boldsymbol{y})$，不需重新訓練辨識模型 \cite{zhao2019shallow, pundak2018deep}。
+  \item \textbf{Deep biasing}：將情境資訊內建於神經網路本身，例如 CLAS 將情境片語嵌入為向量，並在解碼的每一步以 attention 機制彙整情境，偏置元件與 ASR 模型聯合訓練 \cite{pundak2018deep}。
+\end{itemize}
+
+兩條路線各有張力：shallow fusion 保留「模型不動、只換清單」的彈性，但依賴外部模型與 rescoring 權重的調校，且在偏置片語為大量專有名詞時，若相關詞未先出現於 beam 上便難以發揮效果 \cite{pundak2018deep}；deep biasing 透過聯合訓練省去權重調校、並能自然處理 OOV 詞，但情境路徑深入網路內部，使推論時更換熱詞清單的機制變得複雜 \cite{pundak2018deep}。
+
+\subsection{「動態」偏置的意涵}
+
+本綜述聚焦的「動態」熱詞偏置，指的是以偏置清單（bias list）作為模型的額外輸入：推論時系統接收一組與當下情境相關的片語 $\boldsymbol{z}=z_1,\ldots,z_N$，模型據此將辨識目標從 $P(\boldsymbol{y}\mid\boldsymbol{x})$ 擴充為 $P(\boldsymbol{y}\mid\boldsymbol{x},\boldsymbol{z})$，而在替換熱詞清單時\textbf{不改動模型權重} \cite{pundak2018deep}。在此定義下，即使清單中包含訓練時從未見過的詞彙，模型仍能在推論階段即時納入新的熱詞；偏置的效果完全由清單內容與模型既有的情境處理機制（如情境編碼器與 attention）決定 \cite{pundak2018deep}。這個特性對實際部署尤為重要：使用者的聯絡人、播放清單等情境片語會隨時間與場景變動，串流系統必須在不重新訓練、不重載模型的前提下即時替換熱詞，同時維持串流解碼的低延遲特性。如何在串流 RNN-T 架構上實現這種「清單即插即用」的動態偏置，並兼顧偏置強度、泛化性與運算成本，正是後續各節方法分類與比較的核心議題 \cite{xu2023adaptive}。
+
+
+%% ---- sections/s03.tex
+\section{方法分類架構}
+
+依據熱詞（hotword）資訊注入辨識系統的機制，現有文獻中的動態熱詞偏置方法可歸納為五大類：（1）在解碼搜尋階段進行模式匹配並加分的方法；（2）將脈絡資訊編碼為神經表徵、內化於模型內部的方法；（3）以輕量級模組（contextual adapters）適配主模型的方法；（4）動態擴充輸出詞彙表的方法；（5）以 CTC 式關鍵詞偵測輔助主辨識流的方法。以下各小節依序說明各類機制，並討論其對串流 RNN-T 場景的適用性。
+
+\subsection{解碼搜尋階段的模式匹配加分}
+
+第一類方法承襲傳統 ASR 中以 WFST（weighted finite state transducer）進行 on-the-fly rescoring 的範式：將熱詞清單編譯為有限狀態結構，在 beam search 展開部分假說時逐 token 匹配，命中熱詞前綴即給予分數獎勵。Wang 等人\cite{wang2023contextual}將此思路移植到 RNN-T 的串流解碼中，以 KMP（Knuth--Morris--Pratt）字串匹配演算法在解碼過程即時比對熱詞，命中後對對應的輸出 token 加分，模擬傳統 WFST contextualization 的效果，同時避免在建碼與合成 WFST 上的運算負擔。此類方法的優點是推理時可直接換用新熱詞清單、不需重新訓練模型，且天然支援 OOV 熱詞；缺點是加分權重屬於需在推理時調校的超參數，加權位置與強度設計不當會導致偏置不足或過度偏置（over-biasing），且加分機制與神經模型機率分佈彼此獨立，並未經過聯合最佳化。
+
+\subsection{神經內部脈絡編碼}
+
+第二類方法主張將熱詞資訊轉為向量表徵、由模型內部的注意機制自行取用，代表工作是 Pundak 等人提出的 CLAS（Contextual Listen, Attend and Spell）\cite{pundak2018deep}。CLAS 以 LSTM bias-encoder 將每個脈絡片語（context phrase）嵌入為固定維度向量，並在解碼的每個步驟以獨立的 bias-attention 彙整脈絡向量、與音訊 context vector 串接後送入 decoder，建模目標由 $P(\boldsymbol{y}\mid\boldsymbol{x})$ 擴充為 $P(\boldsymbol{y}\mid\boldsymbol{x},\boldsymbol{z})$，其中脈絡嵌入元件與整個 ASR 模型\textbf{聯合訓練}。相較於仰賴外部獨立語言模型做 on-the-fly rescoring 的做法，CLAS 不需仔細調校 rescoring 權重，可直接納入訓練未見過的 OOV 熱詞，並在數百個脈絡片語的設定下顯著勝過 shallow fusion 式的線上 rescoring 基線。針對熱詞數量達數千時 attention 被稀釋的問題，CLAS 亦提出 bias-conditioning：僅當熱詞的前綴已出現在部分解碼假說中才啟用該熱詞的嵌入。此類方法的概念可自然推廣至 RNN-T 的 prediction network 與 joint network，是其應用於串流 RNN-T 的理論基礎。
+
+\subsection{Contextual Adapters}
+
+第三類方法以參數高效的模組化設計切入：在預訓練好的主模型（如 RNN-T encoder）內插入小型 contextual adapter 網路，僅訓練 adapter 參數即可讓模型吸收脈絡資訊。Sathyendra 等人\cite{sathyendra2022contextual}的做法將脈絡表徵透過 adapter 注入 encoder 各層，使主模型權重維持不變。此類方法的優勢在於訓練成本低、可為不同領域或使用者保留各自的 adapter、且便於在既有部署模型上增量升級；代價是脈絡資訊的注入位置與容量受限於 adapter 的設計，對熱詞的偏置能力通常弱於聯合訓練的端對端脈絡編碼方法。
+
+\subsection{動態詞彙表擴充}
+
+第四類方法直接在輸出端處理熱詞：由於端對端模型多以 word-piece 或 grapheme 作為輸出單元，理論上已能拼出任意詞串，但實務上模型對訓練未見的組合辨識能力薄弱。動態詞彙表擴充（dynamic vocabulary expansion）方法在推理時將熱詞加入候選詞彙表，並調整輸出分佈以提升熱詞被輸出的機率。Sudo 等人\cite{sudo2024contextualized}提出 contextualized RNN-T，將擴充的詞彙資訊編碼後納入 RNN-T 的解碼路徑，使熱詞能以串流方式即時被辨識。此類方法對 OOV 專有名詞（人名、歌名等）特別有效，因為它直接補強了輸出層對新詞的可行性；其挑戰在於詞彙表變動會影響解碼搜尋空間的大小與延遲，需搭配剪枝或快取策略以維持串流即時性。
+
+\subsection{CTC 式關鍵詞偵測輔助}
+
+第五類方法將「熱詞是否出現」視為獨立的關鍵詞偵測（keyword spotting）子任務。Nakagome 等人\cite{nakagome2025wctc}提出以 CTC 為基礎的 W-CTC 關鍵詞偵測機制，與主辨識模型並行運作：CTC 分支對熱詞清單進行逐幀的關鍵詞對齊與偵測，其偵測結果再回饋用於提升主辨識流程中對應熱詞的分數。這種雙流設計與 CLAS 一脈相承，Pundak 等人\cite{pundak2018deep}亦指出其脈絡化技術正是串流關鍵詞偵測方法的推廣。CTC 分支的單調對齊特性與逐幀輸出結構天然適合串流處理，且關鍵詞偵測與一般轉寫解耦，能在不干擾主模型訓練目標的前提下提供偏置訊號；缺點是系統複雜度較高，需處理兩分支之間的資訊整合。
+
+\subsection{各類方法在串流 RNN-T 場景的比較}
+
+綜合而言，五類方法在串流 RNN-T 場景下的取捨可從三個面向比較：
+
+\begin{itemize}
+  \item \textbf{熱詞更換的即時性}：解碼階段模式匹配\cite{wang2023contextual}與神經脈絡編碼\cite{pundak2018deep}皆支援推理時直接替換熱詞清單（後者的脈絡嵌入甚至可在音訊串流開始前先行計算）；contextual adapters\cite{sathyendra2022contextual}則需預先訓練對應領域的模組，動態性較低。
+  \item \textbf{是否需重新訓練}：模式匹配加分不需任何訓練；CLAS 式方法\cite{pundak2018deep}與 contextualized RNN-T\cite{sudo2024contextualized}需聯合訓練脈絡元件；adapters\cite{sathyendra2022contextual}只需訓練少量新增參數；W-CTC\cite{nakagome2025wctc}需訓練關鍵詞偵測分支。
+  \item \textbf{與串流解碼的契合度}：模式匹配與 CTC 式偵測皆以逐幀、單調的方式運作，與 RNN-T 的串流 beam search 契合度高；神經脈絡編碼需在每個解碼步驟計算 attention，開銷隨熱詞數量成長，故常需 bias-conditioning 之類的剪枝機制控制計算量\cite{pundak2018deep}；動態詞彙表擴充\cite{sudo2024contextualized}則需注意搜尋空間膨脹對延遲的影響。
+\end{itemize}
+
+這些取捨決定了各類方法分別適合的應用情境：熱詞清單頻繁變動、不可再訓練的場景傾向解碼階段匹配；熱詞領域固定且重視辨識精度的場景適合聯合訓練類方法；而需要在既有模型上低成本擴充能力的部署，則可考慮 adapters 或關鍵詞偵測輔助的混合架構。後續章節將沿此分類，分別深入討論串流情境下的即時偏置技術與對應的訓練策略。
+
+
+%% ---- sections/s04.tex
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{CJKutf8}
+\usepackage{amsmath}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=black, citecolor=black, urlcolor=black}
+
+\title{串流 RNN-T 動態熱詞偏置方法綜述（初稿）}
+\author{（作者資料未提供）}
+\date{\today}
+
+\begin{document}
+\begin{CJK}{UTF8}{bsmi}
+\maketitle
+
+\begin{abstract}
+串流式 RNN-T（Recurrent Neural Transducer）是端對端語音辨識中廣泛用於即時辨識的架構，其逐幀推進的解碼特性對熱詞偏置（hotword biasing）帶來延遲與不可回溯的挑戰。本綜述以研究文獻庫中的論文為依據，整理串流 RNN-T 動態熱詞偏置的代表性方法：以模型預測分數動態調控偏置強度的 adaptive contextual biasing、於串流 beam search 內即時進行 KMP 字串匹配的 context biasing，以及免重訓、免 TTS 的層間偏置注入。本文比較三類方法在觸發時機、計算成本與適配成本上的取捨，並討論實務系統可行的組合策略。
+\end{abstract}
+
+\section{引言}
+端對端語音辨識模型雖在通用測試集上表現優異，但對訓練資料中未出現或極少出現的專有名詞、人名、新詞（即熱詞，hotwords）常有辨識困難。熱詞偏置技術透過在解碼或模型運算過程中，對指定的偏置詞組給予額外分數或情境資訊，以提升熱詞的召回率。
+
+在離線（non-streaming）設定下，偏置可待整句解碼完成後再行調整；但在串流（streaming）設定下，模型必須逐幀輸出結果、不可回溯重解，偏置策略必須即時決定觸發時機與強度。本文聚焦串流 RNN-T 情境下的動態熱詞偏置方法，以研究文獻庫中的論文為引用來源，整理其技術路線並比較優劣。
+
+\section{背景：串流 RNN-T 與熱詞偏置}
+RNN-T 以 encoder、prediction network 與 joint network 逐幀對齊聲學輸入與輸出 token 序列，其損失可寫為所有對齊路徑的機率總和：
+\begin{equation}
+P(\mathbf{y} \mid \mathbf{x}) = \sum_{(\mathbf{u},\mathbf{t}) \in \mathcal{B}(\mathbf{y},\mathbf{x})} P(\mathbf{u}, \mathbf{t} \mid \mathbf{x}),
+\end{equation}
+其中 $\mathcal{B}(\mathbf{y},\mathbf{x})$ 為輸出序列 $\mathbf{y}$ 與輸入序列 $\mathbf{x}$ 間所有單調對齊路徑的集合。串流設定下，解碼以 beam search 逐幀推進，輸出須低延遲且不可回溯重解。
+
+熱詞偏置依實作位置大致可分為：解碼端分數加權（於 beam search 中對熱詞相關假說加分）、以及模型端情境注入（將熱詞資訊編碼後注入網路內部）。串流情境對兩者皆有限制：加分時機須即時、注入運算須輕量，且不得仰賴離線的重排序或批次處理。
+
+\section{早期端對端脈絡化方法}
+較早的端對端脈絡化模型以 CLAS 為代表：其情境詞組嵌入可在音訊串流開始前先行計算，並以 bias-conditioning 遮罩確保詞組僅在其 prefix 出現於部分假說時才被啟用 \cite{pundak2018deep}。然而該類設計係針對注意力式的 encoder--decoder 模型（LAS）而建，並非直接面向 RNN-T 的串流解碼；其技術思路雖可資借鑑，串流 RNN-T 仍需專為逐幀解碼設計的偏置機制。
+
+\input{sections/s04.tex}
+
+\section{討論}
+表~\ref{tab:compare} 彙整三類串流偏置方法的比較（細節見第~4 節）。
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{p{4.2cm}p{3.4cm}p{3.4cm}p{3.2cm}}
+\hline
+方法 & 觸發時機 & 主要優點 & 主要成本 \\
+\hline
+Adaptive contextual biasing \cite{xu2023adaptive} & 依模型預測分數動態決定 & 兼顧熱詞召回與整體辨識品質 & 需可靠的預測分數訊號 \\
+KMP 即時匹配 \cite{wang2023contextual} & 每次 token 延伸時 & 線性時間、輕量、可嵌入串流解碼 & 僅於字串層級比對 \\
+層間偏置注入 \cite{nakagome2025wctc} & 依中間層特徵逐幀關鍵詞偵測 & 免重訓、免 TTS、作用於內部表示 & 需穩定的中間層特徵 \\
+\hline
+\end{tabular}
+\caption{串流 RNN-T 動態熱詞偏置方法比較。}
+\label{tab:compare}
+\end{table}
+
+三者並不互斥：分數調控可與即時字串匹配搭配，決定「何時加分」與「加多少」；層間偏置則可在不解碼端干預的前提下提供情境訊息。實務系統可依應用對延遲、熱詞規模與部署成本的限制組合選用。
+
+\section{結論與未來方向}
+本文綜述了串流 RNN-T 動態熱詞偏置的三類代表性方法：adaptive contextual biasing \cite{xu2023adaptive}、KMP 式即時匹配 \cite{wang2023contextual} 與層間偏置注入 \cite{nakagome2025wctc}，並回顧早期端對端脈絡化模型 CLAS \cite{pundak2018deep} 的啟發。未來方向包括：多類方法於同一系統內的整合驗證、偏置強度的自適應學習，以及在大型詞庫下維持低延遲的匹配結構設計。本綜述為初稿，完整實驗數據與方法細節請參閱文獻庫原始論文。
+
+\begin{thebibliography}{9}
+
+\bibitem{pundak2018deep}
+G.~Pundak, T.~N.~Sainath, R.~Prabhavalkar, A.~Kannan, and D.~Zhao,
+``Deep Context: End-to-End Contextual Speech Recognition,''
+in \emph{Proc. IEEE SLT}, 2018.
+
+\bibitem{xu2023adaptive}
+Xu 等人,
+``Adaptive contextual biasing：於解碼過程中依模型預測分數動態調整偏置量,'' 2023.
+（完整書目資料：資料未提供）
+
+\bibitem{wang2023contextual}
+Wang 等人,
+``Contextual biasing：串流 beam search 中以 KMP 線性時間字串匹配即時觸發偏置加分,'' 2023.
+（完整書目資料：資料未提供）
+
+\bibitem{nakagome2025wctc}
+Nakagome 等人,
+``免重訓、免 TTS 的層間偏置（inter-layer biasing）：以中間層聲學特徵進行關鍵詞偵測並注入情境,'' 2025.
+（完整書目資料：資料未提供）
+
+\end{thebibliography}
+
+\end{CJK}
+\end{document}
+
+
+%% ---- sections/s05.tex
+\section{訓練策略與模型適配}
+\label{sec:training-strategies}
+
+與第 4 節以推論階段為主的即時偏置機制相對，本節聚焦於另一條互補路徑：從訓練目標、訓練流程與詞彙表設計等層次進行介入，使串流 RNN-T 自訓練階段起即具備利用動態熱詞的能力。此類做法的核心議題在於：如何在不犧牲串流解碼特性的前提下，提升模型對偏置詞的感知與利用效率，同時兼顧個人化應用所需的適配彈性。以下依序討論輔助訓練目標、早期脈絡注入與文本擾動、contextual adapters，以及動態詞彙表四個方向。
+
+\subsection{輔助訓練目標：Guided Attention Loss}
+
+標準的 Transducer loss 對「偏置詞應如何被注意與輸出」並未提供明確的監督訊號，導致偏置機制的成效受限：隨著偏置詞清單中的詞數量增加，偏置所帶來的詞辨識錯誤率（word recognition error, WRE）降幅會逐漸遞減。針對此一挑戰，Tang 等人提出在 Transducer loss 之外加入 Guided Attention（GA）loss 作為輔助訓練目標 \cite{tang2024improving}，透過對注意力學習施加引導，彌補主目標在脈絡利用上監督不足的缺口。此做法的一項重要特性是：GA loss 僅改變訓練目標的形式，並不為模型引入額外參數，因此不會在推論階段造成額外的計算或記憶體負擔，對講求低延遲的串流 RNN-T 情境格外合適。
+
+\subsection{早期脈絡注入與文本擾動}
+
+即使模型架構上具備接收脈絡的介面，脈絡訊號能否被有效利用，仍取決於注入位置與訓練方式的設計。Huang 等人提出早期脈絡注入（early context injection），將脈絡表示注入編碼器中較早的層，使脈絡資訊能自編碼的初期即參與聲學表徵的建構，而非僅在解碼端或編碼器末端才與聲學特徵交互作用 \cite{huang2024improving}。然而，單純提供脈絡輸入並不保證模型確實使用它；為此，該方法進一步在訓練時引入文本擾動（text perturbation），強迫模型學會依賴脈絡完成解碼。兩者相輔相成：前者確保脈絡訊號的傳遞路徑通暢，後者確保訓練目標確實驅動模型利用脈絡，而非將脈絡輸入視為可忽略的冗餘訊號。
+
+\subsection{Contextual Adapters：參數高效的個人化適配}
+
+Shallow fusion 類做法依賴外部獨立訓練的語言模型，並以固定權重將其分數加至模型輸出，不僅需要仔細調校加成權重，也與端對端模型將各組件聯合最佳化的優勢相牴觸 \cite{pundak2018deep}。Sathyendra 等人提出的 contextual adapters 以神經調變（neural modulation）模組為個人化提供另一種途徑 \cite{sathyendra2022contextual}：藉由在模型內部插入小型的調變模組，以與使用者或情境相關的資訊調變模型的內部表徵，使個人化能力內化為模型參數的一部分，而非推論階段的外部分數加成。此類參數高效的適配機制突破了 shallow fusion 依賴外部語言模型與固定權重加成的限制，也為後續低資源與個人化應用（第 6 節）奠定了技術基礎。
+
+\subsection{動態詞彙表}
+
+前述方法大多隱含一項假定：偏置詞能以既有的靜態子詞詞彙表適切地分解。然而，偏置片語（尤其是專有名詞）以靜態子詞切分時，常產生訓練語料中罕見、甚至不自然的 token 序列，使其輸出機率系統性偏低；即使脈絡訊號已成功注入模型，模型仍難以完整輸出這些偏置片語。Sudo 等人因而主張採用動態詞彙表（dynamic vocabulary），讓詞彙表隨偏置清單動態調整 \cite{sudo2024contextualized}，使偏置片語能以更自然的建模單位參與解碼，從而緩解靜態子詞分解造成的機率偏低問題。動態詞彙表與前述訓練策略互補：輔助訓練目標、早期注入與調變模組處理「脈絡如何被利用」的問題，動態詞彙表則處理「偏置詞如何被表示」的問題。
+
+綜合而言，本節所述方法反映了動態熱詞偏置研究從「推論階段補償」走向「訓練階段內建」的趨勢：輔助訓練目標在不增加參數的前提下強化脈絡利用 \cite{tang2024improving}；早期脈絡注入搭配文本擾動確保脈絡訊號被確實使用 \cite{huang2024improving}；contextual adapters 提供參數高效的個人化適配管道 \cite{sathyendra2022contextual}；動態詞彙表則從建模單位的層次，緩解偏置片語在靜態子詞分解下的機率偏低問題 \cite{sudo2024contextualized}。
+
+
+%% ---- sections/s06.tex
+\section{低資源與個人化應用}
+
+前述章節討論的熱詞偏置方法，多假設有大量訓練語料與成熟的基礎辨識模型；然而在低資源場景下，基礎模型對領域外詞彙與命名實體的覆蓋不足，熱詞偏置的重要性反而更加突出。在台灣華語（台灣口音華語）的串流自動語音辨識（ASR）實務中，常見的挑戰包括：可用轉錄語料有限、基礎詞彙表對在地人名、地名與專有名詞的覆蓋率低，以及串流解碼延遲限制下偏置分數難以即時生效。相關文獻針對低資源台灣華語串流 ASR 探討了熱詞偏置的實務作法與面臨的挑戰 \cite{anonhotword}，並有研究進一步討論在此類設定下改善罕見詞辨識的策略 \cite{huang2024improving}；惟其具體實驗設定與量化結果，本綜述所依據之文獻庫資料未提供，此處不予臆測。
+
+就實務層面而言，低資源情境下的熱詞偏置面臨幾項結構性困難。第一，偏置詞表往往動態變動且包含大量詞彙外（out-of-vocabulary, OOV）詞，傳統需要事先編譯加權有限狀態轉換器（WFST）或依賴外部語言模型的做法，在詞表頻繁更新時維護成本高。第二，偏置權重的調校（如 shallow fusion 中的縮放係數）在低資源條件下缺乏充足的開發集可供驗證，容易出現過度偏置（over-biasing）或偏置無效的問題。第三，串流解碼要求即時性，偏置機制必須在逐影格解碼過程中即時生效，而不能依賴事後重打分。這些限制使得「如何在推理時納入訓練未見的詞彙、且不需要繁複的權重調校」成為低資源應用中的核心需求。
+
+個人化語音辨識是熱詞偏置最具代表性的應用場景之一。使用者的聯絡人清單、播放清單、常用地址或自行指定的詞彙，構成了一份與當前說話者高度相關的情境片語（context phrases）清單；這些片語多為命名實體，在通用訓練語料中出現頻率極低，甚至完全未出現，因而成為辨識錯誤的主要來源。若能將此類個人化脈絡納入解碼過程，即可顯著改善罕見詞與命名實體的辨識正確率。Pundak 等人提出的 CLAS（Contextual Listen, Attend and Spell）模型即是此方向的代表性工作：模型將情境片語嵌入為向量，並在解碼的每一步以注意力機制彙整情境資訊，且情境化元件與 ASR 模型整體聯合訓練 \cite{pundak2018deep}。該工作明確指出，個人化資訊（如聯絡人、歌曲播放清單）正是情境偏置的三類典型來源之一，並強調其方法可納入訓練時未見過的 OOV 詞、且不需仔細調校重打分權重，這兩項特性對個人化應用尤為關鍵 \cite{pundak2018deep}。
+
+在個人化情境的評估設定上，Pundak 等人的實驗以 TTS 合成語句建立了多個附帶情境片語清單的測試集，其中 Contacts 測試集包含 15,000 筆語句、平均每筆附帶 75 個情境片語、情境片語中訓練資料未出現過的獨特詞比例（bias OOV rate）為 5.2\%；Songs 測試集平均附帶 303 個片語、bias OOV rate 為 3.5\% \cite{pundak2018deep}。此設定具體呈現了個人化應用的典型樣貌：偏置清單規模可從數個片語到數百個不等，且其中相當比例為訓練未見的命名實體。此外，CLAS 針對偏置清單規模增大（數千個片語）時注意力難以聚焦的問題，提出了 bias-conditioning 機制，僅在部分解碼假說中偵測到對應前綴時才啟用該片語的情境資訊 \cite{pundak2018deep}；此機制對個人化場景中聯絡人清單規模龐大的情況具有直接的參考價值。
+
+需要指出的是，CLAS 本身建立於 listen-attend-spell（LAS）架構之上，而非串流 RNN-T；但其在個人化情境偏置上的設計原則——全神經情境編碼、聯合訓練、支援可變數量情境片語與 OOV 詞、以 no-bias 選項在無相關情境時回退——對串流 RNN-T 的動態熱詞偏置具有方法論上的借鑑意義 \cite{pundak2018deep}。在串流 RNN-T 的脈絡下，如何在逐影格解碼的同時維持對個人化情境的即時注意力，並控制運算開銷以滿足端側部署需求，是將此類技術落地到個人化應用時必須處理的問題。近年的後續研究亦持續在情境化 ASR 框架下探討個人化詞彙（如聯絡人清單、使用者指定詞彙）對罕見詞辨識的改善 \cite{sathyendra2022contextual}，以及相關偏置策略的改進方向 \cite{huang2024improving}。
+
+綜合而言，低資源與個人化應用凸顯了動態熱詞偏置在實務部署中的價值：當基礎模型能力受限、且目標詞彙高度個人化時，能在推理時即時納入使用者情境、無需重新訓練模型且對 OOV 詞友善的偏置機制，是改善罕見詞與命名實體辨識的關鍵途徑。對台灣華語等低資源語言的串流 ASR 而言，如何在偏置效果、即時性與調校成本之間取得平衡，仍是實務部署上待解的課題；相關量化比較因文獻庫資料未提供，留待後續實證研究補足。
+
+
+%% ---- sections/s07.tex
+\section{討論與未來方向}
+
+本章對第 3 至第 6 節所回顧的各條方法路線進行橫向比較，歸納其在「免重訓 vs. 需訓練」、「串流適配性」與「額外參數量與系統複雜度」三個面向上的取捨；隨後指出本領域仍待解決的開放挑戰，作為後續研究的方向指引。
+
+\subsection{方法路線的橫向比較}
+
+就「是否需要重新訓練」而言，動態熱詞偏置方法大致可分為兩大類。第一類是\textbf{免重訓}的解碼期路線（第 4 節）：在已訓練完成的串流 RNN-T 模型之外，於解碼階段動態注入偏置資訊，例如以 shallow fusion 加入情境相關的外部語言模型 \cite{zhao2019shallow}。此類方法的優勢在於部署彈性高、熱詞可即時增刪且不需更動主模型，但代價是必須維護額外的解碼元件，並仔細調校偏置權重，否則容易產生過度偏置（over-biasing）或無效偏置。第二類是\textbf{需訓練}的路線（第 5 節）：將情境資訊的處理內化到模型本身，例如以全神經情境編碼器與偏置注意力機制和主模型聯合訓練 \cite{pundak2018deep}，或透過專門的訓練策略與自適應機制強化模型對熱詞的記憶與泛化能力 \cite{tang2024improving,xu2023adaptive}。此類路線通常不需要精細的 rescoring 權重調校，且能直接處理訓練時未見過的 OOV 熱詞 \cite{pundak2018deep}，但訓練成本與工程複雜度明顯較高。
+
+\begin{table}[t]
+\centering
+\caption{串流 RNN-T 動態熱詞偏置各方法路線的定性比較}
+\begin{tabular}{lccc}
+\hline
+路線 & 是否需重訓 & 串流適配性 & 額外複雜度 \\
+\hline
+解碼期融合（shallow fusion 等） & 免重訓 & 高 & 外部元件維護、權重調校 \\
+全神經情境編碼（CLAS 型） & 需聯合訓練 & 高 & 額外情境編碼器與注意力 \\
+訓練策略／模型適配 & 需訓練 & 視實作而定 & 訓練成本增加 \\
+自適應／個人化偏置 & 部分需訓練 & 高 & 需線上更新機制 \\
+\hline
+\end{tabular}
+\end{table}
+
+就「串流適配性」而言，免重訓路線直接作用於逐影格的解碼程序，與串流 RNN-T 的即時輸出特性天然相容；而全神經路線雖需訓練，其情境表徵卻有良好的串流性質——以 CLAS 為例，熱詞清單的偏置嵌入向量可在音訊串流開始之前\textbf{先行計算}，解碼過程中僅需逐步進行注意力彙整，不破壞逐影格輸出的低延遲特性 \cite{pundak2018deep}。就「額外參數量與系統複雜度」而言，免重訓路線不增加模型參數，但將複雜度轉嫁到解碼系統與運維端；全神經路線新增的參數相對有限——CLAS 的偏置編碼器僅為單層 LSTM，搭配一組獨立的偏置注意力，相對其整體模型（約 5{,}800 萬個可訓練參數）僅屬少量額外參數 \cite{pundak2018deep}——但當偏置詞表達到數千個片語時，還需引入額外的偏置條件化（bias-conditioning）機制，以在部分解碼假說中偵測前綴、遮罩未啟用的熱詞，這增加了推論系統的整體複雜度 \cite{pundak2018deep}。訓練策略與自適應路線則主要把成本放在訓練期或線上更新期，推論期的額外開銷相對較低 \cite{tang2024improving,xu2023adaptive}。近期研究也在持續探索串流 transducer 與偏置機制的更緊密整合 \cite{nakagome2025wctc}。
+
+\subsection{開放挑戰}
+
+儘管上述路線已各自展現成效，本綜述認為串流 RNN-T 動態熱詞偏置仍有以下三項關鍵的開放挑戰：
+
+\begin{itemize}
+  \item \textbf{偏置詞表規模擴大時的效能維持。}既有全神經方法在小規模詞表下表現最佳：以 CLAS 為例，在數百個情境片語時顯著優於傳統線上 rescoring 技術，但當片語數成長到數千個時，兩者僅約相當，且注意力權重成為眾多偏置嵌入的加權總和，容易偏離訓練時見過的情境表徵，必須借助前綴偵測與遮罩等條件化手段補救 \cite{pundak2018deep}。如何在詞表規模大幅擴大（例如數萬級別的聯絡人或商品詞表）時維持偏置效能，並避免解碼延遲隨詞表線性膨脹，仍是核心難題；自適應偏置與更有效率的情境檢索機制是可能的緩解方向 \cite{xu2023adaptive,tang2024improving}。
+  \item \textbf{串流延遲與準確率的取捨。}串流 RNN-T 逐影格輸出、無法使用未來聲學資訊，熱詞的偏置決策必須在極有限的右文情境下即時完成；偏置越積極，越可能在熱詞尚未完整說出前就拉高相關假說的分數，反而引入誤偏置。如何在維持串流低延遲的前提下設計偏置時機與強度，兼顧熱詞召回與整體 WER，是方法設計上持續存在的張力，近年多項研究皆以此為改進焦點 \cite{tang2024improving,nakagome2025wctc}。
+  \item \textbf{動態詞表與串流 transducer 的整合。}RNN-T 的預測網路與解碼結構在設計上以固定輸出詞彙為前提，而動態熱詞偏置要求詞表在推論階段可隨情境即時增刪。如何在不中斷串流、不重算已產生狀態的情況下，將動態載入的熱詞無縫整合進串流 transducer 的解碼程序，目前仍缺乏統一的框架與一致的評估基準 \cite{nakagome2025wctc}。
+\end{itemize}
+
+綜合而言，免重訓路線與需訓練路線在部署彈性、偏置品質與系統複雜度之間呈現明顯互補；未來的研究方向，可預期朝向兼取兩者優點的混合式設計演進——亦即在免重訓的即時偏置框架中，融入輕量的聯合訓練或自適應成分，同時在可擴展的詞表管理、串流延遲控制與標準化評估協議上建立更完整的基礎，使動態熱詞偏置得以在大規模、低延遲的實際串流系統中穩定發揮效益。
+
+
+%% ---- sections/s08.tex
+\section{結論}
+
+本文以串流 RNN-T 為主軸，系統性地回顧了動態熱詞偏置方法的發展。串流 RNN-T 因其低延遲與適合端側部署的特性，已成為語音助理與即時轉錄場景的主流端對端架構；然而其將聲學、發音與語言知識聯合訓練於單一網路的設計，也使得外部的專有名詞與個人化詞彙難以在推論階段直接注入，形成所謂的脈絡偏置問題。動態熱詞偏置正是為了解決此一矛盾而生：在不更動主模型權重或僅進行輕量適配的前提下，於訓練或解碼過程中納入使用者提供的熱詞清單，使系統能即時跟上不斷變動的詞彙需求。
+
+回顧此領域的發展脈絡，可以觀察到一條清晰的演進主線。早期的情境化做法多延襲傳統 ASR 的思維，仰賴獨立訓練的外部語言模型在解碼時進行加權；這類做法雖然可行，卻與端對端模型聯合最佳化的核心優勢相悖，也往往需要仔細調校偏置權重 \cite{pundak2018deep}。後續研究遂沿著兩條互補的路徑推進：一是在推論機制上設計更精緻的即時偏置策略，例如依據部分解碼假說動態啟用熱詞、或自適應地調整偏置的強度與範圍，以兼顧串流延遲與辨識正確性 \cite{xu2023adaptive}；二是從訓練策略與模型適配著手，讓模型在訓練階段即學會利用脈絡資訊，將熱詞知識內化於模型本身 \cite{nakagome2025wctc}。這兩條路徑共同構成了本綜述分類架構的主體。
+
+在分類貢獻上，本文提出以「偏置發生的階段」與「知識注入的方式」為主軸的統一分類架構，將文獻整理為三大面向：串流情境下的即時熱詞偏置（推論階段的機制設計）、訓練策略與模型適配（訓練階段的知識注入），以及低資源與個人化應用（面向實際部署的延伸）。此一框架使原本散落於各文獻、術語各異的技術得以在相同尺度上比較，並清楚地呈現各類方法在關鍵維度上的取捨：偏置強度與誤觸發（over-biasing）之間的平衡、對未見熱詞的泛化能力、串流解碼下的計算與延遲開銷，以及是否需要重新訓練或調整模型。
+
+綜合文獻的觀察顯示，目前尚無任何單一方法能在所有條件下佔據絕對優勢。即時偏置方法勝在部署彈性與免重訓，但需要處理權重調校與過度偏置的風險；訓練導向的方法能改善模型對脈絡資訊的內化與解碼一致性，但會增加訓練流程的複雜度，並須維持對推論時任意熱詞清單的即時適應能力。因此，將推論階段的動態啟用機制與訓練階段的脈絡強化相結合的混合式設計，正逐漸成為此領域的共同趨勢。
+
+展望未來，隨著個人化助理、端側部署與低資源語言應用的需求持續成長，動態熱詞偏置仍有寬廣的研究空間，包括在有限標註資料下穩健地學習熱詞表示、於裝置端進行隱私保護的脈絡適配，以及建立更嚴謹、可比較的評估協定。期望本綜述所提出的分類架構與發展脈絡整理，能為後續研究者在選擇、改良或組合各類偏置方法時提供清晰的座標，進一步推動串流 RNN-T 在真實應用中的情境感知能力。

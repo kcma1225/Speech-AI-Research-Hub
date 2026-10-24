@@ -1,0 +1,175 @@
+---
+title: "Agent 評估集：單篇論文研究 進度報告 261024"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## 問題定義
+
+![](diagrams/diagram-1c51908f222b.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+- **目標**：台灣華語低資源語音辨識
+- **資源**：僅 10 小時標註語音
+- **指標**：dev CER（目前 18.2%）
+- **階段**：目前於題目發想
+
+::: {.takeaway}
+以 10 小時台灣華語微調 wav2vec 2.0，目前 dev CER 18.2%
+:::
+
+::: {.notes}
+這頁定義研究要解決的問題：台灣華語語音辨識屬於低資源設定，標註資料只有 10 小時。做法是使用 wav2vec 2.0 base 的自監督特徵進行微調，評估指標採用 dev CER。依 2026-10-21 的週會筆記，目前微調後的 dev CER 為 18.2%。整體研究目前仍在題目發想階段，之後依序進入文獻探討、實驗、撰寫，最後投稿或口試。下一頁將說明目前的實驗架構與微調流程。
+:::
+
+## Idea 或架構
+
+![](diagrams/diagram-b800ab63beb0.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21"}
+
+::: {.takeaway}
+微調流程已跑通，但資料少、過擬合明顯；下週加入 SpecAugment 與速度擾動
+:::
+
+::: {.notes}
+這頁呈現目前的實驗架構與微調流程。骨幹模型是 wav2vec 2.0 base，做法是微調它的自監督特徵，而不是從頭訓練。資料只有 10 小時台灣華語語音，訓練後以 dev CER 評估，目前全模型微調的 dev CER 為 18.2%（週會筆記 2026-10-21）。已測試的變體是凍結前 6 層，CER 升到 19.0%，比全模型微調差，因此暫不採用。由於資料太少、過擬合明顯，下週計畫加入 SpecAugment 與速度擾動做資料增強（週會筆記 2026-10-21 下週計畫）。
+:::
+
+## 對帳
+:::: {.columns}
+::: {.column width="48%"}
+### ✅ 已完成
+- 10 小時微調：dev CER 18.2%
+- 凍結前 6 層：CER 19.0%
+:::
+::: {.column width="48%"}
+### ⬜ 待辦
+- 加入 SpecAugment
+- 加入速度擾動
+- 整理微調超參數表
+:::
+::::
+
+![](diagrams/diagram-82699b73a17a.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21"}
+
+距上次新數字：1 週
+
+::: {.takeaway}
+實驗已產出數字；資料增強與期中里程碑待補
+:::
+
+::: {.notes}
+這頁核對計畫與實際進度的落差。已完成：用 10 小時台灣華語資料微調 wav2vec 2.0 base，dev CER 18.2%；凍結前 6 層的變體 CER 19.0%，兩個數字都出自 2026-10-21 的週會筆記。待辦：SpecAugment 與速度擾動上次已列入下週計畫，但仍在未完成清單，另外還要整理微調超參數表。時間軸方面：10 月 21 日微調跑通，接下來加入 SpecAugment 與速度擾動，期中報告預計 2026-12-01，但目前研究階段還在題目發想，後面還有文獻探討、實驗、撰寫、投稿或口試。整體來看，實驗本身已有數字產出，但資料增強與里程碑進度需要本週補上；最新數字距離這次組會 1 週。
+:::
+
+## Table 1 現況
+![](charts/chart-b00e90fae453.svg){.hub-chart fig-align="center" fig-alt="chart" data-font="16"}
+
+:::: {.columns}
+::: {.column width="58%"}
+::: {.takeaway}
+凍結前 6 層比全參微調高 0.8 個 CER（19.0% vs 18.2%）
+:::
+:::
+::: {.column width="42%"}
+**兩個設定皆用 10 小時台灣華語訓練**
+
+**距上次新數字：1 週**
+:::
+::::
+
+::: {.notes}
+這頁是目前手上全部實驗數字的現況，兩個數字都出自 2026-10-21 的週會筆記，兩個設定的訓練資料都是 10 小時台灣華語。全參微調 wav2vec 2.0 base 的 dev CER 18.2%，是目前最好的設定；對照組凍結前 6 層的 dev CER 為 19.0%，比全參微調高 0.8 個 CER。最新數字距離這次組會 1 週，這兩個數字就是目前實驗紀錄的全部現況。
+:::
+
+## 本週關鍵結果
+
+:::: {.columns}
+::: {.column width="42%"}
+::: {.big-number}
+18.2%
+:::
+
+::: {.big-number-label}
+dev CER：全參微調 wav2vec 2.0 base（2026-10-21 週會筆記）
+:::
+:::
+::: {.column width="58%"}
+### 怎麼解讀
+
+- 全參微調優於凍結前 6 層
+- 週會筆記記錄：資料太少，過擬合明顯
+- 過擬合對策：下週加入 SpecAugment、速度擾動
+:::
+::::
+
+![](diagrams/diagram-9ef8a71da0b0.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.4"}
+
+::: {.takeaway}
+全參微調為目前最佳設定，解讀需考慮過擬合
+:::
+
+::: {.notes}
+本週關鍵數字：用 10 小時台灣華語資料全參微調 wav2vec 2.0 base，dev CER 達 18.2%（週會筆記 2026-10-21）。對照組凍結前 6 層，dev CER 為 19.0%，比全參微調差 0.8 個百分點，這組對照的長條圖已放在前面的「對帳」頁，這裡不重複畫同一組數字，只取最佳設定 18.2% 作為本週關鍵結果。下方的流程圖把這週的脈絡串起來：10 小時台灣華語資料量太少，全參微調之後，週會筆記「問題」欄記錄過擬合明顯，所以解讀 18.2% 這個數字時必須把過擬合背景考慮進去；對策是下週加入 SpecAugment 與速度擾動，之後再重新檢視數字。這個阻礙與後續處理方向，下一頁「卡住」會詳細報告。
+:::
+
+## 卡住
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- 資料太少，過擬合明顯：週會筆記（2026-10-21）問題欄記錄：資料太少、過擬合明顯。dev CER 18.2% 的數字要放在這個背景下解讀，是我目前最核心的瓶頸。
+- 資料增強尚未實作：SpecAugment 與速度擾動是緩解過擬合的排定方向，但兩項都還列在未完成待辦，還沒跑出新的數字。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+
+## Idea card
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- 以 SpecAugment 回應過擬合：過擬合來自資料太少，我打算先加 SpecAugment 做頻譜遮罩，觀察 dev CER 能否從目前的 18.2% 再往下。
+- 速度擾動等效擴增資料：速度擾動能在不新增標註資料的情況下增加訓練資料多樣性，正好對症只有 10 小時台灣華語資料不足的問題。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+
+## 下週與要問
+
+[AI 代填，待你確認]{.hub-ai-filled style="color:#b45309;font-weight:600;font-size:0.7em"}
+
+- 跑 SpecAugment 與速度擾動：下週把這兩種資料增強加進微調流程，回報 dev CER 是否優於目前的 18.2%，驗證能否緩解過擬合。
+- 整理並完成超參數表：把目前 dev CER 18.2% 設定的微調超參數完整整理成表，清掉這項未完成待辦。
+
+::: {.notes}
+（AI 代填，待你確認：自動駕駛依研究資料草擬的建議，不是報告者確認過的看法；報告前請確認或改寫成自己的想法。）
+:::
+

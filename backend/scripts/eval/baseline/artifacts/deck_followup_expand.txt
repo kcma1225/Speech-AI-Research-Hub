@@ -1,0 +1,215 @@
+---
+title: "Zipformer + RNNT with Dynamic Hotwords: State of the Art (Agent draft)"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## Problem Definition
+
+:::: {.columns}
+::: {.column width="48%"}
+### Baseline: rare names fail
+- Streaming ASR misrecognizes rare person and place names
+- Biased toward training vocabulary; hotwords appear only at inference time
+:::
+::: {.column width="52%"}
+### Goal: dynamic hotwording
+- Recognize user-provided hotwords **without retraining**
+- Zipformer + RNN-T streaming baseline on icefall
+:::
+::::
+
+![](diagrams/diagram-df08731c0c4e.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="24.3"}
+
+::: {.takeaway}
+Rare-word error rate is high but unquantified; biasing gains to be measured on the streaming baseline.
+:::
+
+::: {.notes}
+Streaming ASR often misrecognizes rare words such as person names and course terminology: end-to-end models are biased toward their training vocabulary, and hotwords typically appear only at inference time (literature review, 2026-10-24). Dynamic hotwording, i.e., contextual biasing, targets exactly this: improve recognition of a user-provided bias list with no retraining, or only lightweight training. We build on the Zipformer + RNN-T streaming baseline on icefall, which already runs at AISHELL-1 dev CER 5.1% with a hotword list of 320 proper nouns compiled from course recordings. The baseline rare-word error rate is high but unquantified, so the hotword-biasing gains are to be measured, and the advisor asked to fix the metrics first: rare-word recall, overall CER, and false-trigger rate. Streaming makes this harder because the lookahead is only 320 ms and bias scores can false-trigger, which motivates the injection-point survey on the next page.
+:::
+
+## Dynamic Hotwording: Landscape and Injection Points
+
+![](diagrams/diagram-2d934449799b.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+- Decoder-side routes: trie scoring (shallow fusion, KMP) and CLAS attention
+- Vocabulary layer: dynamic bias tokens expand decoder outputs
+- Encoder intermediate layers: early context injection, layers 9/15
+- Shared trade-off: B-WER gains vs. false triggers (Anti-Biasing WER)
+
+::: {.takeaway}
+Same hotword list, different injection points; every family trades B-WER gains against false-trigger risk.
+:::
+
+::: {.notes}
+The backbone is the streaming pipeline already running on icefall: speech input feeds the Zipformer encoder, RNN-T decoding applies the hotword weighting, and the output is checked for rare-word errors. The survey organizes each method family by where the user-provided bias list enters: at decode time as a score bonus from a trie or WFST (shallow fusion [@zhao2019shallow]; KMP biasing [@wang2023contextual]), at the decoder vocabulary layer as dynamic bias tokens [@sudo2024contextualized], or into encoder intermediate layers as early context injection at layers 9/15 [@huang2024improving]. CLAS / Deep context is the attention-based decoder-side route: a bias-encoder embeds the context phrases and a separate attention summarizes them at every output step, but it must be trained jointly with the model [@pundak2018deep], whereas the retraining-free encoder-side option is WCTC's mid-layer acoustic detection [@nakagome2025wctc]. Shallow fusion needs no training and adds no parameters, but its fixed linear scoring risks false triggers as the hotword list grows. The common trade-off across all families is that bias must be strong enough to lift hotword accuracy (B-WER) without false-triggering ordinary content, measured as B-WER vs U-WER, Anti-Biasing WER, or unchanged CER.
+:::
+
+## Method: Shallow Fusion / KMP Biasing
+
+### Architecture
+
+![](diagrams/diagram-32e99b395fdb.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="18.8"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### Pros
+- Training-free: zero extra parameters
+- With-Prefix WER 9.6 → 2.4 (B = 150); Contact-Tag 14.7 → 7.7
+:::
+::: {.column width="50%"}
+### Cons
+- Fixed linear scoring: more entities worsen OOD WER 1.7 → 2.1–2.5
+- False-positive bonuses; tune λ and cost parameters at inference
+:::
+::::
+
+::: {.notes}
+This decoding-time route compiles the user-provided hotword phrases into a trie / WFST and lets beam search maximize log P(y|x) + λ log P_C(y), where the contextual score P_C is weighted by the tunable factor λ (Eq. 5, pundak2018deep); wang2023contextual re-implements this inference-time matching with the Knuth–Morris–Pratt algorithm, adding zero extra parameters and staying TPU-friendly. Because the scoring is purely additive at inference, the ASR model stays untouched — no training, no new parameters — but score placement matters: word-boundary bonuses fail when the word never enters the beam, and naive weight pushing can over-bias early prefixes (pundak2018deep). Empirically, on an 870M RNN-T voice-search model, With-Prefix WER drops from 9.6 to 2.4 with B = 150 and Contact-Tag from 14.7 to 7.7 (wang2023contextual). The fixed linear scoring also has a cost: as more entities are added, out-of-domain WER worsens from 1.7 to 2.1–2.5, because false-positive bonuses corrupt ordinary words (wang2023contextual). Finally, λ and the per-phrase cost parameters must be tuned at inference (pundak2018deep), which motivates the neural biasing route detailed on the next page.
+:::
+
+## Method: CLAS / Deep Context (Neural Biasing)
+
+### Architecture
+
+![](diagrams/diagram-9ffe70649267.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="18"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### Pros
+- Up to 68% relative WER gain vs shallow fusion
+- No rescoring weights; handles OOV; variable list size
+:::
+::: {.column width="50%"}
+### Cons
+- Joint training required: not retraining-free
+- Attention scatters past 300 hotwords; recall drops
+:::
+::::
+
+::: {.notes}
+CLAS extends a standard LAS encoder-decoder with a bias-encoder: a multi-layer LSTM reads the subword embeddings of each context phrase, and its last state becomes that phrase's embedding. A learnable no-bias vector $h^z_0$ lets the model back off to bias-less decoding when no phrase matches the audio. A separate bias attention, queried by the decoder state $d_t$ at every step, computes the context vector $c^z_t$ (Eqs. 6-7) that conditions the output distribution. Because the component is trained jointly with the recognizer, no rescoring weights need tuning, and it handles OOV phrases and a variable number of phrases at inference, with up to 68% relative WER improvement over the LAS plus contextual n-gram shallow-fusion baseline (Abstract, p. 1, pundak2018deep). The cost is that joint training makes it not retraining-free (pundak2018deep). In our setting, attention scatters once the hotword list exceeds 300 entries — our course list has 320 proper nouns — and rare-word recall drops (weekly meeting notes, 2026-10-20).
+:::
+
+## Method: Dynamic Vocabulary Bias Tokens
+
+![](diagrams/diagram-7ba80e434082.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="19.7"}
+
+Architecture: one bias token per phrase, so a hotword is never out-of-vocabulary.
+
+| Pros | Cons |
+|---|---|
+| Architecture-agnostic: CTC, RNN-T, attention | Requires training with bias tokens |
+| B-WER improves 3.1-4.9 pts over deep biasing (English, Japanese) | With external LM, decompose tokens back to subwords |
+| Streaming RNN-T test-clean B-WER **14.3 → 3.1** (N=100) | Not a plug-in at inference time |
+
+::: {.takeaway}
+Bias tokens need retraining, but stay architecture-agnostic and outperform deep biasing.
+:::
+
+::: {.notes}
+This route, from sudo2024contextualized, represents each bias phrase with a single bias token that dynamically expands the vocabulary at inference, so a hotword phrase can never be out-of-vocabulary. The mechanism is architecture-agnostic: the same design works with CTC, RNN-T, and attention-based models, and it needs no auxiliary loss, only the standard E2E-ASR loss. The gains are substantial: B-WER improves by 3.1-4.9 points over conventional deep biasing across both English and Japanese. On streaming RNN-T LibriSpeech test-clean, B-WER drops from 14.3 to 3.1 with N=100 bias phrases. The main cost is that the model must be trained with bias tokens, so unlike retraining-free routes this is not a plug-in at inference time. A practical detail: when the system is combined with an external LM, the bias tokens must be decomposed back into static subwords.
+:::
+
+## Method: WCTC-Biasing (Retraining-Free Acoustic Detection)
+
+![](diagrams/diagram-3a7850684036.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="18.4"}
+
+- **Architecture:** Two retraining-free steps — wildcard CTC detection, then output interpolation
+- **Pros:** No retraining, no TTS; acoustic wildcard matching tolerates pronunciation variation, partial omissions
+- **Cons:** CSJ OOV F1 36.3 vs 62.4 (InterBiasing); Japanese self-conditioned CTC only
+
+::: {.takeaway}
+Retraining-free acoustic keyword detection at intermediate layers — unproven beyond Japanese CTC.
+:::
+
+::: {.notes}
+WCTC-Biasing (nakagome2025wctc) injects hotwords on the acoustic side: an 18-layer Conformer with self-conditioned CTC stays untouched, and detection happens at its intermediate layers. Step 1 applies wildcard CTC to detect keywords directly from acoustic features, so the model needs no retraining and no TTS-derived pronunciation module. Step 2 interpolates this detection with the original outputs to bias recognition. Because matching is acoustic-level with wildcards, it tolerates pronunciation variation and partial omissions, which is relevant for Japanese scripts. The cost is accuracy: in-domain CSJ OOV F1 reaches only 36.3 versus 62.4 for InterBiasing. It has also been validated only on self-conditioned CTC with Japanese — no experiments on RNN-T, AED, decoder-only models, or other languages — so applicability to our Zipformer RNN-T streaming baseline remains an open question.
+:::
+
+## Table 1: Method Comparison and Current Status
+
+| Method | Injection point | Retraining | Headline number |
+|---|---|---|---|
+| Shallow fusion / KMP | Decoding-time scoring | None | WER 9.6 → **2.4** with prefix |
+| CLAS / Deep context | Bias-encoder + attention | Joint training | up to 68% rel. WER gain |
+| WCTC-Biasing | Intermediate-layer detection | None | CSJ OOV F1 36.3 |
+
+![](diagrams/diagram-51c7ee40d48e.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="26"}
+
+::: {.takeaway}
+Headline numbers are not directly comparable; all methods degrade as bias list N grows.
+:::
+
+::: {.notes}
+This table summarizes the dynamic hotwording families on injection point, retraining requirement, and each paper's headline number. Shallow fusion / KMP scores the hotword trie during decoding with no training, moving WER from 9.6 to 2.4 with prefix boosting (wang2023contextual). CLAS embeds context phrases in a bias-encoder and attends over them at every decoder step, requiring joint training, with up to 68% relative WER gain over a shallow-fusion baseline (pundak2018deep). WCTC-Biasing detects keywords acoustically at intermediate layers without retraining, reaching CSJ OOV F1 36.3 (nakagome2025wctc); dynamic vocabulary bias tokens (sudo2024contextualized) is architecture-agnostic, but no headline number was extracted this cycle, so it is omitted from the table. A caveat when reading the table: the papers use different languages and metrics (WER, B-WER, U-WER, CER, keyword F1), so the numbers are not directly comparable; the only shared axis is bias list size N, and all methods degrade as N grows. The timeline shows the current status: the streaming baseline on icefall and the paper reading (shallow fusion, CLAS) are done, hotword experiments are in progress, and the rare-word error rate evaluation is next week, with target dates to be agreed with the advisor.
+:::
+
+## This Week's Key Results and Blockers
+
+| Item | Status | Detail |
+|---|---|---|
+| Streaming baseline on icefall | **Done** | AISHELL-1 dev CER **5.1%** |
+| Hotword list, course recordings | **Done** | 320 proper nouns |
+| CLAS, shallow fusion papers | **Done** | Summarized |
+| Hotword-annotated streaming data | Blocker | Advisor-level decision |
+| 320 ms lookahead; no unified metric | Blocker | False triggers; hard to compare |
+
+- 1 week since last new number
+
+::: {.takeaway}
+Concrete results are locked in; both blockers go to the advisor.
+:::
+
+::: {.notes}
+This week delivered concrete numbers: the Zipformer streaming RNN-T baseline is running on icefall with AISHELL-1 dev CER of 5.1%, recorded one week after the previous new number (weekly meeting notes, 2026-10-20). The hotword list is also ready, with 320 proper nouns compiled from course recordings, and both the CLAS and shallow fusion papers have been read and summarized. First blocker, data: too little streaming speech annotated with hotwords limits rare-word evaluation, and this is an advisor-level decision. Second, streaming-specific blockers: with only 320 ms lookahead in streaming mode, bias scores false-trigger easily, and since no unified rare-word error rate exists yet, results are hard to compare. Both blockers carry directly into next week's tasks and the question for the advisor on the following page.
+:::
+
+## Idea Card and Next Week and Questions
+
+> **My own view, not from the reviewed papers:** add score bonuses while the decoding path stays on the trie
+
+![](diagrams/diagram-b571357b28c3.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="21"}
+
+- **Next week:** trie fusion baseline, recall script, ICASSP tables
+- **Ask advisor:** which test set for rare-word recall?
+- **Advisor feedback:** fix metrics first — recall, CER, false triggers
+
+::: {.takeaway}
+Only trie paths earn the bonus.
+:::
+
+::: {.notes}
+The idea card is my own view rather than a method from the reviewed papers: compile the 320-proper-noun hotword list from the course recordings into a trie (prefix tree) and add score bonuses during RNN-T decoding while the path stays on the trie. The diagram shows the flow: the hotword list is compiled into the trie, and during decoding only paths that stay on the trie earn the score bonus, so common words keep their normal scores and the bias targets rare names such as Navid or Nadia, which share the prefix Na. Next week's three tasks come from the weekly notes and the pending todo list: implement trie-based shallow fusion as the baseline, build the rare-word recall evaluation script, and prepare the experiment tables for the ICASSP 2027 submission planned for 2026-11-15. The question for the advisor is which test set should be used for rare-word recall, because no unified rare-word error rate exists yet, so the test-set choice determines how the hotword gains are measured. I will also incorporate the advisor feedback from the 2026-10-20 weekly meeting: fix the metrics first (rare-word recall, overall CER, and false-trigger rate), then compare shallow fusion versus neural biasing on the same hotword list. The false-trigger rate matters because our streaming lookahead is only 320 ms, so bias scores can misfire on ordinary audio.
+:::
+

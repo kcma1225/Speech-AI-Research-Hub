@@ -1,0 +1,168 @@
+---
+title: "Zipformer + RNNT with Dynamic Hotwords: State of the Art (Agent draft)"
+author: "林雅婷"
+date: "2026-10-24"
+format:
+  revealjs:
+    width: 1280
+    height: 800
+    margin: 0.04
+    slide-number: c/t
+    center: false
+    navigation-mode: linear
+    css: hub-deck.css
+    html-math-method:
+      method: katex
+      # Without an explicit url Quarto's revealjs output appends katex.min.js to the MathJax URL (a file that does not exist).
+      url: "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/"
+    include-after-body:
+      - text: |
+          <script>
+          (function () {
+            var items = [];
+            document.querySelectorAll("aside.notes .math").forEach(function (el) {
+              items.push({ el: el, tex: el.textContent, display: el.classList.contains("display") });
+              el.classList.remove("math");
+            });
+            document.addEventListener("DOMContentLoaded", function () {
+              items.forEach(function (it) {
+                katex.render(it.tex, it.el, { displayMode: it.display, output: "mathml", throwOnError: false });
+              });
+            });
+          })();
+          </script>
+---
+
+## Problem Definition
+:::: {.columns}
+::: {.column width="48%"}
+- Streaming ASR often misrecognizes rare person and place names
+- Goal: recognize user-provided hotwords **without retraining**
+:::
+::: {.column width="52%"}
+
+| Scenario | Rare-word error rate |
+|---|---|
+| Baseline | High (unquantified) |
+| Hotword biasing | To be measured |
+
+:::
+::::
+
+![](diagrams/diagram-ceb0d071f694.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="24.3"}
+
+::: {.takeaway}
+Hotword biasing should cut rare-name errors without retraining; measured next week on the Zipformer streaming baseline.
+:::
+
+::: {.notes}
+This page explains why streaming recognition is particularly difficult for rare words such as person names and place names. Under standard decoding on the Zipformer streaming baseline, these words are frequently misrecognized, so the rare-word error rate stays high, though it has not been quantified yet. Our goal is to improve recognition without retraining the model, by making user-provided hotwords easier to recognize. The comparison shows the two paths: standard decoding today, where rare names come out wrong, versus decoding with hotword biasing, whose rare-word error rate will be measured next week on the streaming baseline.
+:::
+
+## Dynamic Hotword Approach
+
+![](diagrams/diagram-846f468b5b7f.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.3"}
+
+- Hotword list enters at the decoder, not the encoder
+- Surveyed families: shallow fusion, TCPGen, contextual biasing
+
+| Method | Where hotword information enters |
+|---|---|
+| Shallow fusion | Score added during decoding |
+| TCPGen | Constrained generation inside the decoder |
+| Contextual biasing | Bias states in the decoding graph |
+
+::: {.takeaway}
+Shallow fusion, TCPGen, and contextual biasing differ in where hotword information enters the model.
+:::
+
+::: {.notes}
+The pipeline starts with speech input feeding into the Zipformer encoder, which is the streaming baseline already running on icefall. RNN-T decoding then applies hotword weighting: the user-provided hotword list, compiled into a trie, enters the decoder as a separate bias branch rather than through the acoustic encoder. The final output is the recognition result, where we check the errors on rare words. The table compares the three surveyed families by their injection point: shallow fusion adds a hotword score during decoding, TCPGen generates hotword subwords inside the decoder from a constrained pool, and contextual biasing builds the bias into the decoding graph. All three act on the decoder side, but the mechanism differs, and that difference is what the upcoming experiments will compare.
+:::
+
+## Current Progress
+
+![](diagrams/diagram-fa3315f0cd41.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.4"}
+
+| Item | Status |
+|---|---|
+| Streaming baseline on icefall | **Done** |
+| Paper reading (shallow fusion, TCPGen) | **Done** |
+| Hotword experiments | In progress |
+| Rare-word error rate evaluation | Next week |
+
+- Target dates: to be agreed with the advisor
+
+::: {.takeaway}
+Baseline done; hotword experiments in progress; rare-word evaluation next week.
+:::
+
+::: {.notes}
+This week's main work was completing the baseline training and decoding on icefall. The reading of the shallow fusion and TCPGen papers is also finished, so both appear as done stages in the roadmap. The roadmap shows the order: paper reading and the streaming baseline are finished, hotword experiments are in progress, and evaluation of the rare-word error rate follows next week. The status table summarizes the same four items. Target dates for the remaining items are not fixed yet and will be agreed with the advisor.
+:::
+
+## Blockers
+
+![](diagrams/diagram-a322dc184098.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+:::: {.columns}
+::: {.column width="50%"}
+### Data blocker
+- **Impact:** limits rare-word evaluation
+- **Action:** to be decided with advisor
+:::
+::: {.column width="50%"}
+### Metric blocker
+- **Impact:** results hard to compare
+- **Action:** ask advisor: which test set for rare-word recall
+:::
+::::
+
+::: {.takeaway}
+Bring both blockers to the advisor meeting next week.
+:::
+
+::: {.notes}
+This week's blockers are on the data and evaluation sides. First, the data is insufficient: too little streaming speech is annotated with hotwords, which limits the rare-word evaluation; since the data is an advisor-level decision, the plan is to settle it with the advisor. Second, the evaluation metric is unsettled: there is no unified method yet for computing the rare-word error rate, so results would be hard to compare; as listed in next week's questions, I will ask the advisor which test set to use for rare-word recall.
+:::
+
+## Idea Card
+
+> Build the hotword list into a trie (prefix tree) and add score bonuses during RNN-T decoding
+
+![](diagrams/diagram-c1a277950bdb.svg){.hub-diagram fig-align="center" fig-alt="diagram" data-font="20.9"}
+
+::: {.takeaway}
+Example: decoding N-a-v-i-d stays on the trie, so the rare name wins the bonus and is recognized correctly.
+:::
+
+::: {.notes}
+This idea is the presenter's own view rather than a method reported in the reviewed papers. The hotword list is compiled into a trie (prefix tree), which lets the decoder cheaply check at every step whether the current hypothesis matches a prefix of any hotword. During RNN-T decoding, paths that stay on the trie receive a score bonus, biasing the output toward the intended keywords. Because the bonus only applies on prefix matches, common words keep their normal scores, so the approach targets rare or domain-specific terms without disturbing everyday recognition. In the illustration, the names Navid and Nadia share the prefix Na; when the decoder emits N-a-v-i-d it stays on the trie, and the completed path earns the bonus, so the rare name is recognized correctly.
+:::
+
+## Next Week and Questions
+
+:::: {.columns}
+::: {.column width="48%"}
+### Next week
+- [ ] Compile hotword list into a trie
+- [ ] Add score bonus during RNN-T decoding
+- [ ] Measure rare-word error change vs. baseline
+:::
+::: {.column width="52%"}
+### Question for advisor
+
+> Which test set should we use for rare-word recall?
+
+Why ask: there is no unified rare-word error rate method yet, so the test set decides how hotword gains are measured.
+:::
+::::
+
+::: {.takeaway}
+Answering the test-set question unlocks next week's evaluation.
+:::
+
+::: {.notes}
+Next week's work is to implement a baseline with a trie-based score bonus: first compile the hotword list into a trie, then apply score bonuses through the trie during RNN-T decoding, and finally check how the rare-word error rate changes against the current baseline. There is also one question to raise with the advisor: which test set should be used to evaluate rare-word recall. This matters because no unified method exists yet for computing the rare-word error rate, so the test-set choice directly determines how the hotword gains will be measured.
+:::
+

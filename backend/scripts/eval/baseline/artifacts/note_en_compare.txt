@@ -1,0 +1,43 @@
+# Note: Shallow Fusion vs. Neural Contextual Biasing for Streaming RNN-T
+
+## Background: Streaming RNN-T and Contextual Biasing
+
+**Streaming RNN-T.** RNN-T is an end-to-end transducer that emits tokens while audio arrives: an encoder processes the current and previous audio frames (blockwise, with 800 ms blocks and 320 ms look-ahead in one implementation), and a prediction network and joint network combine encoder and decoder states, making the model suitable for streaming voice-assistant recognition (Sathyendra et al., 2022; Sudo et al., 2024).
+
+**The contextual biasing problem.** Trained on large voice-search corpora, RNN-T often misrecognizes rare words — personal names from a contact list, song or app titles, and other domain terms — because such items are underrepresented in training data. Contextual biasing addresses this by supplying a dynamic list of bias phrases at inference time and steering decoding toward them (Zhao et al., 2019).
+
+**Why dynamic, retraining-free biasing matters.** Bias lists change per user and session, so retraining the full model for every list is impractical; avoiding it also preserves general accuracy, since full fine-tuning causes catastrophic forgetting (Sathyendra et al., 2022). Existing approaches divide into shallow fusion, which adds scores from an external contextual model during beam search, and neural contextual biasing, which injects phrase embeddings into the network itself.
+
+## Shallow Fusion for Streaming RNN-T
+
+Shallow fusion injects context at the log-score level during streaming beam search: $y^* = \arg\max_y \log P(y|x) + \lambda \log P_C(y)$, where the contextual LM $P_C$ is a WFST compiled from bias phrases and applied before beam pruning, so the RNN-T decoder streams normally (Zhao et al., 2019). KMP matching boosts partial hypotheses with a per-token bonus in shallow-fusion mode (Wang et al., 2023). The fusion weight is tuned per biasing category and requires calibration (Xu et al., 2023).
+
+Results: Songs WER 19.6→5.3 (Zhao et al., 2019); KMP fusion cuts With-Prefix WER 9.6→2.4 (Wang et al., 2023); on personalized transducers, SF yields +21.84% Proper-Names WERR but -3.87% General WERR (Sathyendra et al., 2022).
+
+Strengths: no retraining, no added parameters, modular. Weaknesses: weight sensitivity with possible overboosting, and false alarms—no-prefix biasing worsens voice-search WER 6.9→12.5 (Zhao et al., 2019). Latency/RTF: not provided.
+
+## Neural Contextual Biasing for Streaming RNN-T
+
+Neural biasing encodes the phrase list with a neural encoder and injects it via attention. Sathyendra et al. train contextual adapters (<1.5% of parameters) on a frozen streaming RNN-T: BiLSTM-encoded catalog entities are attended and injected into encoder/predictor/joint representations, avoiding catastrophic forgetting. Xu et al.'s CATT attends over the entity list with a streaming Entity Detector gating it; Sudo et al. make each phrase a dynamic token in a blockwise RNN-T with an inference-time bias weight.
+
+Results: adapters reach 31.29% proper-names WERR vs. 21.84% for shallow fusion (36.17% combined); CATT gives up to 6.7% relative WER and 20.7% relative CER reduction. Strengths: no fusion-weight tuning, better scaling to large catalogs, frozen pretrained weights. Weaknesses: the LAS-based CLAS degrades on thousands of phrases, false alarms are possible, combining with SF risks overbiasing, and most methods need retraining.
+
+## Head-to-Head Comparison
+
+| Aspect | Shallow fusion | Neural biasing |
+|---|---|---|
+| Scoring | $\log P(y|x)+\lambda\log P_C(y)$ (Zhao); KMP bonus (Wang) | Attention over phrase embeddings (Sathyendra; Xu; Sudo) |
+| Retraining | None; tuned weight only | Joint training (CLAS, CATT) or adapters (<1.5% params) |
+| WER gains (bias) | Songs 19.6→5.3 (Zhao); 9.6→2.4 (Wang) | Up to 68% rel. (CLAS); NE-WERR +34.1; 20.7% CER (Xu) |
+| Non-biased speech | Overboost risk (Sathyendra 2022); voice search 6.9→12.5 without prefix safeguards (Zhao 2019) | False alarms; +1.2–5.4% CER without a list (Xu) |
+| Streaming | RNN-T native; RTF not provided | Streamable; RTF 0.128–0.135 vs. 0.108 (Xu) |
+| Bias list | Recompile WFST; calibration non-trivial (Xu) | Dynamic tokens (Sudo); CLAS degrades at thousands (10.8→14) |
+
+SF is training-free and runs natively in RNN-T beam search, but is weight-sensitive and risks overboosting. NB yields larger gains and can be gated, at the cost of trained components and scaling limits.
+
+## Takeaways from the Collected Papers
+
+- **SF, no retraining:** Zhao et al. cut RNN-T WER (Songs 19.6→5.3); Wang et al.'s KMP fusion adds 20–40% relative gains, no new parameters.
+- **NB, with training:** adapters beat SF and scale better to large catalogs (Sathyendra et al.); an entity detector curbs false alarms (RTF 0.128→0.135; Xu et al.).
+- **Best results combine both:** adapters + SF reach NE-WERR +39.70% on RNN-T.
+- **Gaps:** latency/RTF "not provided" except Xu et al.; CLAS's large-catalog failure is shown on LAS, leaving streaming RNN-T scaling unresolved.

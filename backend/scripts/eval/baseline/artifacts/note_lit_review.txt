@@ -1,0 +1,60 @@
+# 文獻回顧：Agent 評估集：串流 ASR 熱詞偏置
+
+## 研究背景與範圍
+
+End-to-end ASR 的輸出偏向訓練詞彙，對專有名詞、人名、內部術語等罕見詞（熱詞）辨識不佳，而這些詞常到推論時才出現 [@nakagome2025wctc][@wang2023contextual]。Contextual biasing（熱詞偏置）旨在讓模型在不重新訓練（或僅輕量訓練）的前提下，依給定的 bias list 提升熱詞辨識率 [@sudo2024contextualized]。本筆記比較六篇文獻：一篇為 ASR 骨幹架構 Conformer [@gulati2020conformer]——本身不處理熱詞偏置，但為多數 biasing 方法所依附的 encoder–decoder 基礎，並提供 LibriSpeech WER 基準點；另五篇涵蓋主要技術路線——推理時結構化匹配（KMP biasing [@wang2023contextual]）、輔助訓練損失 [@tang2024improving]、neural biasing 的早期 context 注入與文字擾動 [@huang2024improving]、架構無關的動態詞彙 bias token [@sudo2024contextualized]，以及免重訓的中間層聲學偵測注入 [@nakagome2025wctc]。評估語言以英文（LibriSpeech 為主）與日文（CSJ 等）為主，指標涵蓋 WER/CER、偏置詞 WER（B-WER）與關鍵詞 F1。
+
+## 方法比較表
+
+| 論文 | 問題 | 方法 | 資料 | 指標 | 主要結果 |
+|---|---|---|---|---|---|
+| [@gulati2020conformer] | Transformer 擅長全域交互但難抽局部特徵，CNN 相反；需參數有效率地結合兩者 | Conformer encoder：Macaron 式 FFN＋MHSA（相對位置編碼）＋depthwise convolution 模組；S/M/L（10.3M–118.8M 參數） | LibriSpeech 970h（英文朗讀） | WER | test-clean/other 2.1%/4.3%（無 LM）、1.9%/3.9%（含 LM）；消融顯示 convolution 模組最關鍵 |
+| [@wang2023contextual] | WFST biasing 的稀疏 FST 難以在 TPU 上高效實作 | 以 Knuth-Morris-Pratt 匹配演算法重寫 inference-based biasing（shallow fusion／OTF rescoring），零額外參數、TPU-friendly；另支援 prefix 強化 | 870M RNN-T（490K 小時 voice search 訓練）；Contact-Tag＋三類合成測試集（英文） | WER | With-Prefix（B=150）9.6→2.4；Contact-Tag 14.7→7.7；與 model-based NAM 疊加再獲 8%–40% 相對改善；Anti-Biasing 幾乎不惡化 |
+| [@tang2024improving] | bias phrase 數量增多時，biasing 的 WER 降幅遞減 | Contextual Adapter＋Guided Attention 輔助損失（GA-CE／GA-CTC）教導 adapter attention 對齊 phrase；不新增參數 | LibriSpeech 960h；rare words 清單＋0–2000 個 distractors | WER、U-WER、B-WER | B-WER 相對 biasing baseline 最多降 19.2%、相對 vanilla transducer 最多降 49.3%；大 bias list 下退化遠小於 baseline（N=2000 時 CA baseline 降幅僅剩 20.0%） |
+| [@huang2024improving] | neural biasing 只在 encoder 最後一層注入 context；訓練資料極少出現需依賴 context 的樣本 | Early Context Injection（第 9/15 層）＋text perturbation（以讀音相近替代拼字迫使模型依賴 context）；凍結 transducer 只訓 biasing 模組 | LibriSpeech 1000h、SPGISpeech 5000h、ConEC（英文） | WER、U-WER/B-WER、實體類別 WER | test-other B-WER 相對 no biasing 降 60%、相對 shallow fusion 降 25%（且不犧牲 U-WER）；宣稱 LibriSpeech contextual ASR 設定新 SOTA；解碼開銷可忽略 |
+| [@sudo2024contextualized] | deep biasing 把片語切成 subword 產生不自然 token 模式、機率大降；既有 DB 與特定架構緊耦合 | dynamic vocabulary：每個片語以單一 bias token 於推論時動態擴充詞彙表；架構無關（CTC/RNN-T/attention）、免輔助損失 | LibriSpeech-960（英文）；日文 in-house 855h（CSJ＋ATR 等，N=203 技術詞） | WER、B-WER/U-WER；日文 CER/B-CER | 英日 B-WER 相比傳統 DB 改善 3.1–4.9 點；streaming RNN-T test-clean B-WER 14.3→3.1（N=100）；未見過的詞 B-WER 73.5%→19.0%（N=1000） |
+| [@nakagome2025wctc] | 既有 biasing 需重訓、需 TTS 模組，或罕見詞根本不會出現在 beam 中 | 免重訓兩步驟：wildcard CTC 以聲學特徵於中間層偵測關鍵詞，再與原輸出內插偏置（self-conditioned CTC／18 層 Conformer） | CSJ（日語）訓練；CSJ eval3＋Common Voice、JSUT、TEDxJP-10K 評估 | CER、關鍵詞 F1（OOV/IV） | TEDxJP-10K OOV F1 相對 +29%（LM+KBBS）；CER 幾乎不變；但 in-domain CSJ 的 OOV F1 遜於 InterBiasing（36.3 vs 62.4） |
+
+## 綜合分析
+
+**共同點一：問題定義與免重訓訴求。** 五篇 biasing 論文一致把熱詞視為訓練資料覆蓋不足、且常到推論時才出現的罕見詞 [@nakagome2025wctc][@wang2023contextual][@sudo2024contextualized]，核心訴求都是「免重訓或僅輕量訓練」：KMP biasing 與 WCTC-Biasing 完全不需重訓 [@wang2023contextual][@nakagome2025wctc]；tang 與 huang 凍結預訓練 transducer、只訓練 biasing 模組 [@tang2024improving][@huang2024improving]；sudo 雖需訓練，但只用一般 E2E-ASR 損失、不需輔助損失 [@sudo2024contextualized]。
+
+**共同點二：骨幹同源。** 各方法多建立在 Conformer 世代的 encoder 之上 [@gulati2020conformer]：tang 用 Conformer transducer、nakagome 用 18 層 Conformer CTC、wang 的 870M RNN-T 也採 16 層 Conformer encoder，huang 則用 Zipformer。骨幹成熟後，研究重心轉為「如何把外部 context 餵進已訓練好的模型」，Conformer 本身則提供 LibriSpeech WER 基準點（含 LM 1.9%/3.9%）[@gulati2020conformer]；各 biasing 論文的無偏置基線（如 tang 的 test-clean 1.9、test-other 4.9 [@tang2024improving]）落在相近水準，底座具一定可比性。
+
+**共同點三：同一個權衡。** 偏置要強（熱詞辨識提升）但不能誤觸發（一般內容退化），各篇以不同指標呈現：tang/huang/sudo 的 B-WER 對 U-WER [@tang2024improving][@huang2024improving][@sudo2024contextualized]、nakagome 強調 CER 幾乎不變 [@nakagome2025wctc]、wang 以 Anti-Biasing WER 衡量 [@wang2023contextual]。
+
+**差異軸一：介入位置呈光譜分布。** 從解碼時加分（KMP 的 shallow fusion／OTF rescoring，零參數零訓練 [@wang2023contextual]）、decoder 詞彙層（bias token 動態擴充 [@sudo2024contextualized]）、encoder 中間層注入（huang 的第 9、15 層 [@huang2024improving]；nakagome 的每 3 層內插 [@nakagome2025wctc]），到訓練目標層級（GA-CE／GA-CTC 教 adapter 的 attention 對齊 phrase [@tang2024improving]）。介入越深通常越依賴訓練或調參，但對內部表示的影響也更直接：huang 顯示早期注入優於只在最後一層（test-other 4.00 對 4.33），因 self-attention 能讓 context 連鎖擴散 [@huang2024improving]。
+
+**差異軸二：關鍵詞匹配方式。** wang 用精確 token 匹配加線性計分 [@wang2023contextual]；nakagome 以 wildcard CTC 做聲學層級的容錯匹配，可容忍發音模糊與部分漏音，對書寫形式多變的日語尤其相關 [@nakagome2025wctc]；tang/huang/sudo 把匹配交給可學習的 attention 或詞彙機制，因此需要輔助監督或訓練資料設計（guided attention、替代拼字擾動、bias token 改寫轉錄）來迫使模型學會「看 context」[@tang2024improving][@huang2024improving][@sudo2024contextualized]。
+
+**差異軸三：架構耦合度。** sudo 主打架構無關，CTC、RNN-T、attention 皆可套用 [@sudo2024contextualized]；wang 聲稱可插入任何 beam search，且與 model-based NAM 的增益可疊加（8%–40% 相對改善）[@wang2023contextual]；相對地，nakagome 依賴 self-conditioned CTC 的中間層條件化機制 [@nakagome2025wctc]，tang 的 GA 損失綁定 Contextual Adapter 的 attention 結構 [@tang2024improving]，通用性較受限。
+
+**資料與評估。** 語言與領域差異顯著：英文 LibriSpeech 是 tang/huang/sudo 的主戰場，huang 另加 SPGISpeech 5000 小時與真實語境的 ConEC [@tang2024improving][@huang2024improving][@sudo2024contextualized]；日文方面，sudo 用 in-house 855 小時的 end-user 技術詞，nakagome 以 CSJ 訓練並在三個 out-of-domain 集評估 [@sudo2024contextualized][@nakagome2025wctc]；wang 則用 490K 小時產業語料與真實的 Contact-Tag [@wang2023contextual]。指標亦分歧：英文慣用 WER／B-WER／U-WER，日文用 CER 與關鍵詞 F1（分 OOV／IV）[@nakagome2025wctc]。因此各篇頭條數字不可直接互比：tang 報相對降幅 19.2%–49.3%、sudo 報 B-WER 改善 3.1–4.9 點、nakagome 報 OOV F1 相對 +29%、wang 報 WER 絕對值。唯一共同的對照軸是 bias list 大小——tang（N=0–2000）、sudo（N=100–2000）、huang（N=500）、wang（B=150–3000）一致顯示清單越大退化越多，並各自提出緩解：輔助損失 [@tang2024improving]、bias token 的動態詞彙設計 [@sudo2024contextualized]、distractor 加擾動的訓練策略 [@huang2024improving]、prefix 強化與 TPU 端的效率設計 [@wang2023contextual]。
+
+**與 shallow fusion 的張力。** huang 直接指出多數 neural biasing 研究未與 shallow fusion 對照，其 vanilla neural biasing（test-other 4.33）確實不敵 SF（4.11），需早期注入加上 text perturbation 才勝出（3.69）[@huang2024improving]；sudo 加上外部 LM 後，本方法與傳統 DB「表現相當」，優勢轉為簡單性與免外部文字資料 [@sudo2024contextualized]；wang 本身即是 SF／OTF rescoring 的改良實作 [@wang2023contextual]。各篇對 non-contextual baseline 的增益是共識，但相對 SF 這個低成本基準的優勢，各篇的立場與證據強度並不一致。
+
+## 研究缺口
+
+1. **大 bias list 與 distractor 敏感性尚未根治**。Guided Attention 緩解了 bias phrase 增多導致的退化 [@tang2024improving]，但同篇承認 GA-CTC 在無 distractor（$N=0$）時對 B-WER 無助益、中小清單也不如 GA-CE；neural biasing 對清單大小 $N$ 比 shallow fusion 更敏感，作者僅將清單縮短列為 future work [@huang2024improving]；KMP biasing 只示範到數千個片語，且 entity 增多時 out-of-domain WER 上升（1.7→2.1–2.5）[@wang2023contextual]；dynamic vocabulary 也隨 $N$ 增大而 B-WER/U-WER 同步變差 [@sudo2024contextualized]。
+
+2. **與 shallow fusion 的比較基準不一致，結論存在張力**。有作者指出許多既有研究未與 shallow fusion 直接比較、只報告對 non-contextual baseline 的增益 [@huang2024improving]；同一實驗中 vanilla neural biasing、PromptASR 與 guided attention 皆劣於 shallow fusion，須疊加 text perturbation 才超越 [@huang2024improving]——但 guided attention 輔助損失在 [@tang2024improving] 的設定下宣稱使 rare vocabulary WER 相對 biasing baseline 最多降 19.2%；dynamic vocabulary 加上外部 LM 後也僅「與傳統 DB 相當」[@sudo2024contextualized]。何種方法在何種條件下真正優於 shallow fusion，尚無跨論文一致的答案。
+
+3. **架構與語言的泛化未經驗證**。WCTC-Biasing 僅驗證於 self-conditioned CTC（Conformer）與日語，對 RNN-T、AED、decoder-only 或其他語言未實驗 [@nakagome2025wctc]；dynamic vocabulary 雖宣稱架構無關，但與 LM 結合時 bias token 須分解回靜態 subword [@sudo2024contextualized]；Guided Attention 僅在 LibriSpeech 讀語音上實驗 [@tang2024improving]；Conformer 骨幹本身亦僅於 LibriSpeech 單一基準評估，未涵蓋其他語言、領域或噪聲場景 [@gulati2020conformer]。
+
+4. **over-biasing／誤觸發與超參數調校負擔普遍存在**。KMP biasing 的固定線性計分使 biasing entity 越多、out-of-domain WER 越差（false positive bonus 的代價）[@wang2023contextual]；dynamic vocabulary 的偏置權重 $\mu$ 需依目標領域調整（RNN-T 設 0.01、CTC/attention 設 0.8），且 $\mu$ 越大 B-WER 改善但 U-WER 惡化 [@sudo2024contextualized]；WCTC-Biasing 的 $\theta$、$\omega$ 與偏置層集合 $S$ 皆需 dev set 調校，低 $\theta$ 較佳也是事後由驗證集實驗發現 [@nakagome2025wctc]。
+
+5. **未見過的詞與訓練訊號稀疏問題未解**。dynamic vocabulary 對訓練資料未見過的詞，B-WER 在 $N=1000$ 時仍達 19.0% 而非歸零 [@sudo2024contextualized]；neural biasing 的訓練資料中需依賴 context 才能答對的語句極少（SPGISpeech 僅 4.42%），須以 text perturbation 人為製造訊號，而替代拼字產生器僅不到 200 條手工規則 [@huang2024improving]；WCTC-Biasing 雖免 TTS，但在 in-domain CSJ 的 OOV F1（36.3）明顯低於需 TTS 的 InterBiasing（62.4）[@nakagome2025wctc]；ConEC 的 PRODUCT 實體類別亦未超越 baseline [@huang2024improving]。
+
+6. **串流、延遲與計算成本的量化證據不足**。WCTC-Biasing 宣稱 wildcard CTC 快速，但全文未提供推論延遲或計算成本數據 [@nakagome2025wctc]；early context injection 仍有約 0.6–1.0 分鐘的解碼開銷 [@huang2024improving]；GA-CE 需 CTC forced alignment 產生標籤、實作成本較高 [@tang2024improving]；Conformer 骨幹未討論串流/低延遲設定，也未報告延遲或 RTF [@gulati2020conformer]。多數方法僅離線評估，與串流場景（如 [@sudo2024contextualized] 的 streaming RNN-T、[@wang2023contextual] 的 voice search）之間缺乏可直接對照的效率證據。
+
+## 與本研究的關係
+
+- **評估指標與分級設計可直接參考**：偏置詞 B-WER／非偏置詞 U-WER 分項指標 [@tang2024improving][@sudo2024contextualized]、關鍵詞 OOV/IV F1 [@nakagome2025wctc]，以及以 distractor 數量 $N$（0–2000）分級的壓力測試設計 [@tang2024improving][@huang2024improving]，可對應到熱詞偏置評估集的指標選擇與難度分級。
+
+- **串流情境的主要參照**：[@sudo2024contextualized] 為六篇中唯一提供 streaming RNN-T 實驗者（test-clean B-WER 14.3→3.1，N=100），並主張方法架構無關，最貼近串流 ASR 熱詞偏置的評估需求；[@wang2023contextual] 的 KMP biasing 在 beam search 內逐步加分，形式上與即時解碼相容，可作為推理時方法的第二參照，但摘要中未見延遲量測數據。
+
+- **免重訓方法利於受控對照**：[@wang2023contextual]（零額外參數）與 [@nakagome2025wctc]（免重訓、免 TTS）皆能在固定模型上開關偏置，適合建立「有／無偏置」的受控比較；[@wang2023contextual] 並顯示與 model-based 方法（NAM）疊加仍可再獲 8%–40% 相對改善，評估集可據此設計方法組合的測項。
+
+- **骨幹與 baseline 的選擇依據**：[@gulati2020conformer] 提供 Conformer 骨幹與 LibriSpeech WER 基準點，並為 [@tang2024improving]（Conformer Transducer）與 [@nakagome2025wctc]（Conformer CTC）採用為基礎；[@huang2024improving] 指出既有研究常未與 shallow fusion 直接比較，且其改良 neural biasing 能超越 shallow fusion——評估集可比照將 shallow fusion 納入對照 baseline。
+
+- **跨方法評比的調參公平性**：各方法偏置強度皆需調校（[@sudo2024contextualized] 的 $\mu$、[@wang2023contextual] 的 $\delta$／$F$、[@nakagome2025wctc] 的 $\theta$／$\omega$、[@tang2024improving] 的 $\alpha$），且偏置過強會推高 U-WER [@sudo2024contextualized] 或造成 out-of-domain 誤觸發退化 [@wang2023contextual]；若要在評估集中跨方法評比，調參條件需一致才具可比性。

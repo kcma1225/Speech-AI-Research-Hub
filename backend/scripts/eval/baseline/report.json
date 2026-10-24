@@ -1,0 +1,2733 @@
+{
+  "id": "2026-10-23T16-41-32",
+  "hub": "http://127.0.0.1:18090",
+  "user": "linyating",
+  "started_at": "2026-10-23T16:41:32.543Z",
+  "ended_at": "2026-10-24T01:26:20.335Z",
+  "builds": [
+    {
+      "image": "4232638b6ab1",
+      "created": "2026-10-23T16:01:50.97619738Z",
+      "git": "b547fff+dirty"
+    },
+    {
+      "image": "e474128d9df5",
+      "created": "2026-10-23T17:13:48.499931846Z",
+      "git": "b547fff+dirty"
+    },
+    {
+      "image": "9441a37e8a71",
+      "created": "2026-10-23T19:23:06.358357348Z",
+      "git": "b547fff+dirty"
+    },
+    {
+      "image": "3ab300da254d",
+      "created": "2026-10-23T21:00:17.099125721Z",
+      "git": "b547fff+dirty"
+    },
+    {
+      "image": "f3565b40eb9f",
+      "created": "2026-10-23T21:26:25.048376664Z",
+      "git": "b547fff+dirty"
+    },
+    {
+      "image": "ad3e62833088",
+      "created": "2026-10-23T22:53:22.552869956Z",
+      "git": "b547fff+dirty"
+    },
+    {
+      "image": "e7fb9fc1d8f9",
+      "created": "2026-10-24T00:24:37.178486915Z",
+      "git": "b547fff+dirty"
+    },
+    {
+      "image": "e7fb9fc1d8f9",
+      "created": "2026-10-24T00:24:37.178486915Z",
+      "git": "6987144"
+    }
+  ],
+  "selection": "all; re-run 2026-10-23T23-39-25: only deck_translate_en,deck_followup_expand,deck_add_page,note_en_compare; regraded 2026-10-24T01:35",
+  "results": [
+    {
+      "id": "deck_translate_en",
+      "title": "中文簡報整份翻成英文（含封面）",
+      "tags": [
+        "deck",
+        "edit",
+        "lang",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T23:39:26.011Z",
+      "ended_at": "2026-10-24T00:35:43.953Z",
+      "build_start": {
+        "image": "ad3e62833088",
+        "created": "2026-10-23T22:53:22.552869956Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "e7fb9fc1d8f9",
+        "created": "2026-10-24T00:24:37.178486915Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "done",
+      "run_ids": [
+        "065a9f7f-3695-4510-bd7e-f293587e623d"
+      ],
+      "goal_id": null,
+      "conversation_id": "eebbf559-78be-483a-b53b-dffa7a829c3a",
+      "playbook": "slides",
+      "deck_id": "2264dded-1264-47b9-8706-80789bc04b0c",
+      "deck_pages": 6,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "language_en",
+          "ok": true,
+          "detail": "English（漢字 0、英文字 909）"
+        },
+        {
+          "id": "page_count",
+          "ok": true,
+          "detail": "6 頁（要求 6）"
+        },
+        {
+          "id": "cover_en",
+          "ok": true,
+          "detail": "封面：「Zipformer + RNNT with Dynamic Hotwords: State of the Art (Agent draft)」"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 16,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 1,
+        "req_total": 1,
+        "failed": []
+      },
+      "wall_s": 3333,
+      "queued_s": 0,
+      "active_s": 1532,
+      "calls": 28,
+      "calls_by_purpose": {
+        "outline": {
+          "n": 1,
+          "s": 40
+        },
+        "requirements": {
+          "n": 1,
+          "s": 14
+        },
+        "title_translate": {
+          "n": 1,
+          "s": 5
+        },
+        "verify": {
+          "n": 7,
+          "s": 298
+        },
+        "verify:budget": {
+          "n": 1,
+          "s": 7
+        },
+        "verify_final": {
+          "n": 1,
+          "s": 96
+        },
+        "visual_fix": {
+          "n": 3,
+          "s": 610
+        },
+        "visual_qa": {
+          "n": 4,
+          "s": 236
+        },
+        "visual_qa:retry": {
+          "n": 1,
+          "s": 13
+        },
+        "write_slides": {
+          "n": 8,
+          "s": 291
+        }
+      },
+      "tokens": {
+        "in": 175146,
+        "out": 91294
+      },
+      "fix_rounds": 1,
+      "final_rounds": 0,
+      "stops": {
+        "converged": 10
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 4,
+        "substance": 5,
+        "structure": 4,
+        "form": 4,
+        "overall": 4.25,
+        "rationale": "The deck is in natural English throughout—slides, tables, takeaways, and speaker notes—but the cover retains the Chinese author name 林雅婷, so the 'all English' constraint is not fully met, and the external SVG diagram labels cannot be verified. Content is technically accurate and specific (shallow fusion, TCPGen, trie-based RNNT biasing) with no invented numbers or filler. Organization is logical, "
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 5
+    },
+    {
+      "id": "deck_followup_expand",
+      "title": "接著上一個：再詳細一點、每個方法要有架構與 Pros/Cons（不重說語言）",
+      "tags": [
+        "deck",
+        "edit",
+        "lang",
+        "chain",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-24T00:35:44.049Z",
+      "ended_at": "2026-10-24T01:26:20.246Z",
+      "build_start": {
+        "image": "e7fb9fc1d8f9",
+        "created": "2026-10-24T00:24:37.178486915Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "e7fb9fc1d8f9",
+        "created": "2026-10-24T00:24:37.178486915Z",
+        "git": "6987144"
+      },
+      "redeployed": false,
+      "status": "partial",
+      "run_ids": [
+        "48397922-0eeb-4d99-a303-9bc83672db09"
+      ],
+      "goal_id": null,
+      "conversation_id": "eebbf559-78be-483a-b53b-dffa7a829c3a",
+      "playbook": "slides",
+      "deck_id": "2264dded-1264-47b9-8706-80789bc04b0c",
+      "deck_pages": 9,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "language_en",
+          "ok": true,
+          "detail": "English（漢字 0、英文字 1908）"
+        },
+        {
+          "id": "per_item_fields",
+          "ok": true,
+          "detail": "4 頁有全部欄位（architecture／pros／cons），0 頁只有部分；要求 ≥ 2"
+        },
+        {
+          "id": "expanded",
+          "ok": true,
+          "detail": "9 頁（原本 6）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 18,
+        "fail": 1,
+        "other": 0,
+        "req_pass": 4,
+        "req_total": 4,
+        "failed": [
+          "clean：這些頁面還有佔位文字（〔　〕、待補、TODO…）：第 9 頁「Idea Card and Next Week and Questions」。請填入依據資料的內容；資料裡真的沒有就明寫「資料未提供」。"
+        ]
+      },
+      "wall_s": 2974,
+      "queued_s": 0,
+      "active_s": 2854,
+      "calls": 44,
+      "calls_by_purpose": {
+        "outline": {
+          "n": 3,
+          "s": 686
+        },
+        "outline:budget": {
+          "n": 3,
+          "s": 244
+        },
+        "requirements": {
+          "n": 1,
+          "s": 24
+        },
+        "verify": {
+          "n": 8,
+          "s": 551
+        },
+        "verify:budget": {
+          "n": 2,
+          "s": 81
+        },
+        "verify_final": {
+          "n": 2,
+          "s": 336
+        },
+        "verify_final:budget": {
+          "n": 2,
+          "s": 48
+        },
+        "visual_fix": {
+          "n": 3,
+          "s": 340
+        },
+        "visual_qa": {
+          "n": 5,
+          "s": 200
+        },
+        "write_slides": {
+          "n": 15,
+          "s": 1136
+        }
+      },
+      "tokens": {
+        "in": 844928,
+        "out": 222988
+      },
+      "fix_rounds": 5,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 11,
+        "same_failure": 1,
+        "cap": 1
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 5,
+        "substance": 4,
+        "structure": 4,
+        "form": 4,
+        "overall": 4.25,
+        "rationale": "Delivers exactly the ask: four dynamic hotwording methods (shallow fusion/KMP, CLAS, bias tokens, WCTC), each with architecture and explicit Pros/Cons, in English and clearly more detailed than the prior overview, with cited numbers and equation references. Substance is strong but slightly inconsistent: the sudo2024 slide reports a headline number (B-WER 14.3→3.1) yet Table 1 omits the method clai"
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 15
+    },
+    {
+      "id": "deck_expand_fields_zh",
+      "title": "展開：每個方法一頁，每頁要有架構、優點、缺點",
+      "tags": [
+        "deck",
+        "edit"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T18:00:27.249Z",
+      "ended_at": "2026-10-23T19:38:18.564Z",
+      "build_start": {
+        "image": "e474128d9df5",
+        "created": "2026-10-23T17:13:48.499931846Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "9441a37e8a71",
+        "created": "2026-10-23T19:23:06.358357348Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "partial",
+      "run_ids": [
+        "2b6d7935-6f76-465a-b376-b3dcb8db6777"
+      ],
+      "goal_id": null,
+      "conversation_id": "aff7b6eb-2f35-4b5d-bf19-b32d486b1109",
+      "playbook": "slides",
+      "deck_id": "b71afaf6-d73a-43b8-a3aa-733527e19438",
+      "deck_pages": 10,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "language_zh",
+          "ok": true,
+          "detail": "繁體中文（漢字 2466、英文字 414）"
+        },
+        {
+          "id": "per_item_fields",
+          "ok": true,
+          "detail": "6 頁有全部欄位（架構／優點／缺點），0 頁只有部分；要求 ≥ 2"
+        },
+        {
+          "id": "titles_kept",
+          "ok": false,
+          "detail": "少了或順序變了：目前進度、下週與要問"
+        }
+      ],
+      "pass": false,
+      "criteria": {
+        "pass": 18,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 3,
+        "req_total": 3,
+        "failed": []
+      },
+      "wall_s": 2244,
+      "queued_s": 3550,
+      "active_s": 2225,
+      "calls": 49,
+      "calls_by_purpose": {
+        "outline:budget": {
+          "n": 3,
+          "s": 342
+        },
+        "write_slides": {
+          "n": 14,
+          "s": 1316
+        },
+        "visual_qa": {
+          "n": 4,
+          "s": 182
+        },
+        "verify_final:budget": {
+          "n": 1,
+          "s": 42
+        },
+        "outline": {
+          "n": 3,
+          "s": 559
+        },
+        "visual_fix": {
+          "n": 2,
+          "s": 227
+        },
+        "requirements": {
+          "n": 1,
+          "s": 26
+        },
+        "write_slides:budget": {
+          "n": 2,
+          "s": 76
+        },
+        "verify_final": {
+          "n": 1,
+          "s": 94
+        },
+        "verify:budget": {
+          "n": 5,
+          "s": 59
+        },
+        "visual_qa:budget": {
+          "n": 1,
+          "s": 32
+        },
+        "verify": {
+          "n": 11,
+          "s": 444
+        },
+        "verify:retry": {
+          "n": 1,
+          "s": 15
+        }
+      },
+      "tokens": {
+        "in": 868575,
+        "out": 209132
+      },
+      "fix_rounds": 1,
+      "final_rounds": 0,
+      "stops": {
+        "converged": 13,
+        "cap": 1
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 5,
+        "substance": 5,
+        "structure": 5,
+        "form": 5,
+        "overall": 5,
+        "rationale": "Exactly five method slides (Shallow fusion, CLAS, contextual adapters, adaptive contextual biasing, dynamic vocabulary), each with a dedicated 架構 diagram plus 優點/缺點 columns, while the surrounding pages (問題定義, 總覽, Table 1, 卡住, Idea card) are retained unchanged. Content is dense and source-attributed with concrete numbers (e.g., B-WER 14.3→3.1 at N=100, 68% relative WER for CLAS, 320ms lookahead) an"
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 4
+    },
+    {
+      "id": "deck_add_page",
+      "title": "英文簡報加一頁比較表（中文指令，簡報維持英文）",
+      "tags": [
+        "deck",
+        "edit",
+        "lang",
+        "quick",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T23:39:26.026Z",
+      "ended_at": "2026-10-24T00:33:03.878Z",
+      "build_start": {
+        "image": "ad3e62833088",
+        "created": "2026-10-23T22:53:22.552869956Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "e7fb9fc1d8f9",
+        "created": "2026-10-24T00:24:37.178486915Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "partial",
+      "run_ids": [
+        "f614cdd3-d0db-4095-8924-488bbf094712"
+      ],
+      "goal_id": null,
+      "conversation_id": "ccb6a35c-1362-4b5f-8411-f8dbc6b50d3e",
+      "playbook": "slides",
+      "deck_id": "ef079311-02e3-4377-8907-a7ac2ea9f1f1",
+      "deck_pages": 7,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "page_count",
+          "ok": true,
+          "detail": "7 頁（要求 7）"
+        },
+        {
+          "id": "titles_kept",
+          "ok": true,
+          "detail": "原本的 6 頁都在"
+        },
+        {
+          "id": "comparison_table",
+          "ok": true,
+          "detail": "p2「Shallow fusion vs. CLAS vs. contextual adapters」的表格比較了 shallow、CLAS、adapter"
+        },
+        {
+          "id": "language_en",
+          "ok": true,
+          "detail": "English（漢字 0、英文字 1445）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 17,
+        "fail": 1,
+        "other": 0,
+        "req_pass": 3,
+        "req_total": 3,
+        "failed": [
+          "coverage：大綱第 2 頁 Shallow fusion 與第 4 頁 Contextual adapters 的獨立頁面缺席，比較表頁原封不動重複出現三次，頁面結構與大綱不符且不連貫。"
+        ]
+      },
+      "wall_s": 3081,
+      "queued_s": 122,
+      "active_s": 3061,
+      "calls": 39,
+      "calls_by_purpose": {
+        "write_slides": {
+          "n": 11,
+          "s": 561
+        },
+        "verify_final": {
+          "n": 2,
+          "s": 215
+        },
+        "verify:budget": {
+          "n": 2,
+          "s": 75
+        },
+        "visual_qa": {
+          "n": 6,
+          "s": 348
+        },
+        "visual_fix:budget": {
+          "n": 1,
+          "s": 147
+        },
+        "verify": {
+          "n": 9,
+          "s": 519
+        },
+        "outline": {
+          "n": 2,
+          "s": 380
+        },
+        "visual_fix": {
+          "n": 4,
+          "s": 937
+        },
+        "outline:retry": {
+          "n": 1,
+          "s": 114
+        },
+        "requirements": {
+          "n": 1,
+          "s": 18
+        }
+      },
+      "tokens": {
+        "in": 753027,
+        "out": 193994
+      },
+      "fix_rounds": 4,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 11
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 18
+    },
+    {
+      "id": "deck_exact_pages",
+      "title": "剛好 8 頁的進度報告",
+      "tags": [
+        "deck",
+        "create",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T19:38:18.654Z",
+      "ended_at": "2026-10-23T20:34:32.291Z",
+      "build_start": {
+        "image": "9441a37e8a71",
+        "created": "2026-10-23T19:23:06.358357348Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "9441a37e8a71",
+        "created": "2026-10-23T19:23:06.358357348Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "partial",
+      "run_ids": [
+        "6d78e5b4-5981-4a4d-86f0-c2149cdfaf49"
+      ],
+      "goal_id": null,
+      "conversation_id": "e96dc217-dcc6-4475-aa60-753bdb513279",
+      "playbook": "slides",
+      "deck_id": "0b72a130-c93b-41ba-9a3f-13a5b46c8ef9",
+      "deck_pages": 8,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "page_count",
+          "ok": true,
+          "detail": "8 頁（要求 8）"
+        },
+        {
+          "id": "language_zh",
+          "ok": true,
+          "detail": "繁體中文（漢字 1457、英文字 192）"
+        },
+        {
+          "id": "deck_mode",
+          "ok": true,
+          "detail": "kind=progress，paper=無"
+        },
+        {
+          "id": "no_placeholder",
+          "ok": true,
+          "detail": "沒有佔位文字"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 14,
+        "fail": 1,
+        "other": 0,
+        "req_pass": 1,
+        "req_total": 1,
+        "failed": [
+          "coverage：共8頁且各頁對應大綱，自填頁已標「AI 代填，待你確認」；但第4頁「Table 1 現況」整頁（表格、圖、takeaway、notes）皆未出現大綱要求的固定元素「距上次新數字：N 週」。"
+        ]
+      },
+      "wall_s": 2029,
+      "queued_s": 1302,
+      "active_s": 2030,
+      "calls": 48,
+      "calls_by_purpose": {
+        "write_slides": {
+          "n": 13,
+          "s": 982
+        },
+        "visual_qa": {
+          "n": 6,
+          "s": 231
+        },
+        "verify_final:budget": {
+          "n": 2,
+          "s": 58
+        },
+        "outline": {
+          "n": 2,
+          "s": 262
+        },
+        "visual_fix": {
+          "n": 3,
+          "s": 419
+        },
+        "requirements": {
+          "n": 1,
+          "s": 13
+        },
+        "write_slides:budget": {
+          "n": 1,
+          "s": 19
+        },
+        "visual_qa:retry": {
+          "n": 1,
+          "s": 55
+        },
+        "verify_final": {
+          "n": 2,
+          "s": 165
+        },
+        "verify:budget": {
+          "n": 5,
+          "s": 79
+        },
+        "verify": {
+          "n": 10,
+          "s": 373
+        },
+        "ask_options:budget": {
+          "n": 1,
+          "s": 17
+        },
+        "ask_options": {
+          "n": 1,
+          "s": 44
+        }
+      },
+      "tokens": {
+        "in": 417258,
+        "out": 175989
+      },
+      "fix_rounds": 5,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 13
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 5,
+        "substance": 4,
+        "structure": 4,
+        "form": 4,
+        "overall": 4.25,
+        "rationale": "Delivers exactly 8 Traditional-Chinese slides in a coherent progress-report arc (problem → idea → milestones → results → blockers → next steps), grounded in dated study artifacts with verifiable specifics (Zipformer RNN-T, AISHELL-1 dev CER 5.1%, 320-term bias list, CLAS/shallow-fusion comparison). Substance is docked because three of the eight slides (卡住, Idea card, 下週與要問) are explicitly flagged "
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 15
+    },
+    {
+      "id": "deck_remove_page",
+      "title": "刪掉一頁",
+      "tags": [
+        "deck",
+        "edit",
+        "quick",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T19:59:54.564Z",
+      "ended_at": "2026-10-23T20:53:08.166Z",
+      "build_start": {
+        "image": "9441a37e8a71",
+        "created": "2026-10-23T19:23:06.358357348Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "9441a37e8a71",
+        "created": "2026-10-23T19:23:06.358357348Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "done",
+      "run_ids": [
+        "088bb1e5-9149-4ab5-840d-7e9d01b031e7"
+      ],
+      "goal_id": null,
+      "conversation_id": "ec0bd8ff-aa80-4b28-ac5c-5fb803c1a93c",
+      "playbook": "slides",
+      "deck_id": "d6b6e4e8-df5e-4f66-8be3-c483419761bd",
+      "deck_pages": 5,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "page_count",
+          "ok": true,
+          "detail": "5 頁（要求 5）"
+        },
+        {
+          "id": "removed",
+          "ok": true,
+          "detail": "已移除"
+        },
+        {
+          "id": "titles_kept",
+          "ok": true,
+          "detail": "原本的 5 頁都在"
+        },
+        {
+          "id": "language_zh",
+          "ok": true,
+          "detail": "繁體中文（漢字 1112、英文字 44）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 17,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 2,
+        "req_total": 2,
+        "failed": []
+      },
+      "wall_s": 1146,
+      "queued_s": 2037,
+      "active_s": 1147,
+      "calls": 25,
+      "calls_by_purpose": {
+        "outline": {
+          "n": 1,
+          "s": 34
+        },
+        "requirements": {
+          "n": 1,
+          "s": 3
+        },
+        "verify": {
+          "n": 5,
+          "s": 170
+        },
+        "verify:budget": {
+          "n": 1,
+          "s": 14
+        },
+        "verify_final": {
+          "n": 2,
+          "s": 131
+        },
+        "visual_fix": {
+          "n": 4,
+          "s": 461
+        },
+        "visual_qa": {
+          "n": 5,
+          "s": 141
+        },
+        "visual_qa:retry": {
+          "n": 1,
+          "s": 7
+        },
+        "write_slides": {
+          "n": 5,
+          "s": 191
+        }
+      },
+      "tokens": {
+        "in": 148189,
+        "out": 72376
+      },
+      "fix_rounds": 1,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 9
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 8
+    },
+    {
+      "id": "deck_topic_paper_title",
+      "title": "從文獻做主題簡報（英文、「paper title」說法）",
+      "tags": [
+        "deck",
+        "create",
+        "topic",
+        "lang",
+        "slow",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T16:41:32.555Z",
+      "ended_at": "2026-10-23T17:03:38.845Z",
+      "build_start": {
+        "image": "4232638b6ab1",
+        "created": "2026-10-23T16:01:50.97619738Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "4232638b6ab1",
+        "created": "2026-10-23T16:01:50.97619738Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "done",
+      "run_ids": [
+        "64789a56-f5a8-4f8f-ba78-8e2f240c4743"
+      ],
+      "goal_id": null,
+      "conversation_id": "7f65449d-2349-453e-8336-7d9852866fc6",
+      "playbook": "slides",
+      "deck_id": "512138d3-c167-4dc2-a1a5-2d526f13b180",
+      "deck_pages": 10,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "language_en",
+          "ok": true,
+          "detail": "English（漢字 0、英文字 1822）"
+        },
+        {
+          "id": "deck_mode",
+          "ok": true,
+          "detail": "kind=progress，paper=無"
+        },
+        {
+          "id": "library_papers",
+          "ok": true,
+          "detail": "提到文獻庫 9 篇（要求 ≥ 4）：gulati2020conformer, nakagome2025wctc, tang2024improving, huang2024improving, sudo2024contextualized, wang2023contextual"
+        },
+        {
+          "id": "pages",
+          "ok": true,
+          "detail": "10 頁（≥ 6）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 19,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 5,
+        "req_total": 5,
+        "failed": []
+      },
+      "wall_s": 925,
+      "queued_s": 321,
+      "active_s": 926,
+      "calls": 17,
+      "calls_by_purpose": {
+        "outline": {
+          "n": 1,
+          "s": 155
+        },
+        "requirements": {
+          "n": 1,
+          "s": 27
+        },
+        "verify": {
+          "n": 4,
+          "s": 161
+        },
+        "verify:budget": {
+          "n": 1,
+          "s": 23
+        },
+        "verify_final": {
+          "n": 1,
+          "s": 71
+        },
+        "visual_fix": {
+          "n": 1,
+          "s": 172
+        },
+        "visual_qa": {
+          "n": 3,
+          "s": 159
+        },
+        "write_slides": {
+          "n": 5,
+          "s": 529
+        }
+      },
+      "tokens": {
+        "in": 203455,
+        "out": 70759
+      },
+      "fix_rounds": 1,
+      "final_rounds": 0,
+      "stops": {
+        "converged": 8
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 5,
+        "substance": 5,
+        "structure": 4,
+        "form": 5,
+        "overall": 4.75,
+        "rationale": "Delivers an English revealjs survey deck with the exact paper title, a two-axis taxonomy covering all nine library methods with injection points, per-method citations, and a synthesis/next-steps slide. Substance is technically specific and correct (KMP-vs-WFST, CLAS OOV handling and attention scatter, WCTC inter-layer retraining-free KWS, dynamic-vocabulary subword issue), with project numbers exp"
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 4
+    },
+    {
+      "id": "deck_paper_report",
+      "title": "論文報告簡報（有 PDF）",
+      "tags": [
+        "deck",
+        "create",
+        "paper",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T17:08:41.624Z",
+      "ended_at": "2026-10-23T17:43:48.479Z",
+      "build_start": {
+        "image": "4232638b6ab1",
+        "created": "2026-10-23T16:01:50.97619738Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "e474128d9df5",
+        "created": "2026-10-23T17:13:48.499931846Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "partial",
+      "run_ids": [
+        "3395f787-0b5e-448c-8d57-9794e47caf18"
+      ],
+      "goal_id": null,
+      "conversation_id": "ce543398-c02c-4087-b7c9-24d827edf98b",
+      "playbook": "slides",
+      "deck_id": "074319c2-360f-4c49-97f4-a9db3663d533",
+      "deck_pages": 13,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "paper_report",
+          "ok": true,
+          "detail": "kind=paper_report，paper=3b647776-698f-4ef0-b6d2-f8782fa7b5aa"
+        },
+        {
+          "id": "language_zh",
+          "ok": false,
+          "detail": "不是全繁體中文：封面（沒有中文）、p1 內文、p2 內文、p3 內文、p4 內文、p6 內文…共 9 處（CJK 3286、英文字 947）"
+        },
+        {
+          "id": "pages",
+          "ok": true,
+          "detail": "13 頁（≥ 8）"
+        }
+      ],
+      "pass": false,
+      "criteria": {
+        "pass": 16,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 2,
+        "req_total": 2,
+        "failed": []
+      },
+      "wall_s": 2028,
+      "queued_s": 0,
+      "active_s": 1998,
+      "calls": 64,
+      "calls_by_purpose": {
+        "write_slides": {
+          "n": 18,
+          "s": 1417
+        },
+        "visual_qa": {
+          "n": 5,
+          "s": 213
+        },
+        "outline": {
+          "n": 2,
+          "s": 249
+        },
+        "visual_fix": {
+          "n": 1,
+          "s": 222
+        },
+        "research_paper": {
+          "n": 10,
+          "s": 267
+        },
+        "requirements": {
+          "n": 1,
+          "s": 46
+        },
+        "write_slides:budget": {
+          "n": 2,
+          "s": 83
+        },
+        "requirements:budget": {
+          "n": 1,
+          "s": 21
+        },
+        "verify_final": {
+          "n": 1,
+          "s": 59
+        },
+        "verify:budget": {
+          "n": 6,
+          "s": 84
+        },
+        "visual_qa:budget": {
+          "n": 1,
+          "s": 53
+        },
+        "write_slides:continue": {
+          "n": 1,
+          "s": 15
+        },
+        "verify": {
+          "n": 11,
+          "s": 466
+        },
+        "ask_options:budget": {
+          "n": 1,
+          "s": 23
+        },
+        "ask_options": {
+          "n": 1,
+          "s": 52
+        },
+        "research_paper:continue": {
+          "n": 1,
+          "s": 18
+        },
+        "ask_options:retry": {
+          "n": 1,
+          "s": 18
+        }
+      },
+      "tokens": {
+        "in": 850243,
+        "out": 193257
+      },
+      "fix_rounds": 5,
+      "final_rounds": 0,
+      "stops": {
+        "converged": 16,
+        "no_improvement": 1,
+        "same_failure": 1
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 4,
+        "substance": 5,
+        "structure": 3,
+        "form": 3,
+        "overall": 3.75,
+        "rationale": "The deck delivers the requested Chinese journal-club format (problem → architecture → training/inference → setup/fairness → main results → assessment) with dense, correctly-attributed paper numbers (NE-WERR +34.10/+44.33 vs SF +27.70/+38.12, 86% time saving, <500k params, Tables 2–4 ablations), and the Quarto/revealjs source is clean. However, three slides carry explicit '[AI 代填，待你確認]' placeholder"
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 11
+    },
+    {
+      "id": "note_topic_research",
+      "title": "主題調研筆記",
+      "tags": [
+        "note",
+        "research",
+        "slow"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T17:03:38.935Z",
+      "ended_at": "2026-10-23T17:08:41.537Z",
+      "build_start": {
+        "image": "4232638b6ab1",
+        "created": "2026-10-23T16:01:50.97619738Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "4232638b6ab1",
+        "created": "2026-10-23T16:01:50.97619738Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "awaiting_input",
+      "run_ids": [
+        "38cafe55-2bf5-492a-9fa2-79d3d5259973"
+      ],
+      "goal_id": null,
+      "conversation_id": "85ae40a4-3e32-4285-a405-755345b193ad",
+      "playbook": "topic_research",
+      "deck_id": null,
+      "deck_pages": null,
+      "deliverable": {
+        "expected": "note",
+        "got": [],
+        "brief": "note",
+        "ok": false,
+        "detail": "要 note，得到 無（Brief：note）"
+      },
+      "grades": [
+        {
+          "id": "language_zh",
+          "ok": false,
+          "detail": "漢字 0、CJK 0、英文字 0"
+        },
+        {
+          "id": "library_papers",
+          "ok": false,
+          "detail": "提到文獻庫 0 篇（要求 ≥ 4）"
+        },
+        {
+          "id": "citations",
+          "ok": false,
+          "detail": "0 個引用鍵，都在研究文獻庫（至少要 3 個）"
+        },
+        {
+          "id": "length",
+          "ok": false,
+          "detail": "0 字元（要求 ≥ 1500）"
+        }
+      ],
+      "pass": false,
+      "criteria": {
+        "pass": 0,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 0,
+        "req_total": 0,
+        "failed": []
+      },
+      "wall_s": 302,
+      "queued_s": 0,
+      "active_s": 295,
+      "calls": 4,
+      "calls_by_purpose": {
+        "requirements": {
+          "n": 1,
+          "s": 27
+        },
+        "topic_plan": {
+          "n": 1,
+          "s": 57
+        },
+        "topic_select": {
+          "n": 1,
+          "s": 87
+        },
+        "topic_select:budget": {
+          "n": 1,
+          "s": 85
+        }
+      },
+      "tokens": {
+        "in": 23894,
+        "out": 14071
+      },
+      "fix_rounds": 0,
+      "final_rounds": 0,
+      "stops": {},
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": "找不到和這個主題相關、可以匯入的論文（線上搜尋：「contextual biasing streaming ASR evaluation」、「shallow fusion contextual biasing ASR」、「contextual RNN-T joiner biasing」、「Zipformer contextual biasing RNN-T」、「contextual biasing WERR comparison」、「contextual biasing false trigger」、「contextual biasing ASR survey」、「seminal hotword contextual biasing methods」、「hotword WERR false trigger metrics」、「deep context listen attend spell」）。請在補充指示提供更具體的英文關鍵字、論文標題或 arXiv 編號，或先把論文加入研究文獻庫後按「繼續」。",
+      "error": null,
+      "fix_calls": 0
+    },
+    {
+      "id": "note_lit_review",
+      "title": "文獻回顧（要有比較表）",
+      "tags": [
+        "note",
+        "research"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T17:43:48.575Z",
+      "ended_at": "2026-10-23T18:00:27.163Z",
+      "build_start": {
+        "image": "e474128d9df5",
+        "created": "2026-10-23T17:13:48.499931846Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "e474128d9df5",
+        "created": "2026-10-23T17:13:48.499931846Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "done",
+      "run_ids": [
+        "058b7923-28c2-4ff6-b28e-8f8d19d4fbe0"
+      ],
+      "goal_id": null,
+      "conversation_id": "3bf9e9e5-5ab2-4199-b8ac-d23a67b2c70f",
+      "playbook": "lit_review",
+      "deck_id": null,
+      "deck_pages": null,
+      "deliverable": {
+        "expected": "note",
+        "got": [
+          "note"
+        ],
+        "brief": "lit_review",
+        "ok": true,
+        "detail": "要 note，得到 note（Brief：lit_review）"
+      },
+      "grades": [
+        {
+          "id": "language_zh",
+          "ok": true,
+          "detail": "漢字 2322、CJK 2758、英文字 767"
+        },
+        {
+          "id": "table_rows",
+          "ok": true,
+          "detail": "最大表格 6 列（要求 ≥ 5）"
+        },
+        {
+          "id": "citations",
+          "ok": true,
+          "detail": "6 個引用鍵，都在研究文獻庫"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 7,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 2,
+        "req_total": 2,
+        "failed": []
+      },
+      "wall_s": 909,
+      "queued_s": 0,
+      "active_s": 910,
+      "calls": 50,
+      "calls_by_purpose": {
+        "verify_final:budget": {
+          "n": 1,
+          "s": 22
+        },
+        "requirements": {
+          "n": 1,
+          "s": 12
+        },
+        "lit_read": {
+          "n": 35,
+          "s": 675
+        },
+        "verify_final": {
+          "n": 1,
+          "s": 79
+        },
+        "verify:budget": {
+          "n": 4,
+          "s": 127
+        },
+        "write:lit_review": {
+          "n": 4,
+          "s": 367
+        },
+        "verify": {
+          "n": 4,
+          "s": 164
+        }
+      },
+      "tokens": {
+        "in": 684028,
+        "out": 84593
+      },
+      "fix_rounds": 0,
+      "final_rounds": 0,
+      "stops": {
+        "converged": 11
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 5,
+        "substance": 5,
+        "structure": 4,
+        "form": 5,
+        "overall": 4.75,
+        "rationale": "Delivers exactly what was asked: a Traditional-Chinese literature review of contextual biasing with a dense comparison table, covering five genuine biasing papers plus a justified backbone reference. Substance is highly specific and internally consistent (numbers cross-referenced across sections, honest caveats like the shallow-fusion tension and metric non-comparability), with no filler or fabric"
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 0
+    },
+    {
+      "id": "note_reading",
+      "title": "單篇閱讀筆記",
+      "tags": [
+        "note",
+        "paper",
+        "quick"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T20:34:32.381Z",
+      "ended_at": "2026-10-23T21:07:23.823Z",
+      "build_start": {
+        "image": "9441a37e8a71",
+        "created": "2026-10-23T19:23:06.358357348Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "3ab300da254d",
+        "created": "2026-10-23T21:00:17.099125721Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "partial",
+      "run_ids": [
+        "12ce26cf-9f0b-4379-963b-3e4d52cf18f6"
+      ],
+      "goal_id": null,
+      "conversation_id": "b52bdcca-8fd7-4d37-b676-4c052ead054d",
+      "playbook": "reading_note",
+      "deck_id": null,
+      "deck_pages": null,
+      "deliverable": {
+        "expected": "note",
+        "got": [
+          "note"
+        ],
+        "brief": "reading_note",
+        "ok": true,
+        "detail": "要 note，得到 note（Brief：reading_note）"
+      },
+      "grades": [
+        {
+          "id": "language_zh",
+          "ok": true,
+          "detail": "漢字 6457、CJK 7787、英文字 1860"
+        },
+        {
+          "id": "about_paper",
+          "ok": true,
+          "detail": "提到 CLAS / Deep context"
+        },
+        {
+          "id": "length",
+          "ok": true,
+          "detail": "20421 字元（要求 ≥ 800）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 6,
+        "fail": 1,
+        "other": 0,
+        "req_pass": 2,
+        "req_total": 2,
+        "failed": [
+          "grounded：「我的想法」區塊捏造了論文與來源資料中都沒有的使用者研究細節（逾 300 個、recall 下降、老師要求、ICASSP），雖標註 AI 代填但並非「依研究資料草擬」，具體數字與情境屬無中生有。"
+        ]
+      },
+      "wall_s": 1240,
+      "queued_s": 651,
+      "active_s": 1223,
+      "calls": 86,
+      "calls_by_purpose": {
+        "verify:retry:budget": {
+          "n": 1,
+          "s": 12
+        },
+        "verify_final:budget": {
+          "n": 1,
+          "s": 36
+        },
+        "requirements": {
+          "n": 1,
+          "s": 33
+        },
+        "verify_final": {
+          "n": 2,
+          "s": 182
+        },
+        "verify:budget": {
+          "n": 6,
+          "s": 199
+        },
+        "reading_part": {
+          "n": 60,
+          "s": 1433
+        },
+        "verify": {
+          "n": 12,
+          "s": 535
+        },
+        "ask_options": {
+          "n": 1,
+          "s": 48
+        },
+        "verify:retry": {
+          "n": 1,
+          "s": 54
+        },
+        "ask_options:retry": {
+          "n": 1,
+          "s": 39
+        }
+      },
+      "tokens": {
+        "in": 755138,
+        "out": 151013
+      },
+      "fix_rounds": 2,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 11
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 38
+    },
+    {
+      "id": "latex_paper_goal",
+      "title": "從零寫 LaTeX 論文（目標）",
+      "tags": [
+        "latex",
+        "goal",
+        "slow"
+      ],
+      "mode": "goal",
+      "started_at": "2026-10-23T16:41:32.545Z",
+      "ended_at": "2026-10-23T17:49:13.839Z",
+      "build_start": {
+        "image": "4232638b6ab1",
+        "created": "2026-10-23T16:01:50.97619738Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "e474128d9df5",
+        "created": "2026-10-23T17:13:48.499931846Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "partial",
+      "run_ids": [
+        "6eee6f62-81ca-497c-970b-3253c4e7f674",
+        "674481d0-fe62-42d8-943b-6a56679e6e5e"
+      ],
+      "goal_id": "2f782d4c-e0d4-4e0f-8f36-79839d71dcca",
+      "conversation_id": "3292703f-fadf-4bf4-bc8b-492b98305542",
+      "playbook": "paper_outline",
+      "deck_id": null,
+      "deck_pages": null,
+      "deliverable": {
+        "expected": "latex",
+        "got": [
+          "note",
+          "latex"
+        ],
+        "brief": null,
+        "ok": true,
+        "detail": "要 latex，得到 note、latex（Brief：無）"
+      },
+      "grades": [
+        {
+          "id": "compiles",
+          "ok": false,
+          "detail": "最後編譯：failure"
+        },
+        {
+          "id": "sections",
+          "ok": true,
+          "detail": "19 個 \\section（≥ 4）"
+        },
+        {
+          "id": "citations",
+          "ok": false,
+          "detail": "14 個引用鍵，3 個不在研究文獻庫：graves2012sequence, rao2017streaming, he2019streaming"
+        }
+      ],
+      "pass": false,
+      "criteria": {
+        "pass": 13,
+        "fail": 2,
+        "other": 0,
+        "req_pass": 6,
+        "req_total": 6,
+        "failed": [
+          "compile：LaTeX 編譯有錯誤：編譯失敗，沒有產生 PDF。請查看完整編譯記錄。",
+          "cites：這些引用鍵不在研究的文獻庫中：graves2012sequence、rao2017streaming、he2019streaming。只能使用：nakagome2025wctc、sudo2024contextualized、tang2024improving、huang2024i"
+        ]
+      },
+      "wall_s": 4007,
+      "queued_s": 0,
+      "active_s": 3255,
+      "calls": 68,
+      "calls_by_purpose": {
+        "paper_section": {
+          "n": 13,
+          "s": 1464
+        },
+        "paper_outline": {
+          "n": 1,
+          "s": 83
+        },
+        "verify_final:budget": {
+          "n": 2,
+          "s": 251
+        },
+        "paper_section:continue": {
+          "n": 1,
+          "s": 15
+        },
+        "paper_abstract": {
+          "n": 2,
+          "s": 70
+        },
+        "requirements": {
+          "n": 2,
+          "s": 44
+        },
+        "paper_fix": {
+          "n": 8,
+          "s": 963
+        },
+        "paper_section:budget": {
+          "n": 5,
+          "s": 334
+        },
+        "verify_final": {
+          "n": 3,
+          "s": 282
+        },
+        "verify:budget": {
+          "n": 11,
+          "s": 278
+        },
+        "paper_fix:budget": {
+          "n": 4,
+          "s": 312
+        },
+        "paper_abstract:budget": {
+          "n": 2,
+          "s": 28
+        },
+        "verify": {
+          "n": 14,
+          "s": 682
+        }
+      },
+      "tokens": {
+        "in": 851733,
+        "out": 267354
+      },
+      "fix_rounds": 4,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 11,
+        "unchanged": 1
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 2,
+        "substance": 3,
+        "structure": 1,
+        "form": 1,
+        "overall": 1.75,
+        "rationale": "The topic, scope, and language match the request and the technical content (RNN-T math, CLAS, shallow fusion, KMP matching, adapters, dynamic vocabulary) is genuinely substantive, but the artifact is two-plus conflicting drafts stitched together rather than the single survey requested. Structure fails catastrophically: duplicate abstract and title, three incompatible taxonomies (3-axis, 5-category"
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 28
+    },
+    {
+      "id": "deck_progress_single_paper",
+      "title": "只有一篇論文的研究做進度簡報（不能變論文報告）",
+      "tags": [
+        "deck",
+        "create",
+        "quick"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T20:53:08.259Z",
+      "ended_at": "2026-10-23T21:38:01.917Z",
+      "build_start": {
+        "image": "9441a37e8a71",
+        "created": "2026-10-23T19:23:06.358357348Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "f3565b40eb9f",
+        "created": "2026-10-23T21:26:25.048376664Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "partial",
+      "run_ids": [
+        "010d6756-dd1a-4536-a7de-91cb8752599a"
+      ],
+      "goal_id": null,
+      "conversation_id": "04434d5f-bb24-484b-870f-2b228ef41a58",
+      "playbook": "slides",
+      "deck_id": "15362b52-eb92-4924-8192-b9b2f62f129c",
+      "deck_pages": 8,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "deck_mode",
+          "ok": true,
+          "detail": "kind=progress，paper=無"
+        },
+        {
+          "id": "language_zh",
+          "ok": true,
+          "detail": "繁體中文（漢字 1412、英文字 82）"
+        },
+        {
+          "id": "progress_content",
+          "ok": true,
+          "detail": "用到研究的進度資料（CER 18.2%／SpecAugment／微調）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 15,
+        "fail": 2,
+        "other": 0,
+        "req_pass": 3,
+        "req_total": 3,
+        "failed": [
+          "clean：這些頁面還有佔位文字（〔　〕、待補、TODO…）：第 3 頁「對帳」。請填入依據資料的內容；資料裡真的沒有就明寫「資料未提供」。",
+          "coverage：「本週關鍵結果」講稿宣稱對照長條圖放在「對帳」頁，但 final 的對帳頁只有 timeline 時間軸圖，hbar 長條圖實際位於「Table 1 現況」頁，前後指涉不一致，破壞連貫，不適合直接在組會報告。"
+        ]
+      },
+      "wall_s": 2686,
+      "queued_s": 0,
+      "active_s": 2648,
+      "calls": 52,
+      "calls_by_purpose": {
+        "write_slides": {
+          "n": 15,
+          "s": 776
+        },
+        "visual_qa": {
+          "n": 7,
+          "s": 276
+        },
+        "verify_final:budget": {
+          "n": 1,
+          "s": 30
+        },
+        "outline": {
+          "n": 2,
+          "s": 296
+        },
+        "visual_fix": {
+          "n": 5,
+          "s": 759
+        },
+        "outline:retry": {
+          "n": 1,
+          "s": 89
+        },
+        "requirements": {
+          "n": 1,
+          "s": 32
+        },
+        "write_slides:budget": {
+          "n": 1,
+          "s": 21
+        },
+        "verify_final": {
+          "n": 3,
+          "s": 230
+        },
+        "verify:budget": {
+          "n": 3,
+          "s": 52
+        },
+        "visual_qa:budget": {
+          "n": 1,
+          "s": 27
+        },
+        "verify": {
+          "n": 11,
+          "s": 385
+        },
+        "ask_options": {
+          "n": 1,
+          "s": 37
+        }
+      },
+      "tokens": {
+        "in": 320829,
+        "out": 186390
+      },
+      "fix_rounds": 4,
+      "final_rounds": 0,
+      "stops": {
+        "converged": 13
+      },
+      "flips": {
+        "criteria": [
+          "coverage"
+        ],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 17
+    },
+    {
+      "id": "deck_progress_en",
+      "title": "英文指令的進度簡報",
+      "tags": [
+        "deck",
+        "create",
+        "lang"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T21:07:23.930Z",
+      "ended_at": "2026-10-23T21:36:31.537Z",
+      "build_start": {
+        "image": "3ab300da254d",
+        "created": "2026-10-23T21:00:17.099125721Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "f3565b40eb9f",
+        "created": "2026-10-23T21:26:25.048376664Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "done",
+      "run_ids": [
+        "ea1aeb4f-92f5-47ed-9480-c045ff82c9ae"
+      ],
+      "goal_id": null,
+      "conversation_id": "2760bb42-b701-4a1c-a40f-8397df59bc12",
+      "playbook": "slides",
+      "deck_id": "e049cbfe-b999-4ae4-b6e0-a409395b5968",
+      "deck_pages": 8,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "language_en",
+          "ok": true,
+          "detail": "English（漢字 0、英文字 1133）"
+        },
+        {
+          "id": "deck_mode",
+          "ok": true,
+          "detail": "kind=progress，paper=無"
+        },
+        {
+          "id": "cover_en",
+          "ok": true,
+          "detail": "封面：「Agent Evaluation Set for Streaming ASR Hotword Biasing: Progress Report 261024」"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 17,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 3,
+        "req_total": 3,
+        "failed": []
+      },
+      "wall_s": 1742,
+      "queued_s": 0,
+      "active_s": 1722,
+      "calls": 45,
+      "calls_by_purpose": {
+        "outline:budget": {
+          "n": 1,
+          "s": 79
+        },
+        "write_slides": {
+          "n": 12,
+          "s": 660
+        },
+        "visual_qa": {
+          "n": 4,
+          "s": 124
+        },
+        "title_translate": {
+          "n": 1,
+          "s": 5
+        },
+        "outline": {
+          "n": 3,
+          "s": 450
+        },
+        "visual_fix": {
+          "n": 1,
+          "s": 87
+        },
+        "requirements": {
+          "n": 1,
+          "s": 16
+        },
+        "write_slides:budget": {
+          "n": 1,
+          "s": 12
+        },
+        "verify_final": {
+          "n": 2,
+          "s": 183
+        },
+        "verify:budget": {
+          "n": 5,
+          "s": 155
+        },
+        "verify": {
+          "n": 11,
+          "s": 437
+        },
+        "ask_options": {
+          "n": 1,
+          "s": 29
+        },
+        "requirement_fix": {
+          "n": 2,
+          "s": 89
+        }
+      },
+      "tokens": {
+        "in": 362143,
+        "out": 143275
+      },
+      "fix_rounds": 5,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 13
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 13
+    },
+    {
+      "id": "note_en_compare",
+      "title": "英文筆記：比較兩類做法",
+      "tags": [
+        "note",
+        "lang"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-24T00:33:03.971Z",
+      "ended_at": "2026-10-24T01:00:28.318Z",
+      "build_start": {
+        "image": "e7fb9fc1d8f9",
+        "created": "2026-10-24T00:24:37.178486915Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "e7fb9fc1d8f9",
+        "created": "2026-10-24T00:24:37.178486915Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "done",
+      "run_ids": [
+        "f4936c78-f6a4-44c6-b78f-67650bd39447"
+      ],
+      "goal_id": null,
+      "conversation_id": "c09d54d0-8408-4d2f-8d3a-5207bb84cbbf",
+      "playbook": "generic",
+      "deck_id": null,
+      "deck_pages": null,
+      "deliverable": {
+        "expected": "note",
+        "got": [
+          "note"
+        ],
+        "brief": "note",
+        "ok": true,
+        "detail": "要 note，得到 note（Brief：note）"
+      },
+      "grades": [
+        {
+          "id": "language_en",
+          "ok": true,
+          "detail": "漢字 0、CJK 0、英文字 690"
+        },
+        {
+          "id": "library_papers",
+          "ok": true,
+          "detail": "提到文獻庫 4 篇（要求 ≥ 3）：sudo2024contextualized, wang2023contextual, sathyendra2022contextual, zhao2019shallow"
+        },
+        {
+          "id": "length",
+          "ok": true,
+          "detail": "4254 字元（要求 ≥ 1500）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 10,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 4,
+        "req_total": 4,
+        "failed": []
+      },
+      "wall_s": 1584,
+      "queued_s": 0,
+      "active_s": 1585,
+      "calls": 60,
+      "calls_by_purpose": {
+        "generic_research": {
+          "n": 27,
+          "s": 357
+        },
+        "generic_research:budget": {
+          "n": 1,
+          "s": 104
+        },
+        "plan_generic": {
+          "n": 1,
+          "s": 61
+        },
+        "requirements": {
+          "n": 1,
+          "s": 13
+        },
+        "verify": {
+          "n": 10,
+          "s": 808
+        },
+        "verify:budget": {
+          "n": 7,
+          "s": 476
+        },
+        "verify_final": {
+          "n": 1,
+          "s": 52
+        },
+        "write:generic": {
+          "n": 9,
+          "s": 780
+        },
+        "write:generic:budget": {
+          "n": 3,
+          "s": 206
+        }
+      },
+      "tokens": {
+        "in": 1324908,
+        "out": 188572
+      },
+      "fix_rounds": 4,
+      "final_rounds": 0,
+      "stops": {
+        "converged": 7
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": {
+        "request": 5,
+        "substance": 4,
+        "structure": 4,
+        "form": 5,
+        "overall": 4.5,
+        "rationale": "Delivers exactly the requested note: an English head-to-head comparison of shallow fusion vs. neural biasing for streaming RNN-T grounded in the study's papers (Zhao, Wang, Sathyendra, Xu, Sudo). Substance is highly specific and honest about gaps, but the combined/NE figures are internally unexplained and inconsistent (31.29% vs +34.1, 36.17% vs +39.70%), which a strict grader cannot wave off. Str"
+      },
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 14
+    },
+    {
+      "id": "deck_translate_zh",
+      "title": "英文簡報整份翻成繁中",
+      "tags": [
+        "deck",
+        "edit",
+        "lang"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T21:38:02.036Z",
+      "ended_at": "2026-10-23T22:51:04.815Z",
+      "build_start": {
+        "image": "f3565b40eb9f",
+        "created": "2026-10-23T21:26:25.048376664Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "f3565b40eb9f",
+        "created": "2026-10-23T21:26:25.048376664Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "done",
+      "run_ids": [
+        "b5b8558f-ee3d-408a-8cd7-b9f9778ec65d"
+      ],
+      "goal_id": null,
+      "conversation_id": "c672ffe3-6a31-4e1e-9d44-44ef07dafe34",
+      "playbook": "slides",
+      "deck_id": "6909e6f8-3410-4fe1-a03e-8ffa363739c5",
+      "deck_pages": 6,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "language_zh",
+          "ok": true,
+          "detail": "繁體中文（漢字 772、英文字 93）"
+        },
+        {
+          "id": "page_count",
+          "ok": true,
+          "detail": "6 頁（要求 6）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 16,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 1,
+        "req_total": 1,
+        "failed": []
+      },
+      "wall_s": 753,
+      "queued_s": 3625,
+      "active_s": 754,
+      "calls": 23,
+      "calls_by_purpose": {
+        "outline": {
+          "n": 1,
+          "s": 31
+        },
+        "requirements": {
+          "n": 1,
+          "s": 5
+        },
+        "verify": {
+          "n": 7,
+          "s": 259
+        },
+        "verify:budget": {
+          "n": 1,
+          "s": 41
+        },
+        "verify_final": {
+          "n": 1,
+          "s": 34
+        },
+        "visual_fix": {
+          "n": 2,
+          "s": 178
+        },
+        "visual_qa": {
+          "n": 3,
+          "s": 117
+        },
+        "write_slides": {
+          "n": 7,
+          "s": 192
+        }
+      },
+      "tokens": {
+        "in": 140397,
+        "out": 53821
+      },
+      "fix_rounds": 1,
+      "final_rounds": 0,
+      "stops": {
+        "converged": 10
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 4
+    },
+    {
+      "id": "chat_paraphrase",
+      "title": "聊天交辦：助理改寫不能新增要求",
+      "tags": [
+        "chat",
+        "deck",
+        "brief",
+        "core"
+      ],
+      "mode": "chat",
+      "started_at": "2026-10-23T22:38:18.941Z",
+      "ended_at": "2026-10-23T23:37:25.675Z",
+      "build_start": {
+        "image": "f3565b40eb9f",
+        "created": "2026-10-23T21:26:25.048376664Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "ad3e62833088",
+        "created": "2026-10-23T22:53:22.552869956Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "done",
+      "run_ids": [
+        "8abfc42a-e3e3-472d-8c62-b735c63e5d73"
+      ],
+      "goal_id": null,
+      "conversation_id": "36ad4198-1942-44e9-8006-b8b8947bf6fb",
+      "playbook": "slides",
+      "deck_id": "5ca6a61e-2858-4962-9af3-f105d96c5ede",
+      "deck_pages": 8,
+      "deliverable": {
+        "expected": "deck",
+        "got": [
+          "deck"
+        ],
+        "brief": "deck",
+        "ok": true,
+        "detail": "要 deck，得到 deck（Brief：deck）"
+      },
+      "grades": [
+        {
+          "id": "brief_grounded",
+          "ok": true,
+          "detail": "3 條要求都引用原話"
+        },
+        {
+          "id": "deck_mode",
+          "ok": true,
+          "detail": "kind=progress，paper=無"
+        },
+        {
+          "id": "language_zh",
+          "ok": true,
+          "detail": "繁體中文（漢字 1770、英文字 175）"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 17,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 3,
+        "req_total": 3,
+        "failed": []
+      },
+      "wall_s": 2939,
+      "queued_s": 564,
+      "active_s": 2923,
+      "calls": 46,
+      "calls_by_purpose": {
+        "write_slides": {
+          "n": 11,
+          "s": 1051
+        },
+        "visual_qa": {
+          "n": 6,
+          "s": 208
+        },
+        "verify_final:budget": {
+          "n": 1,
+          "s": 35
+        },
+        "outline": {
+          "n": 3,
+          "s": 646
+        },
+        "visual_fix": {
+          "n": 3,
+          "s": 613
+        },
+        "outline:retry": {
+          "n": 3,
+          "s": 233
+        },
+        "requirements": {
+          "n": 1,
+          "s": 28
+        },
+        "write_slides:budget": {
+          "n": 1,
+          "s": 35
+        },
+        "verify_final": {
+          "n": 2,
+          "s": 222
+        },
+        "verify:budget": {
+          "n": 2,
+          "s": 67
+        },
+        "verify": {
+          "n": 11,
+          "s": 515
+        },
+        "ask_options:budget": {
+          "n": 1,
+          "s": 16
+        },
+        "ask_options": {
+          "n": 1,
+          "s": 41
+        }
+      },
+      "tokens": {
+        "in": 385124,
+        "out": 236398
+      },
+      "fix_rounds": 3,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 13
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 12
+    },
+    {
+      "id": "deck_missing_pdf",
+      "title": "論文沒有 PDF：要停下來要 PDF，不能換成別的",
+      "tags": [
+        "deck",
+        "stop",
+        "quick",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T22:51:04.906Z",
+      "ended_at": "2026-10-23T22:51:37.375Z",
+      "build_start": {
+        "image": "f3565b40eb9f",
+        "created": "2026-10-23T21:26:25.048376664Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "f3565b40eb9f",
+        "created": "2026-10-23T21:26:25.048376664Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "needs_pdf",
+      "run_ids": [
+        "c2dcbb12-dfd9-4710-a404-af5195d106ff"
+      ],
+      "goal_id": null,
+      "conversation_id": "7f29696d-fd06-44ce-b31f-a79b340076cc",
+      "playbook": "slides",
+      "deck_id": null,
+      "deck_pages": null,
+      "deliverable": {
+        "expected": "停在 needs_pdf",
+        "got": [],
+        "brief": "deck",
+        "ok": true,
+        "detail": "狀態 needs_pdf，成果 無"
+      },
+      "grades": [
+        {
+          "id": "no_substitute",
+          "ok": true,
+          "detail": "沒有寫出替代成果"
+        }
+      ],
+      "pass": true,
+      "criteria": {
+        "pass": 0,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 0,
+        "req_total": 0,
+        "failed": []
+      },
+      "wall_s": 32,
+      "queued_s": 0,
+      "active_s": 31,
+      "calls": 1,
+      "calls_by_purpose": {
+        "requirements": {
+          "n": 1,
+          "s": 27
+        }
+      },
+      "tokens": {
+        "in": 2465,
+        "out": 1699
+      },
+      "fix_rounds": 0,
+      "final_rounds": 0,
+      "stops": {},
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": "〈Hotword Biasing for Low-Resource Taiwanese Mandarin Streaming ASR (eval fixture 〉找不到 PDF（已試過開放取用與文獻紀錄的網址），這份先跳過：貼上 PDF 網址按「從網址下載 PDF」，或到文獻庫上傳後按「繼續」。",
+      "error": null,
+      "fix_calls": 0
+    },
+    {
+      "id": "kind_conflict",
+      "title": "交付物衝突：指定閱讀筆記流程，卻要簡報",
+      "tags": [
+        "stop",
+        "brief",
+        "quick",
+        "core"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T22:51:37.442Z",
+      "ended_at": "2026-10-23T23:18:35.845Z",
+      "build_start": {
+        "image": "f3565b40eb9f",
+        "created": "2026-10-23T21:26:25.048376664Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "ad3e62833088",
+        "created": "2026-10-23T22:53:22.552869956Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": true,
+      "status": "done",
+      "run_ids": [
+        "99564733-cc17-4315-9e7e-66c8d787a5df"
+      ],
+      "goal_id": null,
+      "conversation_id": "f3aff6a0-7798-42f9-bfdb-599f33a93cb5",
+      "playbook": "reading_note",
+      "deck_id": null,
+      "deck_pages": null,
+      "deliverable": {
+        "expected": "deck 或詢問",
+        "got": [
+          "note"
+        ],
+        "brief": "reading_note",
+        "ok": false,
+        "detail": "成果 note；不該出現 note"
+      },
+      "grades": [
+        {
+          "id": "brief_deck",
+          "ok": false,
+          "detail": "Brief 交付物：reading_note"
+        }
+      ],
+      "pass": false,
+      "criteria": {
+        "pass": 7,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 2,
+        "req_total": 2,
+        "failed": []
+      },
+      "wall_s": 1605,
+      "queued_s": 0,
+      "active_s": 1468,
+      "calls": 84,
+      "calls_by_purpose": {
+        "verify_final:budget": {
+          "n": 1,
+          "s": 14
+        },
+        "requirements": {
+          "n": 1,
+          "s": 14
+        },
+        "verify_final": {
+          "n": 2,
+          "s": 257
+        },
+        "reading_part:budget": {
+          "n": 1,
+          "s": 23
+        },
+        "reading_part": {
+          "n": 63,
+          "s": 1659
+        },
+        "verify": {
+          "n": 14,
+          "s": 755
+        },
+        "ask_options": {
+          "n": 1,
+          "s": 42
+        },
+        "ask_options:retry": {
+          "n": 1,
+          "s": 57
+        }
+      },
+      "tokens": {
+        "in": 675985,
+        "out": 167034
+      },
+      "fix_rounds": 4,
+      "final_rounds": 1,
+      "stops": {
+        "converged": 11
+      },
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": null,
+      "error": null,
+      "fix_calls": 29
+    },
+    {
+      "id": "note_generic_metrics",
+      "title": "一般筆記：評估指標與計算方式",
+      "tags": [
+        "note",
+        "generic"
+      ],
+      "mode": "api",
+      "started_at": "2026-10-23T23:18:35.932Z",
+      "ended_at": "2026-10-23T23:37:40.903Z",
+      "build_start": {
+        "image": "ad3e62833088",
+        "created": "2026-10-23T22:53:22.552869956Z",
+        "git": "b547fff+dirty"
+      },
+      "build_end": {
+        "image": "ad3e62833088",
+        "created": "2026-10-23T22:53:22.552869956Z",
+        "git": "b547fff+dirty"
+      },
+      "redeployed": false,
+      "status": "awaiting_input",
+      "run_ids": [
+        "5220d4f3-eb9f-4aa2-88b2-6633a8e5ac64"
+      ],
+      "goal_id": null,
+      "conversation_id": "e9b2c4d1-afab-4401-af4e-88ec25af06bf",
+      "playbook": "experiment_report",
+      "deck_id": null,
+      "deck_pages": null,
+      "deliverable": {
+        "expected": "note",
+        "got": [],
+        "brief": "note",
+        "ok": false,
+        "detail": "要 note，得到 無（Brief：note）"
+      },
+      "grades": [
+        {
+          "id": "language_zh",
+          "ok": false,
+          "detail": "漢字 0、CJK 0、英文字 0"
+        },
+        {
+          "id": "covers_metrics",
+          "ok": false,
+          "detail": "四個指標都有寫到"
+        },
+        {
+          "id": "length",
+          "ok": false,
+          "detail": "0 字元（要求 ≥ 800）"
+        }
+      ],
+      "pass": false,
+      "criteria": {
+        "pass": 0,
+        "fail": 0,
+        "other": 0,
+        "req_pass": 0,
+        "req_total": 0,
+        "failed": []
+      },
+      "wall_s": 24,
+      "queued_s": 1121,
+      "active_s": 22,
+      "calls": 1,
+      "calls_by_purpose": {
+        "requirements": {
+          "n": 1,
+          "s": 21
+        }
+      },
+      "tokens": {
+        "in": 2484,
+        "out": 1409
+      },
+      "fix_rounds": 0,
+      "final_rounds": 0,
+      "stops": {},
+      "flips": {
+        "criteria": [],
+        "checks": []
+      },
+      "judge": null,
+      "pair": null,
+      "question": "找不到實驗數據。請把結果貼在補充指示，或附加實驗筆記後按「繼續」。",
+      "error": null,
+      "fix_calls": 0
+    }
+  ],
+  "summary": {
+    "tasks": 20,
+    "passed": 14,
+    "deliverable_ok": 17,
+    "done": 9,
+    "grades": {
+      "pass": 48,
+      "total": 60
+    },
+    "median_wall_min": 27.9,
+    "calls": 834,
+    "fix_calls_share": 28.2,
+    "fix_rounds": 50,
+    "flips": 1,
+    "judge_avg": 4.14
+  },
+  "compared_with": null
+}

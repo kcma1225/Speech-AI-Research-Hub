@@ -1,0 +1,353 @@
+# 閱讀筆記：Deep context: end-to-end contextual speech recognition
+
+## 論文資訊與一句話總結
+
+### 論文資訊
+- **標題**：Deep context: end-to-end contextual speech recognition
+- **作者**：Golan Pundak、Tara N. Sainath、Rohit Prabhavalkar、Anjuli Kannan、Ding Zhao
+- **年份**：2018
+- **出處**：arXiv 預印本（arXiv:1808.02480），全文 8 頁；cite key：`pundak2018deep`
+- **關鍵詞**（Index Terms，p. 1）：speech recognition、sequence-to-sequence models、listen attend and spell (LAS)、attention、embedded speech recognition
+
+### 一句話總結
+本文提出 Contextual Listen, Attend and Spell（CLAS）——一個全神經、端到端的情境感知 ASR 方法：把情境詞組（context phrases）以字元序列嵌入成固定維度表示，透過注意力機制在 LAS 解碼的每一步融入情境，並與整個辨識模型**聯合訓練**；在多項任務上，CLAS 相對 WER 最高比「LAS 與情境 n-gram 模型 shallow fusion」的基準方法改善 68%（Abstract, p. 1）。
+
+### 要解決的問題與動機
+1. **情境決定使用者說什麼**：將說話者情境納入辨識可顯著提升 ASR 表現，情境包括對話狀態（鬧鐘響時「stop」「cancel」應更可能）、位置（附近餐廳或地點更可能），以及個人化資訊如聯絡人與播放清單（§1, p. 1）。
+2. **端到端模型難以動態引入情境**：seq2seq 模型（CTC、RNN-T、LAS）把傳統 ASR 的聲學模型、發音模型與語言模型合併為單一神經網路聯合訓練；而傳統情境化主流做法是以獨立訓練的 LM 做 on-the-fly（OTF）rescoring，動態調整少量相關 n-gram 的權重——這種依賴外部獨立訓練 LM 的方式**違背了 seq2seq 模型聯合最佳化的優勢**（§1, p. 1–2）。
+3. **既有情境化方法需調權重**：先前以由說話者情境構建的 WFST 對 LAS 做 shallow fusion 雖有效，但連同 OTF rescoring 都需要仔細調整 rescoring 權重（§1, p. 1–2）。
+4. **CLAS 的設計目標**：提供情境詞組清單即可，**不需要**情境資訊在訓練時出現、可處理未見過的 OOV 詞、且不需調 rescoring 權重；方法可視為 [18] 串流關鍵詞偵測技術的推廣，允許推理時詞組數量可變（§1, p. 1–2；Abstract）。
+5. **動機的初步驗證**：CLAS 在處理數百個情境詞組時顯著勝過線上 rescoring，數千個詞組時與其相當（§1, p. 2；Abstract）。
+
+以下依目錄逐章展開：2 BACKGROUND（LAS 模型與 OTF rescoring）、3 CLAS（架構、訓練、推理、Bias-Conditioning）、4–5 實驗與結果、6 結論。
+
+## 1 INTRODUCTION
+
+### 投影片 1｜章節封面：1 INTRODUCTION
+- **主題**：如何在辨識過程中「動態」納入說話者情境（context），並提出全神經網路（all-neural）情境化機制 **CLAS（Contextual-LAS）**（§1, p. 1–2）
+- 本章為文字論述，**無編號公式**；模型與機制的數學定式見 §2–§3
+
+### 投影片 2｜動機：情境資訊能顯著提升 ASR（§1, p. 1）
+- 語音正成為行動裝置與智慧型個人助理的主要輸入模式之一 [1]
+- 將 speaker's context 納入辨識流程，辨識效能可顯著提升 [2]
+- 情境實例：
+  - **對話狀態**：鬧鐘響起時，希望 "stop"、"cancel" 更可能被辨識出來
+  - **說話者位置**：使附近餐廳或地點名稱更可能出現 [3]
+  - **個人化資訊**：使用者的聯絡人或歌曲播放清單 [4]
+
+### 投影片 3｜基礎：sequence-to-sequence ASR 的興起（§1, p. 1）
+- 直接由輸入語音序列輸出 words、word-pieces [5] 或 graphemes
+- 隱式將傳統 ASR 三元件——聲學模型（AM）、發音模型（PM）、語言模型（LM）——整合進**單一神經網路**，聯合訓練以優化 log-likelihood 或任務導向目標（如 expected WER）[6]
+- 代表方法：
+  - connectionist temporal classification（CTC），word output targets [7, 8]
+  - recurrent neural network transducer（RNN-T）[9, 10]
+  - 「Listen, Attend, and Spell」（LAS）encoder-decoder 架構 [11, 12]
+- 作者先前成果：以 **12,500 小時**轉錄語音訓練，即可超越 state-of-the-art 傳統 ASR 系統 [13]
+
+### 投影片 4｜問題：既有動態情境化方法的矛盾（§1, p. 1–2）
+- 核心議題：**動態**將情境資訊納入辨識流程
+- 傳統 ASR 主流做法：獨立訓練的 on-the-fly（OTF）rescoring 框架，動態調整與當下情境相關的少數 n-grams 之 LM 權重 [2]
+- 延伸到 sequence-to-sequence 模型的既有工作：
+  - **shallow fusion** [14]：在辨識過程中納入額外的 LM 成分
+  - **cold fusion** [15]：使辨識過程偏向 task-specific LM
+  - 以 shallow fusion 直接情境化 LAS [16]：用說話者情境建構加權有限狀態轉換器（WFST）修改輸出機率，已證實有效
+- **根本矛盾**：如前人做法使用外部、獨立訓練的 LM 做 OTF rescoring，違背了 sequence-to-sequence 模型各元件聯合最佳化所帶來的好處
+
+### 投影片 5｜方法：CLAS 的兩個步驟（§1, p. 1）
+- 情境以**片語清單（list of contextual phrases）**形式提供
+- 步驟：
+  1. 將每個情境片語（以 graphemes 序列表示）**嵌入**為固定維度表示
+  2. 以**注意力機制** [17] 在模型每次輸出預測的每一步，彙整可用情境
+
+### 投影片 6｜CLAS 的三大特性（§1, p. 1–2）
+- 為 [18]（串流關鍵詞偵測情境下所提技術）的**推廣**：允許推論時使用**可變數量**的情境片語
+- **不需要**在訓練時即取得該特定情境資訊
+- 關鍵優勢（不同於 [16, 2]）：**不需仔細調校 rescoring 權重**，同時仍能納入詞彙外詞（OOV, out-of-vocabulary）
+
+### 投影片 7｜結果摘要與論文組織（§1, p. 2）
+- CLAS 將情境化元件與模型其餘部分**聯合訓練**
+- **數百個**情境片語：顯著超越 online rescoring 技術；**數千個**：與這些技術相當
+- 論文組織：§2.1 標準 LAS 模型、§2.2 標準情境化做法；§3 提出由 LAS 修改為 CLAS 的方法；§4、§5 分別為實驗設定與結果討論；§6 結論
+
+## 2 BACKGROUND
+
+*（以下以簡報形式呈現 §2 重點；公式依 PDF 擷取文字還原，請對照原文 p. 2–3。）*
+
+### 投影片 1｜本章地圖：兩塊基礎
+- §2.1 標準 LAS：本文要擴充的骨幹模型（§2.1, p. 2）
+- §2.2 On-the-fly Rescoring：本文的基線方法（§2.2, p. 2–3）
+- 對照 Fig. 1：1(a)＝LAS、1(b)＝本文提出的 CLAS（後者見下一章）（§2.1, p. 2）
+- 閱讀主線：LAS 的機率分解（式 1–4）→ contextual LM 如何以 WFST 併入解碼（式 5）
+
+### 投影片 2｜2.1 The LAS model：三模組（§2.1, p. 2；Fig. 1a）
+- 定義：輸出 label 序列 $\boldsymbol{y}$（本文用 graphemes）在輸入音訊影格 $\boldsymbol{x}$（本文用 log-mel features）條件下的機率 $P(\boldsymbol{y}|\boldsymbol{x})$；細節見 [11, 13]
+- **Encoder**：堆疊 RNN [19, 20]（本文為 unidirectional）；讀入 $\boldsymbol{x}=(x_1,\ldots,x_K)$，輸出高階特徵（隱藏狀態）序列 $\boldsymbol{h}^x=(\boldsymbol{h}^x_1,\ldots,\boldsymbol{h}^x_K)$；角色類似傳統 ASR 的聲學模型
+- **Attention**：以 Multi-Head attention [21, 13]，由當前 decoder 隱藏狀態 $\boldsymbol{d}_t$ 對完整 encoder 狀態序列 $\boldsymbol{h}^x$ 計算 context vector $\boldsymbol{c}_t=\boldsymbol{c}^x_t$
+- **Decoder**：堆疊單向 RNN，計算輸出 token（本文為 characters）序列 $\boldsymbol{y}=(y_1,\ldots,y_T)$ 的機率
+- 三模組 jointly trained，從聲學特徵影格預測 grapheme 序列（Fig. 1a）
+
+### 投影片 3｜2.1 四個關鍵公式（§2.1, p. 2）
+- 式 1（輸出的自迴歸分解）：
+$$P(\boldsymbol{y}|\boldsymbol{x}) = P(\boldsymbol{y}|\boldsymbol{h}^x) = \prod_{t=1}^{T} P\!\left(y_t \mid \boldsymbol{h}^x, y_0, y_1, \ldots, y_{t-1}\right)$$
+（$T$＝輸出長度；$y_0$＝起始句首符號；模型逐步產生字元）
+- 式 2（decoder 狀態，捕捉先前字元脈絡 $\boldsymbol{y}_{<t}$）：
+$$\boldsymbol{d}_t = \mathrm{RNN}\!\left(\tilde{y}_{t-1},\, \boldsymbol{d}_{t-1},\, \boldsymbol{c}_{t-1}\right)$$
+（$\tilde{y}_{t-1}$＝$y_{t-1}$ 的 embedding 向量；$\boldsymbol{d}_{t-1}$、$\boldsymbol{c}_{t-1}$＝前一步 decoder 隱藏狀態與 context vector）
+- 式 3（第 $t$ 步輸出的後驗分布）：
+$$P\!\left(y_t \mid \boldsymbol{h}^x, \boldsymbol{y}_{<t}\right) = \mathrm{softmax}\!\left(\boldsymbol{W}_s[\boldsymbol{c}_t; \boldsymbol{d}_t] + \boldsymbol{b}_s\right)$$
+（$\boldsymbol{W}_s$、$\boldsymbol{b}_s$＝可學習參數；$[\cdot;\cdot]$＝兩向量串接）
+- 式 4（訓練目標：最小化 discriminative loss）：
+$$L_{\mathrm{LAS}} = -\log P(\boldsymbol{y}|\boldsymbol{x})$$
+- 資料流（Fig. 1a, p. 2）：$\boldsymbol{x}$ → Encoder → $\boldsymbol{h}^x$；Attention($\boldsymbol{h}^x$, $\boldsymbol{d}^x_{t-1}$) → $\boldsymbol{c}^x_t$；Decoder($y_{t-1}$) → $\boldsymbol{d}^x_t$ → Softmax → $P(y_t \mid y_{t-1},\ldots,y_0;\boldsymbol{x})$
+
+### 投影片 4｜2.2 On-the-fly Rescoring：流程＋式 5（§2.2, p. 2）
+- 定位：本文基線之一（similar to [22]）；假設 word-level biasing phrases 事先已知
+- 步驟 1：把 biasing phrases 編譯成 weighted finite state transducer（WFST）[23]，得 word-level WFST $G$
+- 步驟 2：$G$ 與「speller」FST $S$ 做 left-composition；$S$ 把 grapheme／word-piece 序列轉寫成對應的詞
+- 步驟 3：沿用 [12] 對一般 LM 的程序，得 contextual LM：
+$$C = \min(\det(S \circ G))$$
+（$S\circ G$＝composition；$\det$＝determinization；$\min$＝minimization）
+- 步驟 4——式 5（contextual LM 以加權方式併入解碼準則）：
+$$\boldsymbol{y}^* = \arg\max_{\boldsymbol{y}}\; \log P(\boldsymbol{y}|\boldsymbol{x}) + \lambda \log P_C(\boldsymbol{y})$$
+（$P_C(\boldsymbol{y})$＝contextual LM 的分數；$\lambda$＝可調超參數，控制在 beam search 期間 contextual LM 對整體分數的影響程度）
+
+### 投影片 5｜分數加在哪？Fig. 2(a)(b) 的兩種做法與問題（§2.2, p. 2–3）
+- Fig. 2(a)：[22] 未用 weight pushing → 式 5 的總分只在詞邊界（word boundary）套用；例「cat」：c:c → a:a → t:t/−1，成本落詞尾
+  - 限制：相關的詞若沒先出現在 beam 上，此技術便無法改善表現
+  - 適用性：phrases 很少（如 `yes`、`no`、`cancel`）尚可 [22]；含大量專有名詞（歌名、聯絡人）時效果不佳
+- Fig. 2(b)：weight pushing（similar to [12]）→ 分數只套用到每詞開頭的 subword unit；例「cat」：c:c/−1 → a:a → t:t
+  - 風險：over-biasing——詞在很早期就被人為 boost
+
+### 投影片 6｜Fig. 2(c) 本文做法：每個 subword-unit 加分＋subtractive cost（§2.2, p. 3）
+- 把權重 push 到詞的每個 subword unit；例「cat」（Fig. 2c）：c:c/−0.33 → a:a/−0.33 → t:t/−0.33（三段分攤，總量與單點 −1 相當）
+- 另加入 subtractive cost（圖中以負權重呈現）：隨匹配推進以 ε 轉移（圖示遞增扣回 −0.33、−0.66）逐步抵銷已給的加分
+- 目的：避免「prefix 提早被加分、卻未匹配到整個 phrase」的人為加分
+- 圖註（Fig. 2, p. 3）：成本（即 −1）是 model parameters，於 inference 階段調整
+- 三種做法（Fig. 2a–c）將在 results section 比較（§2.2, p. 3）
+
+## 3 CONTEXTUAL LAS (CLAS)
+
+**投影片 1｜封面：CLAS 核心概念（§3, p. 3）**
+- CLAS＝Contextualized LAS：在 LAS 上額外輸入 bias phrases 清單 $\boldsymbol{z}$，有效建模 $P(\boldsymbol{y}|\boldsymbol{x},\boldsymbol{z})$。
+- $\boldsymbol{z}$ 的元素為與當前辨識情境相關的片語，如個人化聯絡人姓名、歌單等。
+- 全章四節：架構、訓練、推論、Bias-Conditioning。
+
+**投影片 2｜3.1 架構（1/3）：bias-encoder（§3.1, p. 3；Fig. 1b）**
+- 與標準 LAS（Fig. 1a）最大差異：新增 bias-encoder 與對應 attention。
+- $\boldsymbol{z}=\boldsymbol{z}_1,\ldots,\boldsymbol{z}_N$ 編成 $\boldsymbol{h}^z=\{\boldsymbol{h}^z_0,\ldots,\boldsymbol{h}^z_N\}$；$i>0$ 時 $\boldsymbol{h}^z_i$ 為 $\boldsymbol{z}_i$ 的嵌入（上標 $z$ 區別 bias 與音訊變數）。
+- no-bias 選項：可學習向量 $\boldsymbol{h}^z_0=\boldsymbol{h}^z_{nb}$ 代表「不用任何片語」，讓模型在無片語匹配音訊時可退回（backoff）無偏置解碼、完全忽略 $\boldsymbol{z}$。
+- bias-encoder 為多層 LSTM [19]：輸入 $\boldsymbol{z}_i$ 的子詞嵌入序列（與 decoder 相同的 grapheme 或 word-piece 單位），取 LSTM 最後狀態為整個片語嵌入 [24]。
+
+**投影片 3｜3.1 架構（2/3）：bias attention（§3.1, p. 3）**
+- 用與 audio-encoder 分開的 attention，以 decoder 狀態 $\boldsymbol{d}_t$ 算次要 context vector $\boldsymbol{c}^z_t$：
+$$u^z_{it}=\boldsymbol{v}^{z\top}\tanh(\boldsymbol{W}^z_h\boldsymbol{h}^z_i+\boldsymbol{W}^z_d\boldsymbol{d}_t+\boldsymbol{b}^z_a)\tag{6}$$
+$$\boldsymbol{\alpha}^z_t=\mathrm{softmax}(\boldsymbol{u}^z_t),\qquad \boldsymbol{c}^z_t=\sum_{i=0}^{N}\alpha^z_{it}\,\boldsymbol{h}^z_i\tag{7}$$
+- 符號：$u^z_{it}$＝片語 $i$ 在步 $t$ 的注意力能量；$\boldsymbol{v}^z,\boldsymbol{W}^z_h,\boldsymbol{W}^z_d,\boldsymbol{b}^z_a$＝可學習參數；$\boldsymbol{\alpha}^z_t$＝正規化注意力權重，加權求和得 $\boldsymbol{c}^z_t$。
+
+**投影片 4｜3.1 架構（3/3）：decoder 接軌與機率詮釋（§3.1, p. 3）**
+- 餵入 decoder 的 context vector 改為串接 $\boldsymbol{c}_t=[\boldsymbol{c}^x_t;\boldsymbol{c}^z_t]$；decoder 與 audio-encoder 等其餘元件同標準 LAS。
+- CLAS 明確建模「給定音訊與先前輸出、看到某片語」的機率：$\alpha^z_t=P(\boldsymbol{z}_t|\boldsymbol{d}_t)=P(\boldsymbol{z}_t|\boldsymbol{x};\boldsymbol{y}_{<t})$（式 8），稱 **bias-attention-probability**。
+- Fig. 3（p. 3）：reference "talk to what fruit are you" 以 3,250 個 bias phrases 解碼，展示最活躍片語在各解碼步 $t$ 的權重（圖中以 `$` 代 `</bias>`）。
+
+**投影片 5｜3.2 訓練：目標與隨機 bias list（§3.2, p. 4）**
+- 損失 $L_{\mathrm{CLAS}}=-\log P(\boldsymbol{y}|\boldsymbol{x},\boldsymbol{z})$（式 9）；$\boldsymbol{y}$＝轉錄稿、$\boldsymbol{x}$＝音訊、$\boldsymbol{z}$＝bias list。
+- $\boldsymbol{z}$ 於訓練時每個 batch 執行期隨機產生 → 模型對推論用哪些片語不做假設。
+- 流程：取 batch 的 references $r_1,\ldots,r_{N_{\mathrm{batch}}}$，隨機選以子字串出現於部分轉錄稿的 n-gram 組成 $\boldsymbol{z}$。
+- no-bias 練習：每個 reference 以機率 $P_{\mathrm{keep}}$ 被排除（語句留在 batch 但不抽片語）；$P_{\mathrm{keep}}=0$ 無任何片語、$=1$ 每語句至少一個匹配。
+- 每個保留 reference 隨機選 $k$ 個 word n-grams：$k$ 均勻取自 $[1,N_{\mathrm{phrases}}]$、階數 $n$ 均勻取自 $[1,N_{\mathrm{order}}]$；例 $P_{\mathrm{keep}}=1.0,N_{\mathrm{phrases}}=1,N_{\mathrm{order}}=1$＝每個 reference 選一個 unigram。
+
+**投影片 6｜3.2 訓練：`</bias>` 目標改造（§3.2, p. 4）**
+- 對 $\boldsymbol{z}$ 與各 reference $r$ 求交集，每次匹配在匹配處後插入 `</bias>`：例 `play a song.` 配到 `play` → `play</bias> a song.`。
+- 目的：製造**只有考慮正確 bias phrase 才能修正的訓練誤差** [18]——要預測 `</bias>` 就必須 attend 正確片語，確保 bias-encoder 獲得更新。
+
+**投影片 7｜3.3 推論（§3.3, p. 4）**
+- 使用者提供音訊特徵序列 $\boldsymbol{x}$ 與 context sequences $\boldsymbol{z}$（可能訓練中從未見過）。
+- bias-encoder 先把 $\boldsymbol{z}$ 嵌成 $\boldsymbol{h}^z$，且可在音訊串流開始**前**先算好。
+- 音訊幀 $\boldsymbol{x}$ 餵 audio encoder；decoder 如標準 LAS 以 beam-search 產生 N-best 假說 [24]。
+
+**投影片 8｜3.4 Bias-Conditioning：動機與做法（§3.4, p. 4）**
+- 問題：數千片語時 $\boldsymbol{c}^z_t$ 是眾多 bias-embeddings 的加權和，可能遠離訓練時見過的任何 context vector。
+- 做法：另提供 bias prefixes $\boldsymbol{p}=\boldsymbol{p}_1,\ldots,\boldsymbol{p}_N$；$\boldsymbol{z}_i$ 只在 $\boldsymbol{p}_i$ 被偵測出現於部分假說 $\boldsymbol{y}_{<t}$（beam 上部分解碼假說）時才於步 $t$「啟用」，更新式 (7)：
+$$m_{it}=\begin{cases}0 & \text{if } p_i\subseteq y_{<t}\\ \infty & \text{otherwise}\end{cases}\tag{10}$$
+$$\boldsymbol{\alpha}^z_t=\mathrm{softmax}(\boldsymbol{u}^z_t-\boldsymbol{m}_t)\tag{11}$$
+- $\subseteq$＝字串包含：prefix 未出現 → 能量減 $\infty$ → softmax 後機率歸零。
+- 例：`the cat sat` 條件在 prefix `the cat`：仍對整句算嵌入，但只在 $\boldsymbol{y}_{<t}$ 偵測到 `the cat` 才啟用。
+
+**投影片 9｜3.4 prefix 怎麼選（§3.4, p. 4）**
+- 好的 prefix：最小化共用同一 prefix 的片語數（避免 bias-attention「過載」），又不把片語切太碎（保留具辨識度的 bias embeddings）。
+- 可行做法：從空 prefix（$p_i=\epsilon$）起步，只要未被太多片語共用，每次從 $\boldsymbol{z}_i$ 加一個詞迭代擴展。
+- §5.3.3 討論 rule-based prefix 建構；完整演算法化處理留作未來工作。
+
+## 4 EXPERIMENTS
+
+### 投影片 1｜§4 實驗總覽（p. 4–5）
+- 兩個小節：**§4.1 Experimental Setup**（訓練資料 → 資料增強 → 訓練資源 → 模型架構 → bias 超參數）／**§4.2 Test sets**（Table 1：五個測試集）
+- 一句話：先交代「怎麼訓練 CLAS」，再交代「拿什麼測 CLAS」
+
+---
+
+### 投影片 2｜訓練資料（§4.1, p. 4）
+- 訓練設置類似 [13]，但聚焦 **grapheme（字元）輸出**、模型架構較小
+- 訓練集：**約 25,000 小時**、**3,300 萬（33 million）句**英文語音
+- 語料**匿名化＋人工轉寫**，代表 **Google 語音搜尋**流量
+
+---
+
+### 投影片 3｜資料增強（§4.1, p. 4）
+- 以 **room simulator** 人工破壞乾淨語料：加入不同程度的**噪聲與殘響** [25]
+- 整體 **SNR 0–30 dB、平均 12 dB**
+- 噪聲來源：**YouTube** 與日常生活環境錄音
+
+---
+
+### 投影片 4｜訓練資源與 shard 機制（§4.1, p. 4–5）
+- 硬體：**8×8 TPU slices**；global batch size = **4,096**
+- 每個 training core 每個訓練步驟處理 **shard size = 32** 句
+- bias phrases 在各 shard 內**隨機產生** → 每個 shard 訓練時最多看到 **32 個** bias phrases
+
+---
+
+### 投影片 5｜輸入特徵與模型架構（§4.1, p. 5）
+- 特徵：**80 維 log-mel**（25 ms 窗、每 10 ms 一幀）；沿 [13] **堆疊 3 幀、步距 3** 下採樣 → encoder 可比 [11] 更簡單
+- **encoder**：10 層單向 LSTM（每層 256 nodes）
+- **encoder-attention**：512 維、4 個 attention heads
+- **bias-encoder**：單層 LSTM（512 nodes）；**bias-attention**：512 維
+- **decoder**：4 層 LSTM（每層 256 nodes）
+- 總計約 **5,800 萬**可訓練參數；以 **TensorFlow** [26] 實作
+
+---
+
+### 投影片 6｜bias 訓練超參數（§4.1, p. 5；定義見 §3.2, p. 4）
+- $P_{\text{keep}}=0.5$：建立 bias 清單時，每句 reference 以此機率被保留；被丟棄者**仍留在 batch 但不提供 bias 片語** → 練出「no-bias」情境的穩健性（§3.2：$P_{\text{keep}}=0$ 完全無 bias 片語、$P_{\text{keep}}=1$ 每句至少一個匹配片語）
+- $N_{\text{phrases}}=1$：每個保留的 reference 隨機選 $k$ 個 word n-grams，$k \sim U[1,\,N_{\text{phrases}}]$
+- $N_{\text{order}}=4$：n-gram 階數 $n \sim U[1,\,N_{\text{order}}]$（最長 4-gram）
+- bias 清單期望大小（p. 5 原文：「17（shard size 的一半＋1 個 'no-bias'）」）：
+
+$$\mathbb{E}\big[\lvert\boldsymbol{z}\rvert\big] \;=\; \underbrace{32 \times 0.5}_{\text{一半 shard}} \;+\; \underbrace{1}_{\text{no-bias}} \;=\; 17$$
+
+  - $\lvert\boldsymbol{z}\rvert$：bias 清單片語數；$32$：shard size；$P_{\text{keep}}=0.5$ 使約半數 reference 留下片語；$+1$：「no-bias」選項
+
+---
+
+### 投影片 7｜測試集總覽（§4.2, Table 1, p. 5）
+
+| Test Set | 句數 | 平均 bias list 大小 | bias OOV rate |
+|---|---|---|---|
+| Voice Search | 14k | – | – |
+| Dictation | 15k | – | – |
+| Songs | 15k | 303 | 3.5% |
+| Contacts | 15k | 75 | 5.2% |
+| Talk-To | 4k | 3,255 | 5.6% |
+
+- **bias OOV rate**＝bias 清單中、未出現於訓練資料的唯一詞（unique words）所佔比例（Table 1 說明，p. 5）
+- **Voice Search**：約 3 秒的語音搜尋查詢；**Dictation**：較長語句（如簡訊聽寫）→ 兩者與部分訓練條件匹配，**不測 biasing**，而是測 bias-free 設定下的表現（p. 5）
+
+---
+
+### 投影片 8｜三個 bias 測試集（§4.2, p. 5）
+- 每句附**各自的 contextual phrases**：4 個到 3,000 多個，且**句與句之間不一定相同**
+- 以 **TTS**（**Parallel WaveNet** [27]）人工合成，並**比照訓練資料的方式加噪**
+- **Songs**：播放音樂請求（*play rihanna music*）；bias 集＝熱門美國歌曲與歌手名
+- **Contacts**：撥號請求（*call demetri mobile*）；bias 集＝任意聯絡人名清單
+- **Talk-To**：與 chatbot 交談請求（*talk to trivia game*）；可用 chatbot 清單明顯更大（平均 **3,255**，Table 1）
+
+## 5 RESULTS
+
+### 投影片 1｜總覽：三條實驗線（§5, p. 5–6）
+- 在多個測試集上檢驗 CLAS：(1) 完全無 bias phrases 時的表現（§5.1）→ (2) OTF rescoring 基線（§5.2）→ (3) CLAS 搭配 bias phrases 的成效與擴展性（§5.3）
+
+### 投影片 2｜§5.1 無 bias phrases：CLAS-NB vs LAS（p. 5）
+- 動機：確認 biasing 元件在「沒有 bias phrases」時不會妨礙解碼
+- **CLAS-NB**＝訓練時用隨機 bias phrases、推論時給空清單（只呈現 "no-bias"）
+- Voice Search：LAS 6.9% → CLAS-NB **6.4%**；Dictation：5.5% → **4.5%**（Table 2, p. 5）
+- 結論：CLAS-NB 反而優於 vanilla LAS → CLAS 即使無 bias phrases 也可用；後續實驗以 CLAS-NB 作為 LAS 基線的代理，確保公平比較
+
+### 投影片 3｜§5.2 OTF rescoring：bias 要加在哪些 subword（p. 5）
+- 只報 Songs 測試集，其他集合趨勢相同（Table 3, p. 5）；各變體差異在 biasing 權重如何分配到 subword 單位（作法見 §2.2）
+- WER %：No Bias (LAS) 20.9 → End of Word Bias（內文引 [22]、Table 3 列名作 [16]）19 → Beginning of Word Bias 16.5 → **Every Subword Unit w/ Subtractive Cost Bias 9.4**
+- 結論：詞尾 bias 幾乎無改善、詞首略有幫助；最佳做法是對**每個 subword 單位** bias，讓詞持續留在 beam 上——之後所有 OTF 實驗皆採此設定
+
+### 投影片 4｜§5.3.1 CLAS vs 兩基線（Table 4, p. 6）
+- 基線：(1) LAS（＝§5.1 的 CLAS-NB）；(2) LAS + OTF rescoring（§2.2），其中權重 $\lambda$ 直接在**同一批測試集**上估測（允許調參）
+- WER %（LAS / LAS+OTF / CLAS）：Songs 18.7 / 9.4 / **6.9**；Contacts 28 / 17.7 / **7.9**；Talk-To 10.8 / **5.2** / 14
+- 發現：數百個 phrases、高 OOV 率的集合（Songs、Contacts），CLAS 明顯勝出且**不需額外超參數調校**；但數千個 phrases 的 Talk-To 上 CLAS 退化（14%）→ 擴展性問題留待 §5.3.3 解決
+
+### 投影片 5｜§5.3.2 隨 distractor 數增加的退化（Fig. 4, p. 6）
+- 方法：把 bias 清單限縮為「參考轉錄中出現的 phrases + $N$ 個 *distractors*（不在轉錄中、自完整 bias 清單隨機抽取）」，觀察 WER 隨 $N$ 的變化
+- 圖形（圖軸由 Figure 4 目測）：橫軸 distractor 數（對數刻度）、縱軸 WER %；約 10 個時約 4.7%、到約 100 個仍平坦，之後攀升，約 $10^3$ 附近越過「無 biasing」虛線（約 11%），約 3,000 個時升到約 14.8%——呈漸進退化
+- 假說：phrases 一多，embeddings 之間開始出現相關性——talking pal 與 talkative ai 的相關性（原文稱 normalized inner product，筆記補記為 $\mathrm{corr}(e_a, e_b) = \langle e_a, e_b\rangle / (\lVert e_a\rVert\,\lVert e_b\rVert)$，原文未給公式）為 **0.6**，平均僅 **0.2**
+
+### 投影片 6｜§5.3.3 解方：CLAS + Bias-conditioning (Cond) + OTF（p. 6）
+- 做法：結合 CLAS 與 bias-conditioning（§3.4）；因 Talk-To phrases 最多，只對此集驗證擴展性；以規則方式建構 prefix——由 talk to + 下一個詞組成，如 talk to pharmacy flashcards 切成 prefix $p_i$ = talk to pharmacy（條件前綴）與 suffix $z_i$ = flashcards（實際 bias 的目標片段）；另發現把 talk to 後第一詞條件於**首字母**也有幫助（pharmacy → talk to p）
+- 效果：共享同一 prefix 的 phrases 上限 3,255 → **225**，bias phrase segments 總數僅 +10%
+- Table 5（WER %）：Songs CLAS 6.9 → **CLAS+OTF 5.7**；Contacts 7.9 → **7.5**；Talk-To CLAS 14、+OTF 9.0、+Cond 7.4、**+Cond+OTF 5.6**
+- 結論：conditioning 與 OTF rescoring 各自有助益、結合最佳（Talk-To 14% → **5.6%**）；bias-conditioning 使 CLAS 擴展到大量 phrases 而無任何退化
+
+## 6 CONCLUSIONS
+
+### 投影片 1｜結論四要點總覽（§6, p. 6）
+1. **提出 CLAS**：作者總結本工作提出 CLAS——一個 novel、all-neural、end-to-end 的 contextualized ASR 模型，核心做法是「把完整的 context phrases embed 進模型」以納入語境資訊（§6, p. 6；架構細節見 §3.1, p. 3）。
+2. **勝過 shallow fusion**：在多個 test sets 上，CLAS 的實驗結果超越標準的 shallow-fusion biasing 技術（§6, p. 6；直接比較見 §5.3.1, p. 6）。全文最大幅度見 Abstract：relative WER 改善高達 68%，顯示聯合最佳化優於個別訓練元件的組合（Abstract, p. 1）。
+3. **大量 context phrases 的能力**：作者檢驗了 CLAS 處理一大組 context phrases 的能力（對應 §5.3.2「CLAS with varying number of bias phrases」, p. 6），並提出 conditioning 方法進一步改善品質（對應 §3.4 Bias-Conditioning, p. 4；實證見 §5.3.3, p. 6）。
+4. **未來工作**：把 CLAS scaling 到 tens of thousands（數萬）個 bias phrases（§6, p. 6）。
+
+### 投影片 2｜四要點回扣全文脈絡
+- **要點 1 ↔ §1（p. 1–2）**：CLAS 先把每個 phrase（以 graphemes 表示的序列）embed 成固定維度表示，再用 attention 在每個輸出預測步驟彙整可用 context；訓練時不需要同樣的 context 資訊、不必小心調 rescoring weights、且可納入 OOV 詞（§1, p. 1–2）——這些正是結論宣稱的賣點來源。
+- **要點 2 ↔ §5（p. 5–6）**：完全無 bias phrases 時 CLAS-NB 已明顯優於 LAS（§5.1, p. 5）；搭配 bias phrases 時勝過 OTF rescoring 基線（§5.2, p. 5）；§5.3.1（p. 6）再逐一比較各種 biasing 做法。Introduction 並註明：數百個 phrases 時 CLAS 「significantly outperforms」online rescoring，數千個時約當持平（§1, p. 2）。
+- **要點 3 ↔ §5.3.3（p. 6）**：在 bias phrases 最多的 Talk-To 測試集，WER 從純 CLAS 的 14 降到 CLAS+Cond 的 7.4，再加上 OTF rescoring 更到 5.6（Table 5, p. 6）；作者寫道 conditioning 讓模型「scale 到大量 phrases 而不劣化」（§5.3.3, p. 6）。
+
+### 投影片 3｜結論點名的關鍵機制：Bias-Conditioning（§3.4, p. 4；Eq. 10–11）
+- **動機**：呈現數千個 phrases 時，bias context vector 是許多 bias-embeddings 的加權和，可能遠離訓練時見過的任何 context vector（§3.4, p. 4）。
+- **做法**：推論時同時給 bias phrases $z = z_1,\dots,z_N$ 與 bias prefixes $p = p_1,\dots,p_N$；只有當 $p_i$ 已出現在 beam 的部分解碼假設 $y_{<t}$ 時，才「啟用」對應的 $z_i$：
+$$m_t^i = \begin{cases}0 & \text{if } p_i \subseteq y_{<t}\\ \infty & \text{otherwise}\end{cases}\qquad(10)$$
+$$\alpha_t^z = \mathrm{softmax}(u_t^z - m_t)\qquad(11)$$
+- **符號說明**（§3.4, p. 4）：$m_t^i$＝第 $i$ 個 phrase 在步驟 $t$ 的遮罩（0＝啟用、$\infty$＝禁用）；$\subseteq$＝字串包含（string inclusion）；$u_t^z$＝bias attention 的 logits；$\alpha_t^z$＝更新後的 bias-attention 機率（更新的是 Eq. 7 的 bias-attention-probabilities）；$y_{<t}$＝目前部分假設。
+
+### 投影片 4｜prefix 怎麼選 ＋ 未來工作的伏筆
+- §5.3.3（p. 6）採 rule-based 建構：prefix 取「talk to」＋下一個詞（例：talk to pharmacy flashcards → prefix $p_i$ = talk to pharmacy、suffix $z_i$ = flashcards）；並讓「talk to」後的第一個詞額外條件在首字母上（如 talk to p）。效果：共享同一 prefix 的 phrases 由 3255 降到 225，bias phrase segments 總數僅增加 10%（§5.3.3, p. 6）。
+- §3.4（p. 4）明言：好的 prefix 應極小化共享同一 prefix 的 phrases 數、又不要把 phrase 切得太碎；完整演算法化處理留作 future work——這與結論「scaling 到 tens of thousands of bias phrases」（§6, p. 6）首尾呼應：conditioning 是通往大規模個人化 bias 的橋梁。
+- 一句話收尾：CLAS 的價值在於把 contextualization 併入 end-to-end 的聯合最佳化，而非事後掛上獨立訓練的 LM／n-gram（Abstract, p. 1；§6, p. 6）。
+
+## 限制、我的疑問與待追問
+
+### 論文自述與明顯的限制
+- **擴展性是最大弱點**：偏誤清單達數千條時，純 CLAS 在 Talk-To 上 WER 反升至 14%,明顯輸給 LAS+OTF 的 5.2(§5.3.1、Table 4);作者僅把「擴展到數萬條 bias phrases」列為 future work(§6),代表架構本身尚未解決此問題。
+- **Bias-conditioning 是手工、任務特定的解法**：前綴以 rule-based 方式構造(`talk to`+下一詞，再對首字母 conditioning),只在 Talk-To 一個集合上驗證；一般化的前綴演算法被明言「留作 future work」(§3.4、§5.3.3)。
+- **三個 biasing 測試集全是 TTS 合成**：Songs、Contacts、Talk-To 以 Parallel WaveNet 產生後加噪(§4.2),沒有真人語音的 biasing 評測，對真實場景的外推存疑。
+- **可重現性低**：25,000 小時內部 Google 語音、8×8 TPU 訓練(§4.1),資料與模型未公開；僅測英文、grapheme 輸出。
+- **訓練與推論的清單長度落差**：訓練每 shard 最多 32 條 bias phrases(期望 17 條)(§4.1),推論卻達 3,255 條(§4.2);作者自己承認這會使 context vector「遠離訓練時所見」(§3.4)。
+
+### 讀的時候不清楚的地方
+- Abstract 稱相對 WER 改善「高達 68%」,但以 Table 4 計算：Contacts 28→7.9 為 71.8%,Songs 18.7→6.9 為 63.1%,沒有一組恰為 68%,對照基準不明。
+- Table 4 的 LAS 在 Songs 是 18.7,Table 3 的 No Bias (LAS) 卻是 20.9;§5.3.1 說 LAS baseline「以 CLAS-NB 作為 proxy」,但未逐項交代各表實際用的基準，交叉比較時易混淆。
+- Table 5 顯示 CLAS+OTF 在 Songs(5.7)、Contacts(7.5)都比純 CLAS 好，與 §5.3.1「數百條時 CLAS 明顯較佳」的敘述有張力；且 CLAS+Cond 在這兩集為「-」,未解釋為何不測。
+- CLAS-NB 在無 bias 時反而優於 vanilla LAS(§5.1,作者稱「somewhat surprisingly」),成因未分析。
+- OTF 的 λ「estimated on the same test sets」(§5.3.1),Fig. 2 的成本參數「tuned during inference」,調參用哪些資料未明說(雖調在測試集上對基線有利，仍屬不乾淨的比較)。
+- Talk-To 失效只有假說(embedding 相關性 0.6 vs 平均 0.2,§5.3.2),無控制實驗；bias-attention 對數千條 embeddings 的推論計算/延遲成本也未報告(§3.3 只說嵌入可提前算)。
+- 式 (8) 把 attention 權重直接寫成 $P(z_t|d_t)=P(z_t|x;y_{<t})$(§3.1),記法寬鬆，與 softmax 歸一化的語意關係需自行推敲。
+
+### 值得追問的問題
+- $P_{\text{keep}}$、$N_{\text{phrases}}$、$N_{\text{order}}$(§3.2、§4.1)對 WER 與 scale 行為的敏感度如何？有無系統性消融？
+- Conditioning 以 $m_{it}=\infty$ 遮蔽未匹配前綴的 phrase(式 (10)–(11));若前綴本身被誤辨，正確 phrase 會被擋掉，robustness 如何補救？自動前綴演算法能否脫離 `talk to` 這類固定句式泛化(§3.4)?
+- 模型如何線上決定 no-bias backoff($h_z^{nb}$,§3.1)?能否把 $\alpha_t^z$ 當作 bias 相關度的 confidence 輸出？
+- 除了 OTF rescoring,與 cold fusion [15] 等其他 contextual E2E 方法、以及串流/低延遲設定的比較為何？
+- Abstract 的 68% 究竟由哪兩個數字算出？
+
+## 與我研究的關係
+
+### 問題完全對口
+本篇核心正是我的主題：在 E2E ASR 中依動態 context phrases（人名、歌名等清單）即時偏置辨識，且測試時可含訓練未見的 OOV 詞（Abstract；§3）。我的研究是 Zipformer + RNN-T 的熱詞偏置，同屬 contextual biasing，此篇是最核心的參照文獻。
+
+### 可取用的方法線索
+- **OTF rescoring（§2.2，式 5）**：不重訓模型、推論期把熱詞編成 WFST 淺融合（$\lambda$ 加權），與我「不重新訓練整個模型」的限制屬同一家族。其消融（Table 3：Songs 20.9 → 9.4）顯示「每個 subword 都給分＋subtractive cost」遠優於只在詞首/詞尾給分——此設計可直接對應到我 RNN-T 解碼的 token 級 biasing。
+- **Bias-Conditioning（§3.4，式 10–11）**：熱詞只在 prefix 出現於部分假說 $y_{<t}$ 時才啟用，是推論期、與串流相容的 gating 機制，可用來在解碼中動態縮減熱詞候選，緩解大量熱詞互相干擾（§5.3.2：embedding 相關性升高導致 WER 隨清單變大而劣化）。
+
+### 對評估集設計最有用
+我的研究要建評估集，此篇實驗設計可直接參考（§4.2、Table 1）：熱詞清單規模分層（75–3,255 條）、回報 bias OOV 率（3.5–5.6%）、以 distractors 畫出 WER–清單大小曲線（Fig. 4），並設 no-bias 對照組確認偏置不傷害一般語句（§5.1、Table 2：CLAS-NB 反而略優於 LAS）。
+
+### 需要小心的差異
+CLAS 把偏置模組與 ASR 聯合訓練（§3.2），才能大幅勝過淺融合（Table 4：Songs 6.9 vs OTF 9.4；Abstract 稱最高 68% 相對 WER 改善），Talk-To（千級清單）則靠 conditioning＋OTF 補救（Table 5：14 → 5.6）。但我不能重訓整個模型，故 CLAS 對我更像「聯合訓練上限」的定位參考，用來衡量推論期方法的差距；且其架構是 LAS attention 而非 RNN-T/串流，無法直接搬架構，可搬的是 subword 給分、prefix gating 與評估方法學。
+
+## 我的想法
+
+（之後自己補上）
