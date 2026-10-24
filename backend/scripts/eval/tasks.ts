@@ -16,6 +16,8 @@ export type Outcome = {
   deck?: { id: string; qmd: string; parsed: G.Deck; kind: string | null; paperId: string | null; paperTitle: string | null };
   note?: { id: string; md: string };
   latex?: { id: string; text: string; compile: string | null };
+  /** The main study's cite keys after the run (papers a workflow imported into the study count as its library). */
+  studyKeys?: string[];
   kinds: Kind[];
   brief: G.BriefLike;
   asks: { id: string; title?: string; pending?: boolean }[];
@@ -62,8 +64,15 @@ const paper = (ctx: Ctx, re: RegExp) => {
 
 const deckOf = (o: Outcome) => o.deck?.parsed ?? { title: "", subtitle: "", slides: [] };
 const lang = (o: Outcome, l: "en" | "zh") => (o.deck ? G.languageGrade(G.deckLanguage(o.deck.parsed, l), l) : G.grade(`language_${l}`, false, "沒有簡報"));
+/** Paper-report decks follow the Lab-Hub template (English slides, 繁中 notes) unless the request names a language. */
+const paperLang = (o: Outcome, request: string) => {
+  const l = G.explicitLanguage(request);
+  if (l) return lang(o, l);
+  return o.deck ? G.paperReportLanguage(o.deck.parsed) : G.grade("language_template", false, "沒有簡報");
+};
 const noteText = (o: Outcome) => o.note?.md ?? "";
-const keys = (ctx: Ctx) => ctx.fx.main.keys;
+const PAPER_REPORT_REQUEST = "幫我做一份論文報告簡報：Contextual Adapters for Personalized Speech Recognition in Neural Transducers";
+const keys = (ctx: Ctx, o?: Outcome) => [...new Set([...ctx.fx.main.keys, ...(o?.studyKeys ?? [])])];
 const progressDeck = (o: Outcome) => G.grade("deck_mode", !!o.deck && o.deck.kind !== "paper_report" && !o.deck.paperId, o.deck ? `kind=${o.deck.kind ?? "?"}，paper=${o.deck.paperId ?? "無"}` : "沒有簡報");
 
 export const TASKS: Task[] = [
@@ -110,21 +119,21 @@ export const TASKS: Task[] = [
   },
   {
     id: "deck_paper_report", title: "論文報告簡報（有 PDF）", tags: ["deck", "create", "paper", "core"], mode: "api", study: "main",
-    request: "幫我做一份論文報告簡報：Contextual Adapters for Personalized Speech Recognition in Neural Transducers",
+    request: PAPER_REPORT_REQUEST,
     prepare: async (c) => ({ inputs: { paper_id: paper(c, /^Contextual Adapters/).id } }), expect: { kind: "deck" }, timeoutMin: 90,
-    grade: (o, c) => [G.grade("paper_report", o.deck?.kind === "paper_report" && (o.deck.paperId === paper(c, /^Contextual Adapters/).id || /^Contextual Adapters/i.test(o.deck.paperTitle ?? "")), `kind=${o.deck?.kind ?? "?"}，paper=${o.deck?.paperTitle ?? o.deck?.paperId ?? "無"}`), lang(o, "zh"), G.grade("pages", deckOf(o).slides.length >= 8, `${deckOf(o).slides.length} 頁（≥ 8）`)],
+    grade: (o, c) => [G.grade("paper_report", o.deck?.kind === "paper_report" && (o.deck.paperId === paper(c, /^Contextual Adapters/).id || /^Contextual Adapters/i.test(o.deck.paperTitle ?? "")), `kind=${o.deck?.kind ?? "?"}，paper=${o.deck?.paperTitle ?? o.deck?.paperId ?? "無"}`), paperLang(o, PAPER_REPORT_REQUEST), G.grade("pages", deckOf(o).slides.length >= 8, `${deckOf(o).slides.length} 頁（≥ 8）`)],
     judge: "a journal-club report of this one paper: problem, method (architecture), experiments with the paper's numbers, assessment",
   },
   {
     id: "note_topic_research", title: "主題調研筆記", tags: ["note", "research", "slow"], mode: "api", study: "main",
     request: "調研：在 Zipformer + RNN-T 串流辨識下，有哪些 dynamic hotwording（contextual biasing）做法？整理成研究筆記", expect: { kind: "note" }, timeoutMin: 120,
-    grade: (o, c) => [G.docLanguage(noteText(o), "zh"), G.mentionsPapers(noteText(o), c.fx.main.papers, 4), G.citationsResolve(noteText(o), keys(c), 3), G.minLength(noteText(o), 1500)],
+    grade: (o, c) => [G.docLanguage(noteText(o), "zh"), G.mentionsPapers(noteText(o), c.fx.main.papers, 4), G.citationsResolve(noteText(o), keys(c, o), 3), G.minLength(noteText(o), 1500)],
     judge: "a research note: taxonomy of methods, where each injects bias, trade-offs, open questions; every claim tied to a library paper",
   },
   {
     id: "note_lit_review", title: "文獻回顧（要有比較表）", tags: ["note", "research"], mode: "api", study: "main",
     request: "幫我寫一份 contextual biasing（熱詞偏置）的文獻回顧，要有比較表", expect: { kind: "note" }, timeoutMin: 90,
-    grade: (o, c) => [G.docLanguage(noteText(o), "zh"), G.tableRows(noteText(o), 5), G.citationsResolve(noteText(o), keys(c), 5)],
+    grade: (o, c) => [G.docLanguage(noteText(o), "zh"), G.tableRows(noteText(o), 5), G.citationsResolve(noteText(o), keys(c, o), 5)],
     judge: "a literature review with a comparison table and a synthesis, faithful to the papers",
   },
   {
@@ -136,7 +145,7 @@ export const TASKS: Task[] = [
   {
     id: "latex_paper_goal", title: "從零寫 LaTeX 論文（目標）", tags: ["latex", "goal", "slow"], mode: "goal", study: "main",
     request: "寫一篇 LaTeX 論文初稿：串流 RNN-T 動態熱詞偏置方法綜述，用研究文獻庫的論文", expect: { kind: "latex" }, timeoutMin: 240,
-    grade: (o, c) => [G.grade("compiles", o.latex?.compile === "success", `最後編譯：${o.latex?.compile ?? "無"}`), G.grade("sections", ((o.latex?.text ?? "").match(/\\section\*?\{/g) ?? []).length >= 4, `${((o.latex?.text ?? "").match(/\\section\*?\{/g) ?? []).length} 個 \\section（≥ 4）`), G.citationsResolve(o.latex?.text ?? "", keys(c), 5)],
+    grade: (o, c) => [G.grade("compiles", o.latex?.compile === "success", `最後編譯：${o.latex?.compile ?? "無"}`), G.grade("sections", ((o.latex?.text ?? "").match(/\\section\*?\{/g) ?? []).length >= 4, `${((o.latex?.text ?? "").match(/\\section\*?\{/g) ?? []).length} 個 \\section（≥ 4）`), G.citationsResolve(o.latex?.text ?? "", keys(c, o), 5)],
     judge: "a coherent survey paper draft: introduction, method taxonomy, comparison, discussion; citations used correctly",
   },
   {

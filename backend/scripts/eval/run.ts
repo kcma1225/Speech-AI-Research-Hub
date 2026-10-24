@@ -22,7 +22,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HUB, Hub, deployedBuild, isUuid, sleep, sql, type Build } from "./client.js";
-import { deckSource, ensureFixtures, type Fixtures } from "./fixtures.js";
+import { deckSource, ensureFixtures, studyKeys, type Fixtures } from "./fixtures.js";
 import * as G from "./graders.js";
 import { pairwise, rubric } from "./judge.js";
 import { markdown, summarize, type Report, type TaskResult } from "./report.js";
@@ -210,6 +210,7 @@ async function collect(runs: Wf[], goal: Goal | null, status: string): Promise<O
   if (noteId) o.note = { id: noteId, md: (await hub.api<{ note: { content_md: string } }>("GET", `/notes/${noteId}`)).note.content_md };
   const latexId = arts.filter((a) => a.kind === "latex_project").at(-1)?.id;
   if (latexId) o.latex = { id: latexId, ...(await latexOf(latexId)) };
+  if (noteId || latexId) o.studyKeys = await studyKeys(hub, fx.main.id).catch(() => undefined);
   return o;
 }
 

@@ -228,8 +228,9 @@ run("workflow requirements (probe suite)", () => {
       expect(textOf(req, "user")).toContain("JSON 的 item 欄位");
       return JSON.stringify({ pages: [
         { title: "Problem", points: ["Rare words in streaming ASR"] },
-        { title: "Shallow fusion", points: ["Architecture", "Pros", "Cons"], item: "Shallow fusion" },
-        { title: "TCPGen", points: ["Architecture", "Pros", "Cons"], item: "TCPGen" },
+        // The method page split into one page per method (both claim it: the original is expanded, not dropped).
+        { title: "Shallow fusion", points: ["Architecture", "Pros", "Cons"], item: "Shallow fusion", from: 2 },
+        { title: "TCPGen", points: ["Architecture", "Pros", "Cons"], item: "TCPGen", from: 2 },
         { title: "Comparison", points: ["Side by side"] },
         { title: "Blocked", points: ["Data"] },
       ] });
@@ -249,6 +250,38 @@ run("workflow requirements (probe suite)", () => {
     const qmd = await qmdOf(deckId);
     expect(languageViolations(qmd, "en")).toEqual([]);
     expect((qmd.match(/^## /gm) ?? []).length).toBe(5);
+  });
+
+  it("2b. expanding one named page keeps the others: a page the planner merged away is put back, the deck is checked", async () => {
+    const id = await newDeck("熱詞週報（展開）", ORIGINAL);
+    // The planner ignores the rule twice (the eval deck_expand_fields_zh outline): 「卡住」 merged into the last page.
+    m.set("outline", JSON.stringify({ pages: [
+      { title: "問題定義", points: ["罕見詞"] },
+      { title: "Shallow fusion", points: ["架構", "優點", "缺點"], item: "Shallow fusion" },
+      { title: "TCPGen", points: ["架構", "優點", "缺點"], item: "TCPGen" },
+      { title: "結果與下一步", points: ["資料量不足"] },
+    ] }));
+    const { planned, status, run: r } = await planAndRun("把「方法」展開：每個方法一頁，每頁都要有架構、優點、缺點", { inputs: { deck_id: id } });
+    expect(planned.plan!.edit_kind).toBe("expand");
+    // The planner was told which pages stay, and got the missing page as an issue before the deterministic repair.
+    const prompts = m.prompts("outline");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain("第 3 頁「卡住」");
+    expect(prompts[1]).toContain("原本的這些頁面不見了：第 3 頁「卡住」");
+    expect(planned.plan!.outline!.map((o) => o.title)).toEqual(["問題定義", "Shallow fusion", "TCPGen", "結果與下一步", "卡住"]);
+    expect(planned.criteria.find((c) => c.id === "kept")!.check).toEqual({ id: "pages_kept", params: { titles: ["問題定義", "卡住"], ordered: true } });
+    expect(status, JSON.stringify(r.report?.issues)).toBe("done");
+    expect(r.criteria.find((c) => c.id === "kept")!.status).toBe("pass");
+    expect(await qmdOf(id)).toMatch(/^## 卡住/m);
+  });
+
+  it("2c. a planner that never returns an outline: the edit runs on the deck's own pages instead of failing", async () => {
+    const id = await newDeck("熱詞週報（無大綱）", ORIGINAL);
+    m.set("outline", "我先想一想這份簡報要怎麼擴充……");
+    const { planned, status, run: r } = await planAndRun("再詳細一點", { inputs: { deck_id: id } });
+    expect(planned.plan!.edit_kind).toBe("expand");
+    expect(planned.plan!.outline!.map((o) => [o.title, (o as { from?: number }).from])).toEqual([["問題定義", 1], ["方法", 2], ["卡住", 3]]);
+    expect(status, JSON.stringify(r.report?.issues)).toBe("done");
   });
 
   it("3. remove a page and include a topic the model extracted: the page is dropped at planning, the topic is checked", async () => {

@@ -14,6 +14,7 @@ import { loadStudyAccess } from "../lib/studies/access.js";
 import { cancelJob } from "../jobs/queue.js";
 import { enqueueWorkflow } from "./jobs.js";
 import { emitRun, getRun, getSteps, insertSteps, insertWorkflowEvent, runView, stepView } from "./store.js";
+import { titleMatches } from "./checks.js";
 import { getWorkflowPlaybook } from "./playbooks/index.js";
 import { WorkflowEnv } from "./env.js";
 import { platformPort } from "./llm.js";
@@ -270,6 +271,12 @@ export async function approveWorkflow(app: FastifyInstance, user: CurrentUser, i
     if (outline && pb?.id === "slides" && edits.outline?.length) {
       const n = outline.length;
       criteria = criteria.map((c) => (c.id === "pages" ? { ...c, text: `簡報正好 ${n} 頁，頁面順序與確認的大綱一致`, check: { id: "slide_count", params: { expected: n } } } : c));
+      // Kept original pages: the ones the user took out of the outline on the plan card are their own decision.
+      criteria = criteria.flatMap((c) => {
+        if (c.id !== "kept" || !c.check) return [c];
+        const titles = ((c.check.params?.titles as string[] | undefined) ?? []).filter((t) => outline!.some((o) => titleMatches(t, o.title)));
+        return titles.length ? [{ ...c, check: { ...c.check, params: { ...c.check.params, titles } } }] : [];
+      });
     }
     const plan = locked.plan ? { ...locked.plan, ...(outline ? { outline } : {}), ...(state ? { requirements: state.requirements as Requirement[] } : {}) } : null;
     if (state) await client.query("UPDATE workflow_runs SET state = state || $2::jsonb WHERE id=$1", [id, JSON.stringify(state)]);

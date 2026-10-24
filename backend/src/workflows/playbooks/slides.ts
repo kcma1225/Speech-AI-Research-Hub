@@ -19,7 +19,7 @@ import { normalizeDiagrams } from "../../lib/slides/deck-visuals.js";
 import { figureSyntax } from "../../lib/slides/content-lint.js";
 import { buildContentRefs, contentRefsOf, paperFigures } from "../content-refs.js";
 import { bodyIssues, closeOpenBlocks, combineScores, fixContent, fixFor, materializeVisuals, pagesToScore, pruneGeneratedFiles, replaceSlides, scoreTable, sourceIssues, visionScores, visualShare, VISUAL_RULES, type PageScore, type ShotPage } from "./slides-visual.js";
-import { parseSlides, PLACEHOLDER_RE, titleMatches, unbalanced } from "../checks.js";
+import { keptIssues, matchOriginals, parseSlides, PLACEHOLDER_RE, scrubPlaceholders, titleMatches, unbalanced, type OriginalPage } from "../checks.js";
 import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps } from "../store.js";
@@ -42,7 +42,8 @@ import type { EditKind, Requirement } from "../types.js";
  * it); `layout` = the layout pattern the planner chose (A–F, T; `LAYOUTS`); `purpose` = what the page is for; `kind` and
  * `sources` (topic decks) = the page's role in the survey and the papers (`P<n>` = pick n) its content rests on.
  */
-export type SlideOutline = OutlineItem & { student_owned?: boolean; item?: string; layout?: string; purpose?: string; kind?: PageKind; sources?: string[] };
+/** `from`: an edit (revise / expand) — the original page this page rewrites or expands (1-based). */
+export type SlideOutline = OutlineItem & { student_owned?: boolean; item?: string; layout?: string; purpose?: string; kind?: PageKind; sources?: string[]; from?: number };
 export type PageKind = "title" | "motivation" | "taxonomy" | "method" | "comparison" | "synthesis" | "other";
 const PAGE_KINDS: PageKind[] = ["title", "motivation", "taxonomy", "method", "comparison", "synthesis", "other"];
 
@@ -410,7 +411,7 @@ function criteriaFor(n: number, mode: DeckMode, owned: string[], abstractOnly = 
   ];
 }
 
-type OutlineJson = { pages: { title: string; points?: string[]; student_owned?: boolean; item?: string; layout?: string; purpose?: string; kind?: string; sources?: string[] }[] };
+type OutlineJson = { pages: { title: string; points?: string[]; student_owned?: boolean; item?: string; layout?: string; purpose?: string; kind?: string; sources?: string[]; from?: unknown }[] };
 const isOutline = (v: unknown): v is OutlineJson => !!v && typeof v === "object" && Array.isArray((v as OutlineJson).pages) && (v as OutlineJson).pages.every((p) => p && typeof p.title === "string");
 
 /** `revise`: an existing deck's pages already carry the student's content — none is student-owned. */
@@ -447,6 +448,7 @@ const pageMeta = (p: OutlineJson["pages"][number]): Partial<SlideOutline> => {
     ...(kind && PAGE_KINDS.includes(kind) ? { kind } : {}),
     ...(sources.length ? { sources } : {}),
     ...(typeof p.purpose === "string" && p.purpose.trim() ? { purpose: cleanPoint(p.purpose, 160) } : {}),
+    ...((typeof p.from === "number" || (typeof p.from === "string" && /^\d{1,2}$/.test(p.from.trim()))) && Number.isInteger(Number(p.from)) && Number(p.from) > 0 ? { from: Number(p.from) } : {}),
   };
 };
 
@@ -747,6 +749,110 @@ async function setRequirement(env: WorkflowEnv, type: Requirement["type"], patch
   await env.setState({ requirements: reqs });
 }
 
+
+// ---------------------------------------------------------------- original pages preserved
+
+/** The user's words free the deck's structure (pages may be merged / dropped) or only its order. */
+const RESTRUCTURE_RE = /重新組織|重組|重新規劃|打掉重[做寫]|restructure|reorgani[sz]e|rework/i;
+const REORDER_RE = /順序|重新排|排序|調換|對調|移到|移至|挪到|放到最?[前後]|reorder|re-order|swap|move\s/i;
+
+/**
+ * Which original pages an edit must keep: every page except the ones the user's words remove (exclude) and, in an
+ * expansion, the ones they name to expand (「把『動態熱詞的做法』展開」: that page may become several new ones). Order is
+ * kept unless the words ask to reorder; titles of kept pages are kept in an expansion that is not a translation. Null
+ * when the words ask to restructure the deck (nothing to protect).
+ */
+type KeepRule = { originals: OriginalPage[]; ordered: boolean; translate: boolean; keepTitles: boolean; targets: string[] };
+function keepRule(words: string, reqs: Requirement[], src: ReviseSource, kind: EditKind): KeepRule | null {
+  if (RESTRUCTURE_RE.test(words)) return null;
+  const ex = reqs.find((r) => r.type === "exclude")?.params;
+  const removed = [...(ex?.terms ?? []).flatMap((t) => [t.name, ...(t.aliases ?? [])]), ...(ex?.pages ?? []).map((n) => src.slides[n - 1]?.title ?? "")].filter(Boolean);
+  const squash = (x: string) => x.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+  const said = squash(words);
+  const targets = kind === "expand" ? src.slides.map((p) => p.title).filter((t) => squash(t).length >= 2 && said.includes(squash(t))) : [];
+  const originals = src.slides
+    .map((p, i) => ({ n: i + 1, title: p.title, text: slideText(p.raw) }))
+    .filter((o) => o.title && !removed.some((t) => titleMatches(t, o.title)) && !targets.includes(o.title));
+  if (!originals.length) return null;
+  const lang = targetLanguage(reqs);
+  const translate = !!lang && lang !== deckLanguage(src.slides.map((p) => p.raw).join("\n"));
+  return { originals, ordered: !REORDER_RE.test(words), translate, keepTitles: kind === "expand" && !translate, targets };
+}
+
+/** A slide's visible text (title + body, no notes), clipped: the content signature the matcher compares. */
+const slideText = (raw: string) => {
+  const p = parseSlides(raw)[0];
+  return clipText(p ? `${p.title}\n${p.body}` : raw, 1200);
+};
+const deckLanguage = (text: string): "zh" | "en" => ((text.match(/[\u3400-\u9fff]/g) ?? []).length > (text.match(/[A-Za-z]{2,}/g) ?? []).length ? "zh" : "en");
+
+/** A kept page the plan dropped, back from the original: its title and bullet points. */
+function restoredPage(o: OriginalPage, raw: string): SlideOutline {
+  const body = parseSlides(raw)[0]?.body ?? "";
+  const bullets = body.split("\n").map((l) => /^\s*[-*+]\s+(.+)$/.exec(l)?.[1]?.trim()).filter((x): x is string => !!x).map((x) => cleanPoint(x)).slice(0, 5);
+  return { n: 0, title: o.title, points: bullets.length ? bullets : [`沿用原第 ${o.n} 頁的內容`], from: o.n };
+}
+
+/**
+ * Deterministic repair of an edit's outline: every kept original carried by one page (`from` set), dropped ones put back
+ * from the original, retitled ones (expansion) get their title back, and — unless the user asked to reorder — the
+ * originals in their order with the new pages staying after the original they followed.
+ */
+function keepOriginals(outline: SlideOutline[], rule: KeepRule, raws: string[]): { outline: SlideOutline[]; restored: string[]; retitled: string[]; changed: boolean } {
+  const match = matchOriginals(rule.originals, outline, { translate: rule.translate });
+  const pivot = new Map<number, number>();
+  match.at.forEach((j, i) => j !== null && pivot.set(j, i));
+  const restored: string[] = [];
+  const retitled: string[] = [];
+  const carried = rule.originals.map((o, i) => {
+    const j = match.at[i];
+    if (j === null || j === undefined) {
+      restored.push(o.title);
+      return restoredPage(o, raws[o.n - 1] ?? "");
+    }
+    const p = outline[j]!;
+    // Retitled without being split, or a merged title naming another original (「Idea card、下週與要問」).
+    const merged = rule.originals.some((x) => x !== o && titleMatches(x.title, p.title));
+    const rename = rule.keepTitles && ((match.by[i] !== "title" && !match.split[i] && !titleMatches(o.title, p.title)) || merged);
+    if (rename && p.title !== o.title) retitled.push(`「${p.title}」→「${o.title}」`);
+    return { ...p, ...(rename ? { title: o.title } : {}), from: o.n };
+  });
+  let out: SlideOutline[];
+  if (rule.ordered) {
+    const head: SlideOutline[] = [];
+    const after = rule.originals.map(() => [] as SlideOutline[]);
+    let anchor = -1;
+    outline.forEach((p, j) => {
+      const i = pivot.get(j);
+      if (i !== undefined) anchor = i;
+      else (anchor < 0 ? head : after[anchor]!).push(p);
+    });
+    out = [...head, ...carried.flatMap((p, i) => [p, ...after[i]!])];
+  } else {
+    // Reordering asked: the planner's order stands; a page put back goes after the previous original's page.
+    out = outline.map((p, j) => (pivot.has(j) ? carried[pivot.get(j)!]! : p));
+    rule.originals.forEach((_, i) => {
+      if (match.at[i] !== null) return;
+      const prev = i > 0 ? out.indexOf(carried[i - 1]!) : -1;
+      out.splice(prev + 1, 0, carried[i]!);
+    });
+  }
+  const changed = out.length !== outline.length || out.some((p, k) => p.title !== outline[k]?.title);
+  return { outline: out.map((p, k) => ({ ...p, n: k + 1 })), restored, retitled, changed };
+}
+
+/** The outline step's output for an outline (the text the checks and the plan card read). */
+const outlineOutput = (outline: SlideOutline[], summary = `${outline.length} 頁大綱`): StepOutput => ({ summary, text: outline.map((p) => `## ${p.title}\n${p.points.map((x) => `- ${x}`).join("\n")}`).join("\n\n"), data: { outline } });
+
+/** The planner's rule for kept pages (outline prompts). */
+function keepLine(rule: KeepRule | null, kind: EditKind): string {
+  if (!rule) return "";
+  const pages = rule.originals.map((o) => `第 ${o.n} 頁「${o.title}」`).join("、");
+  return kind === "expand"
+    ? `這些原本的頁面使用者沒有要求刪掉或改動，都要保留${rule.ordered ? "、順序不變" : ""}${rule.keepTitles ? "、標題照原文" : ""}：${pages}。可以把它們寫得更具體，也可以在前後插入新頁${rule.targets.length ? `；使用者要求展開的是${rule.targets.map((t) => `「${t}」`).join("、")}，這幾頁可以拆成多頁` : ""}。每頁的 from 寫出它改寫或展開自原本的第幾頁（新頁省略）。`
+    : `原本的每一頁都要保留${rule.ordered ? "、順序不變" : ""}（使用者要求刪掉的除外）：${pages}。每頁的 from 寫出它改寫自原本的第幾頁。`;
+}
+
 type ReviseSource = { deck: { id: string; title: string; kind: DeckMode; paper_id: string | null }; slides: { title: string; raw: string }[] };
 
 /**
@@ -804,20 +910,52 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
   // 「加上一頁…」: exactly the deck's pages + the added ones (not the generic expansion size).
   const added = addedPages(userText(env));
   const want = kind === "expand" ? Math.min(30, Math.max(3, Number(env.run.inputs.pages) || requiredPages(env.requirements()) || (added ? src.slides.length + added : Math.max(src.slides.length + 2, Math.round(src.slides.length * 1.5))))) : null;
+  // Original pages the user did not ask to remove / expand / reorder stay (checked on the outline and on the deck).
+  const keep = keepRule(userText(env), env.requirements(), src, kind);
+  const keptCheck: CheckSpec[] = keep ? [{ id: "pages_kept", params: { originals: keep.originals, ordered: keep.ordered, translate: keep.translate, keep_titles: keep.keepTitles } }] : [];
+  const outlineChecks = (n: number | null): CheckSpec[] => [...(kind === "expand" ? [{ id: "slide_count", params: { expected: n } }, { id: "no_placeholder", params: { on_slide: true } }] : [{ id: "min_length", params: { chars: 20 } }]), ...keptCheck];
+  const raws = src.slides.map((p) => p.raw);
   const outlineStep = await planningStep(env, {
     key: "outline", role: "planner", title: kind === "expand" ? `規劃擴充後的 ${want} 頁大綱` : "規劃修改後的每一頁",
-    instructions: kind === "expand" ? `依使用者的要求重新規劃正好 ${want} 頁的大綱：深入要求的焦點，內容來自原簡報與研究資料。` : "依使用者的修改要求，列出修改後每一頁的標題與重點（頁數與順序照原本，除非使用者要求改變）。",
+    instructions: kind === "expand" ? `依使用者的要求重新規劃正好 ${want} 頁的大綱：深入要求的焦點，內容來自原簡報與研究資料；沒有要求改動的原頁保留。` : "依使用者的修改要求，列出修改後每一頁的標題與重點（頁數與順序照原本，除非使用者要求改變）。",
     depends_on: ["research"],
     expected: kind === "expand" ? `${want} 頁大綱` : `${src.slides.length} 頁大綱`,
-    verify: { checks: kind === "expand" ? [{ id: "slide_count", params: { expected: want } }, { id: "no_placeholder", params: { on_slide: true } }] : [{ id: "min_length", params: { chars: 20 } }], judge: false },
-  }, (fix) => (kind === "expand" ? expandOutline(env, src, brief, want!, fix) : reviseOutline(env, src, fix)), 2);
-  const outline = await settleOutline(env, ((outlineStep.output.data as { outline?: SlideOutline[] } | undefined)?.outline ?? []), src.slides);
-  if (!outline.length) throw new WorkflowInputError("無法規劃修改後的簡報，請稍後再試。");
+    verify: { checks: outlineChecks(want), judge: false },
+  }, (fix) => (kind === "expand" ? expandOutline(env, src, brief, want!, fix, keep) : reviseOutline(env, src, fix, keep)), 2, async (out, round) => {
+    // After the planner's own fix round, kept pages it still dropped / moved / retitled are put back deterministically.
+    const planned = (out.data as { outline?: SlideOutline[] } | undefined)?.outline;
+    if (!keep || round < 1) return null;
+    // The planner never produced an outline (staging: a cheap model spent every budget thinking): the deck's own pages
+    // (minus removed ones) are the outline, so the edit still runs instead of failing the run.
+    const all = !planned?.length && round >= 2 ? keepRule(userText(env), env.requirements(), src, "revise") : null;
+    if (all) {
+      const r = keepOriginals([], all, raws);
+      await env.note(`沒有規劃出新的大綱，改照原本的 ${r.outline.length} 頁${kind === "expand" ? "逐頁擴充" : "修改"}。`);
+      return { output: outlineOutput(r.outline), verify: kind === "expand" ? { checks: outlineChecks(r.outline.length), judge: false } : undefined };
+    }
+    if (!planned?.length) return null;
+    const r = keepOriginals(planned, keep, raws);
+    if (!r.changed && !r.retitled.length) return null;
+    await env.note(`大綱保留原本的頁面：${[r.restored.length ? `放回 ${r.restored.map((t) => `「${t}」`).join("、")}` : "", r.retitled.length ? `標題改回 ${r.retitled.join("、")}` : "", !r.restored.length && !r.retitled.length ? "順序改回原本的順序" : ""].filter(Boolean).join("；")}。`);
+    return { output: outlineOutput(r.outline), verify: kind === "expand" ? { checks: outlineChecks(r.outline.length), judge: false } : undefined };
+  });
+  const settled = await settleOutline(env, ((outlineStep.output.data as { outline?: SlideOutline[] } | undefined)?.outline ?? []), src.slides);
+  if (!settled.length) throw new WorkflowInputError("無法規劃修改後的簡報，請稍後再試。");
+  // Each page knows the original it rewrites (writers read that page; a removal no longer shifts the mapping).
+  const carried = keep ? matchOriginals(keep.originals, settled, { translate: keep.translate }) : null;
+  const outline = settled.map((p, j) => {
+    const i = carried?.at.indexOf(j) ?? -1;
+    const from = i >= 0 ? keep!.originals[i]!.n : p.from && p.from <= src.slides.length ? p.from : kind === "revise" && settled.length === src.slides.length ? j + 1 : undefined;
+    const { from: _drop, ...rest } = p;
+    return from ? { ...rest, from } : rest;
+  });
+  const keptTitles = carried ? carried.at.filter((j): j is number => j !== null).map((j) => outline[j]!.title) : [];
   const vision = await env.vision("slides");
   // Pages whose original speaker notes were already short (e.g. the student's own pages) are not required to grow notes.
-  const shortNotes = kind === "revise" ? outline.filter((o, i) => (parseSlides(src.slides[i]?.raw ?? "")[0]?.notes ?? "").replace(/\s+/g, "").length < 30 || STUDENT_NOTE_RE.test(src.slides[i]?.raw ?? "")).map((o) => o.title) : [];
+  const origOf = (o: SlideOutline) => (o.from ? src.slides[o.from - 1]?.raw ?? "" : "");
+  const shortNotes = kind === "revise" ? outline.filter((o) => (parseSlides(origOf(o))[0]?.notes ?? "").replace(/\s+/g, "").length < 30 || STUDENT_NOTE_RE.test(origOf(o))).map((o) => o.title) : [];
   // …nor (writers included) are pages that were left for the student to write (their placeholder stays, in the target language).
-  const leftOpen = kind === "revise" ? outline.filter((o, i) => PLACEHOLDER_RE.test(src.slides[i]?.raw ?? "") || /Left for you to write/.test(src.slides[i]?.raw ?? "")).map((o) => o.title) : [];
+  const leftOpen = kind === "revise" ? outline.filter((o) => PLACEHOLDER_RE.test(origOf(o)) || /Left for you to write/.test(origOf(o))).map((o) => o.title) : [];
   const allow = (c: CheckSpec, extra: string[]) => (extra.length ? { ...c, params: { ...(c.params ?? {}), allow_titles: [...new Set([...((c.params?.allow_titles as string[] | undefined) ?? []), ...extra])] } } : c);
   const steps = [research, outlineStep.spec, ...laterSteps(outline, vision)].map((st) =>
     st.verify ? { ...st, verify: { ...st.verify, checks: st.verify.checks.map((c) => (c.id === "speaker_notes" ? allow(c, shortNotes) : c.id === "no_placeholder" ? allow(c, leftOpen) : c)) } } : st);
@@ -836,6 +974,7 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
       kind === "expand"
         ? { id: "expanded", kind: "judge" as const, text: `依要求擴充（${clipText(env.run.request, 120)}）：要求的焦點講得夠深入（每頁有具體的機制、例子或數字），內容都來自原簡報、研究資料或論文，沒有捏造` }
         : { id: "revised", kind: "judge" as const, text: `每一頁都照使用者的要求修改（${clipText(env.run.request, 120)}），沒有遺漏頁面或講稿${removed ? "（使用者要求刪掉的頁面除外）" : ""}，也沒有改掉原本的數字、圖與出處` },
+      ...(keptTitles.length ? [{ id: "kept", kind: "check" as const, text: `原本的頁面都保留${keep!.ordered ? "且順序不變" : ""}（使用者要求刪掉${kind === "expand" ? "或展開" : ""}的除外）：${clipText(keptTitles.map((t) => `「${t}」`).join(""), 240)}`, check: { id: "pages_kept", params: { titles: keptTitles, ordered: keep!.ordered } } }] : []),
     ],
     plan: {
       summary: kind === "expand"
@@ -869,7 +1008,7 @@ async function expandSources(env: WorkflowEnv, studyId: string, pdfKey: string |
   ].filter(Boolean).join("\n\n");
 }
 
-async function expandOutline(env: WorkflowEnv, src: ReviseSource, brief: string, pages: number, fix: { previous: StepOutput; issues: string[] } | null): Promise<StepOutput> {
+async function expandOutline(env: WorkflowEnv, src: ReviseSource, brief: string, pages: number, fix: { previous: StepOutput; issues: string[] } | null, keep: KeepRule | null = null): Promise<StepOutput> {
   const user = [
     LABHUB_RULES[src.deck.kind],
     `使用者要把現有的 ${src.slides.length} 頁簡報擴充成更深入的版本：${env.run.request}`,
@@ -879,27 +1018,29 @@ async function expandOutline(env: WorkflowEnv, src: ReviseSource, brief: string,
       : "",
     `規劃正好 ${pages} 頁的新大綱：可以重新組織、拆頁或加頁，深入使用者要求的焦點；每頁 2–5 個具體重點（機制、例子、數字，數字要標出處），內容只能來自原簡報與研究資料，不要編造。原本的圖、圖表、論文圖適合的就沿用（重點中寫「沿用原第 k 頁的圖」）。`,
     itemRule(env.requirements()),
+    keepLine(keep, "expand"),
     dataBlock("sources", brief.slice(0, 36_000)),
     fix ? `上一版大綱的問題：\n${fix.issues.map((i) => `- ${i}`).join("\n")}` : "",
     `每頁從版型庫挑一個 layout（只寫代號）：${layoutList(src.deck.kind === "paper_report")}；沿用原頁的圖時用原本的版型。不要寫位置、座標或尺寸。`,
-    `只輸出 JSON：{"pages":[{"title":"頁面標題","purpose":"這頁的目的（一句）","points":["重點"],"layout":"A"${perItem(env.requirements()) ? ',"item":"這頁介紹的項目名稱（沒有就省略）"' : ""}}]}，pages 正好 ${pages} 個。`,
+    `只輸出 JSON：{"pages":[{"title":"頁面標題","purpose":"這頁的目的（一句）","points":["重點"],"layout":"A"${perItem(env.requirements()) ? ',"item":"這頁介紹的項目名稱（沒有就省略）"' : ""},"from":2}]}，pages 正好 ${pages} 個；from 是這頁改寫或展開自原本的第幾頁（新頁省略）。`,
   ].filter(Boolean).join("\n\n");
   const { value, text } = await env.callJson<OutlineJson>({ purpose: "outline", role: "planner", messages: [{ role: "system", content: systemFor("planner") }, { role: "user", content: user }], maxTokens: 14_000 }, isOutline);
   const pagesJson = value?.pages ?? outlineFromText(text);
   if (!pagesJson.length) return { summary: "大綱不是有效的 JSON", text: "", data: { outline: [], raw: text.slice(0, 2000) } };
   // A page title appears once (production: the expanded outline repeated 「Table 1 現況」「對帳」… → 22 pages for 12).
   const outline = dedupeOutline(toOutline(pagesJson, true));
-  return { summary: `${outline.length} 頁大綱`, text: outline.map((p) => `## ${p.title}\n${p.points.map((x) => `- ${x}`).join("\n")}`).join("\n\n"), data: { outline } };
+  return outlineOutput(outline);
 }
 
-async function reviseOutline(env: WorkflowEnv, src: ReviseSource, fix: { previous: StepOutput; issues: string[] } | null): Promise<StepOutput> {
+async function reviseOutline(env: WorkflowEnv, src: ReviseSource, fix: { previous: StepOutput; issues: string[] } | null, keep: KeepRule | null = null): Promise<StepOutput> {
   const user = [
     `使用者對這份簡報的修改要求：${env.run.request}`,
     env.guidanceText(),
     `現有簡報有 ${src.slides.length} 頁。列出修改後每一頁的標題與 2–5 個重點：頁數與順序照原本（除非要求改變），內容照要求修改（例如翻譯就把標題與重點都翻成要求的語言），不要新增原本沒有的事實或數字。`,
+    keepLine(keep, "revise"),
     dataBlock("original_slides", src.slides.map((p, i) => `<!-- 第 ${i + 1} 頁 -->\n${p.raw}`).join("\n\n").slice(0, 40_000)),
     fix ? `上一版的問題：\n${fix.issues.map((i) => `- ${i}`).join("\n")}` : "",
-    '只輸出 JSON：{"pages":[{"title":"頁面標題","points":["重點"],"student_owned":false}]}',
+    '只輸出 JSON：{"pages":[{"title":"頁面標題","points":["重點"],"student_owned":false,"from":1}]}（from = 這頁改寫自原本的第幾頁）',
   ].filter(Boolean).join("\n\n");
   const { value, text } = await env.callJson<OutlineJson>({ purpose: "outline", role: "planner", messages: [{ role: "system", content: systemFor("planner") }, { role: "user", content: user }], maxTokens: 14_000 }, isOutline);
   const pagesJson = value?.pages ?? outlineFromText(text);
@@ -974,6 +1115,12 @@ async function ensureDeck(env: WorkflowEnv): Promise<DeckState & { deck_id: stri
 /** Writes the body into the deck's entry (optimistic lock against user edits), renders a preview and waits. */
 export async function writeAndRender(env: WorkflowEnv, body: string, opts: { shots?: boolean } = {}): Promise<DeckState> {
   const deck = await ensureDeck(env);
+  // Placeholders a writer kept after its fix rounds never reach the deck (the student's own pages keep theirs).
+  const scrub = scrubPlaceholders(body, outlineOf(env).filter((p) => p.student_owned).map((p) => p.title));
+  if (scrub.removed) {
+    body = scrub.body;
+    await env.note(`移除 ${scrub.removed} 處沒填的佔位文字：${scrub.pages.slice(0, 4).map((t) => `「${t}」`).join("、")}`, "warn");
+  }
   if (env.run.study_id) await requireEditor(env, env.run.study_id);
   const mode = modeOf(env);
   const paper = await paperOf(env);
@@ -1068,10 +1215,14 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
     `長度預算（每頁）：投影片上最多 ${PAGE_BUDGET.bullets} 個條列、約 ${PAGE_BUDGET.words} 個字詞以內（中文字算半個）；講稿 3–6 句。`,
     "不要寫位置、座標、尺寸或 style（不要 .absolute、top=、left=、width=、position）：版面由版型決定，放不下時系統會自動縮放。",
     "不要 YAML front matter、不要 ``` 包住整段、不要寫其他頁、不要任何說明文字。",
+    `範本裡的〔　〕槽位都要換成依據資料的內容：能從資料算出來的就算出來（今天是 ${taipeiToday()}；例如「距上次新數字：N 週」＝今天減去最近一次出現新實驗數字的日期）；資料真的沒有就刪掉那一行或那一段。投影片和講稿都不要留〔〕、「待補」，也不要在講稿解釋為什麼留空。`,
     pages.some((p) => p.student_owned) ? `學生自填頁（${pages.filter((p) => p.student_owned).map((p) => `「${p.title}」`).join("、")}）只放標題與「${runLabels(env).skipped}」，講稿寫「${runLabels(env).skippedNote}」。` : "",
   ].filter(Boolean).join("\n");
   const original = env.state<string[]>("original_slides");
   const expand = env.state<EditKind>("edit_kind") === "expand";
+  // The original page each planned page rewrites (`from`; older plans without it: the same position).
+  const fromOf = (p: SlideOutline) => (p.from ?? (expand ? 0 : p.n));
+  const kept = original && expand ? pages.filter((p) => p.from && original[p.from - 1]) : [];
   // Neighbouring pages (their text once written): the page continues the line of the deck without writing the others.
   const i0 = outline.findIndex((p) => p.n === nums[0]);
   const all = await getSteps(env.db, env.run.id);
@@ -1086,6 +1237,8 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
           full_outline: deckOutlineText(outline, nums),
           your_pages: outlineText(pages),
           ...(neighbours ? { neighbours } : {}),
+          // A page that keeps an original page: written from that page (title, figures, numbers kept), made more specific.
+          ...(kept.length ? { original_pages: `${kept.map((p) => `第 ${p.n} 頁改寫自原本的第 ${p.from} 頁：以原頁為基礎（標題照大綱、原頁的圖、表、數字與出處保留），依要求寫得更具體。`).join("\n")}\n\n${kept.map((p) => `<!-- 原第 ${p.from} 頁 -->\n${original![p.from! - 1]}`).join("\n\n")}` } : {}),
           research: brief.slice(0, SOURCE_CHARS),
         }
       : original
@@ -1093,7 +1246,7 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
           // Revising an existing deck: rewrite these pages from their originals, changing only what the user asked.
           request: `使用者的修改要求：${env.run.request}\n只照這個要求修改；保留原本的版型、圖、圖表（\`\`\`chart / diagram 規格）、論文圖（paper-fig 語法）、公式、表格、數字與出處，講稿一起修改。`,
           your_pages: outlineText(pages),
-          original_pages: nums.map((n) => `<!-- 第 ${n} 頁 -->\n${original[n - 1] ?? ""}`).join("\n\n"),
+          original_pages: pages.map((p) => `<!-- 第 ${p.n} 頁 -->\n${original[fromOf(p) - 1] ?? ""}`).join("\n\n"),
           format_rules: VISUAL_RULES,
         }
       : {
@@ -1113,7 +1266,7 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
   // Revising: a page the student left for themselves stays theirs (only its prompt changes language), never AI-written.
   if (original && env.state<EditKind>("edit_kind") !== "expand") {
     const L = runLabels(env);
-    const open = pages.map((p, i) => ({ p, i })).filter(({ p }) => /Left for you to write/.test(localizeLabels(original[p.n - 1] ?? "", "en")));
+    const open = pages.map((p, i) => ({ p, i })).filter(({ p }) => /Left for you to write/.test(localizeLabels(original[fromOf(p) - 1] ?? "", "en")));
     if (open.length && parseSlides(draft).length === pages.length) {
       const { pre, chunks } = splitChunks(draft);
       for (const { p, i } of open) chunks[i] = `## ${p.title}\n\n${L.skipped}\n\n::: {.notes}\n${L.skippedNote}\n:::\n\n`;
@@ -1529,7 +1682,7 @@ async function repair(env: WorkflowEnv, failing: Criterion[]) {
     out.set(key, [...(out.get(key) ?? []), issue]);
   };
   for (const c of failing) {
-    if (c.id === "pages" || c.id === "complete") {
+    if (c.id === "pages" || c.id === "kept" || c.id === "complete") {
       for (const p of outline) if (!slides.some((s) => titleMatches(p.title, s.title))) add(writeOf(p.n), `缺少第 ${p.n} 頁「${p.title}」，請完整寫出。`);
       if (!out.size && slides.length > outline.length) add("assemble", `頁數比大綱多（${slides.length} > ${outline.length}）。`);
       if (c.id === "complete") for (const w of writes) add(w.key, c.reason ?? "內容被截斷，請輸出完整版本。");
@@ -1543,7 +1696,7 @@ async function repair(env: WorkflowEnv, failing: Criterion[]) {
     else if (c.id === "clean") {
       for (const s of slides) {
         const p = outline.find((o) => titleMatches(o.title, s.title));
-        if (p && !p.student_owned && /〔|待補|TODO|TBD/i.test(`${s.body}${s.notes}`)) add(writeOf(p.n), `第 ${p.n} 頁「${p.title}」還有佔位文字，請填入依據資料的內容。`);
+        if (p && !p.student_owned && /〔|待補|TODO|TBD/i.test(`${s.body}${s.notes}`)) add(writeOf(p.n), `第 ${p.n} 頁「${p.title}」還有佔位文字「${(PLACEHOLDER_RE.exec(`${s.body}\n${s.notes}`) ?? /〔[^〕]*〕|待補|TODO|TBD/i.exec(`${s.body}${s.notes}`))?.[0] ?? "〔　〕"}」：能從資料算出來就算出來，資料沒有就刪掉那一行，講稿也不要提到它。`);
       }
     } else {
       // Judged criteria: the pages named in the reason, else every writer (bounded: small decks only).
@@ -1562,7 +1715,7 @@ async function applyEdits(env: WorkflowEnv, edits: import("./registry.js").Appro
     const old = prev.find((o) => o.title === p.title) ?? (prev.length === edits.outline!.length ? prev[i] : undefined);
     const owned = prev.find((o) => o.title === p.title)?.student_owned || (!env.state<boolean>("revise") && STUDENT_TITLE_RE.test(p.title));
     // The planner's per-page choices (layout, role, source papers) stay with the page the user kept or edited in place.
-    const meta = old ? { ...(old.layout ? { layout: old.layout } : {}), ...(old.kind ? { kind: old.kind } : {}), ...(old.sources ? { sources: old.sources } : {}), ...(old.item ? { item: old.item } : {}) } : {};
+    const meta = old ? { ...(old.layout ? { layout: old.layout } : {}), ...(old.kind ? { kind: old.kind } : {}), ...(old.sources ? { sources: old.sources } : {}), ...(old.item ? { item: old.item } : {}), ...(old.from ? { from: old.from } : {}) } : {};
     return { n: i + 1, title: p.title.trim().slice(0, 120) || `第 ${i + 1} 頁`, points: (p.points ?? []).map((x) => String(x).slice(0, 200)).filter(Boolean).slice(0, 6), ...meta, ...(owned ? { student_owned: true } : {}) };
   });
   await env.setState({ pages: outline.length });
@@ -1605,4 +1758,4 @@ export const slidesPlaybook: WorkflowPlaybook = {
 
 registerWorkflowPlaybook(slidesPlaybook);
 
-export const _test = { changedPages, addedPages, cleanPoint, dedupeOutline, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps, withVariant, variantOf, stripPositions, suspectPages, withSourceLines, pageSources, usedPicks };
+export const _test = { keepRule, keepOriginals, changedPages, addedPages, cleanPoint, dedupeOutline, toOutline, outlineText, criteriaFor, laterSteps, injectNotes, writerSteps, withVariant, variantOf, stripPositions, suspectPages, withSourceLines, pageSources, usedPicks };

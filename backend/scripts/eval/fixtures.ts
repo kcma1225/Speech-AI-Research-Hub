@@ -89,6 +89,11 @@ async function ensureStudy(hub: Hub, title: string, summary: string): Promise<St
 
 type StudyPaper = { paper: { id: string; title: string; authors?: { family?: string; literal?: string }[]; year?: number | null; has_pdf: boolean; arxiv_id?: string | null; doi?: string | null }; cite_key: string };
 
+/** Every cite key the study's library has now (a topic workflow imports papers into it during the run). */
+export async function studyKeys(hub: Hub, studyId: string): Promise<string[]> {
+  return (await studyPapers(hub, studyId)).map((sp) => sp.cite_key);
+}
+
 async function studyPapers(hub: Hub, studyId: string): Promise<StudyPaper[]> {
   return (await hub.api<{ papers: StudyPaper[] }>("GET", `/studies/${studyId}/papers?status=all`)).papers;
 }

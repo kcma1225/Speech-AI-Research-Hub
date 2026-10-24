@@ -32,7 +32,135 @@ export const titleMatches = (want: string, got: string) => {
   return !!a && !!b && (a === b || a.includes(b) || b.includes(a));
 };
 
+// ---------------------------------------------------------------- original pages preserved (revise / expand)
+
+/** An original page of a deck being edited that must survive the edit: its 1-based number, title and slide text. */
+export type OriginalPage = { n: number; title: string; text: string };
+/** An outline page as the matcher sees it; `from` = the original page it claims to rewrite / expand. */
+export type PlannedPage = { title: string; points?: string[]; from?: number };
+export type PageMatch = { at: (number | null)[]; by: ("title" | "from" | "content" | "position" | null)[]; split: boolean[] };
+
+/** Content signature: Han bigrams + Latin words (≥ 3 letters), lower-cased. */
+export function contentTokens(text: string): Set<string> {
+  const t = text.toLowerCase().replace(/```[^\n]*\n/g, " ").replace(/:::[^\n]*/g, " ");
+  const out = new Set<string>();
+  for (const w of t.match(/[a-z][a-z0-9+-]{2,}/g) ?? []) out.add(w);
+  for (const run of t.match(/[\u3400-\u9fff]+/g) ?? []) for (let i = 0; i + 1 < run.length; i++) out.add(run.slice(i, i + 2));
+  return out;
+}
+/** Share of the original page's signature found in the planned page. */
+export function contentOverlap(original: string, page: string): number {
+  const a = contentTokens(original);
+  if (!a.size) return 0;
+  const b = contentTokens(page);
+  let hit = 0;
+  for (const x of a) if (b.has(x)) hit++;
+  return hit / a.size;
+}
+
+/**
+ * Which planned page carries each original page (one page per original): the same title, the page's own `from` claim
+ * (backed by its title or content unless the edit is a translation), a containing title, then a clear content match;
+ * a translation with the same page count falls back to position. `split` = more than one page claims that original.
+ */
+export function matchOriginals(originals: OriginalPage[], pages: PlannedPage[], opts: { translate?: boolean } = {}): PageMatch {
+  const used = new Set<number>();
+  const at: (number | null)[] = originals.map(() => null);
+  const by: PageMatch["by"] = originals.map(() => null);
+  const text = (p: PlannedPage) => `${p.title}\n${(p.points ?? []).join("\n")}`;
+  const take = (i: number, j: number, how: NonNullable<PageMatch["by"][number]>) => ((at[i] = j), (by[i] = how), used.add(j));
+  const pass = (how: NonNullable<PageMatch["by"][number]>, pick: (o: OriginalPage) => number) =>
+    originals.forEach((o, i) => {
+      if (at[i] !== null) return;
+      const j = pick(o);
+      if (j >= 0) take(i, j, how);
+    });
+  const free = (f: (p: PlannedPage, j: number) => boolean) => pages.findIndex((p, j) => !used.has(j) && f(p, j));
+  pass("title", (o) => free((p) => !!norm(o.title) && norm(o.title) === norm(p.title)));
+  pass("from", (o) => free((p) => p.from === o.n && (!!opts.translate || titleMatches(o.title, p.title) || contentOverlap(o.text, text(p)) >= 0.1 || pages.filter((x) => x.from === o.n).length > 1)));
+  pass("title", (o) => free((p) => titleMatches(o.title, p.title)));
+  if (!opts.translate) {
+    pass("content", (o) => {
+      let best = -1;
+      let score = 0.35;
+      pages.forEach((p, j) => {
+        const s = used.has(j) ? 0 : contentOverlap(o.text, text(p));
+        if (s >= score) (best = j), (score = s);
+      });
+      return best;
+    });
+  } else if (pages.length === originals.length) {
+    pass("position", (o) => {
+      const i = originals.indexOf(o);
+      return used.has(i) ? -1 : i;
+    });
+  }
+  const split = originals.map((o) => pages.filter((p) => p.from === o.n).length > 1);
+  return { at, by, split };
+}
+
+/**
+ * Problems with the originals in a plan: missing, out of order (`ordered`), or — when `keepTitles` (an expansion that
+ * only enriches the page) — retitled although the page was not split into several.
+ */
+export function keptIssues(originals: OriginalPage[], pages: PlannedPage[], match: PageMatch, opts: { ordered?: boolean; keepTitles?: boolean } = {}): string[] {
+  const issues: string[] = [];
+  const missing = originals.filter((_, i) => match.at[i] === null);
+  if (missing.length) issues.push(`原本的這些頁面不見了：${missing.map((o) => `第 ${o.n} 頁「${o.title}」`).join("、")}。使用者沒有要求刪掉或合併，請保留（可以在前後插入新頁、把內容寫得更具體）`);
+  const placed = match.at.map((j, i) => ({ j, o: originals[i]! })).filter((x): x is { j: number; o: OriginalPage } => x.j !== null);
+  if (opts.ordered && placed.some((x, k) => k > 0 && x.j < placed[k - 1]!.j)) issues.push(`原本頁面的順序被改了（應為 ${placed.map((x) => `「${x.o.title}」`).join(" → ")}）。使用者沒有要求調整順序，請照原本的順序`);
+  if (opts.keepTitles) {
+    const renamed = placed.filter((x) => {
+      const i = originals.indexOf(x.o);
+      return match.by[i] !== "title" && !match.split[i] && !titleMatches(x.o.title, pages[x.j]!.title);
+    });
+    if (renamed.length) issues.push(`這些原本的頁面被改了標題：${renamed.map((x) => `「${x.o.title}」→「${pages[x.j]!.title}」`).join("、")}。使用者沒有要求修改這些頁，標題請照原文`);
+  }
+  return issues;
+}
+
 export const PLACEHOLDER_RE = /〔\s*　*\s*〕|待補|待填|待完成|\bTODO\b|\bTBD\b|lorem ipsum|\bXXX\b|\?\?\?|〔[^〕]{0,6}〕|\[(?:插入|在此|placeholder)[^\]]*\]|（此處[^）]{0,20}）/i;
+
+/**
+ * Last-resort cleanup of placeholders the writers left after their fix rounds (e.g. the template's 「距上次新數字：〔N〕 週」):
+ * on every page except the student's own, a slide line (or the `｜` segment of it, or the table row) holding a placeholder
+ * is dropped and so is a speaker-note sentence; code fences stay as they are. Empty divs left behind are removed.
+ */
+export function scrubPlaceholders(body: string, ownedTitles: string[] = []): { body: string; removed: number; pages: string[] } {
+  let removed = 0;
+  const pages: string[] = [];
+  const parts = body.replace(/\r\n/g, "\n").split(/^(?=## )/m);
+  const out = parts.map((part) => {
+    if (!part.startsWith("## ")) return part;
+    const title = part.slice(3, part.indexOf("\n") < 0 ? undefined : part.indexOf("\n")).replace(/\{[^}]*\}\s*$/, "").trim();
+    if (ownedTitles.some((t) => titleMatches(t, title)) || !PLACEHOLDER_RE.test(part.replace(/```[\s\S]*?```/g, ""))) return part;
+    let fence = false;
+    let notes = false;
+    const before = removed;
+    const lines = part.split("\n").flatMap((line, i) => {
+      if (i === 0) return [line];
+      if (/^\s*```/.test(line)) fence = !fence;
+      if (fence || /^\s*```/.test(line)) return [line];
+      if (/^:::+\s*\{?\.?notes\}?\s*$/.test(line)) { notes = true; return [line]; }
+      if (notes && /^:::+\s*$/.test(line)) { notes = false; return [line]; }
+      if (!PLACEHOLDER_RE.test(line)) return [line];
+      removed++;
+      if (notes) {
+        const kept = line.split(/(?<=[。！？!?])/).filter((s) => !PLACEHOLDER_RE.test(s)).join("").trim();
+        return kept ? [kept] : [];
+      }
+      if (/^\s*\|/.test(line)) return [];
+      if (/｜/.test(line)) {
+        const segs = line.split("｜").filter((s) => !PLACEHOLDER_RE.test(s));
+        return segs.length && segs.join("").trim() ? [segs.join("｜").trim()] : [];
+      }
+      return [];
+    });
+    if (removed > before) pages.push(title);
+    return lines.join("\n").replace(/^:::+\s*\{[^}]*\}\s*\n(?:\s*\n)*:::+\s*$\n?/gm, "");
+  });
+  return { body: out.join(""), removed, pages };
+}
 
 /** Missing-data markers that must not be shown on a slide (they are fine in speaker notes). */
 export const SLIDE_MISSING_RE = /資料未提供|摘要未提供|論文未提供|未提供數據|未報告|\bN\/A\b|\bn\/a\b|not (?:reported|provided|available)/i;
@@ -259,6 +387,30 @@ export const CHECKS: Record<string, CheckFn> = {
   /** One unit per axis, an axis label / unit on every chart, the same numbers charted once. */
   chart_semantics(text, { params }) {
     return contentResult(formatIssues(chartIssues(unitsOf(text, params))), "圖表的單位與資料正確", "圖表有問題：");
+  },
+  /**
+   * Original pages of an edited deck kept (revise / expand). On the outline step (`originals` + `data.outline`): every
+   * original matched to a planned page, in order, titles kept when `keep_titles`. On the deck (`titles`): the plan's
+   * pages for those originals are all there, in order.
+   */
+  pages_kept(text, { params, data }) {
+    const ordered = params.ordered !== false;
+    const originals = (Array.isArray(params.originals) ? params.originals : []) as OriginalPage[];
+    const outline = (data as { outline?: PlannedPage[] } | null)?.outline;
+    if (originals.length && outline) {
+      const issues = keptIssues(originals, outline, matchOriginals(originals, outline, { translate: !!params.translate }), { ordered, keepTitles: !!params.keep_titles });
+      return issues.length ? { ok: false, detail: `${issues.join("；")}。` } : { ok: true, detail: `原本的 ${originals.length} 頁都保留${ordered ? "，順序不變" : ""}` };
+    }
+    const want = strs(params.titles);
+    const got = parseSlides(text).map((s) => s.title);
+    const lost: string[] = [];
+    let from = 0;
+    for (const w of want) {
+      const i = got.findIndex((g, k) => (!ordered || k >= from) && titleMatches(w, g));
+      if (i < 0) lost.push(w);
+      else from = i + 1;
+    }
+    return lost.length ? { ok: false, detail: `原本的這些頁面不見了${ordered ? "或順序被改了" : ""}：${lost.map((t) => `「${t}」`).join("、")}。` } : { ok: true, detail: `原本的 ${want.length} 頁都保留${ordered ? "，順序不變" : ""}` };
   },
   render_ok(_text, { data }) {
     const err = (data as { renderError?: string | null; renderTimedOut?: boolean } | null) ?? null;

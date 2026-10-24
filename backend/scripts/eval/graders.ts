@@ -146,6 +146,40 @@ export function languageGrade(rep: LangReport, lang: "en" | "zh"): Grade {
   return grade(`language_${lang}`, rep.ok, detail);
 }
 
+/** Lab-Hub paper-report pages the student writes (templates.ts: pages 7, 12, 13): their own words, not graded. */
+const STUDENT_PAGE = /^\s*(?:Trace one example|My assessment|Takeaways for my work)\s*$/i;
+
+/**
+ * The professor's Lab-Hub paper-report template (backend/src/lib/slides/templates.ts) mandates English slides and 繁中
+ * speaker notes: titles + bodies have no CJK (〈quoted titles〉 allowed), no page's notes are written entirely in English
+ * (≥ 30 words, no Han) and Han dominates the notes overall. The cover (the paper's own title) and the student's own pages
+ * are not graded.
+ */
+export function paperReportLanguage(deck: Deck): Grade {
+  const where: string[] = [];
+  let han = 0;
+  let words = 0;
+  for (const s of deck.slides) {
+    if (STUDENT_PAGE.test(s.title)) continue;
+    if (cjkCount(visible(`${s.title}\n${s.body}`)) > 0) where.push(`p${s.n} 投影片有中文`);
+    const notes = visible(s.notes);
+    const h = hanCount(notes);
+    const w = latinWords(notes.replace(/\$[^$\n]+\$/g, " "));
+    han += h;
+    words += w;
+    if (w >= 30 && h === 0) where.push(`p${s.n} 講稿是英文`);
+  }
+  const ok = !where.length && han > 0 && han >= words;
+  return grade("language_template", ok, ok ? `Lab-Hub 論文報告：投影片英文、講稿繁中（講稿漢字 ${han}、英文字 ${words}）` : `不符合 Lab-Hub 論文報告的語言（投影片英文、講稿繁中）：${where.slice(0, 6).join("、") || "講稿不是以中文為主"}${where.length > 6 ? `…共 ${where.length} 處` : ""}（講稿漢字 ${han}、英文字 ${words}）`);
+}
+
+/** A language the request names explicitly (overrides a template's own language rule); null when it names none. */
+export function explicitLanguage(request: string): "en" | "zh" | null {
+  if (/全英文|用英文|英文(?:版|簡報|投影片|講稿)|in English|English (?:slides|deck|notes)/i.test(request)) return "en";
+  if (/全中文|用中文|中文(?:版|簡報|投影片|講稿)|繁體中文|in (?:Traditional )?Chinese/i.test(request)) return "zh";
+  return null;
+}
+
 /** Documents (notes, LaTeX): English = ≤ 0.5 % CJK among letters; 繁中 = Han ≥ English words. */
 export function docLanguage(text: string, lang: "en" | "zh"): Grade {
   const v = visible(text.replace(/```[\s\S]*?```/g, " ").replace(/\\(?:cite|ref|label|input|includegraphics)\{[^}]*\}/g, " "));
@@ -213,6 +247,13 @@ export function papersMentioned(text: string, papers: PaperRef[]): PaperRef[] {
     if (low.includes(p.key.toLowerCase())) return true;
     const head = norm(p.title.split(/[:：]/)[0]!);
     if (head.length >= 8 && flat.includes(head)) return true;
+    // A long title cut at a word boundary (topic decks' source lines keep ≤ 56 characters): a ≥ 30-letter word prefix.
+    const words = p.title.split(/[:：]/)[0]!.trim().split(/\s+/);
+    for (let k = words.length - 1; k >= 3; k--) {
+      const pre = norm(words.slice(0, k).join(" "));
+      if (pre.length < 30) break;
+      if (flat.includes(pre)) return true;
+    }
     return !!p.author && p.author.length >= 3 && new RegExp(`\\b${p.author.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b[^\\n]{0,20}(?:et al\\.?|\\(?${p.year ?? ""})`, "i").test(text);
   });
 }

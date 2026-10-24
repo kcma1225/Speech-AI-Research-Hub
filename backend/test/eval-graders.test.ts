@@ -53,6 +53,37 @@ describe("eval graders: decks", () => {
   });
 });
 
+describe("eval graders: library papers named by a clipped title", () => {
+  it("a source line's ≥ 30-letter word prefix of the title counts; a short generic prefix does not", () => {
+    const papers = [{ key: "xu2023adaptive", title: "Adaptive Contextual Biasing for Transducer Based Streaming Speech Recognition", year: 2023 }] as G.PaperRef[];
+    expect(G.papersMentioned("Sources: Adaptive Contextual Biasing for Transducer Based (2023)", papers)).toHaveLength(1);
+    expect(G.papersMentioned("Adaptive contextual biasing helps", papers)).toHaveLength(0);
+  });
+});
+
+describe("eval graders: Lab-Hub paper report language", () => {
+  const slide = (t: string, body: string, notes: string) => `## ${t}\n\n${body}\n\n::: {.notes}\n${notes}\n:::\n`;
+  const zhNotes = "**【講述】**（約 1 分鐘）這篇論文用 contextual adapters 把個人化熱詞注入凍結的 transducer，不需要重新訓練整個模型。";
+  const enNotes = "This page explains how the adapters inject the catalog embeddings into the frozen transducer without retraining the whole model, which keeps training cheap and the deployment unchanged for every user.";
+
+  it("English slides + 繁中 notes pass for a request that names no language; Chinese slides or English notes fail", () => {
+    const good = G.parseDeck(`---\ntitle: "Contextual Adapters"\n---\n${slide("Architecture", "- Adapter on the encoder\n- Catalog embeddings", zhNotes)}${slide("My assessment", "- 優點：免重訓", "（由報告者補充）")}`);
+    expect(G.paperReportLanguage(good).ok).toBe(true);
+    // The baseline deck (3395f787): English bodies, Chinese notes — the template, not a language bug.
+    const zhSlides = G.parseDeck(slide("架構", "- 編碼器上的 adapter", zhNotes));
+    expect(G.paperReportLanguage(zhSlides).detail).toContain("p1 投影片有中文");
+    const enNotesDeck = G.parseDeck(slide("Architecture", "- Adapter", enNotes));
+    expect(G.paperReportLanguage(enNotesDeck).detail).toContain("p1 講稿是英文");
+  });
+
+  it("an explicitly named language overrides the template", () => {
+    expect(G.explicitLanguage("幫我做一份論文報告簡報：Contextual Adapters for Personalized Speech Recognition in Neural Transducers")).toBeNull();
+    expect(G.explicitLanguage("論文報告簡報，投影片也用中文")).toBe("zh");
+    expect(G.explicitLanguage("做一份全中文的論文報告")).toBe("zh");
+    expect(G.explicitLanguage("paper report with English notes")).toBe("en");
+  });
+});
+
 describe("eval graders: documents and briefs", () => {
   it("citation keys (Pandoc and LaTeX) resolve against the study keys", () => {
     const text = "Shallow fusion [@zhao2019shallow; @pundak2018deep] and \\citep{xu2023adaptive,ghost2020}. Email a@b.com.";

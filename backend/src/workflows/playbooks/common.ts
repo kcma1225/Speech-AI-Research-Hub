@@ -72,7 +72,13 @@ export function taskPrompt(env: WorkflowEnv, step: StepRow, parts: { context?: R
  * A step executed during planning (research, outline): execute → verify → up to `rounds` fixes, recorded as a passed
  * (or best-effort) step so the plan card shows it. Returns the output and the spec to insert.
  */
-export async function planningStep(env: WorkflowEnv, spec: StepSpec, exec: (fix: { previous: StepOutput; issues: string[] } | null) => Promise<StepOutput>, rounds = 1): Promise<{ output: StepOutput; spec: StepSpec; ok: boolean }> {
+export async function planningStep(
+  env: WorkflowEnv,
+  spec: StepSpec,
+  exec: (fix: { previous: StepOutput; issues: string[] } | null) => Promise<StepOutput>,
+  rounds = 1,
+  settle?: (output: StepOutput, round: number) => Promise<{ output: StepOutput; verify?: StepSpec["verify"] } | null>,
+): Promise<{ output: StepOutput; spec: StepSpec; ok: boolean }> {
   const fake = { id: `plan-${spec.key}`, key: spec.key, title: spec.title, instructions: spec.instructions, expected: spec.expected ?? "", verify: spec.verify ?? { checks: [], judge: false }, history: [], round: 0 } as unknown as StepRow;
   let fix: { previous: StepOutput; issues: string[] } | null = null;
   const history: { round: number; verdict: Verdict; summary: string }[] = [];
@@ -81,6 +87,12 @@ export async function planningStep(env: WorkflowEnv, spec: StepSpec, exec: (fix:
   for (let round = 0; round <= rounds; round++) {
     await env.activity(spec.key, spec.role, round ? `修正第 ${round} 輪` : "開始");
     output = await exec(fix);
+    // A deterministic repair of the output (and the checks it changes, e.g. a page count) before it is verified.
+    const settled = settle ? await settle(output, round) : null;
+    if (settled) {
+      output = settled.output;
+      if (settled.verify) fake.verify = spec.verify = settled.verify;
+    }
     verdict = await verifyStep(env, fake, output);
     history.push({ round, verdict, summary: output.summary.slice(0, 300) });
     await env.event("verdict", { step_key: spec.key, round, verdict });
