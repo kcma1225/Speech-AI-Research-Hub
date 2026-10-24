@@ -93,17 +93,39 @@ export function pageCount(deck: Deck, want: number, tolerance = 0): Grade {
 }
 
 /** Every title of `before` (except `except`) is still a slide title, in the same relative order. */
+/**
+ * Original pages still there, in order, one deck page each: the same title first, else a title that contains only this
+ * original (「Shallow fusion: architecture」) — 「Shallow fusion vs. CLAS vs. contextual adapters」 stands for none of them.
+ */
 export function titlesKept(deck: Deck, before: string[], except: RegExp | null = null): Grade {
   const titles = deck.slides.map((s) => s.title);
   const want = before.filter((t) => !(except && except.test(t)));
+  const used = new Set<number>();
   let at = 0;
   const lost: string[] = [];
   for (const t of want) {
-    const i = titles.findIndex((x, k) => k >= at && sameTitle(t, x));
+    let i = titles.findIndex((x, k) => k >= at && !used.has(k) && !!norm(t) && norm(t) === norm(x));
+    if (i < 0) i = titles.findIndex((x, k) => k >= at && !used.has(k) && sameTitle(t, x) && !want.some((o) => o !== t && sameTitle(o, x)));
     if (i < 0) lost.push(t);
-    else at = i + 1;
+    else (used.add(i), (at = i + 1));
   }
   return grade("titles_kept", !lost.length, lost.length ? `少了或順序變了：${lost.join("、")}` : `原本的 ${want.length} 頁都在`);
+}
+
+/** No page twice: the same title, or the same slide body (≥ 120 characters) under two titles. */
+export function noDuplicatePages(deck: Deck): Grade {
+  const dups: string[] = [];
+  const titles = new Map<string, number>();
+  const bodies = new Map<string, number>();
+  for (const s of deck.slides) {
+    const t = norm(s.title);
+    if (t && titles.has(t)) dups.push(`p${titles.get(t)} 與 p${s.n}「${s.title}」同標題`);
+    else if (t) titles.set(t, s.n);
+    const b = s.body.replace(/\s+/g, "");
+    if (b.length >= 120 && bodies.has(b)) dups.push(`p${bodies.get(b)} 與 p${s.n} 內容相同`);
+    else if (b.length >= 120) bodies.set(b, s.n);
+  }
+  return grade("no_duplicates", !dups.length, dups.length ? `重複的頁面：${dups.slice(0, 6).join("、")}` : "沒有重複的頁面");
 }
 
 export const noSlideTitled = (deck: Deck, re: RegExp): Grade => {

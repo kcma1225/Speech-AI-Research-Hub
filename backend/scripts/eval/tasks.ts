@@ -79,25 +79,25 @@ export const TASKS: Task[] = [
   {
     id: "deck_translate_en", title: "中文簡報整份翻成英文（含封面）", tags: ["deck", "edit", "lang", "core"], mode: "api", study: "main",
     request: "全英文翻譯", deck: "zh", expect: { kind: "deck" },
-    grade: (o, _c, p) => [lang(o, "en"), G.pageCount(deckOf(o), p.before!.pages), G.grade("cover_en", !!o.deck && !G.cjkCount(o.deck.parsed.title) && /[A-Za-z]/.test(o.deck.parsed.title), `封面：「${o.deck?.parsed.title ?? ""}」`)],
+    grade: (o, _c, p) => [G.noDuplicatePages(deckOf(o)), lang(o, "en"), G.pageCount(deckOf(o), p.before!.pages), G.grade("cover_en", !!o.deck && !G.cjkCount(o.deck.parsed.title) && /[A-Za-z]/.test(o.deck.parsed.title), `封面：「${o.deck?.parsed.title ?? ""}」`)],
     judge: "faithful, natural English translation of every page incl. cover, diagram labels and speaker notes; no content lost",
   },
   {
     id: "deck_followup_expand", title: "接著上一個：再詳細一點、每個方法要有架構與 Pros/Cons（不重說語言）", tags: ["deck", "edit", "lang", "chain", "core"], mode: "api", study: "main",
     after: "deck_translate_en", request: "還不夠細，再詳細一點，focus 在動態熱詞，每個方法要有架構、Pros/Cons", expect: { kind: "deck" },
-    grade: (o, _c, p) => [lang(o, "en"), G.perItemFields(deckOf(o), [["architecture", "架構"], ["pros", "advantage", "優點"], ["cons", "disadvantage", "limitation", "缺點"]], 2), G.grade("expanded", deckOf(o).slides.length >= (p.before?.pages ?? 6), `${deckOf(o).slides.length} 頁（原本 ${p.before?.pages ?? 6}）`)],
+    grade: (o, _c, p) => [G.noDuplicatePages(deckOf(o)), lang(o, "en"), G.perItemFields(deckOf(o), [["architecture", "架構"], ["pros", "advantage", "優點"], ["cons", "disadvantage", "limitation", "缺點"]], 2), G.grade("expanded", deckOf(o).slides.length >= (p.before?.pages ?? 6), `${deckOf(o).slides.length} 頁（原本 ${p.before?.pages ?? 6}）`)],
     judge: "each hotword-biasing method gets architecture, pros and cons; more detailed than a 6-page overview; still English",
   },
   {
     id: "deck_expand_fields_zh", title: "展開：每個方法一頁，每頁要有架構、優點、缺點", tags: ["deck", "edit"], mode: "api", study: "main",
     request: "把「動態熱詞的做法」展開：每個方法一頁，每頁都要有架構、優點、缺點", deck: "zh", expect: { kind: "deck" },
-    grade: (o) => [lang(o, "zh"), G.perItemFields(deckOf(o), [["架構", "architecture"], ["優點", "pros"], ["缺點", "cons", "限制"]], 2), G.titlesKept(deckOf(o), ZH_DECK_TITLES, /動態熱詞的做法/)],
+    grade: (o) => [G.noDuplicatePages(deckOf(o)), lang(o, "zh"), G.perItemFields(deckOf(o), [["架構", "architecture"], ["優點", "pros"], ["缺點", "cons", "限制"]], 2), G.titlesKept(deckOf(o), ZH_DECK_TITLES, /動態熱詞的做法/)],
     judge: "one page per method with architecture, pros and cons; the other pages unchanged",
   },
   {
     id: "deck_add_page", title: "英文簡報加一頁比較表（中文指令，簡報維持英文）", tags: ["deck", "edit", "lang", "quick", "core"], mode: "api", study: "main",
     request: "加一頁比較表，比較 shallow fusion、CLAS 和 contextual adapters", deck: "en", expect: { kind: "deck" },
-    grade: (o, _c, p) => [G.pageCount(deckOf(o), p.before!.pages + 1), G.titlesKept(deckOf(o), p.before!.titles), G.tableMentioning(deckOf(o), [["shallow"], ["CLAS", "deep context"], ["adapter"]]), lang(o, "en")],
+    grade: (o, _c, p) => [G.noDuplicatePages(deckOf(o)), G.pageCount(deckOf(o), p.before!.pages + 1), G.titlesKept(deckOf(o), p.before!.titles), G.tableMentioning(deckOf(o), [["shallow"], ["CLAS", "deep context"], ["adapter"]]), lang(o, "en")],
   },
   {
     id: "deck_exact_pages", title: "剛好 8 頁的進度報告", tags: ["deck", "create", "core"], mode: "api", study: "main",
@@ -108,7 +108,7 @@ export const TASKS: Task[] = [
   {
     id: "deck_remove_page", title: "刪掉一頁", tags: ["deck", "edit", "quick", "core"], mode: "api", study: "main",
     request: "刪掉「卡住」這頁", deck: "zh", expect: { kind: "deck" },
-    grade: (o, _c, p) => [G.pageCount(deckOf(o), p.before!.pages - 1), G.noSlideTitled(deckOf(o), /^卡住$/), G.titlesKept(deckOf(o), p.before!.titles, /^卡住$/), lang(o, "zh")],
+    grade: (o, _c, p) => [G.noDuplicatePages(deckOf(o)), G.pageCount(deckOf(o), p.before!.pages - 1), G.noSlideTitled(deckOf(o), /^卡住$/), G.titlesKept(deckOf(o), p.before!.titles, /^卡住$/), lang(o, "zh")],
   },
   {
     id: "deck_topic_paper_title", title: "從文獻做主題簡報（英文、「paper title」說法）", tags: ["deck", "create", "topic", "lang", "slow", "core"], mode: "api", study: "main",
@@ -167,7 +167,7 @@ export const TASKS: Task[] = [
   {
     id: "deck_translate_zh", title: "英文簡報整份翻成繁中", tags: ["deck", "edit", "lang"], mode: "api", study: "main",
     request: "整份翻成繁體中文", deck: "en", expect: { kind: "deck" },
-    grade: (o, _c, p) => [lang(o, "zh"), G.pageCount(deckOf(o), p.before!.pages)],
+    grade: (o, _c, p) => [G.noDuplicatePages(deckOf(o)), lang(o, "zh"), G.pageCount(deckOf(o), p.before!.pages)],
   },
   {
     id: "chat_paraphrase", title: "聊天交辦：助理改寫不能新增要求", tags: ["chat", "deck", "brief", "core"], mode: "chat", study: "main",

@@ -42,6 +42,12 @@ export interface WorkflowPlaybook {
   repair?(env: WorkflowEnv, failing: Criterion[]): Promise<{ key: string; issues: string[] }[]>;
   /** `repair` maps failing requirement criteria (`req_*`) itself; otherwise the engine reopens the writers whose output fails them. */
   handlesRequirements?: boolean;
+  /**
+   * Step checks the final verification re-checks on the shipped artifact: check id → the criterion id that covers it.
+   * A step whose only failing checks are covered by passing criteria does not make the run partial (a writer's page
+   * check is superseded by the deck's own page / layout criteria). A criterion with the same check id covers it too.
+   */
+  coveredChecks?: Record<string, string>;
   /** At the end (done or partial): write the artifact once (notes) and return a short line for the report. */
   commit?(env: WorkflowEnv, outcome: "done" | "partial"): Promise<string | null>;
 }

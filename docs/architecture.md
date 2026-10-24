@@ -173,7 +173,7 @@ Defined in `backend/src/lib/storage.ts` `keys`; the worker receives full keys in
 | `slides/<deckId>/<versionId>/output-<suffix>/…` | output of a re-index render (`POST …/reindex`); on success it becomes the version's `output_prefix` and the previous prefix is deleted |
 | `slides/_shared/<hash>/…` | `offline-assets/` (MathJax, KaTeX, fonts) shared by every version rendered with the same assets; `.complete` marker written last. Never deleted per version (`slide_versions.shared_prefix`) |
 | `slides/<deckId>/source/<fileId>` | binary file (image, font, PDF…) of the deck's in-app Quarto tree (`deck_sources.s3_key`; text files live in the DB). Keys in `lib/slides/sources.ts` `sourceKeys` |
-| `slides/<deckId>/preview/<previewId>/source.zip`, `…/output/` | quick preview (`slide_preview`): the packed tree (deleted once rendered) and the HTML-only render (`deck_previews.output_prefix`); only the newest ready preview per deck is kept. A preview queued with `shots: true` also has `…/output/_hub/shots/<n>.webp` (1280 px wide, ≤ 20 slides) + `_hub/shots.json` (`{version:1,width,height,total,truncated,pages:[{index,h,v?,title?,metrics?}]}`; `metrics` = worker `layout-metrics.ts`: `{words, bullets, minFont, maxFont, overflowY, overflowX, visuals, tables, diagrams, diagramErrors, rawDiagramCode, codeBlocks, textOverflow?, overflowLabels?, minVisualFont?, emptyBand?, contentBottom?}` in deck px; `overflow*` counts both edges, `textOverflow` = inline-SVG (Mermaid) labels outside their node shape or clipped, `minVisualFont` = smallest rendered font of inline SVG text and of `<img data-font>` diagrams/charts (font × display scale), `emptyBand` = largest empty horizontal band of the body below the title as a fraction of its height) for the AI layout review |
+| `slides/<deckId>/preview/<previewId>/source.zip`, `…/output/` | quick preview (`slide_preview`): the packed tree (deleted once rendered) and the HTML-only render (`deck_previews.output_prefix`); only the newest ready preview per deck is kept. A preview queued with `shots: true` also has `…/output/_hub/shots/<n>.webp` (1280 px wide, ≤ 20 slides) + `_hub/shots.json` (`{version:1,width,height,total,truncated,pages:[{index,h,v?,title?,metrics?}]}`; `metrics` = worker `layout-metrics.ts`: `{words, bullets, minFont, maxFont, overflowY, overflowX, visuals, tables, diagrams, diagramErrors, rawDiagramCode, codeBlocks, textOverflow?, overflowLabels?, minVisualFont?, emptyBand?, contentBottom?}` in deck px; `overflow*` counts both edges, `textOverflow` = inline-SVG (Mermaid) labels outside their node shape or clipped, `minVisualFont` = smallest rendered font of inline SVG text and of `<img data-font>` diagrams/charts (font × display scale); `minFont` ignores zero-width text (KaTeX's 1 px `.vlist-s` struts hold U+200B: every formula with a sub/superscript used to measure 1 px) and KaTeX's clipped `.katex-mathml` copy, `emptyBand` = largest empty horizontal band of the body below the title as a fraction of its height) for the AI layout review |
 | `references/<deckId>/<referenceId>` | reference PDF |
 | `latex/<projectId>/blobs/<sha256>` | content-addressed file bytes of a LaTeX project: binary uploads (`latex_files.s3_key`) and every text snapshot taken for a compile or a version (`latex_files.blob_sha256` = last uploaded text hash). Never rewritten; removed with the project |
 | `latex/<projectId>/manifests/<compileId>.json` | runner snapshot manifest (`LatexSnapshotManifest`) of one compile; deleted by the finalizer |
@@ -1634,7 +1634,10 @@ the budget):
    criterion that passed is not judged again when no section (Markdown heading / slide, LaTeX section, else paragraph)
    changed, and otherwise only against the changed sections (`<changed>`; a fail must quote them, else it keeps its pass).
    **Outcome** (`outcomeOf`): `done` = no stop, every criterion `pass` (notes allowed) and no step's kept version fails a
-   deterministic check; a step that stopped only on judged items is a report item, "every step passed" is not required.
+   deterministic check that no passing criterion re-checks on the shipped artifact (`coveredChecks` on the playbook: check
+   id → covering criterion, plus any criterion with the same check id; slides: a writer's `slide_titles` / `slide_count`
+   → `pages`, `speaker_notes` → `notes`, `no_placeholder` → `clean`, `not_truncated` → `complete`, `slide_density` /
+   `slide_length` → `visual_qa`); a step that stopped only on judged items is a report item, "every step passed" is not required.
    **Autopilot** never adds a round for unchanged failures: its one automatic 繼續改 only runs for failing criteria no
    repair has tried (and repairs only those).
 6. *Report*: `report.summary_md` (what was done, verification results, remaining issues, links) + a `notice` message
@@ -1828,6 +1831,24 @@ requirement is now a typed constraint that every step must keep and that is chec
   as `original_pages`. Criterion `kept` (`pages_kept` with the plan's titles of the kept pages, in order) checks the
   final deck; a failure goes to the writers of the missing pages; pages the user takes out of the outline on the plan
   card leave the criterion (`approveWorkflow`).
+- *Page identity* (eval `deck_add_page`, 126957f2: a visual fix of 「Shallow fusion vs. CLAS vs. contextual adapters」
+  replaced the pages 「Shallow fusion」 and 「Contextual adapters」 too and every check passed): pages are matched by
+  `assignTitles` / `findByTitle` (checks.ts; same normalized title first, a containing title only when it names no
+  other page) wherever a page is looked up or replaced by title (`replaceSlides`, visual QA, notes, student pages,
+  source lines, repair). The `pages` criterion (`slide_count` with the outline's `titles`) and `slide_titles` fail on
+  an outline page missing one-to-one, a page out of order, or a duplicated page (`duplicatePages`: the same title more
+  often than the outline has it, or the same slide body (≥ 120 characters) under two titles); a duplicate with every writer's page present
+  is repaired by re-assembling from the writers' pages. Writers' `## ` headings are set to the outline titles when the
+  page count matches (`outlineHeadings`; a writer once titled its page in Chinese in an English deck).
+- *Duplicate visuals* (`dedupeVisuals` in `fixContent`, every write and fix): a ```diagram whose labels are mostly a
+  table's first-column items on the same slide is dropped (the table carries more); a ```chart of ≥ 2 of a table's
+  numbers keeps the chart and drops the table — the vision QA's hard 「重複呈現」 defect the rewrite kept failing on.
+- *Visual fix limits*: editing an existing deck (`revise`: translate / polish) rewrites only pages with a hard defect —
+  design suggestions on the user's own layout stay report items (a translation once had its table redesigned into a
+  chart). A rewritten page whose charts / tables gained numbers that neither the page before nor the sources (brief,
+  original slides) have is not applied (`inventedNumbers`, log 「版面修正在這些頁加了資料裡沒有的數字…」).
+  `stripPositions` also removes hand-shrunk text (`<small>`, inline `font-size`, `[x]{.small}`): it lands below the
+  16 px floor and failed pages as 「字太小」 round after round.
 - *Report back*: a partial run's chat notice lists the unmet items in plain words (`unmetItems`: failed / unjudged
   criteria, else failed steps; content `{items, model: true}`, `messageView.items` + `workflow_id`) with 「要我修這幾項嗎？」
   (→ `POST …/guidance` = 繼續改 with those items); the notice stays visible in the chat and is carried into the model's
@@ -2109,7 +2130,7 @@ materialises it into the deck tree:
   comparison diagram of sentences, a diagram < 16 px in its box, the same paper figure twice, two paper figures on one
   slide) and text-only pages beyond the 60 % visual share fail the page (soft: fixed, not gating). Failing pages with
   rewrites left get issue-specific fix instructions (`fixFor`) plus the verifier's own and go back to a writer
-  (`replaceSlides`, titles unchanged) — except **overflow** (content past the slide, `OVERFLOW_RE`): that page gets the
+  (`replaceSlides`, titles unchanged; one rewritten page replaces exactly one page — `assignTitles`: same title first, else a containing title that names no other page, so 「A vs. B vs. C」 never replaces A or C) — except **overflow** (content past the slide, `OVERFLOW_RE`): that page gets the
   next deterministic **fit variant** instead (`withVariant`: heading class `.fit-90` → `.fit-80` → `.fit-70` = smaller
   font, tables, takeaway and figure height in `DECK_CSS`, never below 16 px; `state.visual_qa.variants`), and the next
   cycle's scoring (vision, else the metrics) picks: the best-ranked version per page is kept and a variant that scored

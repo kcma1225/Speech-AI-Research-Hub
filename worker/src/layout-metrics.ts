@@ -51,10 +51,12 @@ export const SLIDE_METRICS = `(() => {
   const addBand = (r) => { if (r.width > 0 && r.height > 0) bands.push([(r.top - top) / scale, (r.bottom - top) / scale]); };
   let node;
   while ((node = walker.nextNode())) {
-    const text = (node.nodeValue || "").trim();
+    // Zero-width characters are not text (KaTeX's 1px \`.vlist-s\` struts hold a U+200B: every slide with a sub- or
+    // superscript measured "1px text"); KaTeX's MathML copy is clipped to 1px for screen readers.
+    const text = (node.nodeValue || "").replace(/[\\u200b-\\u200d\\u2060\\ufeff]/g, "").trim();
     if (!text) continue;
     const el = node.parentElement;
-    if (!el || el.closest("aside.notes, script, style, svg, .mermaid, pre.mermaid-js") || !visible(el)) continue;
+    if (!el || el.closest("aside.notes, script, style, svg, .mermaid, pre.mermaid-js, .katex-mathml") || !visible(el)) continue;
     const cjk = (text.match(/[\\u3040-\\u30ff\\u3400-\\u9fff\\uf900-\\ufaff]/g) || []).length;
     const latin = (text.replace(/[\\u3040-\\u30ff\\u3400-\\u9fff\\uf900-\\ufaff]/g, " ").match(/[A-Za-z0-9][\\w'.%-]*/g) || []).length;
     words += latin + cjk / 2;

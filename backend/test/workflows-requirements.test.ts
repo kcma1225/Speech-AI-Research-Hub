@@ -64,7 +64,7 @@ const EN: Record<string, string> = { 問題定義: "Problem", 方法: "Method", 
 const table = (en: boolean) => (en ? "| Item | Status |\n|---|---|\n| Data | Done |" : "| 項目 | 狀態 |\n|---|---|\n| 資料 | 完成 |");
 /** One slide in English or Chinese (the item pages carry the per-item fields). */
 function page(title: string, en: boolean, extra = "") {
-  return `## ${title}\n\n${en ? "- Key point taken from the study data" : "- 依據研究資料的重點"}${extra}\n\n${table(en)}\n\n::: {.notes}\n${en ? `This page explains ${title} using what the study data actually records.` : `這一頁說明${title}的內容與資料來源，報告時大約一分鐘，重點放在研究資料裡實際記錄的進展與數字。`}\n:::`;
+  return `## ${title}\n\n${en ? `- Key point on ${title} taken from the study data` : `- 依據研究資料的「${title}」重點`}${extra}\n\n${table(en)}\n\n::: {.notes}\n${en ? `This page explains ${title} using what the study data actually records.` : `這一頁說明${title}的內容與資料來源，報告時大約一分鐘，重點放在研究資料裡實際記錄的進展與數字。`}\n:::`;
 }
 const itemFields = "\n- Architecture: a biasing module next to the decoder\n- Pros: no retraining\n- Cons: over-biasing on common words";
 /** Titles of the pages a writer was asked for (`your_pages`). */

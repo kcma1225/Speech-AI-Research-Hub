@@ -149,6 +149,30 @@ P0 + P1 已部署（b547fff）；**P2 同時在 staging 反覆部署**（ai-work
 - **仍然慢**：時間中位數 30.5 分（共用 2 個槽）；`note_topic_research` 81 次呼叫（`topic_read` 55）。
 - 評審是同一個便宜模型，只看相對變化；pairwise 對基準：勝 3（topic 簡報、論文報告、英文筆記）、平 4、負 3（兩個翻譯／接續擴充、`deck_exact_pages`）。
 
+## P5b：把 partial 的根因修掉（2026-10-24 15:52 → 19:16 UTC）
+
+P5 之後 20/20 通過，但 4 個任務的 run 狀態是 `partial`。根因與修正（不改評分門檻；評分只**加嚴**）：
+
+| 任務 | 根因 | 修正 |
+|---|---|---|
+| `deck_add_page`（126957f2） | 視覺修正重寫比較表頁「Shallow fusion vs. CLAS vs. contextual adapters」，`replaceSlides` 用寬鬆的 `titleMatches`（子字串）找頁 → 同時取代了「Shallow fusion」「Contextual adapters」兩頁：三份相同的比較頁、兩頁不見；`slide_count` 只看頁數、`pages_kept` 與評分 `titles_kept` 也用子字串，全部通過 | `assignTitles`／`findByTitle`（一對一、同標題優先、含其他頁標題的不算）用在所有依標題找頁、換頁的地方；`pages` 驗收（`slide_count` + 大綱標題）與 `slide_titles` 抓缺頁、順序、重複頁（`duplicatePages`），重複時由 writers 的頁重新組裝；評分 `titles_kept` 一對一，新增 `no_duplicates`（6 個簡報編輯任務） |
+| `kind_conflict`（95fe95c9） | 有上下標公式的頁「字太小（1px）」：KaTeX 的 `.vlist-s` 支撐元素是 1px 的零寬字元（U+200B，JS `trim()` 不會去掉），worker 的版面量測把它算成文字 | `worker/src/layout-metrics.ts` 忽略零寬字元與 KaTeX 的 `.katex-mathml`（worker 測試重現 1px → 24px） |
+| `deck_translate_en`（d2e938cb；重跑 cf7e5321） | p4 狀態時間軸與狀態表重複呈現（視覺 QA 的硬傷「重複呈現」），重寫三輪都保留兩者；重跑時另一個問題：翻譯的「偏高／待驗證」表被版面修正改成編造數字（10 % / 2 %）的長條圖 | `dedupeVisuals`（`fixContent`）：同頁的流程圖若大多是表格第一欄的項目就拿掉圖、圖表與表格同數字就拿掉表；修改既有簡報（revise）時視覺修正只處理硬傷；版面修正帶進頁面與來源都沒有的數字就不採用（`inventedNumbers`）；`<small>`／inline `font-size`／`[x]{.small}` 由程式移除（`deck_expand_fields_zh` 重跑時 15.6px 引用兩輪「字太小」） |
+| `deck_followup_expand`（5b112199） | 英文簡報的 writer 把第 5 頁標題寫成中文 → `slide_titles` 失敗、修一輪仍失敗；後面的語言修正把頁修好、驗收全過，但 `outcomeOf` 只要有步驟的確定性檢查失敗就判 partial | writer 頁數對時 `## ` 標題一律設成大綱標題（`outlineHeadings`）；`outcomeOf` 的步驟檢查若被通過的驗收在成品上重新檢查（playbook `coveredChecks`：`slide_titles`/`slide_count`→`pages`、`speaker_notes`→`notes`、`no_placeholder`→`clean`、`not_truncated`→`complete`、`slide_density`/`slide_length`→`visual_qa`）就不算壞步驟（`deck_add_page` 第一次重跑也因 writer 的密度檢查而 partial，成品視覺 QA 通過） |
+
+重跑（ai-worker `a1c6ebb0`，worker `e7cd4517`，`--into runs/p5-kept-pages`）：
+
+| 任務 | 之前 | 之後 | 分鐘 | 呼叫 | 評分 |
+|---|---|---|---|---|---|
+| deck_add_page | partial（36 分、35 次） | **done** | 23 | 27 | 5/5 |
+| deck_translate_en | partial（40、40） | **done** | 15 | 26 | 4/4 |
+| deck_followup_expand | partial（25、33） | **done** | 28 | 36 | 4/4 |
+| kind_conflict | partial（52、56） | **done** | 25 | 48 | 1/1 |
+| deck_remove_page（回歸） | done（14、19） | done | 17 | 19 | 5/5 |
+| deck_expand_fields_zh（回歸） | done（28、31） | done | 35 | 33 | 4/4 |
+
+整份報告現在：**通過 20/20、run 狀態 done 19/20（另一個是預期的 `needs_pdf`）、確定性評分 65/65、時間中位數 27.1 分、呼叫 784（修正類 13.8%）、評審 4.57**。評分多了 `no_duplicates`（總數 60 → 65），只會更難通過。
+
 ## 已知限制
 
 - 便宜模型 + 共用的 2 個 ai-worker 槽：時間會受其他 agent 的 run 影響（`queued_s` 另記；wall 時間從開始執行算），只比較同條件的兩次執行。

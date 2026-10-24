@@ -119,6 +119,73 @@ export function keptIssues(originals: OriginalPage[], pages: PlannedPage[], matc
   return issues;
 }
 
+/**
+ * One-to-one title assignment (got index per wanted title, -1 when missing): the same normalized title first, then a
+ * containing / contained title that names no other wanted title. 「Shallow fusion vs. CLAS vs. contextual adapters」 is
+ * never 「Shallow fusion」 — the loose `titleMatches` let one comparison page stand for three pages (eval deck_add_page).
+ */
+export function assignTitles(want: string[], got: string[]): number[] {
+  const used = new Set<number>();
+  const at = want.map(() => -1);
+  want.forEach((w, i) => {
+    const j = got.findIndex((g, k) => !used.has(k) && !!norm(w) && norm(w) === norm(g));
+    if (j >= 0) (at[i] = j), used.add(j);
+  });
+  want.forEach((w, i) => {
+    if (at[i]! >= 0) return;
+    const j = got.findIndex((g, k) => !used.has(k) && titleMatches(w, g) && !want.some((x, m) => m !== i && norm(x) !== norm(w) && titleMatches(x, g)));
+    if (j >= 0) (at[i] = j), used.add(j);
+  });
+  return at;
+}
+
+/** The item whose title is this title: the same normalized title, else the one unambiguous containing / contained one. */
+export function findByTitle<T>(items: T[], title: string, titleOf: (x: T) => string): T | undefined {
+  const t = norm(title);
+  if (!t) return undefined;
+  const exact = items.find((x) => norm(titleOf(x)) === t);
+  if (exact) return exact;
+  const loose = items.filter((x) => titleMatches(titleOf(x), title));
+  return loose.length === 1 ? loose[0] : undefined;
+}
+
+/** Pages that appear twice: the same title more often than the outline has it, or the same slide body (≥ 120 chars). */
+export function duplicatePages(slides: Slide[], want: string[] = []): string[] {
+  const out: string[] = [];
+  const count = (xs: string[], t: string) => xs.filter((x) => norm(x) === t).length;
+  const seen = new Set<string>();
+  for (const s of slides) {
+    const t = norm(s.title);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    const n = count(slides.map((x) => x.title), t);
+    if (n > Math.max(1, count(want, t))) out.push(`「${s.title}」出現 ${n} 次`);
+  }
+  const bodies = new Map<string, Slide>();
+  for (const s of slides) {
+    const b = s.body.replace(/\s+/g, "");
+    if (b.length < 120) continue;
+    const first = bodies.get(b);
+    if (first && norm(first.title) !== norm(s.title)) out.push(`第 ${first.index} 頁「${first.title}」與第 ${s.index} 頁「${s.title}」內容完全相同`);
+    else if (!first) bodies.set(b, s);
+  }
+  return out;
+}
+
+/** Outline titles vs. the deck: missing (one-to-one), duplicated, out of order (`ordered`). */
+export function outlineIssues(want: string[], slides: Slide[], ordered = true): string[] {
+  const got = slides.map((s) => s.title);
+  const at = assignTitles(want, got);
+  const issues: string[] = [];
+  const missing = want.filter((_, i) => at[i]! < 0);
+  if (missing.length) issues.push(`缺少這些頁面：${missing.map((m) => `「${m}」`).join("、")}`);
+  const placed = at.filter((j) => j >= 0);
+  if (ordered && placed.some((j, k) => k > 0 && j < placed[k - 1]!)) issues.push("頁面順序和大綱不一致");
+  const dups = duplicatePages(slides, want);
+  if (dups.length) issues.push(`有重複的頁面：${dups.join("、")}`);
+  return issues;
+}
+
 export const PLACEHOLDER_RE = /〔\s*　*\s*〕|待補|待填|待完成|\bTODO\b|\bTBD\b|lorem ipsum|\bXXX\b|\?\?\?|〔[^〕]{0,6}〕|\[(?:插入|在此|placeholder)[^\]]*\]|（此處[^）]{0,20}）/i;
 
 /**
@@ -218,16 +285,19 @@ export const CHECKS: Record<string, CheckFn> = {
     const n = (text.match(/§\s*\d|p\.\s*\d|頁\s*\d|第\s*\d+\s*頁|Table\s*\d|表\s*\d|Fig(?:ure|\.)\s*\d|圖\s*\d|〈[^〉]{2,}〉/g) ?? []).length;
     return n >= min ? { ok: true, detail: `標註了 ${n} 處出處` } : { ok: false, detail: `出處標註不足：只有 ${n} 處，至少需要 ${min} 處（例如（§3.2，p. 4）、表 2、〈筆記名稱〉）。` };
   },
+  /** Page count; with `titles` (the outline) also every outline page there once, in order, and no page twice. */
   slide_count(text, { params }) {
     const want = num(params.expected, 0);
-    const got = parseSlides(text).length;
-    return got === want ? { ok: true, detail: `共 ${got} 頁` } : { ok: false, detail: `頁數不符：應為 ${want} 頁，實際 ${got} 頁（每頁以「## 標題」開頭）。` };
+    const slides = parseSlides(text);
+    const got = slides.length;
+    if (got !== want) return { ok: false, detail: `頁數不符：應為 ${want} 頁，實際 ${got} 頁（每頁以「## 標題」開頭）。` };
+    const titles = strs(params.titles);
+    const issues = titles.length ? outlineIssues(titles, slides) : [];
+    return issues.length ? { ok: false, detail: `頁數對，但頁面和大綱不一致：${issues.join("；")}。` } : { ok: true, detail: `共 ${got} 頁${titles.length ? "，與大綱一致" : ""}` };
   },
   slide_titles(text, { params }) {
-    const want = strs(params.titles);
-    const got = parseSlides(text).map((s) => s.title);
-    const missing = want.filter((w) => !got.some((g) => titleMatches(w, g)));
-    return missing.length ? { ok: false, detail: `缺少這些頁面：${missing.map((m) => `「${m}」`).join("、")}。` } : { ok: true, detail: "頁面標題與大綱一致" };
+    const issues = outlineIssues(strs(params.titles), parseSlides(text), params.ordered === true);
+    return issues.length ? { ok: false, detail: `${issues.join("；")}。` } : { ok: true, detail: "頁面標題與大綱一致" };
   },
   speaker_notes(text, { params }) {
     const min = num(params.min_chars, 30);
@@ -402,14 +472,14 @@ export const CHECKS: Record<string, CheckFn> = {
       return issues.length ? { ok: false, detail: `${issues.join("；")}。` } : { ok: true, detail: `原本的 ${originals.length} 頁都保留${ordered ? "，順序不變" : ""}` };
     }
     const want = strs(params.titles);
-    const got = parseSlides(text).map((s) => s.title);
+    const at = assignTitles(want, parseSlides(text).map((s) => s.title));
     const lost: string[] = [];
-    let from = 0;
-    for (const w of want) {
-      const i = got.findIndex((g, k) => (!ordered || k >= from) && titleMatches(w, g));
-      if (i < 0) lost.push(w);
-      else from = i + 1;
-    }
+    let last = -1;
+    want.forEach((w, i) => {
+      const j = at[i]!;
+      if (j < 0 || (ordered && j < last)) lost.push(w);
+      else last = j;
+    });
     return lost.length ? { ok: false, detail: `原本的這些頁面不見了${ordered ? "或順序被改了" : ""}：${lost.map((t) => `「${t}」`).join("、")}。` } : { ok: true, detail: `原本的 ${want.length} 頁都保留${ordered ? "，順序不變" : ""}` };
   },
   render_ok(_text, { data }) {

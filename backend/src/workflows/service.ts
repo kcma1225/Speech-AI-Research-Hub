@@ -270,7 +270,7 @@ export async function approveWorkflow(app: FastifyInstance, user: CurrentUser, i
     }
     if (outline && pb?.id === "slides" && edits.outline?.length) {
       const n = outline.length;
-      criteria = criteria.map((c) => (c.id === "pages" ? { ...c, text: `簡報正好 ${n} 頁，頁面順序與確認的大綱一致`, check: { id: "slide_count", params: { expected: n } } } : c));
+      criteria = criteria.map((c) => (c.id === "pages" ? { ...c, text: `簡報正好 ${n} 頁，頁面順序與確認的大綱一致`, check: { id: "slide_count", params: { expected: n, titles: outline!.map((o) => o.title) } } } : c));
       // Kept original pages: the ones the user took out of the outline on the plan card are their own decision.
       criteria = criteria.flatMap((c) => {
         if (c.id !== "kept" || !c.check) return [c];

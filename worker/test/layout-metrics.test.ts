@@ -37,6 +37,22 @@ describe.skipIf(!chrome)("layout metrics (browser)", () => {
     }
   }, 30_000);
 
+  it("ignores KaTeX's zero-width 1px struts and its clipped MathML copy (kind_conflict: every formula page measured 1px text)", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "lm-"));
+    const browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: dir, args: ["--no-sandbox"] });
+    try {
+      const view = await browser.newPage();
+      await view.setViewport({ width: 1280, height: 800 });
+      // The structure KaTeX renders for $c^x_t$: MathML copy (clipped) + HTML with a vlist strut of font-size 1px.
+      await view.setContent(page(`<h2 style="font-size:40px">Inference</h2><p style="font-size:24px">Decoder input <span class="katex"><span class="katex-mathml" style="position:absolute;clip:rect(1px,1px,1px,1px);width:1px;height:1px;overflow:hidden;font-size:1px"><math><mi>c</mi></math></span><span class="katex-html">c<span class="vlist-s" style="font-size:1px;display:table-cell">\u200b</span></span></span></p>`));
+      const m = (await view.evaluate(SLIDE_METRICS)) as SlideMetrics;
+      expect(m.minFont).toBe(24);
+    } finally {
+      await browser.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("flags SVG labels outside their node box, small diagram text and a large empty body band", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "lm-"));
     const browser = await puppeteer.launch({ executablePath: chrome, headless: true, userDataDir: dir, args: ["--no-sandbox"] });

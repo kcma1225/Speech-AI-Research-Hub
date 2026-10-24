@@ -16,7 +16,7 @@
  * Editing the answers later (「修改答案」) re-runs this step and its dependents (assemble → … → final).
  * Other playbooks can use `askStudentView(env, step, {...})` for a single 「我的想法」-style section.
  */
-import { titleMatches } from "./checks.js";
+import { findByTitle } from "./checks.js";
 import { labelsFor, type Labels } from "./requirements.js";
 import { AI_OPTIONS_INTRO, answerLines, asksOf, askUser, groundedQuestions, isSkipped, normaliseCard, SKIP_VALUE, validateCardAnswers, type QuestionDraft, type StoredAnswer } from "./questions.js";
 import { finishNotice } from "./notify.js";
@@ -147,7 +147,7 @@ export function applyStudentPages(body: string, pages: StudentPage[], L: Labels 
       const head = part.slice(3, nl < 0 ? undefined : nl);
       const attrs = /\s*(\{[^}]*\})\s*$/.exec(head)?.[1];
       const title = head.replace(/\{[^}]*\}\s*$/, "").trim();
-      const hit = pages.find((p) => titleMatches(p.title, title));
+      const hit = findByTitle(pages, title, (p) => p.title);
       return hit ? `${studentPageMarkdown(hit, attrs ? ` ${attrs}` : "", L)}\n` : part;
     })
     .join("")

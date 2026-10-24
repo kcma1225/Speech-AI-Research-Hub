@@ -682,17 +682,21 @@ async function onStop(env: WorkflowEnv, pb: WorkflowPlaybook, stop: WorkflowStop
  * items is a report item, not a reason for 部分完成 — "every step passed" is not required. A run without criteria is
  * done when every step passed.
  */
-export function outcomeOf(criteria: Criterion[], steps: Pick<StepRow, "status" | "error" | "verdict" | "kind">[], stop: WorkflowStop | null): "done" | "partial" {
+export function outcomeOf(criteria: Criterion[], steps: Pick<StepRow, "status" | "error" | "verdict" | "kind">[], stop: WorkflowStop | null, covered: Record<string, string> = {}): "done" | "partial" {
   if (stop) return "partial";
   if (!criteria.length) return steps.length && steps.every((s) => s.status === "passed" || (s.status === "skipped" && !s.error)) ? "done" : "partial";
-  const brokenStep = steps.some((s) => s.kind !== "final" && s.status === "failed" && (!s.verdict || s.verdict.checks.some((c) => !c.ok)));
+  // A failing step check that a passing criterion re-checks on the shipped artifact is superseded (eval
+  // deck_followup_expand / deck_add_page: a writer's page check failed, later steps fixed the page, every criterion
+  // passed — and the run still ended partial).
+  const isCovered = (id: string) => criteria.some((c) => c.status === "pass" && (c.check?.id === id || covered[id] === c.id));
+  const brokenStep = steps.some((s) => s.kind !== "final" && s.status === "failed" && (!s.verdict || s.verdict.checks.some((c) => !c.ok && !isCovered(c.id))));
   return criteria.every((c) => c.status === "pass") && !brokenStep ? "done" : "partial";
 }
 
 async function finish(env: WorkflowEnv, pb: WorkflowPlaybook, stop: WorkflowStop | null) {
   await env.refresh();
   const steps = await getSteps(env.db, env.run.id);
-  const outcome = outcomeOf(env.run.criteria, steps, stop);
+  const outcome = outcomeOf(env.run.criteria, steps, stop, pb.coveredChecks);
   let commitLine: string | null = null;
   try {
     commitLine = (await pb.commit?.(env, outcome)) ?? null;

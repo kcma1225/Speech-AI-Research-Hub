@@ -176,7 +176,7 @@ integration("workflow units", () => {
       const deep = u.includes("Deep Context");
       return `### [@${key}] 論文\n\n#### 一句話\n${deep ? "以 cross-attention 讀取熱詞清單" : "解碼時對熱詞前綴加分"} [@${key}]（p. 1）。\n\n#### 方法\n${deep ? "DEEPMARK 方法以 cross-attention 讀取熱詞清單（p. 3）。" : "SHALLOWMARK 方法在 beam search 對熱詞加分（p. 2）。"}\n\n#### 注入位置與訓練／推論\n${deep ? "encoder 之後，需要訓練（p. 3）" : "只在推論時（p. 2）"}。\n\n#### 數字表\n| 設定 | 資料集 | 指標 | 基線 | 結果 | 出處 |\n|---|---|---|---|---|---|\n| x | LibriSpeech | WER | 5.2 | ${deep ? "4.1" : "4.6"} | 表 2（p. 6） |\n\n#### 限制\n清單很大時變慢。\n\n${"補充說明。".repeat(60)}`;
     };
-    const page = (title: string) => `## ${title}\n\n| 項目 | 內容 |\n|---|---|\n| 做法 | 依摘錄 |\n\n- 依摘錄整理的重點\n\n::: {.notes}\n這一頁說明「${title}」的重點，內容都來自這頁的來源論文摘錄，報告時大約一分鐘。\n:::`;
+    const page = (title: string) => `## ${title}\n\n| 項目 | 內容 |\n|---|---|\n| 做法 | 依摘錄 |\n\n- 依摘錄整理的「${title}」重點\n\n::: {.notes}\n這一頁說明「${title}」的重點，內容都來自這頁的來源論文摘錄，報告時大約一分鐘。\n:::`;
     const pagesOf = (req: Req) => {
       const block = /<data name="your_pages"[^>]*>\n([\s\S]*?)\n<\/data>/.exec(userText(req))?.[1] ?? "";
       return [...block.matchAll(/^\d+\. (.+?)(?:（[^）]*）)*$/gm)].map((x) => x[1]!);

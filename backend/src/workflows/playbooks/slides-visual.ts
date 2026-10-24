@@ -21,7 +21,7 @@ import { mermaidCellsToDiagrams } from "../../lib/slides/diagram/mermaid.js";
 import { listFiles, loadTree, saveBinary, saveText, sourceKeys } from "../../lib/slides/sources.js";
 import { imageFromBuffer, type ReviewImage } from "../../lib/vision/review.js";
 import type { ChatMessage, ImageBlock, TextBlock } from "../../ai/types.js";
-import { hasVisual, parseSlides, SLIDE_MISSING_RE, titleMatches, visibleWords } from "../checks.js";
+import { assignTitles, findByTitle, hasVisual, parseSlides, SLIDE_MISSING_RE, visibleWords } from "../checks.js";
 import { parseJson } from "../llm.js";
 import type { WorkflowEnv } from "../env.js";
 
@@ -356,7 +356,59 @@ export function fixFor(issues: string[]): string {
 export function fixContent(body: string, refs: ContentRefs): { body: string; fixed: number } {
   const a = fixFigureRefs(body, refs.figures ?? []);
   const b = fixDiagrams(a.body, refs, parseSlides(a.body));
-  return { body: b.body, fixed: a.fixed + b.fixed };
+  const c = dedupeVisuals(b.body);
+  return { body: c.body, fixed: a.fixed + b.fixed + c.fixed };
+}
+
+/**
+ * Numbers a rewrite put into its charts / tables that neither the page before it nor the sources have (eval
+ * deck_translate_en: a layout fix replaced the translated table 「偏高／待驗證」 by a bar chart of made-up 10 % / 2 %).
+ */
+export function inventedNumbers(fresh: string, before: string, sources: string): string[] {
+  const data = [...fresh.matchAll(/^```\{?\.?chart\}?[^\n]*\n([\s\S]*?)^```/gm)].map((m) => m[1]!).join("\n") + "\n" + fresh.split("\n").filter((l) => /^\s*\|.*\|\s*$/.test(l)).join("\n");
+  const known = new Set([...numbersOf(before), ...numbersOf(sources)]);
+  return [...numbersOf(data)].filter((n) => !known.has(n));
+}
+
+const squash = (x: string) => x.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+const TABLE_RE = /(?:^[ \t]*\|.*\|[ \t]*\n?)+/gm;
+const VISUAL_BLOCK_RE = /^```\{?\.?(diagram|chart)\}?[^\n]*\n([\s\S]*?)^```[ \t]*\n?/gm;
+
+/**
+ * The same information twice on one slide (a vision-QA hard defect 「重複呈現」 the rewrite kept failing on: eval
+ * deck_translate_en p4, a status timeline over the status table): a ```diagram whose labels are mostly the table's
+ * first-column items is dropped (the table carries more: the status); a ```chart charting ≥ 2 of the table's numbers
+ * keeps the chart and drops the table. Deterministic, per slide; student pages have neither.
+ */
+export function dedupeVisuals(body: string): { body: string; fixed: number } {
+  let fixed = 0;
+  const out = body.split(/^(?=## )/m).map((part) => {
+    if (!part.startsWith("## ")) return part;
+    const table = part.match(TABLE_RE)?.find((t) => t.trim().split("\n").length >= 3);
+    if (!table) return part;
+    const rows = table.trim().split("\n").slice(2).map((l) => squash(l.split("|")[1] ?? "")).filter((x) => x.length >= 3);
+    let next = part;
+    for (const m of part.matchAll(VISUAL_BLOCK_RE)) {
+      const [block, kind, src] = m as unknown as [string, string, string];
+      if (kind === "diagram") {
+        const labels = [...src.matchAll(/"label"\s*:\s*"([^"]+)"/g)].map((x) => x[1]!).concat([...(/"stages"\s*:\s*\[([^\]]*)\]/.exec(src)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((x) => x[1]!)).map(squash).filter((x) => x.length >= 3);
+        const same = (l: string) => rows.some((r) => r.includes(l) || l.includes(r));
+        const shared = labels.filter(same).length;
+        if (rows.length >= 2 && shared >= 2 && shared / labels.length >= 0.6 && rows.filter((r) => labels.some((l) => r.includes(l) || l.includes(r))).length / rows.length >= 0.6) {
+          next = next.replace(block, "");
+          fixed++;
+        }
+      } else {
+        const cn = numbersOf(src);
+        if ([...numbersOf(table)].filter((n) => cn.has(n)).length >= 2 && next.includes(table)) {
+          next = next.replace(table, "");
+          fixed++;
+        }
+      }
+    }
+    return next.replace(/\n{3,}/g, "\n\n");
+  });
+  return { body: out.join(""), fixed };
 }
 
 /** Numbers of a text (normalised; integers < 10 ignored as too generic). */
@@ -482,7 +534,7 @@ export function combineScores(pages: ShotPage[], vision: PageScore[], allowed: (
   return pages.map((p) => {
     const v = vision.find((x) => x.page === p.index);
     const ok = allowed(p.title ?? "");
-    const si = ok ? [] : ([...source.entries()].find(([t]) => titleMatches(t, p.title ?? ""))?.[1] ?? []);
+    const si = ok ? [] : (findByTitle([...source.entries()], p.title ?? "", ([t]) => t)?.[1] ?? []);
     const metric = metricIssues(p, { allowed: ok });
     const hardMetric = metric.filter((x) => HARD_METRIC_RE.test(x));
     const softMetric = metric.filter((x) => !HARD_METRIC_RE.test(x));
@@ -556,15 +608,17 @@ export function closeOpenBlocks(body: string): string {
 
 /** Replaces slides (by title) with rewritten ones; keeps every other slide byte-identical. */
 export function replaceSlides(body: string, rewritten: string): string {
+  const head = (p: string) => p.slice(3, p.indexOf("\n") < 0 ? undefined : p.indexOf("\n")).replace(/\{[^}]*\}\s*$/, "").trim();
   const fresh = closeOpenBlocks(rewritten).split(/^(?=## )/m).filter((p) => p.startsWith("## "));
   const parts = body.split(/^(?=## )/m);
+  const pages = parts.map((p, i) => ({ p, i })).filter((x) => x.p.startsWith("## "));
+  // Each rewritten page replaces exactly one page (one-to-one, same title first): a fixed comparison page titled
+  // 「A vs. B vs. C」 once replaced the pages A and C too (eval deck_add_page: three copies, two pages lost).
+  const at = assignTitles(fresh.map(head), pages.map((x) => head(x.p)));
+  const by = new Map<number, string>();
+  at.forEach((j, k) => j >= 0 && by.set(pages[j]!.i, fresh[k]!));
   return parts
-    .map((p) => {
-      if (!p.startsWith("## ")) return p;
-      const title = p.slice(3, p.indexOf("\n") < 0 ? undefined : p.indexOf("\n")).replace(/\{[^}]*\}\s*$/, "").trim();
-      const hit = fresh.find((f) => titleMatches(title, f.slice(3, f.indexOf("\n") < 0 ? undefined : f.indexOf("\n")).replace(/\{[^}]*\}\s*$/, "").trim()));
-      return hit ? `${hit.trim()}\n\n` : p;
-    })
+    .map((p, i) => (by.has(i) ? `${by.get(i)!.trim()}\n\n` : p))
     .join("")
     .replace(/\n{3,}/g, "\n\n");
 }
