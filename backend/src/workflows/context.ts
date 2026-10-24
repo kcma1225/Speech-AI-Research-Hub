@@ -69,7 +69,7 @@ export async function studyFromText(db: Queryable, user: CurrentUser, request: s
 }
 
 /** 「每一篇文獻」-style requests: one artifact per paper. */
-export const EACH_PAPER_RE = /(每一?篇|每一?份|每一?個|各篇|各個|逐篇|一篇一份|分別|個別|全部|所有)[^。！？\n]{0,12}(文獻|論文|paper)|(文獻|論文|papers?)[^。！？\n]{0,12}(各|分別|逐一|每篇)|\b(each|every|all( of)?( the)?) (paper|papers|reference|article)s?\b|\bone (deck|presentation|note) (per|for each) paper\b/i;
+export const EACH_PAPER_RE = /(每一?篇|各篇|逐篇|一篇一份|每一?份)[^。！？\n]{0,6}(文獻|論文|paper)|每一?個\s*(文獻|論文|paper)|(文獻|論文|papers?|篇)[^。！？\n]{0,6}(各做|分別做|各自做|各一份|逐篇|每篇)|\b(each|every) (paper|reference|article)s?\b(?![^.\n]{0,20}\b(title|year|name)\b)|\bone (deck|presentation|note) (per|for each) paper\b/i;
 /** Playbooks whose run is about exactly one paper. */
 export const PER_PAPER_PLAYBOOKS = new Set(["slides", "reading_note"]);
 export const MAX_BATCH = 10;
@@ -80,15 +80,19 @@ export type BatchItem = { paper_id: string; title: string };
  * The papers a batch covers, or null for a single run: explicit `paper_ids` (≥ 2), or the study's papers when the
  * request asks for each of them (no single `paper_id` given). Papers in the study's order (oldest first), ≤ MAX_BATCH.
  */
-export async function batchPapers(db: Queryable, input: { playbook: string; request: string; studyId: string | null; paperId?: string; paperIds?: string[] }): Promise<BatchItem[] | null> {
+export async function batchPapers(db: Queryable, input: { playbook: string; request: string; studyId: string | null; paperId?: string; paperIds?: string[]; userText?: string }): Promise<BatchItem[] | null> {
   if (!PER_PAPER_PLAYBOOKS.has(input.playbook)) return null;
+  // One artifact per paper only when the user's OWN words ask for it (「每一篇各做一份」); several paper_ids from the
+  // assistant otherwise are the sources of ONE deck / note (production: 5 paper ids → 5 paper-report decks).
+  const asked = EACH_PAPER_RE.test(input.userText ?? input.request);
+  if (!asked) return null;
   const explicit = [...new Set(input.paperIds ?? [])];
   if (explicit.length >= 2) {
     const rows = (await db.query<{ id: string; title: string }>("SELECT id, title FROM papers WHERE id = ANY($1::uuid[])", [explicit])).rows;
     const list = explicit.map((id) => rows.find((r) => r.id === id)).filter((r): r is { id: string; title: string } => !!r).slice(0, MAX_BATCH);
     return list.length >= 2 ? list.map((r) => ({ paper_id: r.id, title: r.title })) : null;
   }
-  if (input.paperId || !input.studyId || !EACH_PAPER_RE.test(input.request)) return null;
+  if (input.paperId || !input.studyId) return null;
   const rows = (await db.query<{ id: string; title: string }>(
     "SELECT p.id, p.title FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 ORDER BY sp.created_at, p.title LIMIT $2",
     [input.studyId, MAX_BATCH],

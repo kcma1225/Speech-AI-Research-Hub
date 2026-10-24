@@ -131,7 +131,7 @@ export async function judgeChecklist(env: WorkflowEnv, step: StepLike, text: str
     dataBlock("output", text.slice(0, 30_000)),
     ANSWER_FORMAT,
   ].filter(Boolean).join("\n\n");
-  const { value } = await env.callJson<Answers>({ purpose: "verify", role: "verifier", messages: [{ role: "system", content: VERIFIER_SYSTEM }, { role: "user", content: user }], maxTokens: 3000 }, isAnswers, step.id);
+  const { value } = await env.callJson<Answers>({ purpose: "verify", role: "verifier", messages: [{ role: "system", content: VERIFIER_SYSTEM }, { role: "user", content: user }], maxTokens: 6000 }, isAnswers, step.id);
   const spec = [step.instructions, step.expected, ...items.map((i) => i.text), requirementsBlock(env.requirements(), "verifier"), env.guidanceText(), extra].join("\n");
   const norm = (id: unknown) => String(id ?? "").replace(/[[\]\s`'"]/g, "").toLowerCase();
   const answers = Array.isArray(value?.items) ? value!.items : [];
@@ -277,7 +277,7 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
       '（再次提醒輸出格式：只輸出 {"results":[…]}，每條標準一筆。）',
     ].filter(Boolean).join("\n\n");
     const ask = async (list: Criterion[], note = "") =>
-      (await env.callJson<CriteriaJudgement>({ purpose: "verify_final", role: "verifier", messages: [{ role: "system", content: VERIFIER_SYSTEM }, { role: "user", content: prompt(list, note) }], maxTokens: 6000 }, isCriteriaJudgement, stepId)).value?.results ?? null;
+      (await env.callJson<CriteriaJudgement>({ purpose: "verify_final", role: "verifier", messages: [{ role: "system", content: VERIFIER_SYSTEM }, { role: "user", content: prompt(list, note) }], maxTokens: 10_000 }, isCriteriaJudgement, stepId)).value?.results ?? null;
     // Ids are matched loosely (「[grounded]」, case, spaces); criteria the verifier left out are asked once more on their own.
     const norm = (id: unknown) => String(id ?? "").replace(/[[\]\s`'"]/g, "").toLowerCase();
     // An unparsable answer (cut off, prose around the JSON) is asked once more before the criteria count as unjudged.

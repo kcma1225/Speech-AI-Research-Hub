@@ -251,3 +251,21 @@ describe("assistant paraphrases are not the user's words", () => {
     expect(ownWords({ run: { tool_call_id: null, request: "x" } } as never, [user], [])).toBeNull();
   });
 });
+
+describe("deck constraints: topic misses are the judge's call", () => {
+  it("a literal topic miss is not a hard failure; a language violation is", async () => {
+    const { failingPages } = await import("../src/workflows/playbooks/slides-requirements.js");
+    const { requirementCriteria } = await import("../src/workflows/requirements.js");
+    const criteria = requirementCriteria([
+      { id: "r1", type: "include_topics", text: "說明每個方法在哪裡注入偏置", source: "request", params: { topics: [{ name: "where each injects the bias" }] } },
+      { id: "r2", type: "language", text: "全部英文", source: "request", params: { language: "en" } },
+    ], "deck").map((c) => ({ ...c, status: "pending" as const }));
+    const env = { run: { criteria } } as never;
+    const english = "## Methods\n\n- Bias enters at the joiner\n\n::: {.notes}\nThe bias vector is added before the joint network.\n:::\n";
+    const f = failingPages(env, english, "");
+    expect(f.issues.length).toBe(1); // the literal phrase is missing
+    expect(f.hard).toEqual([]); // …but the judge decides
+    const chinese = "## 方法\n\n- 偏置加在 joiner\n";
+    expect(failingPages(env, chinese, "").hard.length).toBeGreaterThan(0);
+  });
+});

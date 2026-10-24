@@ -22,6 +22,7 @@ import type { ModelPort, RunRow } from "../src/workflows/types.js";
 import { createTestContext, hasTestDb, hasTestS3, type TestContext } from "./helpers.js";
 import { insertStudy } from "./study-fixtures.js";
 import { setWorkflowAvailability } from "../src/routes/workflows.js";
+import { setTopicResearchDeps } from "../src/workflows/playbooks/research.js";
 
 process.env.PROVIDER_TOKEN_KEY ??= randomBytes(32).toString("base64");
 const run = hasTestDb && hasTestS3 ? describe : describe.skip;
@@ -147,6 +148,9 @@ run("workflow brief", () => {
   });
 
   it("2. an English topic deck that says 'paper title' + 「你自己找」 stays a deck (topic mode), never a paper report or a note", async () => {
+    // The library is empty, so the topic deck searches online: stubbed (never the real APIs), finding nothing importable.
+    const searched: string[] = [];
+    setTopicResearchDeps({ search: async (_env, q) => (searched.push(q), []), snowball: async () => [] });
     // No playbook given: detection alone would pick topic research (state of the art) — the user's words name a deck.
     const created = await createWorkflow(t.app, await asUser(alice.id), { request: TOPIC_DECK, context: { studyId: study.id } });
     expect(created.playbook).toBe("slides");
@@ -170,6 +174,8 @@ run("workflow brief", () => {
     expect(r.brief).toMatchObject({ version: 2, source: "guidance", deliverable: { kind: "deck" } });
     expect(r.brief!.user_words.at(-1)).toContain("Find the papers yourself");
     expect(r.state.deck_style).toBe("topic");
+    expect(searched.length).toBeGreaterThan(0);
+    setTopicResearchDeps(null);
   });
 
   it("3a. the repeated-question fallback would turn the deck into a note: it asks; 「先停下來」 ends the run without a note", async () => {

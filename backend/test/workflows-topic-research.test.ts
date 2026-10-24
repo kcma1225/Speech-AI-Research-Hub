@@ -109,7 +109,7 @@ function mockModel(replies: Record<string, (req: Req) => string>) {
   return { port, log, count: (p: string) => log.filter((l) => l === p).length };
 }
 
-let polishCalls = 0;
+let taxonomyCalls = 0;
 /** Writers by task title; keys from the `papers` data block (full-text papers get page refs, abstract-only ones none). */
 function writer(req: Req) {
   const u = userText(req);
@@ -118,16 +118,11 @@ function writer(req: Req) {
   const abs = [...new Set(lines.filter((m) => !m[0].includes("讀過全文")).map((m) => m[1]!))];
   const [f1, f2 = f1] = full;
   const a1 = abs[0] ?? f2;
-  if (u.includes("你的任務：問題定義與方法分類")) return `## 問題定義\n\n在串流 ASR 中提升專有名詞辨識 [@${f1}]（p. 2）。\n\n## 方法分類\n\n| 方法 | 核心想法 | 注入位置 | 優缺點 | 代表論文 |\n|---|---|---|---|---|\n| Deep biasing | 以注意力讀取熱詞清單 | encoder / predictor | 準但要訓練 | [@${f1}]、[@${f2}] |\n| Shallow fusion | 解碼時對熱詞加分 | beam search | 簡單但易誤觸 | [@${a1}] |\n`;
+  // First draft of the taxonomy unit: a contradictory disclaimer about a full-text paper (topic_consistency) → only this unit is redone.
+  if (u.includes("你的任務：問題定義與方法分類")) return `## 問題定義\n\n${++taxonomyCalls === 1 ? `[@${f1}] 的筆記被截斷，僅有定位資訊。` : ""}在串流 ASR 中提升專有名詞辨識 [@${f1}]（p. 2）。\n\n## 方法分類\n\n| 方法 | 核心想法 | 注入位置 | 優缺點 | 代表論文 |\n|---|---|---|---|---|\n| Deep biasing | 以注意力讀取熱詞清單 | encoder / predictor | 準但要訓練 | [@${f1}]、[@${f2}] |\n| Shallow fusion | 解碼時對熱詞加分 | beam search | 簡單但易誤觸 | [@${a1}] |\n`;
   if (u.includes("你的任務：各方法詳解")) return `## 各方法詳解\n\n### Deep biasing\n\n以 cross-attention 讀取熱詞 [@${f1}]（p. 3）：$$c_t = \\sum_i \\alpha_{t,i} h_i$$\n\n### Shallow fusion\n\n解碼時對熱詞前綴加分 [@${a1}]。\n`;
   if (u.includes("你的任務：實驗結果比較")) return `## 實驗結果比較\n\n| 論文 | 資料集 | 指標 | 基線 | 方法結果 | 出處 |\n|---|---|---|---|---|---|\n${full.map((k) => `| [@${k}] | LibriSpeech | WER | 5.2 | 4.1 | 表 2（p. 6） |`).join("\n")}\n\n同一資料集與指標才能比較。\n`;
   if (u.includes("你的任務：在 Zipformer 上怎麼做")) return `## 在 Zipformer 上怎麼做\n\n- Deep biasing 接在 encoder 之後，需要訓練 [@${f1}]（p. 3）。\n- Shallow fusion 只在 beam search 加分，不用重訓 [@${a1}]。\n`;
-  if (u.includes("你的任務：一致性與精簡")) {
-    polishCalls++;
-    const draft = /<data name="draft"[^>]*>\n([\s\S]*?)\n<\/data>/.exec(u)?.[1] ?? "";
-    // First round: a contradictory disclaimer about a full-text paper (caught by topic_consistency), then fixed.
-    return polishCalls === 1 ? draft.replace("## 問題定義\n\n", `## 問題定義\n\n[@${f1}] 的筆記被截斷，僅有定位資訊。\n\n`) : draft;
-  }
   if (u.includes("你的任務：開放問題與研究關聯")) return `## 開放問題\n\n熱詞清單很大時的延遲 [@${f1}]。\n\n## 與本研究的關係\n\n研究若處理專有名詞，可以參考 deep biasing 的注入位置。\n`;
   return "（未知的任務）";
 }
@@ -169,7 +164,6 @@ integration("topic research workflow", () => {
     topic_read: reader,
     "topic_read:final": reader,
     "write:topic_research": writer,
-    "write:topic_polish": writer,
     verify: () => '{"verdict":"pass","issues":[]}',
     verify_final: allPass,
   });
@@ -185,7 +179,7 @@ integration("topic research workflow", () => {
     searches = [];
     imports = [];
     snowballed = [];
-    polishCalls = 0;
+    taxonomyCalls = 0;
     setTopicResearchDeps({
       async snowball(env, seed) {
         snowballed.push(seed.arxiv_id ?? seed.doi ?? "");
@@ -227,7 +221,9 @@ integration("topic research workflow", () => {
     // Nothing is imported before approval.
     expect(imports).toEqual([]);
     const steps = await getSteps(t.db, run.id);
-    expect(steps.map((s) => s.key)).toEqual(["research", "paper_1", "paper_2", "paper_3", "paper_4", "taxonomy", "approaches", "results", "practice", "discussion", "polish", "assemble", "final"]);
+    // One writer per section (a unit with its budget); no model pass over the whole note — assemble stitches by code.
+    expect(steps.map((s) => s.key)).toEqual(["research", "paper_1", "paper_2", "paper_3", "paper_4", "taxonomy", "approaches", "results", "practice", "discussion", "assemble", "final"]);
+    expect((r.state.units as { key: string; budget: { chars: number } }[]).map((u) => `${u.key}:${u.budget.chars}`)).toEqual(["taxonomy:1800", "approaches:4000", "results:2200", "practice:1400", "discussion:1400"]);
     expect(steps.find((s) => s.key === "practice")!.title).toBe("在 Zipformer 上怎麼做");
     expect(steps.find((s) => s.key === "research")!.status).toBe("passed");
     expect(steps.find((s) => s.key === "paper_1")!.title).toContain("Deep Context Biasing");
@@ -245,11 +241,15 @@ integration("topic research workflow", () => {
     const body = (await t.db.query<{ content_md: string; title: string }>("SELECT content_md, title FROM notes WHERE id=$1", [note.id])).rows[0]!;
     expect(body.title).toBe("主題調研：串流 ASR 熱詞偏置");
     for (const h of ["## 問題定義", "## 方法分類", "## 各方法詳解", "## 實驗結果比較", "## 在 Zipformer 上怎麼做", "## 開放問題", "## 與本研究的關係", "## 參考文獻", "## 搜尋紀錄"]) expect(body.content_md).toContain(h);
-    // The consistency pass: its contradictory first round failed topic_consistency and was fixed.
-    const pol = done.find((s) => s.key === "polish")!;
-    expect(pol.status).toBe("passed");
-    expect(pol.history[0]!.verdict.checks.find((c) => c.id === "topic_consistency")!.ok).toBe(false);
+    // The contradictory first draft failed topic_consistency in its own unit, which alone got a fix round.
+    const tax = done.find((s) => s.key === "taxonomy")!;
+    expect(tax.status).toBe("passed");
+    expect(tax.history[0]!.verdict.checks.find((c) => c.id === "topic_consistency")!.ok).toBe(false);
+    expect(tax.round).toBe(1);
+    for (const k of ["approaches", "results", "practice", "discussion"]) expect(done.find((s) => s.key === k)!.round).toBe(0);
+    expect(m.count("write:topic_polish")).toBe(0);
     expect(body.content_md).not.toContain("被截斷");
+    expect(done.find((s) => s.key === "assemble")!.output!.summary).toContain("依大綱拼接");
     // 搜尋紀錄: queries, citation tracking, kept with role, the switched-off candidate with its reason.
     const log = body.content_md.slice(body.content_md.indexOf("## 搜尋紀錄"));
     expect(log).toContain("`contextual biasing RNN-T`");

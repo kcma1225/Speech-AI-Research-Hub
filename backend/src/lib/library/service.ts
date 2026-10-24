@@ -24,7 +24,8 @@ export interface LibraryConfig {
   /** Per-request timeout, ms (default 20 s; arXiv/ISCA 30 s). */
   timeoutMs?: number;
   /** Tests: API base URL overrides. */
-  baseUrls?: Partial<Record<"openalex" | "s2" | "arxiv" | "crossref" | "acl" | "isca" | "unpaywall", string>>;
+  /** `arxivPdf`: where arXiv PDFs are downloaded from (tests point it at a mock server). */
+  baseUrls?: Partial<Record<"openalex" | "s2" | "arxiv" | "arxivPdf" | "crossref" | "acl" | "isca" | "unpaywall", string>>;
   /** Tests: limiter overrides (default: process-wide shared limiters). */
   limiters?: Partial<Record<LimiterName, RateLimiter>>;
   /** Tests: allow PDF downloads from private addresses (`true`, or a predicate such as "only the mock server"). */
@@ -125,6 +126,7 @@ export function createLibraryService(config: LibraryConfig = {}) {
   const common = { contactEmail: config.contactEmail, timeoutMs: config.timeoutMs };
   const lim = config.limiters ?? {};
   const urls = config.baseUrls ?? {};
+  const arxivPdf = (id: string) => `${(urls.arxivPdf ?? "https://arxiv.org/pdf").replace(/\/$/, "")}/${id}`;
   const clients = {
     openalex: new OpenAlexClient({ ...common, apiKey: config.openalexApiKey, baseUrl: urls.openalex, limiter: lim.openalex }),
     s2: new SemanticScholarClient({ ...common, apiKey: config.s2ApiKey, baseUrl: urls.s2, limiter: lim.s2 }),
@@ -243,7 +245,7 @@ export function createLibraryService(config: LibraryConfig = {}) {
     const signal = opts.signal;
     const arxivId = normalizeArxivId(r.arxivId) ?? arxivIdFromDoi(r.doi);
     // 1. arXiv
-    if (arxivId) return { url: `https://arxiv.org/pdf/${arxivId}`, source: "arxiv" };
+    if (arxivId) return { url: arxivPdf(arxivId), source: "arxiv" };
     // 2. ACL Anthology
     const acl = r.ids?.acl ?? parseAclId(r.doi);
     if (acl) return { url: clients.acl.pdfUrl(acl), source: "acl" };
@@ -264,13 +266,13 @@ export function createLibraryService(config: LibraryConfig = {}) {
     if (oa) {
       const loc = oa.work.best_oa_location;
       const url = loc?.pdf_url ?? (oa.work.open_access?.oa_url?.toLowerCase().includes(".pdf") ? oa.work.open_access.oa_url : null);
-      if (oa.record.arxivId) return { url: `https://arxiv.org/pdf/${oa.record.arxivId}`, source: "arxiv", arxivId: oa.record.arxivId };
+      if (oa.record.arxivId) return { url: arxivPdf(oa.record.arxivId), source: "arxiv", arxivId: oa.record.arxivId };
       if (url) return { url, source: "openalex", ...(loc?.license ? { license: loc.license } : {}) };
     }
     // 6. Semantic Scholar
     if (clients.s2.hasKey || r.ids?.s2) {
       const s = await quiet(clients.s2.getForRecord(r, signal));
-      if (s?.record.arxivId) return { url: `https://arxiv.org/pdf/${s.record.arxivId}`, source: "arxiv", arxivId: s.record.arxivId };
+      if (s?.record.arxivId) return { url: arxivPdf(s.record.arxivId), source: "arxiv", arxivId: s.record.arxivId };
       const url = s?.paper.openAccessPdf?.url;
       if (url) return { url, source: "s2", ...(s?.paper.openAccessPdf?.license ? { license: s.paper.openAccessPdf.license } : {}) };
     }
@@ -279,7 +281,7 @@ export function createLibraryService(config: LibraryConfig = {}) {
       const m = await quiet(clients.arxiv.matchTitle(r.title, { signal }));
       const family = authorFamily(r.authors[0]).toLowerCase();
       const authorOk = !family || !m || m.record.authors.slice(0, 3).some((a) => authorFamily(a).toLowerCase() === family);
-      if (m && authorOk && m.record.arxivId) return { url: `https://arxiv.org/pdf/${m.record.arxivId}`, source: "arxiv-title", arxivId: m.record.arxivId };
+      if (m && authorOk && m.record.arxivId) return { url: arxivPdf(m.record.arxivId), source: "arxiv-title", arxivId: m.record.arxivId };
     }
     return null;
   }

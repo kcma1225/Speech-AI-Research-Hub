@@ -73,7 +73,7 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
   const playbook = explicit ?? playbookFor(deliverable.kind, input.request, inputs as Record<string, unknown>);
   // A page count the assistant passed counts only when the user's own words have one (production: pages: 12 nobody asked for).
   if (paraphrase && inputs.pages && !detectPageCount(words.join("\n"))) delete inputs.pages;
-  const items = await batchPapers(client, { playbook, request: input.request, studyId, paperId: inputs.paper_id, paperIds: inputs.paper_ids });
+  const items = await batchPapers(client, { playbook, request: input.request, studyId, paperId: inputs.paper_id, paperIds: inputs.paper_ids, userText: input.userWords?.length ? input.userWords.join("\n") : undefined });
   await lockUserSlots(client, user.id);
   const usage = await slotUsage(client, user.id);
   let working = usage.working;

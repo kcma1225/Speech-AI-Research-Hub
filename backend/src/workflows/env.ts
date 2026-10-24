@@ -286,7 +286,7 @@ export class WorkflowEnv {
     for (let i = 0; i < max; i++) {
       const res = await this.call({ purpose: opts.purpose ?? "research", role: "researcher", messages, tools, maxTokens: opts.maxTokens ?? 6000 }, step.id);
       if (!res.toolCalls.length) {
-        if (res.text.trim()) return { text: res.text, toolCalls: calls };
+        if (res.text.trim()) return { text: await this.finishCut(step.id, opts.purpose ?? "research", messages, res), toolCalls: calls };
         break;
       }
       messages.push(res.message ?? { role: "assistant", content: [...(res.text ? [{ type: "text" as const, text: res.text }] : []), ...res.toolCalls] });
@@ -311,7 +311,16 @@ export class WorkflowEnv {
     // Out of tool steps (or an empty reply): answer from what was read.
     messages.push({ role: "user", content: "請根據目前讀到的資料，直接輸出任務要求的結果（不要再呼叫工具）。" });
     const final = await this.call({ purpose: `${opts.purpose ?? "research"}:final`, role: "researcher", messages, maxTokens: opts.maxTokens ?? 6000 }, step.id);
-    return { text: final.text, toolCalls: calls };
+    return { text: await this.finishCut(step.id, `${opts.purpose ?? "research"}:final`, messages, final), toolCalls: calls };
+  }
+
+  /** A researcher's answer cut at the output limit: one continuation of that answer only (units.ts), joined deterministically. */
+  private async finishCut(stepId: string, purpose: string, messages: ChatMessage[], res: ChatResult): Promise<string> {
+    if (res.stopReason !== "max_tokens" || !res.text.trim()) return res.text;
+    const { CONTINUE_PROMPT, joinContinuation } = await import("./units.js");
+    await this.note("研究者的整理在輸出上限被截斷，接續寫完這一段。");
+    const more = await this.call({ purpose: `${purpose}:continue`, role: "researcher", messages: [...messages, { role: "assistant", content: res.text }, { role: "user", content: CONTINUE_PROMPT(res.text.slice(-160).replace(/\s+/g, " ").trim()) }], maxTokens: 8000 }, stepId);
+    return joinContinuation(res.text, more.text);
   }
 
   /** Polls a job until it finishes: null = succeeded, string = error, undefined = timeout/cancelled. */

@@ -58,7 +58,8 @@ const contentResult = (issues: string[], okText: string, lead: string) =>
 const num = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
 const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
-function unbalanced(text: string): string[] {
+/** Unclosed structures of a text (code fences, ::: blocks, \begin/\end, $$): the deterministic truncation signal. */
+export function unbalanced(text: string): string[] {
   const out: string[] = [];
   const lines = text.split("\n");
   const fences = lines.filter((l) => /^\s*```/.test(l)).length;
@@ -134,7 +135,9 @@ export const CHECKS: Record<string, CheckFn> = {
     const maxChars = num(params.max_chars, 1100);
     const maxBullets = num(params.max_bullets, 9);
     const bad = parseSlides(text).filter((s) => {
-      const visible = s.body.replace(/```mermaid[\s\S]*?```/g, "");
+      // Diagram / chart / mermaid specs are not slide text (their size is checked by diagram_syntax): a diagram's JSON
+      // counted here made most topic-deck method pages fail and take a fix round on staging.
+      const visible = s.body.replace(/```[^\n]*\n[\s\S]*?```/g, "");
       return visible.length > maxChars || (visible.match(/^\s*[-*+] /gm) ?? []).length > maxBullets;
     });
     return bad.length ? { ok: false, detail: `這些頁面內容太多，投影片放不下（> ${maxChars} 字或 > ${maxBullets} 個條列）：${bad.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請精簡或移到講稿。` } : { ok: true, detail: "每頁份量適中" };

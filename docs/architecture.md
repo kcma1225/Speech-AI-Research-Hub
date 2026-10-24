@@ -1849,6 +1849,25 @@ and an `outbound` write waits for the user even under autopilot (above). Write t
 (`plan.writes`). No tool or playbook publishes today; a plan declaring `publish` (a new deck version, older versions stay) is approved under autopilot and waits otherwise. Nothing is sent outside
 the hub except the open-world search query rules of the assistant.
 
+**Long outputs as units** (`src/workflows/units.ts`). Every long artifact is planned as an outline whose **units**
+(`state.units`: `{key, title, purpose?, points?, sources?, budget: {chars | words | bullets}}`) are generated one per
+step, each in its own call with the Brief, its scope, its **length budget** (`budgetLine`; output tokens sized from it,
+`unitTokens`) and its neighbours (`neighbourBlock`: the previous / next unit's plan, or a deterministic summary of its
+text once written — `unitSummary`). `generateUnit`: a reply that stops at `max_tokens` or leaves a structure open
+(`unbalanced`: code fence, `:::`, `\begin`/`\end`, `$$`) is **continued** (`:continue`, the cut text as the assistant
+turn + 「從中斷的地方接著寫」, joined by `joinContinuation`, which drops a restated overlap or keeps a complete restart)
+and, still cut, **regenerated shorter** once (`:shorter`) — only that unit; a researcher's final answer cut at the limit
+gets one continuation too (`WorkflowEnv.researcher`). Integrators **stitch by code** (`stitch`: units in outline order,
+whole-reply fences and `# ` titles dropped, a `## ` section repeated by a later unit dropped, an open fence closed) —
+no model rewrites the whole document, and a fix round redoes only the unit that failed. Units per playbook: notes
+(`writePart`: reading-note parts 800 / 1 800 / 900 / 600 字, lit review `table` + `synthesis` / `gaps` / `relation`,
+experiment report, meeting prep), generic (the planner's writers are sections with `chars` 300–3 000; integrator /
+designer steps it proposes are dropped and their dependents rewired; assemble stitches), topic research (five section
+writers with budgets taxonomy 1 800 / approaches 4 000 / results 2 200 / practice 1 400 / discussion 1 400, × papers / 8 beyond 8
+papers; the budget is in the prompt, not a gate: a length check made cheap models loop without shrinking on staging), LaTeX sections (one per subsection, 1 400 字) and paper drafts (one per section: 2 400
+字 / 800 words, introduction / conclusion 1 200 / 450), decks (one writer per page, `PAGES_PER_WRITER = 1`, budget ≤ 4
+bullets / ≈ 60 words + 3–6 sentences of notes, the page's layout id).
+
 **Playbooks** (`registerWorkflowPlaybook(def)`, `src/workflows/playbooks/`; `def = {id, title, titleEn, description,
 detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step, env), integrate(env), finalize?(env)}`).
 `plan()` returns a plan, a question, `needs_pdf`, `skip`, or `redirect {playbook, message}` — another playbook fits
@@ -1860,25 +1879,42 @@ progress, weekly) → `progress`; a report on ONE paper (`PAPER_REPORT_RE`: 論�
 present this paper, an arXiv id), or a paper given / named while the words are not about a subject → `paper_report`
 (none given → the `clarify_paper` card); a deck about a subject (`TOPIC_DECK_RE` / `isTopicRequest`: about, 關於, 介紹,
 methods, approaches, survey, literature, 文獻…) → **topic deck**; else `progress`. A word such as "paper title" never
-forces a paper report and the study's only paper is not a reason for one (its fallback pick is forgotten). Topic decks
-(minimal; a full topic pipeline with online search is P2): stored as a `progress`-kind deck with `state.deck_style =
-topic`, `TOPIC_RULES` instead of Lab-Hub's fixed pages (no student-owned pages), research = the study's library (≤ 30
-papers: title, year, venue, abstract) + its newest research / reading notes + progress data (`topicContext`), default 10
-pages, title from the user's words (`topicTitleOf`), grounded criterion against the library; the plan note says no
-online search is done and suggests 「主題調研」 first when needed.
+forces a paper report and the study's only paper is not a reason for one (its fallback pick is forgotten).
+
+**Topic decks** (survey decks; `state.deck_style = topic`, stored as a `progress`-kind deck, `TOPIC_RULES`, default 10
+pages, title from the user's words `topicTitleOf`). Planning (`topicDeckResearch`) reuses the topic_research machinery:
+`decompose` (sub-questions + keyword queries from the request and study title only) → **one online search batch** +
+snowballing (`searchOnline`; keywords / ids only, then the run is tainted) **only when the user's words ask for it**
+(`ONLINE_RE`: 搜尋, 找論文, 最新, search, online…) **or the library is thin** (< `THIN_LIBRARY` = 4 papers with a PDF) →
+`select` picks ≤ min(8, pages − 3) papers (library + importable candidates), stored as `state.topic` → the brief lists
+them as `P1…Pn` with abstracts (+ the 2 newest research / reading notes). The survey outline (exactly N pages) gives
+every page a `kind` (title / motivation / taxonomy / method / comparison / synthesis / other), `sources` (`P<n>`), a
+`layout`, a `purpose` and, for method pages, `item`; `TOPIC_RULES`: taxonomy page, one page per method with a
+```` ```diagram ```` architecture and its **injection point** + training vs. inference, comparison of like-for-like
+numbers, synthesis / open problems, no `paper-fig`. Steps: `paper_i` per pick (import for online picks + the
+structured full-text extraction of topic_research, `readPaper`, each in a fresh context, ≤ 4 tool rounds since the
+digest carries the full text; skippable on the plan card) — only for picks some page names as a source (`usedPicks`: a
+pick the outline does not use is neither imported nor read, said in `plan.notes`) →
+`write_<n>` per page depending on its source papers' steps (`pageSources`: a page without valid refs rests on every
+paper, a title page on none) → the usual assemble → notes → constraints → visual_qa → final. A page's writer (and so its
+judge) gets only its sources (`topicPageBrief`: the topic header + the extraction parts its `kind` needs from each source
+paper, `PAGE_PARTS`), and the content refs are rebuilt from the extractions read so far; assemble adds a deterministic
+`::: {.page-source}` line per page from its source papers (`withSourceLines`, 「來源」/ "Sources"). Online imports appear in
+`plan.writes` as a `paper` write without a draft effect, so the plan waits for the user unless autopilot is on. No picks
+→ the minimal topic deck over the library's abstracts and notes (`topicContext`), said in `plan.notes`.
 
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
-| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress → planner outline of exactly N pages (shown on the card) → writers per section of ≤ 3 pages (parallel, `VISUAL_RULES` + layout patterns A–F) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render → speaker-notes pass → `constraints` (the user's requirements, see Requirements) → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, content checks on `data.refs` (`grounded_names`, `figure_refs`, `diagram_semantics`, `chart_semantics`; see **Content checks** below), `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
-| `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection → integrate → compile-verify (new file) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
-| `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table → synthesis; a study with < 2 papers gets card `lit_too_few` (改做主題調研 → `redirect` to `topic_research` / 我先加入論文 → the old question), autopilot redirects directly | new note | `table_rows` ≥ papers, `citations`, judge |
+| `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress / topic papers (Topic decks above) → planner outline of exactly N pages (shown on the card; each page a unit with `purpose`, points and a **layout id** from the finite library `LAYOUTS` A–F + T — the model picks layouts, never positions) → **one writer per page** (parallel, `VISUAL_RULES` + the chosen layout, per-page budget, neighbouring pages' summaries; a page cut at the output limit is continued alone) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render (a render error sends only the pages it points at to the syntax fix, `suspectPages`) → speaker-notes pass → `constraints` (the user's requirements, see Requirements) → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, content checks on `data.refs` (`grounded_names`, `figure_refs`, `diagram_semantics`, `chart_semantics`; see **Content checks** below), `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
+| `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection (units with budgets) → integrate → compile-verify (new file); a compile error repairs only the subsection units it points at (`unitsForErrors`: `file:line` → the unit, else open environments; `state.fixed_units`) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
+| `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table (+ background) → `synthesis` → `gaps` ∥ `relation` (one section unit each, with budgets) → stitched; a study with < 2 papers gets card `lit_too_few` (改做主題調研 → `redirect` to `topic_research` / 我先加入論文 → the old question), autopilot redirects directly | new note | `table_rows` ≥ papers, `citations`, judge |
 | `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate; no resolvable paper + a topic-like request (`isTopicRequest`) → `redirect` to `topic_research` | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
-| `topic_research` | 主題調研 (detect 0.9: `TOPIC_RE` — 有哪些…做法/方法, 調研, 研究現況, survey, state of the art, related approaches, 找…論文 — and no `paper_id` / arXiv id / DOI) | planning: sub-questions (outline, editable) with expanded keyword queries → **one search batch** + citation snowballing, then tainted → planner picks 8–12 papers (seminal + recent) incl. relevant study papers (step `research`, passed); per paper `paper_i` (parallel): import + structured full-text extraction (數字表), 「僅依摘要」 without a PDF → `taxonomy` → `approaches` ∥ `results` ∥ `practice` (stack named) ∥ `discussion` → `polish` (consistency + concision) → assemble (+ 參考文獻, 搜尋紀錄) | new note; `paper` write 「匯入 N 篇論文到實驗室文獻庫…」 (no draft effect → waits for the user unless autopilot) | `sections_present`, `topic_taxonomy`, `topic_approaches`, `topic_cites`, `topic_numbers`, `topic_results_coverage`, `topic_consistency`, `topic_concise`, `topic_reading`, judge |
+| `topic_research` | 主題調研 (detect 0.9: `TOPIC_RE` — 有哪些…做法/方法, 調研, 研究現況, survey, state of the art, related approaches, 找…論文 — and no `paper_id` / arXiv id / DOI) | planning: sub-questions (outline, editable) with expanded keyword queries → **one search batch** + citation snowballing, then tainted → planner picks 8–12 papers (seminal + recent) incl. relevant study papers (step `research`, passed); per paper `paper_i` (parallel): import + structured full-text extraction (數字表), 「僅依摘要」 without a PDF → `taxonomy` → `approaches` ∥ `results` ∥ `practice` (stack named) ∥ `discussion` (section units with budgets) → assemble: stitched by code + `scrubNote` (+ 參考文獻, 搜尋紀錄) | new note; `paper` write 「匯入 N 篇論文到實驗室文獻庫…」 (no draft effect → waits for the user unless autopilot) | `sections_present`, `topic_taxonomy`, `topic_approaches`, `topic_cites`, `topic_numbers`, `topic_results_coverage`, `topic_consistency`, `topic_concise`, `topic_reading`, judge |
 | `experiment_report` | 實驗報告筆記 | researcher (notes / pasted results) → writer (tables, ```chart) | new note | `table_rows`, `chart_blocks`, `numbers_from_source` |
 | `meeting_prep` | 會議準備 | researcher (open tasks, last feedback, deck changes, recent activity) → writer agenda | new note | `sections_present`, judge |
 | `paper_outline` | 論文大綱 (`playbooks/paper.ts`) | sources = the handed-over notes (`note_ids`) else the newest research / reading notes + the study library with cite keys (step `research`, passed) → writer: fixed Markdown (`# 論文大綱：…`, `## 論文題目`, `## 主要貢獻`, `## 章節規劃` with `### n. 節名` + bullets + 「引用：[@key]」, `## 參考文獻`) → assemble; empty library and no notes → question | new note (kind research) | `sections_present` (三段), `outline_sections` (≥ 4 sections, each with points), `citations`, judge |
-| `paper_draft` | 撰寫 LaTeX 論文 (`playbooks/paper.ts`) | the outline note (`parseOutline`; else a planning-time outline step) + other notes + library → `sec_i` writers in parallel (one `\section`/`\chapter` each, `\cite` only study keys, language from `inputs.language`) → `abstract` (+ keywords) → `assemble` (`max_rounds` 3): **creates a new LaTeX project** from the template (`inputs.template`: zh → `article-zh`, 碩士論文 → `zh-thesis`, en → `ieee-conference`; `paperMain` replaces the sample `\input`s by `sections/sNN-<slug>.tex`, abstract file kept / added first, `refs.bib` = the library export in the auto-bib format) then a verification compile; a fix round repairs the files the compile errors name (`paper_fix`); later rounds rewrite only the run's own files whose text is unchanged since it wrote them (sha check), else leave them (log) → final; commit requests a real compile for the preview | new LaTeX project (`latex_project`, effect `new`) | `compile_ok`, `paper_sections` (every outline title present, from `data.sections`), `citations`, `no_placeholder`, judge |
-| `generic` | 一般任務 | the orchestrator plans freely (≤ 8 steps; roles from the list) | new note | `no_placeholder`, `not_truncated`, judge |
+| `paper_draft` | 撰寫 LaTeX 論文 (`playbooks/paper.ts`) | the outline note (`parseOutline`; else a planning-time outline step) + other notes + library → `sec_i` writers in parallel (one `\section`/`\chapter` each, a unit with its budget and neighbours, `\cite` only study keys, language from `inputs.language`) → `abstract` (+ keywords) → `assemble` (`max_rounds` 3): **creates a new LaTeX project** from the template (`inputs.template`: zh → `article-zh`, 碩士論文 → `zh-thesis`, en → `ieee-conference`; `paperMain` replaces the sample `\input`s by `sections/sNN-<slug>.tex`, abstract file kept / added first, `refs.bib` = the library export in the auto-bib format) then a verification compile; a fix round repairs the files the compile errors name (`paper_fix`); later rounds rewrite only the run's own files whose text is unchanged since it wrote them (sha check), else leave them (log) → final; commit requests a real compile for the preview | new LaTeX project (`latex_project`, effect `new`) | `compile_ok`, `paper_sections` (every outline title present, from `data.sections`), `citations`, `no_placeholder`, judge |
+| `generic` | 一般任務 | the orchestrator plans ≤ 8 steps: researchers, then writers that each own one `##` section with a `chars` budget (no model integrator; assemble stitches) | new note | `no_placeholder`, `not_truncated`, judge |
 
 **Topic research** (`playbooks/research.ts`). For 「研究有哪些做法」-style requests without a specific paper. Planning
 reads nothing untrusted before searching: the decomposition prompt gets only the request, the guidance and the study
@@ -1910,17 +1946,20 @@ verifier's sources (`state.brief_<key>`, read by `verify.ts` before `state.brief
 where the paper gives them), 「## 實驗結果比較」 (≥ 1 row per paper whose 數字表 has numbers, numbers only from the
 extractions), 「## 在 <stack> 上怎麼做」 when the request names a toolkit / model (`stackOf`: Zipformer, icefall, k2,
 ESPnet, NeMo, WeNet, Whisper…; where it plugs in, training vs. inference-only, cost — sources only), 「## 開放問題」 +
-「## 與本研究的關係」 (relation only, never a direction or timeline). Step `polish` (≤ 2 rounds) rewrites the whole draft for
-consistency and concision (no contradictory disclaimers, short cells, no repeated sentences, every citation and number
-kept, ≤ 12 000 chars); assemble uses it when it passed, else the section drafts, and appends 參考文獻 and
-「## 搜尋紀錄」 (queries, citation tracking, kept papers with role + reason, left out: switched off / not importable /
-the planner's exclusions). Checks are registered into `CHECKS` from the module and read their data from the step output
+「## 與本研究的關係」 (relation only, never a direction or timeline). Each section is a unit with a length budget
+(units.ts; together ≈ 12 000 chars, stated in its prompt); there is **no model pass over the whole note**:
+assemble stitches the sections by code and `scrubNote` removes contradictory disclaimers deterministically (「筆記被截斷」
+sentences, a full-text paper described as abstract-only, page / table / equation detail on an abstract-only paper's
+citation), then appends 參考文獻 and 「## 搜尋紀錄」 (queries, citation tracking, kept papers with role + reason, left out:
+switched off / not importable / the planner's exclusions). A final `consistency` / `concise` failure reopens only the
+section units whose own text fails the check. Checks are registered into `CHECKS` from the module and read their data from the step output
 (`data.keys` = the study's cite keys, `methods` = taxonomy rows, `source` = extractions, `abstract_only` / `full` =
 paper labels, `with_numbers`, `draft_keys`): `topic_cites`, `topic_taxonomy`, `topic_approaches`, `topic_numbers`,
 `topic_results_coverage`, `topic_consistency` (an abstract-only paper cited with §/p./equation/table detail, a
 full-text paper described as abstract-only / 「僅有定位」, 「筆記被截斷」 disclaimers), `topic_concise` (cells ≤ 60 chars
 without citations), `topic_length`, `topic_keep_cites`, `topic_reading`. Tests stub search, snowball and import
-(`setTopicResearchDeps`).
+(`setTopicResearchDeps`); a global vitest setup (`test/setup/block-scholarly.ts`) blocks OpenAlex / Semantic Scholar /
+arXiv / Crossref / Unpaywall / doi.org in every test and fails the test that tries.
 
 **Slides: visual-first decks** (`playbooks/slides-visual.ts`, `lib/slides/deck-visuals.ts`, `lib/slides/diagram/`,
 `lib/slides/deck-layout.ts`, `lib/library/figure-locate.ts`). The run keeps the slide body in *source form*; every render
@@ -1993,7 +2032,8 @@ materialises it into the deck tree:
   `grounded_names` + `figure_refs` (`doc: true`) on each section part.
 - Theme: generated decks add `css: hub-deck.css` (written into the tree, rewritten while it is still the generated
   theme): title 40 px, body 26 px, tables 22 px, captions 16 px at 1280×800; `.columns`, `.takeaway`, `.big-number(-label)`,
-  `.figure-frame`, blockquote claim, `img.hub-diagram/.hub-chart` (max-height 600 px).
+  `.figure-frame`, blockquote claim, `img.hub-diagram/.hub-chart` (max-height 600 px), fit variants `.fit-90/80/70`
+  (visual QA), `.page-source` (per-page source line of topic decks, inside the slide).
 - `visual_qa` (after the notes pass, before final; **per page, not an all-pages gate**; ≤ 3 scoring cycles, each page
   rewritten at most `QA_PAGE_FIXES` = 2 times; `max_rounds: 0` so the engine does not re-run it on its own): render with
   `shots: true` → the worker's layout metrics for every page + (when vision) the verifier scoring the screenshots of
@@ -2011,7 +2051,13 @@ materialises it into the deck tree:
   comparison diagram of sentences, a diagram < 16 px in its box, the same paper figure twice, two paper figures on one
   slide) and text-only pages beyond the 60 % visual share fail the page (soft: fixed, not gating). Failing pages with
   rewrites left get issue-specific fix instructions (`fixFor`) plus the verifier's own and go back to a writer
-  (`replaceSlides`, titles unchanged); a rewrite that scores worse than the page's best version is rolled back to it;
+  (`replaceSlides`, titles unchanged) — except **overflow** (content past the slide, `OVERFLOW_RE`): that page gets the
+  next deterministic **fit variant** instead (`withVariant`: heading class `.fit-90` → `.fit-80` → `.fit-70` = smaller
+  font, tables, takeaway and figure height in `DECK_CSS`, never below 16 px; `state.visual_qa.variants`), and the next
+  cycle's scoring (vision, else the metrics) picks: the best-ranked version per page is kept and a variant that scored
+  worse is rolled back like a rewrite. The model never emits positions (`stripPositions` drops `.absolute`, `top=` /
+  `left=` and inline position styles from writer and fix output; the fix prompt swaps a bad figure for another line of
+  the measured figure list instead of editing crop fractions); a rewrite that scores worse than the page's best version is rolled back to it;
   a broken render keeps the last good body. Student-owned / title pages fail only on rendering problems. A capture that
   returns no screenshots is retried once, and a final round without screenshots fails criterion `visual_qa`
   (`unseen`). State `deck.qa` (`{round, scores[], vision, failed[] = hard, soft[]}`) feeds criterion `visual_qa`, which

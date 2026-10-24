@@ -67,7 +67,12 @@ export async function fixPages(env: WorkflowEnv, body: string, pages: number[], 
 }
 
 /** Pages whose requirement checks fail, with the problems per check (language: the exact spots; per-item fields: the item's pages). */
-export function failingPages(env: WorkflowEnv, body: string, front: string): { pages: number[]; issues: string[]; cover: boolean } {
+/**
+ * `hard`: failures a judge cannot overrule (language, page count, removals…). Topic / per-item-field checks have a judged
+ * fallback (`judge_fallback`): a literal miss may be met in other words, so the final judge decides — they never fail the
+ * constraints step on their own (production: 「where each injects the bias」 was demanded verbatim).
+ */
+export function failingPages(env: WorkflowEnv, body: string, front: string): { pages: number[]; issues: string[]; hard: string[]; cover: boolean } {
   const res = requirementResults(env.run.criteria, body, `${front}${body}`).filter((r) => !r.ok);
   const pages = new Set<number>();
   let cover = false;
@@ -77,7 +82,7 @@ export function failingPages(env: WorkflowEnv, body: string, front: string): { p
       for (const v of languageViolations(`${front}${body}`, lang, (r.check.params?.allow as string[] | undefined) ?? [])) v.page === 0 ? (cover = true) : pages.add(v.page);
     } else for (const m of r.detail.matchAll(/第\s*(\d+)\s*頁/g)) pages.add(Number(m[1]));
   }
-  return { pages: [...pages].sort((a, b) => a - b), issues: res.map((r) => r.detail), cover };
+  return { pages: [...pages].sort((a, b) => a - b), issues: res.map((r) => r.detail), hard: res.filter((r) => !r.check.params?.judge_fallback).map((r) => r.detail), cover };
 }
 
 /**

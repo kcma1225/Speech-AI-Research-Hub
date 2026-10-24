@@ -33,6 +33,7 @@ import { getSteps, markTainted } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { WorkflowStop, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRow, type StepSpec } from "../types.js";
 import { clipText, isTopicRequest, systemFor, taskPrompt } from "./common.js";
+import { stitch } from "../units.js";
 import { commitNote, finalSpec, studyOrQuestion, writePart } from "./documents.js";
 import { registerWorkflowPlaybook, type ApprovalEdits, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 
@@ -46,14 +47,14 @@ export type OnlineHit = {
   /** How it was found: 「查詢 "…"」, 「〈seed〉的參考文獻」, 「引用〈seed〉」 (for the 搜尋紀錄). */
   via?: string[];
 };
-type LibPaper = { id: string; title: string; year: number | null; cite_key: string; has_pdf: boolean; abstract: string | null };
-type PickRole = "seminal" | "recent" | "core";
-type Pick =
+export type LibPaper = { id: string; title: string; year: number | null; cite_key: string; has_pdf: boolean; abstract: string | null };
+export type PickRole = "seminal" | "recent" | "core";
+export type Pick =
   | { kind: "library"; paper_id: string; title: string; year: number | null; cite_key: string; has_pdf: boolean; reason: string; role?: PickRole }
   | { kind: "online"; hit: OnlineHit; reason: string; role?: PickRole };
 /** A paper of the run once it is in the study (imported or already there). */
 export type RunPaper = { paper_id: string; cite_key: string; title: string; year: number | null; has_pdf: boolean };
-type TopicState = {
+export type TopicState = {
   topic: string; subqs: SubQuestion[]; queries: string[]; seeds: string[]; hits: OnlineHit[]; picks: Pick[]; excluded: { title: string; reason: string }[];
   searched: boolean; search_errors: string[]; stack: string[];
 };
@@ -66,10 +67,10 @@ const MAX_LIBRARY = 4;
 const MAX_PAPERS = 12;
 const MAX_QUERIES = 10;
 const SEEDS = 3;
-const ABSTRACT_ONLY = "僅依摘要";
+export const ABSTRACT_ONLY = "僅依摘要";
 /** Table cells longer than this (citations excluded) are not concise. */
 const CELL_MAX = 60;
-/** Upper bound of the polished note body (chars; ≈ 15–20 KB of UTF-8 for mostly CJK text). */
+/** Upper bound of a note body (chars; ≈ 15–20 KB of UTF-8 for mostly CJK text); the section budgets add up to about this. */
 const NOTE_MAX_CHARS = 12_000;
 const RESULTS_RE = /experiment|result|evaluation|ablation|analysis|comparison|benchmark|實驗|結果|分析/i;
 
@@ -171,7 +172,7 @@ const hitScore = (h: OnlineHit) => (h.via?.length ?? 1) * 2 + (h.cited_by ? Math
 type SearchBatch = { hits: OnlineHit[]; seeds: string[]; searched: boolean; errors: string[]; queries: string[] };
 const OWN_SEARCH = "線上搜尋結果";
 
-async function searchOnline(env: WorkflowEnv, queries: string[]): Promise<SearchBatch> {
+export async function searchOnline(env: WorkflowEnv, queries: string[]): Promise<SearchBatch> {
   await env.refresh();
   // Results of an earlier batch of this run (stored before anything else happens): a job interrupted after searching
   // (redeploy, crash) resumes with them instead of an empty pool.
@@ -227,10 +228,27 @@ export function sectionOf(text: string, title: string): string | null {
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n");
 }
 
-/** One `#### part` of a paper extraction (up to the next `####` / `###`), trimmed; "" when absent. */
+/**
+ * English headings a model writes for the parts when the artifact is English (the extraction is internal; its headings
+ * are asked in Chinese, but a cheap model follows the language reminder).
+ */
+const PART_ALIASES: Record<string, string[]> = {
+  "一句話": ["One-sentence summary", "One sentence summary", "Summary", "One-liner"],
+  "方法": ["Method", "Methods", "Approach"],
+  "注入位置": ["Injection point", "Where the bias is injected", "Injection"],
+  "注入位置與訓練／推論": ["Injection point and training / inference", "Injection point and training/inference", "Injection point", "Training vs. inference", "Injection"],
+  "關鍵公式": ["Key equations", "Key formulas", "Equations", "Formulas"],
+  "實驗設定": ["Experimental setup", "Experiment setup", "Setup"],
+  "數字表": ["Numbers table", "Results table", "Number table", "Numbers", "Results"],
+  "限制": ["Limitations", "Limits"],
+  "子問題對應": ["Sub-question mapping", "Sub-questions", "Mapping to sub-questions"],
+};
+const partHead = (part: string, heading: string) => titleMatches(part, heading) || (PART_ALIASES[part] ?? []).some((a) => heading.toLowerCase().startsWith(a.toLowerCase()) || titleMatches(a, heading));
+
+/** One `#### part` of a paper extraction (up to the next `####` / `###`), trimmed; "" when absent (English headings accepted). */
 export function extractPart(notes: string, part: string): string {
   const lines = notes.split("\n");
-  const start = lines.findIndex((l) => /^####\s+/.test(l) && titleMatches(part, l.replace(/^####\s+/, "").trim()));
+  const start = lines.findIndex((l) => /^####\s+/.test(l) && partHead(part, l.replace(/^####\s+/, "").replace(/[*_`]/g, "").trim()));
   if (start < 0) return "";
   const end = lines.findIndex((l, i) => i > start && /^#{2,4}\s+/.test(l));
   return lines.slice(start + 1, end < 0 ? undefined : end).join("\n").trim();
@@ -402,7 +420,7 @@ const latinQuery = (request: string) => keywordQuery((request.match(/[A-Za-z][A-
 
 const DEFAULT_SUBQS = ["這個問題要解決什麼？怎麼評估（指標、資料集）？", "主要有哪幾類做法？核心想法與差別是什麼？", "各做法的實驗結果如何？在什麼條件下比較好？", "還有哪些尚未解決的問題？"];
 
-async function libraryPapers(env: WorkflowEnv, studyId: string): Promise<LibPaper[]> {
+export async function libraryPapers(env: WorkflowEnv, studyId: string): Promise<LibPaper[]> {
   return (await env.db.query<LibPaper>(
     `SELECT p.id, p.title, p.year, sp.cite_key, (p.pdf_key IS NOT NULL) AS has_pdf, left(p.abstract, 400) AS abstract
        FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 ORDER BY sp.created_at DESC LIMIT 40`,
@@ -413,7 +431,7 @@ async function libraryPapers(env: WorkflowEnv, studyId: string): Promise<LibPape
 const studyKeys = async (env: WorkflowEnv) =>
   env.run.study_id ? (await env.db.query<{ cite_key: string }>("SELECT cite_key FROM study_papers WHERE study_id=$1", [env.run.study_id])).rows.map((r) => r.cite_key) : [];
 
-async function decompose(env: WorkflowEnv, studyTitle: string, stack: string[]): Promise<{ title: string; topic: string; subqs: SubQuestion[]; queries: string[] }> {
+export async function decompose(env: WorkflowEnv, studyTitle: string, stack: string[]): Promise<{ title: string; topic: string; subqs: SubQuestion[]; queries: string[] }> {
   // Only the user's own words + the study title: the queries written here may leave the hub.
   const user = [
     `使用者的要求：${env.run.request}`,
@@ -453,7 +471,7 @@ async function decompose(env: WorkflowEnv, studyTitle: string, stack: string[]):
 const ROLE_LABEL: Record<PickRole, string> = { seminal: "經典", recent: "近期", core: "核心" };
 const asRole = (v: unknown): PickRole | undefined => (v === "seminal" || v === "recent" || v === "core" ? v : undefined);
 
-async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQuestion[]; hits: OnlineHit[]; stack: string[] }, library: LibPaper[]): Promise<{ picks: Pick[]; excluded: { title: string; reason: string }[] }> {
+export async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQuestion[]; hits: OnlineHit[]; stack: string[]; max?: number }, library: LibPaper[]): Promise<{ picks: Pick[]; excluded: { title: string; reason: string }[] }> {
   if (!st.hits.length && !library.length) return { picks: [], excluded: [] };
   const importable = (h: OnlineHit) => !!(h.doi || h.arxiv_id || h.in_library);
   const year = new Date().getFullYear();
@@ -464,7 +482,7 @@ async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQuestion[
     dataBlock("online_hits", st.hits.map((h, i) => `[${i}] ${h.title}（${h.year ?? "?"}；${h.venue ?? "venue 不明"}${h.cited_by != null ? `；被引 ${h.cited_by}` : ""}${h.open_access ? "；有開放取用全文" : ""}${h.in_library ? "；已在實驗室文獻庫" : ""}${importable(h) ? "" : "；沒有 DOI/arXiv，不能匯入"}；來源：${(h.via ?? []).slice(0, 2).join("、")}）\n${clipText(h.abstract ?? "", 200)}`).join("\n\n") || "（沒有線上結果）"),
     dataBlock("study_library", library.map((p) => `${p.id}｜${p.title}（${p.year ?? "?"}）[@${p.cite_key}]${p.has_pdf ? "" : "（沒有 PDF）"}\n${clipText(p.abstract ?? "", 200)}`).join("\n\n") || "（研究文獻庫是空的）"),
     [
-      `選出 8–12 篇最能回答子問題的論文：研究文獻庫中相關的（≤ ${MAX_LIBRARY} 篇，用 id），以及要匯入的線上候選（≤ ${MAX_ONLINE} 篇，用 [編號]）。`,
+      `選出 ${st.max && st.max < 8 ? `${Math.max(3, st.max - 2)}–${st.max}` : "8–12"} 篇最能回答子問題的論文：研究文獻庫中相關的（≤ ${MAX_LIBRARY} 篇，用 id），以及要匯入的線上候選（≤ ${MAX_ONLINE} 篇，用 [編號]）。`,
       `要兼顧：經典（role "seminal"：被引很多或最早提出該類做法的代表作，至少 2 篇）與近期（role "recent"：${year - 3} 年以後，至少 3 篇），其他直接相關的標 "core"；每類做法至少一篇代表作；優先正式發表（venue）與有開放取用全文的。`,
       st.stack.length ? `使用者用 ${st.stack.join("、")}：有在它上面實作或可直接套用的論文要選。` : "",
       "不能匯入的不要選；和文獻庫重複的不要再選；離題的不要選。每篇一句理由（相關性、venue、年份、被引）。",
@@ -472,7 +490,7 @@ async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQuestion[
     ].filter(Boolean).join("\n"),
     '只輸出 JSON：{"library":[{"id":"…","reason":"…","role":"core"}],"candidates":[{"n":0,"reason":"…","role":"seminal"}],"excluded":[{"n":3,"reason":"…"}]}',
   ].filter(Boolean).join("\n\n");
-  const { value } = await env.callJson<Selection>({ purpose: "topic_select", role: "planner", messages: [{ role: "system", content: systemFor("planner") }, { role: "user", content: user }], maxTokens: 5000 }, isSelection);
+  const { value } = await env.callJson<Selection>({ purpose: "topic_select", role: "planner", messages: [{ role: "system", content: systemFor("planner") }, { role: "user", content: user }], maxTokens: 8000 }, isSelection);
   const picks: Pick[] = [];
   const libPick = (p: LibPaper, reason: unknown, role: unknown) => {
     if (!picks.some((x) => x.kind === "library" && x.paper_id === p.id)) picks.push({ kind: "library", paper_id: p.id, title: p.title, year: p.year, cite_key: p.cite_key, has_pdf: p.has_pdf, reason: clipText(String(reason ?? ""), 200), role: asRole(role) });
@@ -500,11 +518,11 @@ async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQuestion[
     .filter((x): x is { h: OnlineHit; reason: string } => !!x.h && !picks.some((p) => p.kind === "online" && hitKey(p.hit) === hitKey(x.h!)))
     .slice(0, 8)
     .map((x) => ({ title: x.h.title, reason: x.reason || "未選" }));
-  return { picks: picks.slice(0, MAX_PAPERS), excluded };
+  return { picks: picks.slice(0, st.max ?? MAX_PAPERS), excluded };
 }
 
-const pickTitle = (p: Pick) => (p.kind === "library" ? p.title : p.hit.title);
-const pickLine = (p: Pick) => {
+export const pickTitle = (p: Pick) => (p.kind === "library" ? p.title : p.hit.title);
+export const pickLine = (p: Pick) => {
   const role = p.role ? `［${ROLE_LABEL[p.role]}］` : "";
   return p.kind === "library"
     ? `${role}〈${p.title}〉（${p.year ?? "?"}，研究文獻庫 [@${p.cite_key}]${p.has_pdf ? "" : "，沒有 PDF"}）${p.reason ? `：${p.reason}` : ""}`
@@ -516,19 +534,36 @@ const writerKeys = (stack: string[]): WriterKey[] => ["taxonomy", "approaches", 
 const writerChecks = (sections: string[], extra: CheckSpec[], minCites = 1): CheckSpec[] => [{ id: "sections_present", params: { sections } }, ...extra, { id: "topic_cites", params: { min: minCites } }, { id: "topic_consistency" }, { id: "no_placeholder" }, { id: "not_truncated" }];
 const CONCISE = "精簡：不要重複其他段落已寫的句子；表格儲存格只寫關鍵詞（≤ 40 字），細節放到各方法小節。";
 
-/** Steps after the planning-time research: one per paper, the writers, the consistency pass, assemble, final. */
-export function laterSteps(picks: Pick[], stack: string[] = []): StepSpec[] {
-  const paperKeys = picks.map((_, i) => `paper_${i + 1}`);
-  const sections = sectionsFor(stack);
-  const papers: StepSpec[] = picks.map((p, i) => ({
-    key: paperKeys[i]!,
+/** Per paper (parallel): import (online picks) + a structured full-text extraction in a fresh context. */
+export function paperSteps(picks: Pick[], opts: { only?: number[]; maxTools?: number } = {}): StepSpec[] {
+  return picks.map((p, i): StepSpec => ({
+    key: `paper_${i + 1}`,
     role: "researcher",
     title: p.kind === "online" ? `匯入並精讀〈${clipText(p.hit.title, 50)}〉` : `精讀〈${clipText(p.title, 50)}〉`,
     instructions: `${p.kind === "online" ? `把${pickLine(p)}匯入實驗室文獻庫並加入本研究（下載開放取用 PDF），再` : `對研究文獻庫中的${pickLine(p)}`}從全文做結構化摘錄：${EXTRACT_PARTS.join("、")}（數字照原文，標表號與頁碼）。沒有 PDF 時只依摘要，並清楚標示「${ABSTRACT_ONLY}」。`,
-    inputs: { pick: i },
+    inputs: { pick: i, ...(opts.maxTools ? { max_tools: opts.maxTools } : {}) },
     expected: `結構化摘錄（${EXTRACT_PARTS.join("／")}；[@key]、頁碼、表號）`,
     verify: { checks: [{ id: "topic_reading" }, { id: "not_truncated" }], judge: false },
-  }));
+  })).filter((_, i) => !opts.only || opts.only.includes(i));
+}
+
+/** Length budget of each section unit (chars): together ≈ NOTE_MAX_CHARS, without a whole-document rewrite. */
+const WRITER_BUDGET: Record<WriterKey, number> = { taxonomy: 1800, approaches: 4000, results: 2200, practice: 1400, discussion: 1400 };
+/** The note's outline units (`state.units`): one per section writer, with purpose and budget. */
+export const topicUnits = (stack: string[], papers = 8) => writerKeys(stack).map((k) => ({ key: k, title: k === "practice" ? practiceTitle(stack) : WRITER_TITLE[k], budget: { chars: budgetOf(k, papers) } }));
+/** A section's budget grows with the papers it covers beyond 8 (12 papers → × 1.5). */
+const budgetOf = (k: WriterKey, papers: number) => Math.round(WRITER_BUDGET[k] * Math.max(1, papers / 8) / 100) * 100;
+const WRITER_TITLE: Record<WriterKey, string> = { taxonomy: "問題定義與方法分類", approaches: "各方法詳解", results: "實驗結果比較", practice: "", discussion: "開放問題與研究關聯" };
+
+/**
+ * Steps after the planning-time research: one per paper, one writer per section (each a unit with its budget), and an
+ * assemble that stitches the sections by code and removes contradictory disclaimers deterministically (no model pass over
+ * the whole note), then final.
+ */
+export function laterSteps(picks: Pick[], stack: string[] = []): StepSpec[] {
+  const papers = paperSteps(picks);
+  const paperKeys = papers.map((p) => p.key);
+  const sections = sectionsFor(stack);
   const writers: StepSpec[] = [
     { key: "taxonomy", role: "writer", title: "問題定義與方法分類", instructions: `寫「## 問題定義」（≤ 300 字：要解決什麼、輸入輸出、評估指標與常用資料集，只寫摘錄裡有的）與「## 方法分類」：一個 Markdown 表格，欄位依序為 ${TAXONOMY_COLUMNS.join("｜")}，每一列是一類做法（3–7 類，經典與近期的做法都要涵蓋），「代表論文」欄用 [@key]。表格後用 1–2 句說明分類依據。${CONCISE}`, depends_on: paperKeys, expected: "## 問題定義 + ## 方法分類（五欄表格）", verify: { checks: writerChecks(["問題定義", "方法分類"], [{ id: "topic_taxonomy", params: { min: 2 } }, { id: "topic_concise" }]), judge: true } },
     { key: "approaches", role: "writer", title: "各方法詳解", instructions: `寫「## 各方法詳解」：方法分類表的每一列一個「### 方法名」小節（名稱和表格一致，每節 ≤ 300 字），寫核心想法、怎麼接到模型（注入位置；需要訓練或只在推論時）、關鍵公式（LaTeX 並說明符號；摘錄有公式才寫）、優缺點，以及代表論文 [@key] 與頁碼。只寫摘錄裡有的內容；不要重複表格的句子。`, depends_on: [...paperKeys, "taxonomy"], expected: "## 各方法詳解（每類做法一個 ### 小節）", verify: { checks: writerChecks(["各方法詳解"], [{ id: "topic_approaches", params: { min: 2 } }]), judge: true } },
@@ -537,17 +572,10 @@ export function laterSteps(picks: Pick[], stack: string[] = []): StepSpec[] {
     { key: "discussion", role: "writer", title: "開放問題與研究關聯", instructions: "寫「## 開放問題」（論文自述的限制與尚未解決的問題，標 [@key]，≤ 6 點）與「## 與本研究的關係」（≤ 6 點）：說明哪些做法或結論和這個研究有關、可以參考什麼；只說明關聯，不替使用者決定方向、題目或時程。", depends_on: [...paperKeys, "taxonomy"], expected: "## 開放問題 + ## 與本研究的關係", verify: { checks: writerChecks(["開放問題", "與本研究的關係"], [], 0), judge: true } },
   ];
   const keys = writers.map((w) => w.key);
-  const body = sections.filter((s) => s !== "參考文獻" && s !== "搜尋紀錄");
   return [
     ...papers,
     ...writers,
-    {
-      key: "polish", role: "writer", title: "一致性與精簡", max_rounds: 2,
-      instructions: `把各段草稿整合成一份前後一致、精簡的筆記本文（依序：${body.map((s) => `「## ${s}」`).join("")}）：刪掉互相矛盾的說明（例如讀過全文的論文被寫成「僅有摘要／定位」、「筆記被截斷」之類的免責句），只讀摘要的論文不要附章節／頁碼／公式；表格儲存格 ≤ 40 字，表格與小節不要重複同一句；保留每一個引用 [@key]、每一個數字與出處；全文 ≤ ${NOTE_MAX_CHARS} 字。不要新增草稿沒有的內容。`,
-      depends_on: keys, expected: "完整、一致、精簡的筆記本文",
-      verify: { checks: [{ id: "sections_present", params: { sections: body } }, { id: "topic_taxonomy", params: { min: 2 } }, { id: "topic_approaches", params: { min: 2 } }, { id: "topic_numbers" }, { id: "topic_cites", params: { min: 2 } }, { id: "topic_keep_cites" }, { id: "topic_consistency" }, { id: "topic_concise" }, { id: "topic_length", params: { max: Math.round(NOTE_MAX_CHARS * 1.4) } }, { id: "no_placeholder" }, { id: "not_truncated" }], judge: false },
-    },
-    { key: "assemble", role: "integrator", kind: "integrate", title: "整合成一份研究筆記", instructions: "用一致性與精簡後的本文（沒通過時用各段草稿），附上參考文獻與搜尋紀錄。", depends_on: [...keys, "polish"], expected: "完整的研究筆記", verify: { checks: [{ id: "sections_present", params: { sections } }, { id: "no_placeholder" }, { id: "not_truncated" }], judge: false } },
+    { key: "assemble", role: "integrator", kind: "integrate", title: "拼接成一份研究筆記", instructions: "依大綱順序拼接各節（程式，不呼叫模型），刪掉互相矛盾的免責句，附上參考文獻與搜尋紀錄。", depends_on: keys, expected: "完整的研究筆記", verify: { checks: [{ id: "sections_present", params: { sections } }, { id: "no_placeholder" }, { id: "not_truncated" }], judge: false } },
     finalSpec(),
   ];
 }
@@ -591,7 +619,7 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
     hits, picks, excluded, searched: found.searched || !!prev?.searched, search_errors: found.errors, stack,
   };
   const title = `主題調研：${d.title}`;
-  await env.setState({ topic: st, note_title: clipText(title, 190), sections: sectionsFor(stack) });
+  await env.setState({ topic: st, note_title: clipText(title, 190), sections: sectionsFor(stack), units: topicUnits(stack, picks.length) });
   if (!picks.length) {
     const tried = d.queries.length ? `（線上搜尋：${d.queries.map((q) => `「${q}」`).join("、")}${found.errors.length ? `；${found.errors[0]}` : ""}）` : "";
     return { kind: "question", question: `找不到和這個主題相關、可以匯入的論文${tried}。請在補充指示提供更具體的英文關鍵字、論文標題或 arXiv 編號，或先把論文加入研究文獻庫後按「繼續」。` };
@@ -640,10 +668,10 @@ async function applyEdits(env: WorkflowEnv, edits: ApprovalEdits) {
 
 const subqText = (env: WorkflowEnv) => (env.state<TopicState>("topic")?.subqs ?? []).map((s, i) => `Q${i + 1}. ${s.q}`).join("\n");
 
-type ReadPaper = RunPaper & { notes: string };
+export type ReadPaper = RunPaper & { notes: string };
 
 /** The run's papers (imported / library) with their extractions, in plan order. */
-async function runPapers(env: WorkflowEnv): Promise<{ papers: ReadPaper[]; steps: StepRow[] }> {
+export async function runPapers(env: WorkflowEnv): Promise<{ papers: ReadPaper[]; steps: StepRow[] }> {
   const steps = await getSteps(env.db, env.run.id);
   const papers = steps
     .filter((s) => s.key.startsWith("paper_") && s.status !== "skipped" && s.output?.text)
@@ -674,7 +702,7 @@ async function importOrLibrary(env: WorkflowEnv, step: StepRow, pick: Pick): Pro
   return paper;
 }
 
-async function readPaper(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
+export async function readPaper(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
   const st = env.state<TopicState>("topic");
   const pick = st?.picks[Number(step.inputs.pick ?? -1)];
   if (!pick) return { summary: "找不到這篇論文的資料，略過", text: "（沒有這篇論文的資料，略過）", data: { skipped: true } };
@@ -692,9 +720,9 @@ async function readPaper(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<Ste
       subquestions: subqText(env),
       ...(text ? { paper_text: text } : {}),
     },
-    format: `Markdown：開頭「### [@${got.cite_key}] ${clipText(got.title, 80)}」，接著依序用小標 ${parts}（每部分精簡、具體；全篇約 1500–3000 字）。「#### 數字表」是 Markdown 表格（設定／方法｜資料集｜指標｜基線｜結果｜出處（表／頁）），把主要結果與消融的數字照原文列出；論文沒有數字結果時寫「本文沒有報告數字結果」。每個重點標 [@${got.cite_key}] 與頁碼（p. N）、表號或圖號；公式用 LaTeX 並說明符號。「#### 子問題對應」用 Q1…Qn 各一句，無關的寫「本文未涉及」。`,
+    format: `Markdown：開頭「### [@${got.cite_key}] ${clipText(got.title, 80)}」，接著依序用小標 ${parts}（小標照抄這些中文字，即使內容用英文寫；每部分精簡、具體；全篇約 1500–3000 字）。「#### 數字表」是 Markdown 表格（設定／方法｜資料集｜指標｜基線｜結果｜出處（表／頁）），把主要結果與消融的數字照原文列出；論文沒有數字結果時寫「本文沒有報告數字結果」。每個重點標 [@${got.cite_key}] 與頁碼（p. N）、表號或圖號；公式用 LaTeX 並說明符號。「#### 子問題對應」用 Q1…Qn 各一句，無關的寫「本文未涉及」。`,
   }, fix);
-  const r = await env.researcher(step, { system: systemFor("researcher", "你讀完需要的內容後，直接寫出這篇論文的結構化摘錄。"), user, tools: ["read_paper", "view_paper_pages", "get_paper"], maxToolSteps: 12, maxTokens: 16_000, purpose: "topic_read" });
+  const r = await env.researcher(step, { system: systemFor("researcher", "你讀完需要的內容後，直接寫出這篇論文的結構化摘錄。"), user, tools: ["read_paper", "view_paper_pages", "get_paper"], maxToolSteps: Number(step.inputs.max_tools) || 12, maxTokens: 16_000, purpose: "topic_read" });
   return { summary: `${got.has_pdf ? "讀全文" : ABSTRACT_ONLY}：讀了 ${r.toolCalls} 次，${r.text.length} 字`, text: r.text, data: { paper_id: got.paper_id, cite_key: got.cite_key, title: got.title, year: got.year, has_pdf: got.has_pdf } };
 }
 
@@ -704,22 +732,21 @@ export function compactNotes(papers: { notes: string }[], total = 15_000): strin
   return papers.map((p) => clipText(p.notes.trim(), share)).join("\n\n");
 }
 
-const header = (p: RunPaper) => `### [@${p.cite_key}] ${p.title}${p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}）`}`;
+export const header = (p: RunPaper) => `### [@${p.cite_key}] ${p.title}${p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}）`}`;
 const part = (p: ReadPaper, name: string, max: number) => {
   const t = extractPart(p.notes, name);
   return t ? `**${name}**：${clipText(t, max)}` : "";
 };
 
 /** The per-paper parts a writer needs (an extraction without the parts → its whole text, clipped). */
-export function materialFor(kind: WriterKey | "polish", papers: ReadPaper[]): string {
+export function materialFor(kind: WriterKey, papers: ReadPaper[]): string {
   const share = Math.floor(15_000 / Math.max(1, papers.length));
-  const parts: Record<WriterKey | "polish", [string, number][]> = {
+  const parts: Record<WriterKey, [string, number][]> = {
     taxonomy: [["一句話", 200], ["方法", 500], ["注入位置與訓練／推論", 300], ["實驗設定", 300], ["限制", 200]],
     approaches: [["方法", 1400], ["注入位置與訓練／推論", 400], ["關鍵公式", 800]],
     results: [["實驗設定", 500], ["數字表", 2200]],
     practice: [["方法", 500], ["注入位置與訓練／推論", 700], ["數字表", 600], ["限制", 300]],
     discussion: [["一句話", 200], ["限制", 700], ["子問題對應", 600]],
-    polish: [["一句話", 200]],
   };
   return papers.map((p) => {
     const got = parts[kind].map(([n, m]) => part(p, n, m)).filter(Boolean);
@@ -743,7 +770,6 @@ async function checkData(env: WorkflowEnv, papers: ReadPaper[], text: string, ex
 
 const paperList = (papers: RunPaper[]) => papers.map((p) => `[@${p.cite_key}] ${p.title}${p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}：不要附章節、頁碼、公式）`}`).join("\n");
 
-const draftOf = (steps: StepRow[], keys: string[]) => keys.map((k) => steps.find((s) => s.key === k)?.output?.text?.trim()).filter((t): t is string => !!t && !/^\s*BLOCKED/.test(t)).join("\n\n");
 
 async function writeSection(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
   const { papers, steps } = await runPapers(env);
@@ -766,16 +792,35 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<
   return { ...out, data: await checkData(env, papers, taxonomy || out.text || "") };
 }
 
-async function polish(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
-  const { papers, steps } = await runPapers(env);
-  const keys = writerKeys(env.state<TopicState>("topic")?.stack ?? []);
-  const draft = draftOf(steps, keys);
-  if (!draft) return { summary: "沒有草稿", text: "BLOCKED: 各段草稿都沒有完成" };
-  const material = materialFor("polish", papers);
-  if (env.state<string>(`brief_${step.key}`) !== material) await env.setState({ [`brief_${step.key}`]: material });
-  const user = taskPrompt(env, step, { context: { papers: paperList(papers), draft } }, fix);
-  const res = await env.call({ purpose: "write:topic_polish", role: "writer", aiRole: "writing", messages: [{ role: "system", content: systemFor("writer") }, { role: "user", content: `${user}\n\n輸出格式：完整的筆記本文 Markdown（從「## 問題定義」開始，不含 # 標題、參考文獻與搜尋紀錄），不要前言。` }], maxTokens: 16_000 }, step.id);
-  return { summary: `${res.text.length} 字（草稿 ${draft.length} 字）${res.stopReason === "max_tokens" ? "（輸出被截斷）" : ""}`, text: res.text, data: await checkData(env, papers, res.text, { draft_keys: [...citedKeys(draft)] }) };
+/**
+ * Deterministic consistency pass over the stitched note (replaces a model rewriting the whole note): sentences with
+ * 「筆記被截斷」-style disclaimers go, a full-text paper described as abstract-only loses that sentence, and an
+ * abstract-only paper's citation loses its page / table / equation detail. What is left is judged per section.
+ */
+export function scrubNote(text: string, d: { abstract_only?: string[]; full?: string[] }): { text: string; removed: number } {
+  let removed = 0;
+  const sentences = (line: string, drop: (s: string) => boolean) => {
+    const parts = line.split(/(?<=[。！？])/);
+    const kept = parts.filter((p) => !drop(p));
+    removed += parts.length - kept.length;
+    return kept.join("");
+  };
+  const fullKeys = d.full ?? [];
+  let lines = text.split("\n").map((l) => {
+    if (/^\s*\|/.test(l) || /^#/.test(l)) return l;
+    return sentences(l, (p) => TRUNCATED_RE.test(p) || fullKeys.some((k) => p.includes(`@${k}`) && LIMITED_RE.test(p)));
+  });
+  for (const k of d.abstract_only ?? []) {
+    const cite = new RegExp(`\\[([^\\]\\n]*@${escapeRe(k)}\\b)([^\\]\\n]*)\\]((?:\\s*[（(][^）)\\n]{0,20}[）)])?)`, "g");
+    lines = lines.map((l) => l.replace(cite, (m, a: string, rest: string, paren: string) => {
+      const detail = DETAIL_RE.test(rest) || (!!paren && DETAIL_RE.test(paren));
+      if (!detail) return m;
+      removed++;
+      const keepRest = rest.replace(/,\s*(?:p\.|pp\.|§|表|Table|Fig|圖|式|Eq)[^;\]]*/gi, "");
+      return `[${a}${keepRest}]${paren && DETAIL_RE.test(paren) ? "" : paren}`;
+    }));
+  }
+  return { text: lines.join("\n").replace(/[ \t]+\n/g, "\n"), removed };
 }
 
 function references(papers: RunPaper[]): string {
@@ -810,13 +855,14 @@ function searchLog(st: TopicState | undefined, papers: ReadPaper[], steps: StepR
 async function assemble(env: WorkflowEnv): Promise<StepOutput> {
   const { papers, steps } = await runPapers(env);
   const st = env.state<TopicState>("topic");
-  const polished = steps.find((s) => s.key === "polish");
-  const usePolish = polished?.status === "passed" && !!polished.output?.text?.trim();
-  const body = usePolish ? polished!.output!.text!.trim().replace(/^#\s+[^\n]*\n+/, "") : draftOf(steps, writerKeys(st?.stack ?? []));
+  // The section units in outline order, stitched by code; contradictory disclaimers removed deterministically.
+  const parts = writerKeys(st?.stack ?? []).map((k) => steps.find((s) => s.key === k)?.output?.text?.trim()).filter((t): t is string => !!t && !/^\s*BLOCKED/.test(t));
+  const data = await checkData(env, papers, "");
+  const scrubbed = scrubNote(stitch(parts), data);
   const title = env.state<string>("note_title") ?? env.run.title;
-  const text = `# ${title}\n\n${body}\n\n${references(papers)}\n${searchLog(st, papers, steps)}`;
+  const text = `# ${title}\n\n${scrubbed.text.trim()}\n\n${references(papers)}\n${searchLog(st, papers, steps)}`;
   await env.setState({ doc: text });
-  return { summary: `整合${usePolish ? "精簡後的本文" : "各段草稿（精簡版沒通過）"}、${papers.length} 篇論文，共 ${text.length} 字`, text, data: await checkData(env, papers, text) };
+  return { summary: `依大綱拼接 ${parts.length} 節、${papers.length} 篇論文，共 ${text.length} 字${scrubbed.removed ? `（刪掉 ${scrubbed.removed} 處矛盾的說明）` : ""}`, text, data: await checkData(env, papers, text) };
 }
 
 export const topicResearch: WorkflowPlaybook = {
@@ -831,7 +877,6 @@ export const topicResearch: WorkflowPlaybook = {
   applyEdits: (env, edits) => applyEdits(env, edits),
   async execute(env, step, fix) {
     if (step.key.startsWith("paper_")) return readPaper(env, step, fix);
-    if (step.key === "polish") return polish(env, step, fix);
     if (step.key === "assemble") return assemble(env);
     return writeSection(env, step, fix);
   },
@@ -850,7 +895,15 @@ export const topicResearch: WorkflowPlaybook = {
       if (c.id === "numbers" || c.id === "coverage" || c.id === "grounded") add("results", c);
       if (c.id === "practice" && stack.length) add("practice", c);
       if (c.id === "assist" || c.id === "sections") add("discussion", c);
-      if (c.id === "consistency" || c.id === "concise") add("polish", c);
+      // Consistency / concision: only the section units whose own text fails the check.
+      if (c.id === "consistency" || c.id === "concise") {
+        const { papers, steps } = await runPapers(env);
+        const data = await checkData(env, papers, "");
+        for (const k of writerKeys(stack)) {
+          const t = steps.find((s) => s.key === k)?.output?.text ?? "";
+          if (t && !CHECKS[c.id === "consistency" ? "topic_consistency" : "topic_concise"]!(t, { params: {}, data }).ok) add(k, c);
+        }
+      }
       if (c.id === "cites" || c.id === "clean") for (const k of writerKeys(stack)) add(k, c);
     }
     return [...out].map(([key, issues]) => ({ key, issues }));

@@ -272,8 +272,11 @@ run("workflow requirements (probe suite)", () => {
     expect(status, JSON.stringify(r.report?.issues)).toBe("done");
     // Each writer states its own page range (brief.ts scopeLine) and gets the user's words (the Brief).
     const writers = m.prompts("write_slides");
-    expect(writers.some((p) => p.includes("這一步的範圍：只寫第 1–3 頁（共 3 頁）"))).toBe(true);
+    // One writer per page (each a unit with its own budget).
+    expect(writers).toHaveLength(4);
+    expect(writers.some((p) => p.includes("這一步的範圍：只寫第 1 頁（共 1 頁）"))).toBe(true);
     expect(writers.some((p) => p.includes("這一步的範圍：只寫第 4 頁（共 1 頁）"))).toBe(true);
+    expect(writers.every((p) => p.includes("長度預算（每頁）"))).toBe(true);
     expect(writers.every((p) => p.includes("「幫我做這個研究的進度報告簡報，做成 4 頁」"))).toBe(true);
   });
 

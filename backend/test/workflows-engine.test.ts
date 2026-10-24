@@ -20,7 +20,8 @@ import { setWorkflowAvailability } from "../src/routes/workflows.js";
 process.env.PROVIDER_TOKEN_KEY ??= randomBytes(32).toString("base64");
 const run = hasTestDb && hasTestS3 ? describe : describe.skip;
 
-type Reply = string | ((req: { messages: { role: string; content: unknown }[] }, purpose: string) => string);
+type Out = string | { text: string; stopReason: ChatResult["stopReason"] };
+type Reply = Out | ((req: { messages: { role: string; content: unknown }[] }, purpose: string) => Out);
 const result = (text: string): ChatResult => ({ text, reasoning: "", toolCalls: [], stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 50 }, message: { role: "assistant", content: text } });
 const userText = (req: { messages: { role: string; content: unknown }[] }) => req.messages.filter((m) => m.role === "user").map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))).join("\n");
 
@@ -40,7 +41,8 @@ function mockModel() {
       inFlight--;
       const q = queues.get(ctx.purpose);
       const reply = q?.length ? q.shift()! : defaults.get(ctx.purpose) ?? defaults.get("*") ?? "{}";
-      return result(typeof reply === "function" ? reply(req as never, ctx.purpose) : reply);
+      const out = typeof reply === "function" ? reply(req as never, ctx.purpose) : reply;
+      return typeof out === "string" ? result(out) : { ...result(out.text), stopReason: out.stopReason };
     },
     available: async () => true,
     vision: async () => false,
@@ -553,7 +555,7 @@ run("workflow engine", () => {
     expect(m.count("w:a")).toBe(0);
   });
 
-  it("slides playbook: an 11-page outline, a truncated writer output is detected and fixed, deck draft rendered", async () => {
+  it("slides playbook: an 11-page outline written page by page; a page cut at the output limit is continued alone; deck draft rendered", async () => {
     // Fake worker: completes preview renders.
     let stop = false;
     const worker = (async () => {
@@ -587,13 +589,16 @@ run("workflow engine", () => {
     let truncatedOnce = false;
     m.set("write_slides", (req) => {
       const list = pagesOf(req);
-      // The first writer of pages 1–3 stops after one page (the production failure: 1 page instead of many).
+      // The writer of page 1 hits the output limit inside its speaker notes (the production failure: 19 % of writes cut).
       if (!truncatedOnce && list[0] === "問題定義") {
         truncatedOnce = true;
-        return write(list.slice(0, 1));
+        const full = write(list);
+        return { text: full.slice(0, full.indexOf("報告時大約")), stopReason: "max_tokens" };
       }
       return write(list);
     });
+    // The continuation of that one page: the rest of its notes (restating a few words, as models do).
+    m.set("write_slides:continue", () => "這一頁說明問題定義的內容與資料來源，報告時大約一分鐘，重點放在研究資料裡實際記錄的進展與數字。\n:::");
     const id = await newRun("slides", { request: "幫我做這個研究的進度報告簡報，11 頁", inputs: { pages: 11, mode: "progress" } });
     expect((await runWorkflow(deps(), id)).status).toBe("awaiting_plan_approval");
     const planned = (await getRun(t.db, id))!;
@@ -611,9 +616,15 @@ run("workflow engine", () => {
     stop = true;
     await worker;
     const steps = await getSteps(t.db, id);
+    // One writer per page; only page 1 was continued (one extra call), in the same round — no fix round, no other page redone.
+    expect(steps.filter((s) => s.key.startsWith("write_")).map((s) => s.key)).toHaveLength(11);
     const w1 = steps.find((s) => s.key === "write_1")!;
-    expect(w1.history[0]!.verdict.checks.find((c) => c.id === "slide_count")!.ok).toBe(false);
     expect(w1.status, JSON.stringify(w1.history.map((h) => h.verdict))).toBe("passed");
+    expect(w1.round).toBe(0);
+    expect(w1.output!.summary).toContain("接續寫完 1 次");
+    expect(w1.output!.text).toContain("這一頁說明問題定義的內容與資料來源，報告時大約一分鐘");
+    expect(m.count("write_slides:continue")).toBe(1);
+    expect(m.count("write_slides")).toBe(11);
     expect(out.status, JSON.stringify((await getRun(t.db, id))!.report?.issues)).toBe("done");
     const r = (await getRun(t.db, id))!;
     const deck = r.artifacts.find((a) => a.kind === "deck")!;

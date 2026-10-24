@@ -57,6 +57,7 @@ run("library routes", () => {
         if (req.url.searchParams.get("query")) return sendJson(res, fixture("crossref-search.json"));
         return sendJson(res, { status: "ok", message: { items: [] } });
       }
+      if (p.startsWith("/arxiv-pdf/")) return sendText(res, "not here", "text/plain", 404);
       if (p.startsWith("/arxiv")) return sendText(res, fixture("arxiv-search.atom"), "application/atom+xml");
       if (p.startsWith("/unpaywall/")) {
         const doi = decodeURIComponent(p.slice("/unpaywall/".length)).toLowerCase();
@@ -69,7 +70,7 @@ run("library routes", () => {
     setLibraryServiceFactory((config) =>
       createLibraryService({
         ...config,
-        baseUrls: { crossref: `${srv.url}/crossref`, openalex: `${srv.url}/openalex`, arxiv: `${srv.url}/arxiv`, unpaywall: `${srv.url}/unpaywall`, isca: `${srv.url}/isca`, acl: `${srv.url}/acl`, s2: `${srv.url}/s2` },
+        baseUrls: { crossref: `${srv.url}/crossref`, openalex: `${srv.url}/openalex`, arxiv: `${srv.url}/arxiv`, arxivPdf: `${srv.url}/arxiv-pdf`, unpaywall: `${srv.url}/unpaywall`, isca: `${srv.url}/isca`, acl: `${srv.url}/acl`, s2: `${srv.url}/s2` },
         limiters: { crossref: fast(), openalex: fast(), arxiv: fast(), unpaywall: fast(), isca: fast(), acl: fast(), s2: fast(), download: fast() },
         allowPrivateDownloads: true,
       }),

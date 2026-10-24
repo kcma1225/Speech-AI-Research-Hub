@@ -21,6 +21,8 @@ import type { WorkflowEnv } from "../env.js";
 import type { CheckSpec, Criterion, StepOutput, StepRow, StepSpec } from "../types.js";
 import { clipText, planningStep, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
+import { generateUnit, unitContext, unitTokens } from "../units.js";
+import { unbalanced } from "../checks.js";
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
 type LatexOutline = { section: string; subsections: { title: string; points?: string[] }[] };
@@ -147,7 +149,8 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
   const subsections = lo.subsections.slice(0, 6).map((s) => ({ title: s.title.slice(0, 120), points: (s.points ?? []).slice(0, 6) }));
   const target = existing.find((e) => e.heading && (e.heading.toLowerCase().includes(lo.section.toLowerCase()) || lo.section.toLowerCase().includes(e.heading.toLowerCase())));
   const newPath = sectionPathSafe(lo.section);
-  await env.setState({ section: lo.section, subsections, target_file: target ?? null, new_path: newPath });
+  // One unit per subsection, each with its points and length budget (units.ts).
+  await env.setState({ section: lo.section, subsections, target_file: target ?? null, new_path: newPath, units: subsections.map((s, i) => ({ key: `write_${i + 1}`, title: s.title, points: s.points, budget: { chars: 1400 } })) });
 
   const writes: StepSpec[] = subsections.map((s, i) => ({
     key: `write_${i + 1}`, role: "writer", title: `撰寫小節「${clipText(s.title, 40)}」`,
@@ -193,9 +196,37 @@ function sectionPathSafe(title: string) {
   }
 }
 
-function assembleTex(env: WorkflowEnv, parts: string[]) {
-  const section = env.state<string>("section") ?? "Section";
-  return `\\section{${section}}\n\\label{sec:${slugOf(section)}}\n\n${parts.map((p) => p.trim()).join("\n\n")}\n`;
+/** The section file: heading + label, then the subsection units in order. `starts[i]` = the 1-based line where unit i begins. */
+export function assembleTex(section: string, parts: string[]): { content: string; starts: number[] } {
+  const head = `\\section{${section}}\n\\label{sec:${slugOf(section)}}\n\n`;
+  const starts: number[] = [];
+  let line = head.split("\n").length;
+  const body = parts.map((p) => {
+    starts.push(line);
+    const t = p.trim();
+    line += t.split("\n").length + 1;
+    return t;
+  });
+  return { content: `${head}${body.join("\n\n")}\n`, starts };
+}
+
+/**
+ * The units a compile error points at: `file:line` of the section file → the unit holding that line; no line → the units
+ * with an unclosed environment / brace; else every unit (≤ 4). A fix round repairs only these units, one call each.
+ */
+export function unitsForErrors(errors: string[], path: string, starts: number[], parts: string[]): number[] {
+  const out = new Set<number>();
+  for (const e of errors) {
+    const m = new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:(\\d+)`).exec(e);
+    if (!m) continue;
+    const ln = Number(m[1]);
+    let idx = -1;
+    starts.forEach((st, i) => { if (ln >= st) idx = i; });
+    if (idx >= 0) out.add(idx);
+  }
+  if (!out.size) parts.forEach((p, i) => { if (unbalanced(p).length || (p.match(/\{/g) ?? []).length !== (p.match(/\}/g) ?? []).length) out.add(i); });
+  if (!out.size) parts.slice(0, 4).forEach((_, i) => out.add(i));
+  return [...out];
 }
 
 async function execute(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
@@ -203,34 +234,51 @@ async function execute(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepO
   if (step.key.startsWith("write_")) {
     const subs = env.state<{ title: string; points: string[] }[]>("subsections") ?? [];
     const s = subs[Number(step.inputs.index ?? 0)];
+    const u = await unitContext(env, step);
     const user = taskPrompt(env, step, {
       context: { research: (env.state<string>("brief") ?? "").slice(0, 16_000), all_subsections: subs.map((x, i) => `${i + 1}. ${x.title}`).join("\n"), cite_keys: keys.join(", ") },
-      format: `只輸出這一小節的 LaTeX：第一行是 \\subsection{${s?.title ?? ""}}，接著內文（段落、必要時 itemize/equation）。不要 \\documentclass、不要 \\section、不要 Markdown、不要 \`\`\`。`,
+      format: [`只輸出這一小節的 LaTeX：第一行是 \\subsection{${s?.title ?? ""}}，接著內文（段落、必要時 itemize/equation）。不要 \\documentclass、不要 \\section、不要 Markdown、不要 \`\`\`。`, u.budget, u.neighbours].filter(Boolean).join("\n"),
     }, fix);
-    const res = await env.call({ purpose: "latex_write", role: "writer", messages: [{ role: "system", content: systemFor("writer", "你寫學術論文的 LaTeX 內文（中文論文用繁體中文，英文論文用英文，依研究現有章節的語言）。") }, { role: "user", content: user }], maxTokens: 7000 }, step.id);
-    const tex = res.text.replace(/^```(?:latex|tex)?\n|\n```$/g, "").trim();
-    return { summary: `${tex.length} 字${res.stopReason === "max_tokens" ? "（輸出被截斷）" : ""}`, text: tex };
+    const res = await generateUnit(env, { purpose: "latex_write", role: "writer", messages: [{ role: "system", content: systemFor("writer", "你寫學術論文的 LaTeX 內文（中文論文用繁體中文，英文論文用英文，依研究現有章節的語言）。") }, { role: "user", content: user }], maxTokens: unitTokens(u.unit?.budget, 7000) }, step.id, { clean: (t) => t.replace(/^```(?:latex|tex)?\n|\n```$/g, "").trim() });
+    // A rewritten unit replaces an earlier compile repair of it.
+    const fixedUnits = { ...(env.state<Record<string, string>>("fixed_units") ?? {}) };
+    if (fixedUnits[step.key]) {
+      delete fixedUnits[step.key];
+      await env.setState({ fixed_units: fixedUnits });
+    }
+    return { summary: `${res.text.length} 字${res.continued ? `（接續寫完 ${res.continued} 次）` : ""}${res.regenerated ? "（重寫精簡版）" : ""}${res.truncated ? "（輸出仍被截斷）" : ""}`, text: res.text };
   }
   if (step.key === "assemble") {
     const steps = await getSteps(env.db, env.run.id);
-    let content = assembleTex(env, steps.filter((s) => s.key.startsWith("write_") && s.output?.text).sort((a, b) => Number(a.key.slice(6)) - Number(b.key.slice(6))).map((s) => s.output!.text!));
-    const prev = env.state<{ content: string; errors: string[] }>("compiled");
+    const writers = steps.filter((s) => s.key.startsWith("write_") && s.output?.text).sort((a, b) => Number(a.key.slice(6)) - Number(b.key.slice(6)));
+    const fixedUnits = { ...(env.state<Record<string, string>>("fixed_units") ?? {}) };
+    const target = env.state<{ id: string; path: string } | null>("target_file");
+    const path = target?.path ?? env.state<string>("new_path")!;
+    const section = env.state<string>("section") ?? "Section";
+    const prev = env.state<{ content: string; errors: string[]; starts?: number[] }>("compiled");
     if (fix && prev?.errors.length) {
-      await env.activity(step.key, "integrator", "依編譯錯誤修正");
-      const res = await env.call({ purpose: "latex_fix", role: "integrator", aiRole: "writing", messages: [{ role: "system", content: systemFor("integrator", "修正 LaTeX 語法錯誤，內容不變。只輸出完整的章節 LaTeX。") }, { role: "user", content: `編譯錯誤：\n${prev.errors.join("\n")}\n\n${dataBlock("section", prev.content)}` }], maxTokens: 9000 }, step.id);
-      const fixed = res.text.replace(/^```(?:latex|tex)?\n|\n```$/g, "").trim();
-      if (fixed.includes("\\section")) content = `${fixed}\n`;
+      // Compile errors: repair only the units they point at, each in its own call (content unchanged).
+      const parts = writers.map((w) => fixedUnits[w.key] ?? w.output!.text!);
+      const targets = unitsForErrors(prev.errors, path, prev.starts ?? assembleTex(section, parts).starts, parts);
+      for (const i of targets) {
+        const w = writers[i];
+        if (!w) continue;
+        await env.activity(step.key, "integrator", `依編譯錯誤修正小節「${clipText(w.title.replace(/^撰寫小節「|」$/g, ""), 30)}」`);
+        const res = await env.call({ purpose: "latex_fix", role: "integrator", aiRole: "writing", messages: [{ role: "system", content: systemFor("integrator", "修正這一個小節的 LaTeX 語法錯誤（未跳脫的特殊字元、未關閉的環境、未定義的指令），內容不變。只輸出這個小節完整的 LaTeX（\\subsection 開頭）。") }, { role: "user", content: `整個章節檔的編譯錯誤：\n${prev.errors.join("\n")}\n\n${dataBlock("subsection", parts[i]!)}` }], maxTokens: 6000 }, step.id);
+        const fixed = res.text.replace(/^```(?:latex|tex)?\n|\n```$/g, "").trim();
+        if (fixed.includes("\\subsection") && fixed.length > parts[i]!.length * 0.5) fixedUnits[w.key] = fixed;
+      }
+      await env.setState({ fixed_units: fixedUnits });
     }
+    const { content, starts } = assembleTex(section, writers.map((w) => fixedUnits[w.key] ?? w.output!.text!));
     const projectId = env.state<string>("project_id")!;
     const project = await findProject(env.db, projectId);
     if (!project) throw new WorkflowInputError("LaTeX 專案不存在。");
     const rootFile = (await listFiles(env.db, project.id)).find((f) => f.path === project.root_file);
     const rootText = rootFile ? await liveText(env.db, null, rootFile) : "";
-    const target = env.state<{ id: string; path: string } | null>("target_file");
-    const path = target?.path ?? env.state<string>("new_path")!;
     const root = target ? rootText : addInput(rootText, path);
     const compile = await verificationCompile(env, project.id, [{ path, content }], root);
-    await env.setState({ compiled: { content, errors: compile.errors }, tex: content });
+    await env.setState({ compiled: { content, errors: compile.errors, starts }, tex: content });
     return { summary: `整合 ${content.length} 字；驗證編譯：${compile.status}${compile.errors.length ? `（${compile.errors.length} 個錯誤）` : ""}`, text: content, data: { compile, headings: latexHeadings(content) } };
   }
   return step.output ?? { summary: "（已完成）", text: env.state<string>("brief") ?? "" };

@@ -28,6 +28,7 @@ import { latexHeadings, verificationCompile } from "./latex.js";
 import { registerWorkflowPlaybook, type ApprovalEdits, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 import { targetLanguage } from "../requirements.js";
 import { languageOf, OUTLINE_TITLE_RE, templateFor, type Capability } from "../goals/capabilities.js";
+import { generateUnit, unitContext, unitTokens, type Unit } from "../units.js";
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
 export type PaperSection = { title: string; points: string[]; cites: string[] };
@@ -299,7 +300,7 @@ async function draftPlan(env: WorkflowEnv): Promise<PlanResult> {
   const keySet = new Set(src.keys);
   const sections = outline.sections.slice(0, 10).map((s) => ({ ...s, cites: s.cites.filter((k) => keySet.has(k)) }));
   const st: DraftState = { sections, title: outline.title, language: lang, template, keys: src.keys, command };
-  await env.setState({ draft: st, brief: src.brief.slice(0, 30_000), outline_note: outlineNote ? { id: outlineNote.n.id, title: outlineNote.n.title } : null });
+  await env.setState({ draft: st, brief: src.brief.slice(0, 30_000), outline_note: outlineNote ? { id: outlineNote.n.id, title: outlineNote.n.title } : null, units: paperUnits(st) });
   const info = templateInfo(template);
   return {
     kind: "plan",
@@ -314,6 +315,16 @@ async function draftPlan(env: WorkflowEnv): Promise<PlanResult> {
     },
     steps: [...pre, ...draftSteps(st, pre.at(-1)!.key)],
   };
+}
+
+/** Short sections (introduction, conclusion) get a smaller budget than the body sections. */
+const SHORT_SECTION_RE = /intro|conclu|summary|緒論|前言|引言|結論|總結|結語/i;
+/** The paper's units (`state.units`): one per section, with its points and length budget (words in English, chars otherwise). */
+export function paperUnits(st: Pick<DraftState, "sections" | "language">): Unit[] {
+  return st.sections.map((s, i) => {
+    const short = SHORT_SECTION_RE.test(s.title);
+    return { key: `sec_${i + 1}`, title: s.title, points: s.points, sources: s.cites, budget: st.language === "en" ? { words: short ? 450 : 800 } : { chars: short ? 1200 : 2400 } };
+  });
 }
 
 const draftCriteria = (keys: string[]): Omit<Criterion, "status">[] => [
@@ -360,17 +371,19 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<
   const i = Number(step.inputs.index ?? 0);
   const s = st.sections[i]!;
   const en = st.language === "en";
+  // One section = one unit: its budget and its neighbours (their text once written), generated alone (units.ts).
+  const u = await unitContext(env, step, st.language);
   const user = taskPrompt(env, step, {
     context: {
       paper: `題目：${st.title}\n章節：\n${st.sections.map((x, j) => `${j + 1}. ${x.title}${j === i ? "（← 你寫這一節）" : ""}`).join("\n")}`,
       sources: (env.state<string>("brief") ?? "").slice(0, 16_000),
       cite_keys: st.keys.join(", ") || "（文獻庫是空的：不要用 \\cite）",
     },
-    format: `只輸出這一節的 LaTeX：第一行 \\${st.command}{${s.title}}，接著 3–6 段內文（必要時 \\subsection、itemize、table）。引用用 \\cite{key}，key 只能用 cite_keys 裡的。不要 \\documentclass、不要 \\begin{document}、不要 Markdown、不要 \`\`\`。特殊字元要跳脫（\\%、\\&、\\_、\\#）。${en ? "用英文（English）撰寫，不要出現中文字。" : "用繁體中文撰寫。"}資料沒有的實驗數字不要寫。`,
+    format: [`只輸出這一節的 LaTeX：第一行 \\${st.command}{${s.title}}，接著 3–6 段內文（必要時 \\subsection、itemize、table）。引用用 \\cite{key}，key 只能用 cite_keys 裡的。不要 \\documentclass、不要 \\begin{document}、不要 Markdown、不要 \`\`\`。特殊字元要跳脫（\\%、\\&、\\_、\\#）。${en ? "用英文（English）撰寫，不要出現中文字。" : "用繁體中文撰寫。"}資料沒有的實驗數字不要寫。`, u.budget, u.neighbours].filter(Boolean).join("\n"),
   }, fix);
-  const res = await env.call({ purpose: "paper_section", role: "writer", aiRole: "writing", messages: [{ role: "system", content: systemFor("writer", `你在寫一篇學術論文的 LaTeX 內文。${en ? "This paper is written in English: write English only (the 繁體中文 rule does not apply to the paper text)." : ""}`) }, { role: "user", content: user }], maxTokens: 7000 }, step.id);
+  const res = await generateUnit(env, { purpose: "paper_section", role: "writer", aiRole: "writing", messages: [{ role: "system", content: systemFor("writer", `你在寫一篇學術論文的 LaTeX 內文。${en ? "This paper is written in English: write English only (the 繁體中文 rule does not apply to the paper text)." : ""}`) }, { role: "user", content: user }], maxTokens: unitTokens(u.unit?.budget, 7000) }, step.id, { clean: stripFence });
   const tex = withHeading(res.text, s.title, i, st.command);
-  return { summary: `${tex.length} 字${res.stopReason === "max_tokens" ? "（輸出被截斷）" : ""}`, text: tex };
+  return { summary: `${tex.length} 字${res.continued ? `（接續寫完 ${res.continued} 次）` : ""}${res.regenerated ? "（重寫精簡版）" : ""}${res.truncated ? "（輸出仍被截斷）" : ""}`, text: tex };
 }
 
 async function writeAbstract(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
@@ -482,7 +495,7 @@ async function draftApplyEdits(env: WorkflowEnv, edits: ApprovalEdits) {
     return { title: clipText(o.title.trim(), 120), points: o.points.filter((p) => !/^引用[:：]/.test(p)).slice(0, 6), cites };
   });
   const next = { ...st, sections };
-  await env.setState({ draft: next });
+  await env.setState({ draft: next, units: paperUnits(next) });
   const outline: OutlineItem[] = sections.map((s, i) => ({ n: i + 1, title: s.title, points: [...s.points, ...(s.cites.length ? [`引用：${s.cites.join(", ")}`] : [])] }));
   const steps = await getSteps(env.db, env.run.id);
   const dep = steps.some((s) => s.key === "outline") ? "outline" : "research";

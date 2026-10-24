@@ -76,6 +76,10 @@ describe("autopilot plan approval (pure)", () => {
     expect(EACH_PAPER_RE.test("我想要你幫我把每一個文獻都做成簡報")).toBe(true);
     expect(EACH_PAPER_RE.test("make one deck per paper")).toBe(true);
     expect(EACH_PAPER_RE.test("把這篇論文做成簡報")).toBe(false);
+    // Production: one integrated deck where each METHOD lists its paper title is not a per-paper batch.
+    expect(EACH_PAPER_RE.test("幫我做一份英文簡報，每個方法要寫出 paper title 和年份")).toBe(false);
+    expect(EACH_PAPER_RE.test("For each method, include the paper title and publication year")).toBe(false);
+    expect(EACH_PAPER_RE.test("所有文獻各做一份簡報")).toBe(true);
     expect([...textTokens("Lightweight ASR study")]).toEqual(["lightweight", "asr"]);
     expect(recordUrls({ oa_url: null, record: { URL: "https://arxiv.org/abs/2401.00001", link: [{ URL: "https://x.org/a.pdf" }, { URL: "ftp://no" }] } as never })).toEqual(["https://arxiv.org/abs/2401.00001", "https://x.org/a.pdf"]);
   });
@@ -372,6 +376,10 @@ run("workflow autopilot", () => {
     for (let i = 0; i < 5; i++) papers.push(await addPaper(s2.id, `Paper ${i + 1}`, { pdf: true }));
     expect(await batchPapers(t.db, { playbook: "slides", request: "把這個研究的每一篇文獻都做成獨立的簡報", studyId: s2.id })).toHaveLength(5);
     expect(await batchPapers(t.db, { playbook: "lit_review", request: "每一篇文獻", studyId: s2.id })).toBeNull();
+    // Several paper ids from the assistant without the user asking for one per paper → sources of ONE deck.
+    expect(await batchPapers(t.db, { playbook: "slides", request: "Create one English deck from the library", studyId: s2.id, paperIds: papers.slice(0, 3), userText: "幫我做一份英文簡報，根據研究文獻庫整理" })).toBeNull();
+    expect(await batchPapers(t.db, { playbook: "slides", request: "x", studyId: s2.id, paperIds: papers.slice(0, 3), userText: "這三篇各做一份簡報" })).toHaveLength(3);
+    expect(await batchPapers(t.db, { playbook: "slides", request: "x", studyId: s2.id, paperIds: papers.slice(0, 3), userText: "每一篇文獻都做成簡報" })).toHaveLength(3);
     const res = await post(alice, "/api/workflows", { request: "把這個研究的每一篇文獻都做成獨立的簡報", context: { studyId: s2.id }, autopilot: true });
     expect(res.statusCode).toBe(201);
     const body = res.json();

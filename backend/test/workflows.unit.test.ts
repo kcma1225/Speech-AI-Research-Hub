@@ -99,16 +99,17 @@ describe("workflow helpers", () => {
     expect(parseJson('{"x":"含 } 的字串"}\ndata: [DONE]')).toEqual({ x: "含 } 的字串" });
   });
 
-  it("splits a slide outline into writer groups of ≤ 3 pages with per-group checks", () => {
+  it("writes a slide outline page by page (one unit per page, its own checks and budget)", () => {
     const outline = Array.from({ length: 11 }, (_, i) => ({ n: i + 1, title: `P${i + 1}`, points: [], ...(i === 10 ? { student_owned: true } : {}) }));
     const steps = slides.writerSteps(outline);
-    expect(steps.map((s) => s.key)).toEqual(["write_1", "write_4", "write_7", "write_10"]);
-    expect(steps[3]!.inputs).toEqual({ pages: [10, 11] });
+    expect(steps.map((s) => s.key)).toEqual(Array.from({ length: 11 }, (_, i) => `write_${i + 1}`));
+    expect(steps[9]!.inputs).toEqual({ pages: [10], budget: { bullets: 4, words: 60 } });
+    expect(steps[9]!.title).toBe("撰寫第 10 頁「P10」");
     const count = steps[0]!.verify!.checks.find((c) => c.id === "slide_count");
-    expect(count!.params).toEqual({ expected: 3 });
+    expect(count!.params).toEqual({ expected: 1 });
     const later = slides.laterSteps(outline, false).map((s) => s.key);
     // Student-owned pages (page 11) are asked right after the writers, before the assembly.
-    expect(later.slice(0, 6)).toEqual(["write_1", "write_4", "write_7", "write_10", "student_input", "assemble"]);
+    expect(later.slice(10, 13)).toEqual(["write_11", "student_input", "assemble"]);
     expect(later).toContain("notes");
     expect(later.at(-1)).toBe("final");
     expect(slides.laterSteps(outline, true).map((s) => s.key)).toContain("visual_qa");

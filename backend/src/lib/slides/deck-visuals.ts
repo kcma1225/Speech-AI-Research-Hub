@@ -67,6 +67,27 @@ export const DECK_CSS = `/* Speech-AI Hub generated deck theme (Lab-Hub layout, 
 .reveal blockquote { font-size: 30px; border-left: 6px solid ${DECK_PALETTE[1]}; background: #fffbeb; padding: 16px 24px; width: auto; box-shadow: none; font-style: normal; }
 .reveal .katex { font-size: 1.05em; }
 #MathJax_Message { display: none !important; }
+/* Per-page source line of topic decks: inside the slide (never past its edge), one line. */
+.reveal .slides section .page-source { position: absolute; bottom: 0; left: 0; right: 0; font-size: 16px; color: ${DECK_MUTED}; white-space: nowrap; overflow: hidden; }
+.reveal .slides section .page-source p { margin: 0; }
+/* Fit variants (slides workflow, visual QA): a page that overflows gets the next one; never below 16px. */
+.reveal .slides section.fit-90 { font-size: 23px; }
+.reveal .slides section.fit-90 table { font-size: 20px; }
+.reveal .slides section.fit-90 img { max-height: 460px; }
+.reveal .slides section.fit-90 img.hub-diagram, .reveal .slides section.fit-90 img.hub-chart { max-height: 500px; }
+.reveal .slides section.fit-80 { font-size: 21px; }
+.reveal .slides section.fit-80 h2 { font-size: 36px; margin-bottom: 16px; }
+.reveal .slides section.fit-80 table { font-size: 18px; }
+.reveal .slides section.fit-80 .takeaway { font-size: 21px; padding: 10px 16px; }
+.reveal .slides section.fit-80 img { max-height: 400px; }
+.reveal .slides section.fit-80 img.hub-diagram, .reveal .slides section.fit-80 img.hub-chart { max-height: 420px; }
+.reveal .slides section.fit-70 { font-size: 19px; }
+.reveal .slides section.fit-70 h2 { font-size: 32px; margin-bottom: 12px; }
+.reveal .slides section.fit-70 table { font-size: 17px; }
+.reveal .slides section.fit-70 .takeaway { font-size: 19px; padding: 8px 14px; margin-top: 10px; }
+.reveal .slides section.fit-70 .big-number { font-size: 72px; }
+.reveal .slides section.fit-70 img { max-height: 330px; }
+.reveal .slides section.fit-70 img.hub-diagram, .reveal .slides section.fit-70 img.hub-chart { max-height: 340px; }
 `;
 
 // ---------------------------------------------------------------- charts
