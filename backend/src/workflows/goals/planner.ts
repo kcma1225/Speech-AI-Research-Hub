@@ -8,14 +8,15 @@
  */
 import { isLlmUnavailable } from "../../ai/platform/index.js";
 import { dataBlock, llmJson, type LlmHooks } from "../llm.js";
-import { detectPlaybook, getWorkflowPlaybook } from "../playbooks/registry.js";
+import { getWorkflowPlaybook } from "../playbooks/registry.js";
+import { route, routeReadiness, routeStage, servesDeliverable, type RouteReadiness } from "../route.js";
 import type { ModelPort } from "../types.js";
 import {
   capabilityOf, catalogue, DELIVERABLE_KINDS, DELIVERABLE_LABEL, deliverableOf, gapsOf, languageOf, producersOf, readinessLines, templateFor,
   type DeliverableKind, type Readiness,
 } from "./capabilities.js";
 import type { Deliverable, GoalPlan, GoalRow, Stage, StageDraft } from "./types.js";
-import { deliverableFromWords } from "../brief.js";
+import { briefKindOf, deliverableFromWords } from "../brief.js";
 
 export const MAX_STAGES = 8;
 /** A paper needs this many read papers; fewer → topic research first. */
@@ -111,15 +112,25 @@ const isLlmPlan = (v: unknown): v is LlmPlan => !!v && typeof v === "object" && 
 /** Hooks for a planner call outside a run (no budget; usage is not attributed). */
 export const plannerHooks = (model: ModelPort, userId: string, signal: AbortSignal = new AbortController().signal): LlmHooks => ({ model, userId, signal, beforeCall: async () => undefined, afterCall: async () => undefined });
 
-/** Validates LLM stages: known playbooks, `uses` only earlier stages, ≤ MAX_STAGES, the last stage produces the deliverable when a producer exists. */
-export function validStages(raw: LlmPlan["stages"], kind: DeliverableKind, request: string): StageDraft[] | null {
+/**
+ * Validates LLM stages: known playbooks, `uses` only earlier stages, ≤ MAX_STAGES, the last stage produces the deliverable
+ * when a producer exists. Every stage's playbook goes through the router (route.ts `routeStage`: a reading note without a
+ * paper for a topic → topic research, an experiment report without experiment data → generic…), and a stage whose kind
+ * does not serve the deliverable (`servesDeliverable`: a LaTeX section in a deck goal) is dropped.
+ */
+export function validStages(raw: LlmPlan["stages"], kind: DeliverableKind, request: string, ready: RouteReadiness | null = null): StageDraft[] | null {
   const stages: StageDraft[] = [];
-  for (const s of raw.slice(0, MAX_STAGES)) {
+  const index = new Map<number, number>();
+  for (const [n, s] of raw.slice(0, MAX_STAGES).entries()) {
     if (!s || typeof s.playbook !== "string" || !getWorkflowPlaybook(s.playbook) || !capabilityOf(s.playbook)) return null;
+    const req = clip(String(s.request || request), 2000);
+    const playbook = routeStage(s.playbook, req, ready);
+    if (!servesDeliverable(capabilityOf(playbook)!.produces, kind)) continue;
     const i = stages.length;
+    index.set(n, i);
     stages.push({
-      playbook: s.playbook, title: clip(String(s.title || getWorkflowPlaybook(s.playbook)!.title), 80), why: clip(String(s.why ?? ""), 300),
-      request: clip(String(s.request || request), 2000), uses: (Array.isArray(s.uses) ? s.uses : []).filter((u) => Number.isInteger(u) && u >= 0 && u < i),
+      playbook, title: clip(String(s.title || getWorkflowPlaybook(playbook)!.title), 80), why: clip(String(s.why ?? ""), 300),
+      request: req, uses: (Array.isArray(s.uses) ? s.uses : []).filter((u) => Number.isInteger(u) && u >= 0 && u < n).map((u) => index.get(u)).filter((u): u is number => u !== undefined && u < i),
     });
   }
   if (!stages.length) return null;
@@ -152,7 +163,8 @@ export async function planGoal(model: ModelPort | null, userId: string, input: {
   const words = input.userWords?.length ? input.userWords.join("\n") : null;
   const named = input.deliverable ?? (input.userWords?.length ? deliverableFromWords(input.userWords) : null) ?? deliverableOf(request);
   const explicit = input.playbook && getWorkflowPlaybook(input.playbook) ? input.playbook : null;
-  const fallbackPb = explicit ?? detectPlaybook(request, inputs);
+  // One stage, nothing recognised: the router's producer (the same decision as a workflow's).
+  const fallbackPb = route({ words: input.userWords?.length ? input.userWords : [request], paraphrase: input.userWords?.length ? request : null, kind: named ? briefKindOf(named) : null, hint: explicit, inputs, ready: routeReadiness(r) }).playbook;
   const kind: DeliverableKind = named ?? capabilityOf(fallbackPb)?.produces ?? "note";
   const deliverable = deliverableFor(kind, words ?? request);
   const title = clip(kind === "paper" ? `論文：${topicOf(request)}` : request.split("\n")[0]!.trim(), 80);
@@ -172,7 +184,7 @@ export async function planGoal(model: ModelPort | null, userId: string, input: {
         maxTokens: 3000,
       }, isLlmPlan);
       const llmKind = named ?? ((DELIVERABLE_KINDS as readonly string[]).includes(value?.deliverable ?? "") ? (value!.deliverable as DeliverableKind) : kind);
-      const stages = value ? validStages(value.stages, llmKind, request) : null;
+      const stages = value ? validStages(value.stages, llmKind, request, routeReadiness(r)) : null;
       if (value && stages) {
         const d = llmKind === kind ? deliverable : deliverableFor(llmKind, words ?? request);
         return {
@@ -229,7 +241,7 @@ export async function replanAfter(model: ModelPort | null, goal: GoalRow, idx: n
       }],
       maxTokens: 2500,
     }, isLlmPlan);
-    const drafts = value ? validStages(value.stages, goal.deliverable.kind, goal.request) : null;
+    const drafts = value ? validStages(value.stages, goal.deliverable.kind, goal.request, routeReadiness(r)) : null;
     if (!drafts) return null;
     const same = drafts.length === rest.length && drafts.every((d, i) => d.playbook === rest[i]!.playbook);
     if (same) return null;

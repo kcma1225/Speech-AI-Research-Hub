@@ -7,13 +7,14 @@
 import { z } from "zod";
 import { registerAgentTool, type AgentToolContext } from "../../agent/tools/registry.js";
 import { notFound } from "../../lib/http.js";
-import { detectPlaybook, getWorkflowPlaybook } from "../playbooks/registry.js";
+import { getWorkflowPlaybook } from "../playbooks/registry.js";
 import { startResult } from "../service.js";
-import { capabilityOf, DELIVERABLE_KINDS, DELIVERABLE_LABEL, deliverableOf, type DeliverableKind } from "./capabilities.js";
+import { capabilityOf, DELIVERABLE_KINDS, DELIVERABLE_LABEL, type DeliverableKind } from "./capabilities.js";
 import { activeConversationGoal, createGoal, goalDetail, goalResult, updateGoal, type GoalStart } from "./service.js";
 import { getGoal } from "./store.js";
 import type { GoalRow } from "./types.js";
-import { collectUserWords, deliverableFromWords } from "../brief.js";
+import { collectUserWords } from "../brief.js";
+import { wantedDeliverable } from "../route.js";
 
 const uuid = (v?: string) => (v && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);
 
@@ -45,8 +46,8 @@ function startedResult(out: GoalStart, autopilot: boolean) {
 
 type StartArgs = { request: string; deliverable?: string; playbook?: string; study?: string; paper_id?: string; project_id?: string; note_ids?: string[]; userWords?: string[] };
 
-/** The deliverable the user's own words name, else the assistant's request (brief.ts). */
-const wantedOf = (a: StartArgs) => (a.userWords?.length ? deliverableFromWords(a.userWords) : null) ?? deliverableOf(a.request);
+/** The deliverable the user's own words name, else the assistant's request (route.ts). */
+const wantedOf = (a: StartArgs) => wantedDeliverable(a.userWords, a.request);
 
 async function startGoalFrom(ctx: AgentToolContext, a: StartArgs, tool: string) {
   const conv = await convOf(ctx);
@@ -73,18 +74,23 @@ async function startGoalFrom(ctx: AgentToolContext, a: StartArgs, tool: string) 
   return startedResult(out, conv?.autopilot ?? false);
 }
 
+/** Deliverables that need a roadmap (a whole paper, a paper outline built on research): a goal, not one run. */
+const GOAL_KINDS = new Set<DeliverableKind>(["paper", "outline"]);
+
 /**
- * `start_workflow` guard: the request names a deliverable the playbook would not produce (a paper asked for, a
- * literature review picked) → a goal for that deliverable (or the conversation's goal is updated). Null = run the
- * workflow as asked.
+ * `start_workflow` guard (before the router, route.ts): when the assistant's playbook does not produce what the user's
+ * words ask for, a paper / outline becomes a goal for that deliverable, and a conversation that already pursues a goal
+ * updates (or points at) it. Everything else is a workflow: the router picks the producer and records the mismatch.
+ * Null = start the workflow.
  */
 export async function routeWorkflowRequest(ctx: AgentToolContext, a: StartArgs & { paper_ids?: string[] }) {
   const want = wantedOf(a);
   if (!want) return null;
-  const pb = a.playbook && getWorkflowPlaybook(a.playbook) ? a.playbook : detectPlaybook(a.request, { paper_id: a.paper_id, project_id: a.project_id, paper_ids: a.paper_ids });
-  const produces = capabilityOf(pb)?.produces;
-  if (produces === want) return null;
-  return startGoalFrom(ctx, { ...a, deliverable: want, playbook: produces === want ? pb : undefined }, "start_workflow");
+  const hint = a.playbook && getWorkflowPlaybook(a.playbook) ? a.playbook : null;
+  if (hint && capabilityOf(hint)?.produces === want) return null;
+  const active = GOAL_KINDS.has(want) ? null : await activeConversationGoal(ctx.db, ctx.user.id, ctx.conversationId);
+  if (!GOAL_KINDS.has(want) && !active) return null;
+  return startGoalFrom(ctx, { ...a, deliverable: want, playbook: undefined }, "start_workflow");
 }
 
 registerAgentTool({

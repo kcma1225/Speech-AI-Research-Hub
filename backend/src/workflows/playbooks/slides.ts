@@ -26,9 +26,9 @@ import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { WorkflowStop, type CheckSpec, type Criterion, type OutlineItem, type PlannedWrite, type StepOutput, type StepRow, type StepSpec } from "../types.js";
 import { abstractBrief, ensurePaperPdf } from "../paper-pdf.js";
-import { clipText, isTopicRequest, matchPaperTitle, paperIdOf, paperOf, planningStep, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { clipText, matchPaperTitle, paperIdOf, paperOf, planningStep, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
 import { clarifyOnce, requestLine, userGuidance } from "../brief.js";
-import { batchPapers } from "../context.js";
+import { currentRoute, splitBatch, deckModeOf, PROGRESS_RE, PAPER_REPORT_RE, addedPages, editKindOf, requiredPages } from "../route.js";
 import { registerWorkflowPlaybook, type WorkflowPlaybook } from "./registry.js";
 import { ABSTRACT_ONLY, decompose, extractPart, libraryPapers, paperSteps, pickLine, pickTitle, readPaper, searchOnline, select, stackOf, type Pick as TopicPick, type ReadPaper, type TopicState } from "./research.js";
 import { generateUnit, neighbourBlock } from "../units.js";
@@ -96,25 +96,8 @@ export const ONLINE_RE = /線上|上網|網路上|搜尋|搜索|(?:找|查)(?:�
 /** A library with fewer full-text papers than this is thin for a survey deck: search online too. */
 export const THIN_LIBRARY = 4;
 export const TOPIC_DEFAULT_PAGES = 10;
-/** 「論文報告」「這篇論文做成簡報」「present this paper」: a report on ONE paper (a mention of "paper title(s)" is not). */
-export const PAPER_REPORT_RE = /論文報告|文獻報告|paper report|journal club|報告(?:這|那|一)篇|(?:這|那|此|該)篇(?:論文|paper|文章)|(?:present|presenting|report on|summari[sz]e|walk through) (?:this|the|that|one|a single) (?:paper|article)\b|(?:this|the) paper'?s? (?:slides|deck|presentation)|\b\d{4}\.\d{4,5}\b/i;
-/** A deck about a subject — a topic, methods, the literature (「關於…」「介紹…」"about …"), not one paper and not a progress report. */
-export const TOPIC_DECK_RE = /literature|related work|state[- ]of[- ]the[- ]art|\bsurvey|overview|\bapproach(?:es)?\b|\bmethods?\b|\btechniques?\b|\btrends?\b|landscape|\babout\b|\bintroduc(?:e|ing|tion to)\b|研究現況|文獻(?!報告)|有哪些|做法|方法|技術|調研|趨勢|主題|關於|有關|介紹|探討/i;
-/** An explicit progress report (wins over a topic: 「介紹這週的進度」 is a progress deck). */
-export const PROGRESS_RE = /進度|週報|週會|組會|group meeting|progress|weekly|this week'?s? (?:work|results)/i;
-
-/**
- * Which deck: an explicit progress report → progress; a report on one paper (asked for, or a paper given / named while
- * the words are not about a topic) → paper_report; a topic / literature deck → topic; else progress. A word like "paper
- * title" never forces a paper report (production 50b49d80), and the study's only paper is not a reason for one.
- */
-export function deckModeOf(words: string, opts: { inputMode?: string; explicitPaper: boolean; progressAsked: boolean }): DeckMode | "topic" {
-  if (opts.inputMode === "topic" || opts.inputMode === "progress" || opts.inputMode === "paper_report") return opts.inputMode as DeckMode | "topic";
-  if (opts.progressAsked) return "progress";
-  const topic = isTopicRequest(words) || TOPIC_DECK_RE.test(words);
-  if (PAPER_REPORT_RE.test(words) || (opts.explicitPaper && !topic)) return "paper_report";
-  return topic ? "topic" : "progress";
-}
+// Which deck (PAPER_REPORT_RE, TOPIC_DECK_RE, PROGRESS_RE, deckModeOf) is route.ts: the router decides it once.
+export { PAPER_REPORT_RE, TOPIC_DECK_RE, PROGRESS_RE, deckModeOf, REVISE_RE, EXPAND_RE, addedPages, editKindOf } from "../route.js";
 
 /** A topic deck's working title from the user's words: 「幫我做一份關於 X 的簡報」 / "Make a presentation about X" → X. */
 export function topicTitleOf(words: string): string {
@@ -562,29 +545,24 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   const access = await resolveStudy(env);
   if (!access) return { kind: "question", question: await whichStudyQuestion(env, "簡報") };
   if (!access.canEdit) return { kind: "question", question: `你不是〈${access.study.title}〉的成員，不能在這個研究建立簡報。請指定你參與的研究。` };
-  const inputMode = env.run.inputs.mode as DeckMode | undefined;
-  // 「每一篇文獻」 whose study was only found now (named in a guidance, or 「你決定」): split into the per-paper batch
-  // that creation would have made, and end this run.
-  if (!env.run.batch_id && !inputMode && !paperIdOf(env) && await batchPapers(env.db, { playbook: "slides", request: env.run.request, studyId: access.study.id })) {
-    const { insertWorkflows, announceRuns } = await import("../service.js");
-    const out = await transaction(env.db, (c) => insertWorkflows(c, env.user, { request: env.run.request, playbook: "slides", inputs: { study: access.study.id }, conversationId: env.run.conversation_id, autopilot: env.run.autopilot }));
-    await announceRuns(env.db, out.runs);
-    return { kind: "skip", message: `已拆成 ${out.runs.length} 個工作流程（〈${access.study.title}〉的每篇論文各一份簡報），請在批次卡片查看進度。` };
+  // The routing decision (route.ts) says which deck — this deck itself (edit), progress, paper report or topic; the
+  // playbook executes it and never re-reads the request for a mode. Batches were split by the router.
+  const r = await currentRoute(env);
+  // 「每一篇文獻」 whose study was only found now (named in a guidance, or 「你決定」): the batch, and this run ends.
+  if (r?.batch && !env.run.batch_id) {
+    const message = await splitBatch(env, "slides");
+    if (message) return { kind: "skip", message };
   }
   // An existing deck with content + an edit request (translate, rewrite, restyle…) → revise it in place.
-  const revise = await reviseSource(env, access.study.id);
-  if (revise) return revisePlan(env, access, revise);
-  // The user's own words decide which deck (brief.ts); the assistant's request only helps to find a named paper.
+  const revise = r?.deck === "edit" ? await reviseSource(env, access.study.id) : null;
+  if (revise) return revisePlan(env, access, revise, r?.edit);
   const b = env.brief();
   const words = [...(b ? b.user_words : [env.run.request]), ...(b ? [] : userGuidance(env.run))].join("\n");
-  // A paper given with the run (inputs / page context) — decided on the first plan, before a fallback pick is stored.
-  const explicitId = env.state<boolean>("paper_explicit") ?? !!paperIdOf(env);
-  await env.setState({ paper_explicit: explicitId });
+  // A paper given with the run (inputs / page context at creation) — not a fallback pick.
+  const explicitId = r?.explicit_paper ?? !!paperIdOf(env);
   let paper = await paperOf(env);
-  const named = !!paper && (explicitId || !!matchPaperTitle(words, [paper]) || /\b\d{4}\.\d{4,5}\b|\b10\.\d{4,9}\//.test(words));
-  // An explicit 「進度報告」 wins over a study paper picked by fallback (the study's only paper is not a reason for a paper report).
-  const progressAsked = PROGRESS_RE.test(words);
-  let picked = deckModeOf(words, { inputMode, explicitPaper: named, progressAsked });
+  // A run routed before the deck decision existed (or an edit whose deck has no slides): the same pure rule.
+  let picked: DeckMode | "topic" = r?.deck && r.deck !== "edit" ? r.deck : deckModeOf(words, { inputMode: env.run.inputs.mode as string | undefined, explicitPaper: explicitId, progressAsked: PROGRESS_RE.test(words) });
   if (picked === "paper_report" && !paper) picked = await whichPaper(env, access.study.id);
   if (picked !== "paper_report" && paper && !explicitId) {
     // The study's only paper (paperOf's fallback) is not this deck's subject: forget it.
@@ -724,39 +702,10 @@ async function paperFigureList(env: WorkflowEnv, pdfKey: string): Promise<string
 
 // ---------------------------------------------------------------- revising an existing deck
 
-/** 「把這份簡報改成英文」、「精簡」、「重排」… — an edit of the deck itself, not a new deck. */
-export const REVISE_RE = /翻譯|translate|改成|改為|轉成|換成|修改|改寫|重寫|精簡|潤飾|潤稿|調整|英文版|中文版|英文|rewrite|revise|edit|polish|shorten|condense/i;
-/** 「再詳細一點」「focus 在…」「擴充成 20 頁」「每個方法要有 Pros/Cons」: a deeper / restructured version (new outline). */
-export const EXPAND_RE = /詳細|細一點|不夠細|更細|太淺|擴充|擴寫|展開|加深|深入|聚焦|重點放在|主軸|重新規劃|重新組織|重組|focus|expand|elaborate|in[- ]depth|more detail|detailed|deeper|restructure|reorgani[sz]e|rework|每(?:一)?(?:個|種)[^，。\n]{0,10}(?:都)?要有/i;
-/** Translation / language-only passes stay revisions even when they say "detailed" in passing. */
-const TRANSLATE_RE = /翻譯|翻成|translate|英文化|中文化|corrective|只改語言|只翻/i;
-const STRONG_EXPAND_RE = /詳細|細一點|不夠細|更細|擴充|擴寫|展開|深入|聚焦|重點放在|重新規劃|重組|focus|expand|elaborate|in[- ]depth|more detail|restructure|每(?:一)?(?:個|種)[^，。\n]{0,10}(?:都)?要有/i;
+/** The user's own words (Brief) — what added pages / edit kinds are read from, never the assistant's paraphrase. */
+const userText = (env: WorkflowEnv) => (env.brief()?.user_words ?? [env.run.request, ...userGuidance(env.run)]).join("\n");
 
-/**
- * `revise` (translate / polish: same pages, nothing dropped) or `expand` (deeper / restructured: a new outline grounded
- * in the deck and the study's sources). Per-item fields or a page count well above the deck's are expansions too.
- */
-const CN_NUM: Record<string, number> = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
-/** 「加上一頁…」「新增兩頁」「add 2 slides」: how many pages the request adds to the deck (0 when none). */
-export function addedPages(text: string): number {
-  let n = 0;
-  for (const m of text.matchAll(/(?:加上|加入|新增|增加|多加|補上|再加|加)\s*(\d{1,2}|[一二兩三四五六七八九十])\s*(?:頁|張)/g)) n += Number(m[1]) || CN_NUM[m[1]!] || 0;
-  for (const m of text.matchAll(/\badd(?:ing)?\s+(?:an?|one|(\d{1,2}))\s+(?:new\s+|more\s+|extra\s+)?(?:slides?|pages?)\b/gi)) n += Number(m[1]) || 1;
-  return Math.min(n, 20);
-}
-
-export function editKindOf(request: string, reqs: Requirement[], pages: number): EditKind {
-  const want = requiredPages(reqs);
-  if (reqs.some((r) => r.type === "per_item_fields") || (want && want > pages + 2) || addedPages(request)) return "expand";
-  if (TRANSLATE_RE.test(request)) return STRONG_EXPAND_RE.test(request) ? "expand" : "revise";
-  return EXPAND_RE.test(request) ? "expand" : "revise";
-}
-
-/** The page count a requirement asks for (exact, else the range's lower / upper bound). */
-function requiredPages(reqs: Requirement[]): number | null {
-  const p = reqs.find((r) => r.type === "page_count")?.params;
-  return p ? (p.exact ?? (p.min && p.max ? Math.round((p.min + p.max) / 2) : p.min ?? p.max ?? null)) : null;
-}
+// Edit detection (REVISE_RE, EXPAND_RE, addedPages, editKindOf) is route.ts: the router decides edit vs new and revise vs expand.
 
 const perItem = (reqs: Requirement[]) => reqs.find((r) => r.type === "per_item_fields");
 /** Outline rule for per-item fields: one page (or consecutive pages) per item, the item named in `item`. */
@@ -806,9 +755,8 @@ type ReviseSource = { deck: { id: string; title: string; kind: DeckMode; paper_i
  */
 async function reviseSource(env: WorkflowEnv, studyId: string): Promise<ReviseSource | null> {
   const id = env.run.inputs.deck_id as string | undefined;
-  // An edit of this deck: a revise / expand request, or requirements that change it (language, page count, per-item…).
-  const asked = REVISE_RE.test(env.run.request) || EXPAND_RE.test(env.run.request) || env.requirements().some((r) => r.source !== "standing" && ["language", "page_count", "per_item_fields", "exclude", "include_topics"].includes(r.type));
-  if (!id || env.run.inputs.mode || !asked) return null;
+  // Called only when the router decided this is an edit of the given deck.
+  if (!id) return null;
   const deck = (await env.db.query<{ id: string; title: string; kind: string; paper_id: string | null; study_id: string }>("SELECT id,title,kind,paper_id,study_id FROM decks WHERE id=$1", [id])).rows[0];
   if (!deck || deck.study_id !== studyId) return null;
   const made = (await env.db.query<{ body: string | null }>(
@@ -830,7 +778,7 @@ async function reviseSource(env: WorkflowEnv, studyId: string): Promise<ReviseSo
  * dropped. `expand` (「再詳細一點」「focus 在…」「每個方法要有 Pros/Cons」): a new outline grounded in the deck, the study's
  * data and notes on the requested focus (and the paper), original figures reused where they fit.
  */
-async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title: string } }, src: ReviseSource): Promise<import("./registry.js").PlanResult> {
+async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title: string } }, src: ReviseSource, routed?: EditKind): Promise<import("./registry.js").PlanResult> {
   const mode = src.deck.kind;
   // The deck's paper backs figure crops and the content checks.
   if (src.deck.paper_id && !env.run.inputs.paper_id) {
@@ -838,7 +786,8 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
     await env.db.query("UPDATE workflow_runs SET inputs = inputs || jsonb_build_object('paper_id', $2::text) WHERE id=$1", [env.run.id, src.deck.paper_id]);
   }
   const paper = await paperOf(env);
-  const kind = editKindOf(env.run.request, env.requirements(), src.slides.length);
+  // Revise vs expand: the router's decision (the user's words + requirements against the deck's pages).
+  const kind = routed ?? editKindOf(userText(env), env.requirements(), src.slides.length);
   // The deck's built-in labels (AI-filled marks, 「這頁留給你自己寫」, 「由報告者補充」 on student pages) in the target
   // language before any writer sees them: writers keep such lines verbatim otherwise.
   const lang = targetLanguage(env.requirements());
@@ -853,7 +802,7 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
     ? { key: "research", role: "researcher", title: "讀取現有簡報與研究資料", instructions: "讀出這份簡報每一頁的原始內容，加上研究進度、和要求焦點相關的筆記與論文內容。", expected: "原始投影片 + 研究資料", done: { output: { summary: `現有簡報 ${src.slides.length} 頁 + 研究資料 ${extra.length} 字`, text: brief.slice(0, 60_000) } } }
     : { key: "research", role: "researcher", title: "讀取現有簡報", instructions: "讀出這份簡報目前每一頁的原始內容（含圖表語法與講稿）。", expected: "原始投影片", done: { output: { summary: `現有簡報 ${src.slides.length} 頁`, text: original } } };
   // 「加上一頁…」: exactly the deck's pages + the added ones (not the generic expansion size).
-  const added = addedPages([env.run.request, ...(env.run.guidance ?? []).map((g) => g.text)].join("\n"));
+  const added = addedPages(userText(env));
   const want = kind === "expand" ? Math.min(30, Math.max(3, Number(env.run.inputs.pages) || requiredPages(env.requirements()) || (added ? src.slides.length + added : Math.max(src.slides.length + 2, Math.round(src.slides.length * 1.5))))) : null;
   const outlineStep = await planningStep(env, {
     key: "outline", role: "planner", title: kind === "expand" ? `規劃擴充後的 ${want} 頁大綱` : "規劃修改後的每一頁",
@@ -925,7 +874,7 @@ async function expandOutline(env: WorkflowEnv, src: ReviseSource, brief: string,
     LABHUB_RULES[src.deck.kind],
     `使用者要把現有的 ${src.slides.length} 頁簡報擴充成更深入的版本：${env.run.request}`,
     env.guidanceText(),
-    addedPages([env.run.request, ...(env.run.guidance ?? []).map((g) => g.text)].join("\n"))
+    addedPages(userText(env))
       ? `使用者要「新增」頁面：原本的 ${src.slides.length} 頁都要保留（主題不變，可以改寫得更具體），另外新增使用者描述的頁面，總共 ${pages} 頁。不要把新頁的內容併進舊頁，也不要拿掉舊頁。`
       : "",
     `規劃正好 ${pages} 頁的新大綱：可以重新組織、拆頁或加頁，深入使用者要求的焦點；每頁 2–5 個具體重點（機制、例子、數字，數字要標出處），內容只能來自原簡報與研究資料，不要編造。原本的圖、圖表、論文圖適合的就沿用（重點中寫「沿用原第 k 頁的圖」）。`,

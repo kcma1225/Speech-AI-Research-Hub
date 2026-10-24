@@ -39,7 +39,7 @@ registerAgentTool({
     "Never use reading_note or lit_review for such requests. " +
     "A request whose final deliverable needs several workflows (a whole paper from scratch, 「先…再…」) is better started with start_goal; if the playbook you pass would not produce the deliverable the request names (e.g. lit_review for 「寫一篇論文」), this tool starts a goal for that deliverable instead (the result then has goal_id). " +
     "Editing an existing deck (translate, rewrite, shorten, restyle) = slides with deck_id (the page's deck); it revises that deck as a new draft revision. " +
-    "When unsure, omit playbook.",
+    "playbook is only a proposal: the workflow routes on the user's own words (a deck asked for is a deck whatever playbook you pass) and records a mismatch. When unsure, omit playbook.",
   input: z.object({
     request: z.string().trim().min(4).max(4000).describe("Short summary of the task (what to make, topic, material); never add requirements the user did not state"),
     playbook: z.string().max(40).optional(),

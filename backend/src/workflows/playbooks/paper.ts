@@ -7,16 +7,22 @@
  *   zh-thesis, en → ieee-conference) with one file per section and refs.bib from the study library, compiles it (a
  *   verification compile, no history row) and fixes compile errors in bounded rounds. Only the run's own new project is
  *   ever written (effect `new`); a file someone edited in the meantime is left alone.
+ *   Section scope is enforced by code (lib/latex/section-scope.ts): a writer sees the whole outline and the library as
+ *   `key：title`; its reply loses everything that belongs to main.tex (which code generates) and any block of another
+ *   planned section; unknown \cite keys get one repair (library key or claim removed) and are then dropped by code;
+ *   `assemble` rewrites only the later section of a repeated paragraph / sub-heading pair, and a compile error repairs
+ *   only the file it names.
  */
 import { initialState } from "../../collab/text.js";
 import { transaction, type Queryable } from "../../db.js";
 import { exportStudyBibtex } from "../../lib/library/study-export.js";
 import { addInput, listInputs, removeInput } from "../../lib/latex/inputs.js";
+import { dropRepeatedParagraphs, dropUnknownCites, headingBlocks, keepOwnSection, scopeIssues, sectionOverlap, stripPreamble, unknownCites, type HeadingCommand, type Overlap } from "../../lib/latex/section-scope.js";
 import { generateTemplate, templateInfo, type LatexTemplateId } from "../../lib/latex/templates.js";
 import { requestCompile } from "../../lib/latex-projects/service.js";
 import { findFileByPath, findProject, insertTextFile, latexDocName, latexUrl, liveText, roleOf, sha256Hex } from "../../lib/latex-projects/store.js";
 import { recordActivity } from "../../lib/studies/activity.js";
-import { CHECKS } from "../checks.js";
+import { CHECKS, unbalanced } from "../checks.js";
 import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps, markTainted } from "../store.js";
@@ -24,7 +30,7 @@ import type { WorkflowEnv } from "../env.js";
 import type { CheckSpec, Criterion, OutlineItem, StepOutput, StepRow, StepSpec } from "../types.js";
 import { clipText, planningStep, systemFor, taskPrompt } from "./common.js";
 import { commitNote, finalSpec, studyOrQuestion } from "./documents.js";
-import { latexHeadings, verificationCompile } from "./latex.js";
+import { verificationCompile } from "./latex.js";
 import { registerWorkflowPlaybook, type ApprovalEdits, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 import { targetLanguage } from "../requirements.js";
 import { languageOf, OUTLINE_TITLE_RE, templateFor, type Capability } from "../goals/capabilities.js";
@@ -80,7 +86,8 @@ export function parseOutline(md: string): PaperOutline | null {
       }
     }
   }
-  const clean = sections.filter((s) => s.title && !/^參考文獻|^references$/i.test(s.title)).slice(0, 12);
+  // The abstract is its own step and the bibliography comes from the library: neither is a section.
+  const clean = sections.filter((s) => s.title && !/^參考文獻|^references$|^(?:摘要|abstract)$/i.test(s.title.trim())).slice(0, 12);
   return clean.length >= 2 ? { title: clipText(title || "論文", 160), contributions: contributions.slice(0, 8), sections: clean } : null;
 }
 
@@ -100,8 +107,38 @@ const OUTLINE_CHECKS: typeof CHECKS = {
     if (!want.length) return { ok: true, detail: "（沒有章節清單）" };
     return CHECKS.sections_present!(text, { params: { sections: want }, data });
   },
+  /** A section file holds only its own section (lib/latex/section-scope.ts): params `index`, `titles`, `command`. */
+  latex_section_scope(text, { params }) {
+    const titles = Array.isArray(params.titles) ? (params.titles as string[]) : [];
+    const issues = scopeIssues(text, { index: Number(params.index ?? 0), titles, command: params.command === "chapter" ? "chapter" : "section" });
+    return issues.length ? { ok: false, detail: issues.join("；") } : { ok: true, detail: "只有本節的內容" };
+  },
+  /** No section of the assembled paper repeats another's paragraphs or sub-headings (`params.command` = top-level heading). */
+  latex_no_overlap(text, { params }) {
+    const found = paperOverlap(text, params.command === "chapter" ? "chapter" : "section");
+    return found.issues.length ? { ok: false, detail: `各節之間有重複的內容：${found.issues.slice(0, 6).join("；")}。後面的節要刪掉重複的部分，只寫自己的重點。` } : { ok: true, detail: `${found.titles.length} 節沒有重複的段落或小節` };
+  },
 };
 Object.assign(CHECKS, OUTLINE_CHECKS);
+
+/**
+ * The paper as the final verification reads it: top-level headings (\chapter / \section) → `## `, lower ones → `### `
+ * (the Markdown heading checks and per-section requirements apply; `paperOverlap` maps them back).
+ */
+export const paperHeadings = (tex: string, command: HeadingCommand = "section") => tex
+  .replace(new RegExp(`^[ \\t]*\\\\${command}\\*?\\{([^}]*)\\}.*$`, "gm"), "## $1")
+  .replace(/^[ \t]*\\(?:sub)*section\*?\{([^}]*)\}.*$/gm, "### $1");
+
+/** Overlaps between the top-level sections of an assembled paper (the abstract before the first heading is not a section). */
+export function paperOverlap(text: string, command: HeadingCommand): { titles: string[]; overlaps: Overlap[]; issues: string[] } {
+  // The final text has Markdown headings (paperHeadings): back to LaTeX for the section boundaries.
+  const tex = new RegExp(`\\\\${command}\\*?\\{`).test(text) ? text : text.replace(/^## (.+)$/gm, `\\${command}{$1}`).replace(/^### (.+)$/gm, `\\${command === "chapter" ? "section" : "subsection"}{$1}`);
+  const blocks = headingBlocks(tex, command);
+  const overlaps = sectionOverlap(blocks.map((b) => tex.slice(b.start, b.end)));
+  const titles = blocks.map((b) => b.title);
+  const issues = overlaps.map((o) => `「${titles[o.later]}」${o.kind === "heading" ? "重複了小節標題" : "重複了段落"}「${o.sample}」（已在「${titles[o.earlier]}」）`);
+  return { titles, overlaps, issues };
+}
 
 // ---------------------------------------------------------------- shared sources
 
@@ -208,7 +245,9 @@ const paperOutline: WorkflowPlaybook = {
 
 // ---------------------------------------------------------------- 撰寫 LaTeX 論文 (paper_draft)
 
-type DraftState = { sections: PaperSection[]; title: string; language: "zh" | "en"; template: LatexTemplateId; keys: string[]; command: "chapter" | "section" };
+type DraftState = { sections: PaperSection[]; title: string; language: "zh" | "en"; template: LatexTemplateId; keys: string[]; command: HeadingCommand; library?: { key: string; title: string }[] };
+/** A repair of one section file (compile fix, de-duplication), valid only while the section text it started from is unchanged. */
+type FileFix = { from: string; text: string };
 type Written = { project_id: string; paths: string[]; abstract_path: string; sha: Record<string, string>; compile?: { status: string; errors: string[] } };
 
 const ASCII_SLUG = (t: string) => t.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32);
@@ -224,6 +263,28 @@ export function withHeading(tex: string, title: string, i: number, command: "cha
   // A lower / other heading first (\section in a thesis) → replace it; none → add one.
   const stripped = body.replace(/^\\(?:chapter|section)\*?\{[^}]*\}(?:\\label\{[^}]*\})?\s*/, "");
   return `\\${command}{${title.replace(/[\\{}$&#^_%~]/g, "")}}\\label{${command === "chapter" ? "chap" : "sec"}:s${i + 1}}\n\n${stripped}\n`;
+}
+
+/**
+ * A writer's section reply made into a section file, deterministically: fence and everything that belongs to main.tex
+ * stripped (preamble, document, title block, abstract, own bibliography, \input), blocks headed by another planned section
+ * dropped (extra top-level headings demoted), its heading ensured, and — with `keys` — \cite keys outside the study
+ * library removed. `notes` say what was changed (shown in the run's activity).
+ */
+export function sanitizeSection(tex: string, opts: { index: number; titles: string[]; command: HeadingCommand; keys?: readonly string[] }): { text: string; notes: string[] } {
+  const notes: string[] = [];
+  const stripped = stripPreamble(stripFence(tex));
+  if (stripped.removed.length) notes.push(`移除了屬於主檔的內容（${stripped.removed.join("、")}）`);
+  const own = keepOwnSection(stripped.text, opts);
+  if (own.dropped.length) notes.push(`刪掉了屬於其他節的內容（${own.dropped.map((t) => `「${clipText(t, 20)}」`).join("、")}）`);
+  if (own.demoted.length) notes.push(`多出的標題改成小節（${own.demoted.map((t) => `「${clipText(t, 20)}」`).join("、")}）`);
+  let text = own.text.trim() ? withHeading(own.text, opts.titles[opts.index] ?? "", opts.index, opts.command) : "";
+  if (opts.keys && text) {
+    const c = dropUnknownCites(text, opts.keys);
+    if (c.dropped.length) notes.push(`移除了不在研究文獻庫的引用鍵（${c.dropped.join("、")}）`);
+    text = c.text;
+  }
+  return { text, notes };
 }
 
 function abstractTex(template: LatexTemplateId, text: string, keywords: string[]) {
@@ -299,7 +360,7 @@ async function draftPlan(env: WorkflowEnv): Promise<PlanResult> {
   const command = templateInfo(template).sectionCommand;
   const keySet = new Set(src.keys);
   const sections = outline.sections.slice(0, 10).map((s) => ({ ...s, cites: s.cites.filter((k) => keySet.has(k)) }));
-  const st: DraftState = { sections, title: outline.title, language: lang, template, keys: src.keys, command };
+  const st: DraftState = { sections, title: outline.title, language: lang, template, keys: src.keys, command, library: src.papers.map((p) => ({ key: p.key, title: clipText(p.title, 120) })) };
   await env.setState({ draft: st, brief: src.brief.slice(0, 30_000), outline_note: outlineNote ? { id: outlineNote.n.id, title: outlineNote.n.title } : null, units: paperUnits(st) });
   const info = templateInfo(template);
   return {
@@ -307,7 +368,7 @@ async function draftPlan(env: WorkflowEnv): Promise<PlanResult> {
     title: clipText(`論文：${outline.title}`, 120),
     studyId,
     objective: `依${outlineNote ? `大綱〈${outlineNote.n.title}〉` : "規劃的大綱"}寫完整的 LaTeX 論文「${outline.title}」：新的 LaTeX 專案（${info.name_zh}），${sections.length} 節＋摘要，引用研究文獻庫，編譯通過。`,
-    criteria: draftCriteria(src.keys),
+    criteria: draftCriteria(src.keys, command),
     plan: {
       summary: `建立新的 LaTeX 專案（${info.name_zh}，${lang === "en" ? "英文" : "繁體中文"}），${sections.length} 節由撰寫者平行撰寫（每節只引用研究文獻庫的 cite key），再寫摘要；整合後編譯，有錯誤時修正（最多 3 輪）。`,
       outline: sections.map((s, i) => ({ n: i + 1, title: s.title, points: [...s.points.slice(0, 6), ...(s.cites.length ? [`引用：${s.cites.join(", ")}`] : [])] })),
@@ -327,19 +388,21 @@ export function paperUnits(st: Pick<DraftState, "sections" | "language">): Unit[
   });
 }
 
-const draftCriteria = (keys: string[]): Omit<Criterion, "status">[] => [
+const draftCriteria = (keys: string[], command: HeadingCommand): Omit<Criterion, "status">[] => [
   { id: "compile", kind: "check", text: "LaTeX 專案編譯成功（沒有錯誤）", check: { id: "compile_ok" } },
   { id: "structure", kind: "check", text: "大綱的每一節都寫出來了", check: { id: "paper_sections" } },
+  { id: "distinct", kind: "check", text: "各節只寫自己的內容，彼此沒有重複的段落或小節", check: { id: "latex_no_overlap", params: { command } } },
   ...(keys.length ? [{ id: "cites", kind: "check" as const, text: "所有 \\cite 都對應到研究文獻庫的 cite key", check: { id: "citations", params: { keys, min: 1 } } }] : []),
   { id: "complete", kind: "check", text: "沒有佔位文字或被截斷的內容", check: { id: "no_placeholder" } },
   { id: "grounded", kind: "judge", text: "論述來自調研筆記與文獻，引用對應正確的論點，沒有捏造實驗結果或數字" },
 ];
 
-function sectionChecks(st: DraftState, s: PaperSection): CheckSpec[] {
+function sectionChecks(st: DraftState, s: PaperSection, i: number): CheckSpec[] {
   return [
     { id: "citations", params: { keys: st.keys, min: s.cites.length && st.keys.length ? 1 : 0 } },
     { id: "not_truncated" }, { id: "no_placeholder" }, { id: "min_length", params: { chars: 500 } },
     { id: "sections_present", params: { sections: [s.title] } },
+    { id: "latex_section_scope", params: { index: i, titles: st.sections.map((x) => x.title), command: st.command } },
   ];
 }
 
@@ -347,7 +410,7 @@ function draftSteps(st: DraftState, dep: string): StepSpec[] {
   const secs: StepSpec[] = st.sections.map((s, i) => ({
     key: `sec_${i + 1}`, role: "writer", title: `撰寫「${clipText(s.title, 40)}」`,
     instructions: `寫 \\${st.command}{${s.title}} 的 LaTeX 內文。重點：${s.points.join("；") || "依大綱與資料"}${s.cites.length ? `。引用：${s.cites.join(", ")}` : ""}。`,
-    depends_on: [dep], inputs: { index: i }, expected: `一個 \\${st.command} 的 LaTeX 內文`, verify: { checks: sectionChecks(st, s), judge: true },
+    depends_on: [dep], inputs: { index: i }, expected: `一個 \\${st.command} 的 LaTeX 內文`, verify: { checks: sectionChecks(st, s, i), judge: true },
   }));
   return [
     ...secs,
@@ -357,33 +420,62 @@ function draftSteps(st: DraftState, dep: string): StepSpec[] {
   ];
 }
 
+const scopeOf = (st: DraftState, i: number) => ({ index: i, titles: st.sections.map((s) => s.title), command: st.command });
+
 async function sectionTexts(env: WorkflowEnv) {
   const st = env.state<DraftState>("draft")!;
   const steps = await getSteps(env.db, env.run.id);
-  return st.sections.map((s, i) => {
+  return st.sections.map((_, i) => {
     const out = steps.find((x) => x.key === `sec_${i + 1}`)?.output?.text ?? "";
-    return out.trim() ? withHeading(out, s.title, i, st.command) : "";
+    return out.trim() ? sanitizeSection(out, { ...scopeOf(st, i), keys: st.keys }).text : "";
   });
 }
+
+/** The study library as the writer sees it: one `key：title` per line (the only keys \cite may use). */
+const libraryList = (st: DraftState) => (st.library?.length ? st.library.map((p) => `- ${p.key}：${p.title}`) : st.keys.map((k) => `- ${k}`)).join("\n");
 
 async function writeSection(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
   const st = env.state<DraftState>("draft")!;
   const i = Number(step.inputs.index ?? 0);
   const s = st.sections[i]!;
   const en = st.language === "en";
+  const sub = st.command === "chapter" ? "section" : "subsection";
   // One section = one unit: its budget and its neighbours (their text once written), generated alone (units.ts).
   const u = await unitContext(env, step, st.language);
   const user = taskPrompt(env, step, {
     context: {
-      paper: `題目：${st.title}\n章節：\n${st.sections.map((x, j) => `${j + 1}. ${x.title}${j === i ? "（← 你寫這一節）" : ""}`).join("\n")}`,
+      // The whole outline with every section's scope, so this writer knows what the others cover.
+      paper: `題目：${st.title}\n章節大綱（每節只寫自己的重點）：\n${st.sections.map((x, j) => `${j + 1}. ${x.title}${j === i ? "（← 你寫這一節）" : "（其他節負責，不要寫）"}${x.points.length ? `：${x.points.slice(0, 5).join("；")}` : ""}`).join("\n")}`,
       sources: (env.state<string>("brief") ?? "").slice(0, 16_000),
-      cite_keys: st.keys.join(", ") || "（文獻庫是空的：不要用 \\cite）",
+      library: st.keys.length ? `可以引用的文獻（\\cite 只能用這些 key，不要自己編 key）：\n${libraryList(st)}` : "（文獻庫是空的：不要用 \\cite）",
     },
-    format: [`只輸出這一節的 LaTeX：第一行 \\${st.command}{${s.title}}，接著 3–6 段內文（必要時 \\subsection、itemize、table）。引用用 \\cite{key}，key 只能用 cite_keys 裡的。不要 \\documentclass、不要 \\begin{document}、不要 Markdown、不要 \`\`\`。特殊字元要跳脫（\\%、\\&、\\_、\\#）。${en ? "用英文（English）撰寫，不要出現中文字。" : "用繁體中文撰寫。"}資料沒有的實驗數字不要寫。`, u.budget, u.neighbours].filter(Boolean).join("\n"),
+    format: [
+      `只輸出這一節的 LaTeX：第一行 \\${st.command}{${s.title}}，接著 3–6 段內文（必要時 \\${sub}、itemize、table）。這個檔案會被主檔 \\input，主檔已經有前言、題目、摘要與參考文獻。`,
+      `範圍：只寫「${s.title}」的重點。不要 \\documentclass、\\usepackage、\\begin{document}、\\title、\\maketitle、abstract、thebibliography、\\input；不要寫其他節的標題或內容；${SHORT_SECTION_RE.test(s.title) ? "" : "不要寫自己的摘要、緒論或結論，也不要重新介紹整篇論文（「本文…」「In this paper we…」）；"}不要 Markdown、不要 \`\`\`。`,
+      `引用用 \\cite{key}，key 只能是 library 列出的（沒有適合的文獻就不要引用，不要編造）。特殊字元要跳脫（\\%、\\&、\\_、\\#）。${en ? "用英文（English）撰寫，不要出現中文字。" : "用繁體中文撰寫。"}資料沒有的實驗數字不要寫。`,
+      u.budget, u.neighbours,
+    ].filter(Boolean).join("\n"),
   }, fix);
-  const res = await generateUnit(env, { purpose: "paper_section", role: "writer", aiRole: "writing", messages: [{ role: "system", content: systemFor("writer", `你在寫一篇學術論文的 LaTeX 內文。${en ? "This paper is written in English: write English only (the 繁體中文 rule does not apply to the paper text)." : ""}`) }, { role: "user", content: user }], maxTokens: unitTokens(u.unit?.budget, 7000) }, step.id, { clean: stripFence });
-  const tex = withHeading(res.text, s.title, i, st.command);
-  return { summary: `${tex.length} 字${res.continued ? `（接續寫完 ${res.continued} 次）` : ""}${res.regenerated ? "（重寫精簡版）" : ""}${res.truncated ? "（輸出仍被截斷）" : ""}`, text: tex };
+  const system = systemFor("writer", `你在寫一篇學術論文其中一節的 LaTeX 內文。${en ? "This paper is written in English: write English only (the 繁體中文 rule does not apply to the paper text)." : ""}`);
+  const res = await generateUnit(env, { purpose: "paper_section", role: "writer", aiRole: "writing", messages: [{ role: "system", content: system }, { role: "user", content: user }], maxTokens: unitTokens(u.unit?.budget, 7000) }, step.id, { clean: stripFence });
+  // Scope first (deterministic), then citations: unknown keys → one repair that swaps in a library key or drops the claim;
+  // whatever is still unknown is removed by code. A key is never invented.
+  let out = sanitizeSection(res.text, scopeOf(st, i));
+  const unknown = unknownCites(out.text, st.keys);
+  let citeFixed = false;
+  if (unknown.length) {
+    await env.activity(step.key, "writer", `修正不在文獻庫的引用：${unknown.slice(0, 5).join("、")}`);
+    const r = await env.call({ purpose: "paper_cite_fix", role: "writer", aiRole: "writing", messages: [
+      { role: "system", content: systemFor("writer", "修正 LaTeX 章節裡的引用。只改引用，其他內容不變。") },
+      { role: "user", content: [`這些 \\cite key 不在研究文獻庫：${unknown.join("、")}。`, `每一個：換成 library 裡真的支持同一論點的 key；沒有就刪掉那個 \\cite，論點沒有文獻支持就刪掉或改寫成不需要引用的說法。絕對不要新增 library 以外的 key。只輸出這一節完整的 LaTeX（第一行 \\${st.command}{${s.title}}）。`, dataBlock("library", libraryList(st) || "（空）"), dataBlock("section", out.text)].join("\n\n") },
+    ], maxTokens: unitTokens(u.unit?.budget, 7000) }, step.id);
+    const again = sanitizeSection(r.text, scopeOf(st, i));
+    if (again.text.length > out.text.length * 0.5) { out = { text: again.text, notes: [...out.notes, ...again.notes] }; citeFixed = true; }
+  }
+  const final = sanitizeSection(out.text, { ...scopeOf(st, i), keys: st.keys });
+  const notes = [...new Set([...out.notes, ...final.notes])];
+  if (notes.length) await env.note(`「${clipText(s.title, 30)}」：${notes.join("；")}。`);
+  return { summary: `${final.text.length} 字${res.continued ? `（接續寫完 ${res.continued} 次）` : ""}${res.regenerated ? "（重寫精簡版）" : ""}${res.truncated ? "（輸出仍被截斷）" : ""}${citeFixed ? "（修正引用）" : ""}`, text: final.text };
 }
 
 async function writeAbstract(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
@@ -398,8 +490,49 @@ async function writeAbstract(env: WorkflowEnv, step: StepRow, fix: Fix): Promise
 function splitAbstract(text: string) {
   const m = /^\s*(?:KEYWORDS|Keywords|關鍵字)\s*[:：]\s*(.+)$/im.exec(text);
   const keywords = m ? m[1]!.split(/[,，、;；]/).map((k) => k.trim()).filter(Boolean).slice(0, 6) : [];
-  const body = text.replace(/^\s*(?:KEYWORDS|Keywords|關鍵字)\s*[:：].*$/im, "").replace(/\\begin\{abstract\}|\\end\{abstract\}/g, "").trim();
+  const body = stripPreamble(text.replace(/^\s*(?:KEYWORDS|Keywords|關鍵字)\s*[:：].*$/im, "").replace(/\\begin\{abstract\}|\\end\{abstract\}/g, "")).text.replace(/\\(?:chapter|section)\*?\{[^}]*\}/g, "").trim();
   return { body, keywords };
+}
+
+/**
+ * De-duplication across sections (lib/latex/section-scope.ts `sectionOverlap`): every later section that repeats an
+ * earlier one's paragraphs or sub-headings gets ONE rewrite call naming exactly what is repeated (and where); paragraphs
+ * still repeated afterwards are dropped by code. Earlier sections are never touched.
+ */
+async function dedupeSections(env: WorkflowEnv, step: StepRow, st: DraftState, paths: string[], files: Map<string, string>, setFix: (p: string, text: string) => void) {
+  const texts = () => paths.map((p) => files.get(p) ?? "");
+  // One rewrite per section version: a version already rewritten once is only cleaned by code.
+  const tried = new Set(env.state<string[]>("deduped") ?? []);
+  const found = sectionOverlap(texts());
+  const later = [...new Set(found.map((o) => o.later))].slice(0, 6);
+  for (const i of later) {
+    const s = st.sections[i]!;
+    const mine = sectionOverlap(texts()).filter((o) => o.later === i);
+    if (!mine.length) continue;
+    await env.activity(step.key, "integrator", `「${clipText(s.title, 30)}」與前面的章節重複，只改寫重複的部分`);
+    const version = `${paths[i]}:${sha256Hex(files.get(paths[i]!)!)}`;
+    if (tried.has(version)) {
+      const d = dropRepeatedParagraphs(files.get(paths[i]!)!, texts().slice(0, i));
+      if (d.dropped) setFix(paths[i]!, sanitizeSection(d.text, scopeOf(st, i)).text);
+      continue;
+    }
+    tried.add(version);
+    await env.setState({ deduped: [...tried] });
+    const list = mine.map((o) => `- ${o.kind === "heading" ? "小節標題" : "段落"}「${o.sample}」已經寫在第 ${o.earlier + 1} 節「${st.sections[o.earlier]!.title}」`).join("\n");
+    const res = await env.call({ purpose: "paper_dedupe", role: "integrator", aiRole: "writing", messages: [
+      { role: "system", content: systemFor("integrator", "你在整理一篇論文的章節，讓每一節只寫自己的內容。") },
+      { role: "user", content: [`第 ${i + 1} 節「${s.title}」重複了前面章節的內容：\n${list}`, `刪掉或改寫這些重複的部分：前面已經講過的最多用一句話帶過並寫「見第 N 節」，把篇幅留給這一節自己的重點：${s.points.join("；") || "依標題"}。其他段落保持原樣，不要新增 \\cite key、不要加前言或參考文獻。只輸出這一節完整的 LaTeX（第一行 \\${st.command}{${s.title}}）。`, dataBlock("section", files.get(paths[i]!)!)].join("\n\n") },
+    ], maxTokens: 8000 }, step.id);
+    let text = sanitizeSection(res.text, { ...scopeOf(st, i), keys: st.keys }).text;
+    if (text.length < (files.get(paths[i]!) ?? "").length * 0.3) text = files.get(paths[i]!)!;
+    const earlier = texts().slice(0, i);
+    if (sectionOverlap([...earlier, text]).some((o) => o.later === i && o.kind === "paragraph")) {
+      const d = dropRepeatedParagraphs(text, earlier);
+      text = sanitizeSection(d.text, scopeOf(st, i)).text;
+      if (d.dropped) await env.note(`「${clipText(s.title, 30)}」改寫後仍有 ${d.dropped} 段與前面重複，已刪除。`);
+    }
+    setFix(paths[i]!, text);
+  }
 }
 
 /** Creates the project (first round) or rewrites the run's own files, then compiles; a fix round first repairs the files the errors point at. */
@@ -415,20 +548,34 @@ async function assemble(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<Step
   const prior = env.state<Written>("written");
   const files = new Map<string, string>(paths.map((p, i) => [p, texts[i] || withHeading("", st.sections[i]!.title, i, st.command)]));
   files.set(abstractPath, abstractTex(st.template, abs.body || (st.language === "en" ? "Abstract." : "摘要。"), abs.keywords));
-  // Fix round: the files the compile errors name (else all sections) are repaired by the integrator, content unchanged.
+  // Repairs of single files (de-duplication, compile fixes) apply only while the section they started from is unchanged:
+  // a section rewritten by its writer (a repair round) drops them.
+  const fixes: Record<string, FileFix> = Object.fromEntries(Object.entries(env.state<Record<string, FileFix | string>>("fixed") ?? {}).filter((e): e is [string, FileFix] => typeof e[1] === "object" && !!e[1]));
+  const origin = new Map([...files].map(([p, t]) => [p, sha256Hex(t)]));
+  for (const [p, f] of Object.entries(fixes)) if (files.has(p) && origin.get(p) === f.from) files.set(p, f.text);
+  const setFix = (p: string, text: string) => { fixes[p] = { from: origin.get(p)!, text }; files.set(p, text); };
+  // Each section only its own content: a later section repeating an earlier one gets one targeted rewrite of the repeated
+  // parts; what is still repeated after it is removed by code.
+  await dedupeSections(env, step, st, paths, files, setFix);
+  // Fix round: only the files the compile errors name are repaired (main.tex and refs.bib are generated by code); no file
+  // named → the sections with a visible syntax problem, else every section. A repair is a section again (sanitised).
   const errors = prior?.compile?.errors ?? [];
   if (fix && prior && errors.length) {
-    const named = [...files.keys()].filter((p) => errors.some((e) => e.includes(p)));
-    const targets = named.length ? named : [...files.keys()].filter((p) => p !== abstractPath);
+    const named = [...files.keys()].filter((p) => errors.some((e) => e.includes(p) || e.includes(p.replace(/\.tex$/, ""))));
+    const broken = paths.filter((p) => { const t = files.get(p)!; return unbalanced(t).length > 0 || (t.match(/(?<!\\)\{/g) ?? []).length !== (t.match(/(?<!\\)\}/g) ?? []).length || scopeIssues(t, scopeOf(st, paths.indexOf(p))).length > 0; });
+    const targets = named.length ? named : broken.length ? broken : paths;
     for (const p of targets.slice(0, 6)) {
+      const i = paths.indexOf(p);
       await env.activity(step.key, "integrator", `依編譯錯誤修正 ${p}`);
-      const current = env.state<Record<string, string>>("fixed")?.[p] ?? files.get(p)!;
-      const res = await env.call({ purpose: "paper_fix", role: "integrator", aiRole: "writing", messages: [{ role: "system", content: systemFor("integrator", "修正 LaTeX 錯誤（未跳脫的特殊字元、未關閉的環境、未定義的指令、pdfLaTeX 不支援的字元），內容不變。只輸出這個檔案完整的 LaTeX。") }, { role: "user", content: `編譯錯誤：\n${errors.join("\n")}\n\n${dataBlock(p, current)}` }], maxTokens: 8000 }, step.id);
-      const fixed = stripFence(res.text);
-      if (fixed.length > current.length * 0.5) await env.setState({ fixed: { ...(env.state<Record<string, string>>("fixed") ?? {}), [p]: `${fixed}\n` } });
+      const current = files.get(p)!;
+      const what = i >= 0 ? `這是被主檔 \\input 的章節檔（「${st.sections[i]!.title}」）：只輸出這一節完整的 LaTeX（第一行 \\${st.command}{…}），不要 \\documentclass、\\usepackage、\\begin{document}、摘要、thebibliography 或 \\input——前言與參考文獻都在主檔。` : "只輸出這個檔案完整的 LaTeX。";
+      const res = await env.call({ purpose: "paper_fix", role: "integrator", aiRole: "writing", messages: [{ role: "system", content: systemFor("integrator", `修正 LaTeX 錯誤（未跳脫的特殊字元、未關閉的環境、未定義的指令、pdfLaTeX 不支援的字元），內容不變。${what}`) }, { role: "user", content: `編譯錯誤：\n${errors.join("\n")}\n\n${dataBlock(p, current)}` }], maxTokens: 8000 }, step.id);
+      const fixed = i >= 0 ? sanitizeSection(res.text, { ...scopeOf(st, i), keys: st.keys }).text : `${stripFence(res.text)}\n`;
+      // A repair that lost content, or that still writes outside its section, is not taken.
+      if (fixed.length > current.length * 0.5 && (i < 0 || !scopeIssues(fixed, scopeOf(st, i)).some((x) => x.startsWith("章節檔")))) setFix(p, fixed);
     }
   }
-  for (const [p, t] of Object.entries(env.state<Record<string, string>>("fixed") ?? {})) if (files.has(p)) files.set(p, t);
+  await env.setState({ fixed: fixes });
   const author = env.user.name || "作者";
   const main = paperMain(st.template, st.title, author, paths, abstractPath);
   // A record that cannot be exported leaves the template's refs.bib (the compile then reports the missing keys).
@@ -523,7 +670,7 @@ const paperDraft: WorkflowPlaybook = {
   async finalText(env) {
     const st = env.state<DraftState>("draft");
     const w = env.state<Written>("written");
-    return { text: latexHeadings(env.state<string>("tex") ?? ""), data: { compile: w?.compile, sections: st?.sections.map((s) => s.title) ?? [] } };
+    return { text: paperHeadings(env.state<string>("tex") ?? "", st?.command), data: { compile: w?.compile, sections: st?.sections.map((s) => s.title) ?? [] } };
   },
   async repair(env, failing) {
     const st = env.state<DraftState>("draft");
@@ -531,6 +678,17 @@ const paperDraft: WorkflowPlaybook = {
     const text = env.state<string>("tex") ?? "";
     for (const c of failing) {
       if (c.id === "compile") out.push({ key: "assemble", issues: [c.reason ?? "編譯失敗"] });
+      else if (c.id === "distinct" && st) {
+        // The later section of each repeated pair is rewritten (the earlier one keeps its content).
+        const found = paperOverlap(text, st.command);
+        for (const o of found.overlaps) {
+          // Every section file has exactly one top-level heading, so block n is section n.
+          const key = `sec_${o.later + 1}`;
+          const issue = `與第 ${o.earlier + 1} 節「${found.titles[o.earlier]}」重複：「${o.sample}」。刪掉重複的部分，只寫這一節自己的重點。`;
+          const hit = out.find((x) => x.key === key);
+          if (hit) hit.issues.push(issue); else out.push({ key, issues: [issue] });
+        }
+      }
       else if (c.id === "structure") st?.sections.forEach((s, i) => { if (!text.includes(s.title)) out.push({ key: `sec_${i + 1}`, issues: [`這一節沒有寫出來或標題不對：${c.reason ?? ""}`] }); });
       else st?.sections.slice(0, 4).forEach((_, i) => out.push({ key: `sec_${i + 1}`, issues: [`${c.text}：${c.reason ?? ""}`] }));
     }

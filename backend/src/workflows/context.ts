@@ -4,7 +4,7 @@
  *   conversation (its scoped study, its latest page context, the page context of its recent user messages), then a
  *   study named in the request (title / slug words of a study the user edits), then the user's only active study — so
  *   a run started from a chat that is clearly about one study never asks 「要把簡報放在哪個研究？」.
- * - **Batches**: a per-paper playbook (slides, reading note) asked for 「每一篇文獻」 (or given several `paper_ids`)
+ * - **Batches**: a per-paper playbook (slides, reading note) whose user asked for 「每一篇文獻」 (route.ts decides)
  *   becomes one run per paper, linked by `batch_id` (+ `batch_index`); the per-user slot limit queues the rest.
  */
 import type { Queryable } from "../db.js";
@@ -77,15 +77,12 @@ export const MAX_BATCH = 10;
 export type BatchItem = { paper_id: string; title: string };
 
 /**
- * The papers a batch covers, or null for a single run: explicit `paper_ids` (≥ 2), or the study's papers when the
- * request asks for each of them (no single `paper_id` given). Papers in the study's order (oldest first), ≤ MAX_BATCH.
+ * The papers of a batch the router decided on (route.ts: one run per paper only when the user's OWN words ask for it —
+ * 「每一篇各做一份」; several paper_ids from the assistant otherwise are the sources of ONE deck / note; production: 5
+ * paper ids → 5 paper-report decks): explicit `paper_ids` (≥ 2), else the study's papers when no single `paper_id` is
+ * given. Papers in the study's order (oldest first), ≤ MAX_BATCH; null = fewer than 2 (one run).
  */
-export async function batchPapers(db: Queryable, input: { playbook: string; request: string; studyId: string | null; paperId?: string; paperIds?: string[]; userText?: string }): Promise<BatchItem[] | null> {
-  if (!PER_PAPER_PLAYBOOKS.has(input.playbook)) return null;
-  // One artifact per paper only when the user's OWN words ask for it (「每一篇各做一份」); several paper_ids from the
-  // assistant otherwise are the sources of ONE deck / note (production: 5 paper ids → 5 paper-report decks).
-  const asked = EACH_PAPER_RE.test(input.userText ?? input.request);
-  if (!asked) return null;
+export async function batchPapers(db: Queryable, input: { studyId: string | null; paperId?: string; paperIds?: string[] }): Promise<BatchItem[] | null> {
   const explicit = [...new Set(input.paperIds ?? [])];
   if (explicit.length >= 2) {
     const rows = (await db.query<{ id: string; title: string }>("SELECT id, title FROM papers WHERE id = ANY($1::uuid[])", [explicit])).rows;

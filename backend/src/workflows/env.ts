@@ -15,6 +15,7 @@ import type { ChatRole } from "../ai/platform/roles.js";
 import { WorkflowStop, type ModelPort, type Requirement, type RunRow, type StepRole } from "./types.js";
 import { requirementsBlock, targetLanguage } from "./requirements.js";
 import { briefBlock, type Brief } from "./brief.js";
+import type { RouteState } from "./route.js";
 
 /**
  * Calls that never get the user's requirements block: extracting them, goal planning, figure location, the blocked
@@ -211,6 +212,11 @@ export class WorkflowEnv {
   /** The run's fixed Brief (brief.ts): read-only for playbooks and sub-agents. */
   brief(): Brief | null {
     return this.run.brief ?? null;
+  }
+
+  /** The routing decision (route.ts: deliverable, playbook, deck mode / edit kind, batch): playbooks execute it, never re-detect it. */
+  route(): RouteState | null {
+    return (this.run.state?.route as RouteState | undefined) ?? null;
   }
 
   /** The user's requirements (requirements.ts), injected into every sub-agent call. */

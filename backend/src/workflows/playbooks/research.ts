@@ -33,6 +33,7 @@ import { getSteps, markTainted } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { WorkflowStop, type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRow, type StepSpec } from "../types.js";
 import { clipText, isTopicRequest, systemFor, taskPrompt } from "./common.js";
+import { textTokens } from "../context.js";
 import { stitch } from "../units.js";
 import { commitNote, finalSpec, studyOrQuestion, writePart } from "./documents.js";
 import { registerWorkflowPlaybook, type ApprovalEdits, type PlanResult, type WorkflowPlaybook } from "./registry.js";
@@ -64,6 +65,8 @@ export const TAXONOMY_COLUMNS = ["方法", "核心想法", "注入位置", "優�
 export const EXTRACT_PARTS = ["一句話", "方法", "注入位置與訓練／推論", "關鍵公式", "實驗設定", "數字表", "限制", "子問題對應"];
 const MAX_ONLINE = 10;
 const MAX_LIBRARY = 4;
+/** Library papers read when online search gave nothing importable (the library is then the only source). */
+const LIBRARY_FALLBACK = 8;
 const MAX_PAPERS = 12;
 const MAX_QUERIES = 10;
 const SEEDS = 3;
@@ -420,6 +423,15 @@ const latinQuery = (request: string) => keywordQuery((request.match(/[A-Za-z][A-
 
 const DEFAULT_SUBQS = ["這個問題要解決什麼？怎麼評估（指標、資料集）？", "主要有哪幾類做法？核心想法與差別是什麼？", "各做法的實驗結果如何？在什麼條件下比較好？", "還有哪些尚未解決的問題？"];
 
+/** Library papers for a topic when the selection came back empty: by keyword overlap with the topic, full text first. */
+export function libraryFallback(library: LibPaper[], topic: string): Pick[] {
+  const want = textTokens(topic);
+  const score = (p: LibPaper) => [...textTokens(`${p.title} ${p.abstract ?? ""}`)].filter((t) => want.has(t)).length;
+  const ranked = library.map((p) => ({ p, s: score(p) })).sort((a, b) => b.s - a.s || Number(b.p.has_pdf) - Number(a.p.has_pdf));
+  const related = ranked.filter((x) => x.s > 0);
+  return (related.length ? related : ranked).slice(0, LIBRARY_FALLBACK).map(({ p }) => ({ kind: "library" as const, paper_id: p.id, title: p.title, year: p.year, cite_key: p.cite_key, has_pdf: p.has_pdf, reason: "研究文獻庫中與主題相關（線上沒有可匯入的結果）", role: "core" as const }));
+}
+
 export async function libraryPapers(env: WorkflowEnv, studyId: string): Promise<LibPaper[]> {
   return (await env.db.query<LibPaper>(
     `SELECT p.id, p.title, p.year, sp.cite_key, (p.pdf_key IS NOT NULL) AS has_pdf, left(p.abstract, 400) AS abstract
@@ -613,7 +625,15 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
   const hits = found.searched ? found.hits : prev?.hits ?? [];
   const library = await libraryPapers(env, access.study.id);
   await env.activity("research", "planner", "挑選候選論文");
-  const { picks, excluded } = await select(env, { topic: d.topic, subqs: d.subqs, hits, stack }, library);
+  const sel = await select(env, { topic: d.topic, subqs: d.subqs, hits, stack }, library);
+  const { excluded } = sel;
+  let picks = sel.picks;
+  // Nothing importable online (or no usable selection) while the study's library has papers: work from the library
+  // instead of stopping on a question (production eval: autopilot stopped although the library had 10 relevant papers).
+  if (!picks.length && library.length) {
+    picks = libraryFallback(library, `${d.topic}\n${d.subqs.map((q) => q.q).join("\n")}\n${env.run.request}`);
+    await env.note(`線上沒有找到可以匯入的論文，改用研究文獻庫中的 ${picks.length} 篇論文繼續。`, "warn");
+  }
   const st: TopicState = {
     topic: d.topic, subqs: d.subqs, queries: found.searched ? found.queries : prev?.queries ?? [], seeds: found.searched ? found.seeds : prev?.seeds ?? [],
     hits, picks, excluded, searched: found.searched || !!prev?.searched, search_errors: found.errors, stack,

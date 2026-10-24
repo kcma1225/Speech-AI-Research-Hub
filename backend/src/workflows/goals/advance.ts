@@ -16,7 +16,8 @@ import { focusHref } from "../active.js";
 import { insertWorkflows, announceRuns } from "../service.js";
 import { getRun } from "../store.js";
 import type { ModelPort, RunRow } from "../types.js";
-import { capabilityOf, readinessOf } from "./capabilities.js";
+import { capabilityOf, DELIVERABLE_LABEL, readinessOf } from "./capabilities.js";
+import { BRIEF_KIND_LABEL, playbookKind } from "../brief.js";
 import { replanAfter } from "./planner.js";
 import { getGoal, goalLog, saveGoal } from "./store.js";
 import { GOAL_FINISHED, type GoalRow, type Stage } from "./types.js";
@@ -54,7 +55,9 @@ export async function startStage(client: Queryable, goal: GoalRow, idx: number, 
   const request = `${stage.request}\n\n（目標「${goal.title}」的第 ${idx + 1}/${total} 個階段${stage.why ? `：${stage.why}` : ""}；最終成果：${goal.deliverable.label}）`.slice(0, 4000);
   // The stage's Brief: the goal's user words (verbatim; the stage request is the planner's paraphrase) and the stage's
   // own deliverable — the playbook is fixed, so no fallback can turn e.g. the LaTeX stage into a note without asking.
-  const out = await insertWorkflows(client, owner, { request, playbook: stage.playbook, conversationId: goal.conversation_id, toolCallId: null, context: goal.context, inputs: stageInputs(goal, stage) as never, autopilot: goal.autopilot, userWords: goal.brief?.user_words?.length ? goal.brief.user_words : [goal.request] });
+  // The router (route.ts) takes the stage's playbook as a hint against the stage's own deliverable and current readiness.
+  const kind = playbookKind(stage.playbook);
+  const out = await insertWorkflows(client, owner, { request, playbook: stage.playbook, conversationId: goal.conversation_id, toolCallId: null, context: goal.context, inputs: stageInputs(goal, stage) as never, autopilot: goal.autopilot, userWords: goal.brief?.user_words?.length ? goal.brief.user_words : [goal.request], briefDeliverable: { kind, label: capabilityOf(stage.playbook) ? DELIVERABLE_LABEL[capabilityOf(stage.playbook)!.produces] : BRIEF_KIND_LABEL[kind] } });
   const run = out.runs[0]!;
   await client.query("UPDATE workflow_runs SET goal_id=$2, goal_stage=$3 WHERE id = ANY($1::uuid[])", [out.runs.map((r) => r.id), goal.id, stage.id]);
   const stages = goal.stages.map((s, i) => (i === idx ? { ...s, status: "running" as const, run_id: run.id, artifacts: [], summary: undefined, issues: undefined } : s));

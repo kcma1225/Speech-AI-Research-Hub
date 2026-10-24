@@ -288,6 +288,49 @@ run("workflow brief", () => {
     expect(r.brief!.deliverable.kind).toBe("deck");
   });
 
+  it("9. routing: a reading_note hint with 「做成簡報」 → the Brief (deck) wins; the mismatch is recorded and logged", async () => {
+    const pid = (await t.db.query<{ id: string }>("SELECT paper_id AS id FROM study_papers WHERE study_id=$1", [study.id])).rows[0]!.id;
+    const created = await createWorkflow(t.app, await asUser(alice.id), { request: "把〈Tree-constrained pointer generator for end-to-end contextual speech recognition〉做成簡報", playbook: "reading_note", inputs: { paper_id: pid }, context: { studyId: study.id } });
+    expect(created.playbook).toBe("slides");
+    expect(created.brief!.deliverable.kind).toBe("deck");
+    expect(created.state.route).toMatchObject({ kind: "deck", playbook: "slides", deck: "paper_report", hint: { playbook: "reading_note", accepted: false }, hint_playbook: "reading_note", explicit_paper: true, batch: false });
+    const logs = (await t.db.query<{ data: { text: string } }>("SELECT data FROM workflow_events WHERE run_id=$1 AND type='log' ORDER BY seq", [created.id])).rows.map((x) => x.data.text);
+    expect(logs.some((l) => l.includes("助理建議用「閱讀筆記」"))).toBe(true);
+    expect(logs.some((l) => l.startsWith("路由：要交付的是簡報"))).toBe(true);
+  });
+
+  it("10. routing: metrics + 「寫成一份筆記」 is a general note (not an experiment report asking for data)", async () => {
+    m.set("plan_generic", JSON.stringify({ title: "評估指標", objective: "整理評估指標", criteria: ["涵蓋 CER"], steps: [{ key: "s1", title: "指標", role: "writer", instructions: "寫指標" }] }));
+    const created = await createWorkflow(t.app, await asUser(alice.id), { request: "整理串流語音辨識常用的評估指標（CER、罕見詞 recall、誤觸發率、延遲）與計算方式，寫成一份筆記", context: { studyId: study.id } });
+    expect(created.playbook).toBe("generic");
+    expect((await runWorkflow(deps(), created.id)).status).toBe("awaiting_plan_approval");
+    const r = await row(created.id);
+    expect(r.playbook).toBe("generic");
+    expect(r.state.route).toMatchObject({ kind: "note", playbook: "generic", informed: true, brief_version: r.brief!.version });
+  });
+
+  it("11. routing: 「這兩篇做成簡報」 with two paper ids asks one card; 「每一篇各做一份」 splits into a batch", async () => {
+    const s3 = await insertStudy(t.db, alice.id, `Batch ask ${randomBytes(2).toString("hex")}`);
+    const ids: string[] = [];
+    for (const [i, title] of ["Shallow fusion", "Neural biasing"].entries()) {
+      const pid = (await t.db.query<{ id: string }>("INSERT INTO papers(record,type,title,title_norm,abstract,year,added_by) VALUES($1,'article-journal',$2,lower($2),'Biasing.',2020,$3) RETURNING id", [JSON.stringify({ title }), title, alice.id])).rows[0]!.id;
+      await t.db.query("INSERT INTO study_papers(study_id,paper_id,cite_key,added_by) VALUES($1,$2,$3,$4)", [s3.id, pid, `b${i}2020`, alice.id]);
+      ids.push(pid);
+    }
+    const created = await createWorkflow(t.app, await asUser(alice.id), { request: "這兩篇論文做成簡報", inputs: { paper_ids: ids }, context: { studyId: s3.id } });
+    expect(created.batch_id).toBeNull();
+    expect(created.state.route).toMatchObject({ playbook: "slides", batch: false, ask: "batch" });
+    expect((await runWorkflow(deps(), created.id)).status).toBe("awaiting_input");
+    expect(Object.keys((await row(created.id)).state.asks as object)).toEqual(["clarify_batch"]);
+    await answerWorkflow(t.app, await asUser(alice.id), created.id, { card_id: "clarify_batch", answers: [{ id: "q", value: "each" }] });
+    expect((await runWorkflow(deps(), created.id)).status).toBe("cancelled");
+    const r = await row(created.id);
+    expect(r.report!.summary_md).toContain("已拆成 2 個工作流程");
+    const batch = (await t.db.query<{ paper: string }>("SELECT inputs->>'paper_id' AS paper FROM workflow_runs WHERE batch_id IS NOT NULL AND study_id=$1 ORDER BY batch_index", [s3.id])).rows.map((x) => x.paper);
+    expect(batch).toEqual(ids);
+    await t.db.query("UPDATE workflow_runs SET status='cancelled' WHERE study_id=$1 AND status NOT IN ('cancelled','done','partial','failed')", [s3.id]);
+  });
+
   it("6. a goal keeps the user's words: language from them (not the paraphrase), stage runs carry them with their own deliverable", async () => {
     const out = await createGoal(t.app, await asUser(alice.id), { request: "幫我寫一篇關於台灣語料蒐集現況的論文，使用繁體中文", userWords: ["write an English paper about Taiwanese speech corpora"], context: { studyId: study.id } });
     expect(out.kind).toBe("goal");

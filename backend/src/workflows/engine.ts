@@ -10,7 +10,7 @@ import { CURRENT_USER_COLUMNS, toCurrentUser } from "../lib/auth.js";
 import { loadStudyAccess } from "../lib/studies/access.js";
 import { WorkflowEnv, type EnvDeps } from "./env.js";
 import { addUsage, emitRun, emitStep, getRun, getSteps, insertSteps, insertWorkflowEvent, stepView } from "./store.js";
-import { getWorkflowPlaybook, type WorkflowPlaybook } from "./playbooks/registry.js";
+import { getWorkflowPlaybook, listWorkflowPlaybooks, type WorkflowPlaybook } from "./playbooks/registry.js";
 import { verifyCriteria, verifyUnit } from "./verify.js";
 import { fixLine, HARD_FIX_ROUNDS, ledgerReport, loadConv, loadLedger, nextMove, recordRound, STOP_LABEL, type Convergence, type StopReason, type UnitRound } from "./ledger.js";
 import { finishNotice } from "./notify.js";
@@ -19,7 +19,8 @@ import { autoApproval, autoApprovalNote } from "./autopilot.js";
 import { promoteQueued } from "./queue.js";
 import { runChecks } from "./checks.js";
 import { artifactKindOf, fixedHeadings, persistStanding, prepareRequirements, requirementRepair, translateTitle, withRequirementCriteria } from "./requirements.js";
-import { clarifyDeliverable, prepareBrief, setChecklist, switchGuard } from "./brief.js";
+import { BRIEF_KIND_LABEL, BRIEF_KINDS, chooseDeliverable, clarifyDeliverable, clarifyOnce, playbookKind, prepareBrief, sameDeliverable, setChecklist, switchGuard } from "./brief.js";
+import { route, routeInputOf, routeNote, saveRoute, splitBatch } from "./route.js";
 import { budgetFor, WorkflowStop, type Criterion, type Ledger, type RunRow, type StepOutput, type StepReport, type StepRow, type Verdict, type WorkflowStatus } from "./types.js";
 
 export class WorkflowInputError extends Error {}
@@ -157,6 +158,71 @@ async function mayChangeTo(env: WorkflowEnv, pb: WorkflowPlaybook, to: string, w
   return false;
 }
 
+/** A playbook the user's choice / a redirect settled on: kept by later routing while it delivers the Brief's kind. */
+async function pinRoute(env: WorkflowEnv, playbook: string, why: string) {
+  const cur = env.route();
+  if (!cur) return;
+  await env.setState({ route: { ...cur, playbook, pinned: playbook, reason: `${why.slice(0, 160)}（改由「${getWorkflowPlaybook(playbook)?.title ?? playbook}」執行）` } });
+}
+
+/**
+ * Routing at planning (route.ts), right after the Brief is built: the same pure decision as at creation, now with the
+ * Brief's requirements and the study's readiness. Switches the playbook when the decision changed (always within the
+ * Brief's deliverable), splits a per-paper batch whose study was only known now, and asks ONE card when it cannot decide
+ * (one deck or one per paper; no playbook for the deliverable). Returns the playbook to plan with, or null when the run
+ * stopped (split into a batch) or waits for the answer.
+ */
+async function routePhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<WorkflowPlaybook | null> {
+  for (let round = 0; round < 3; round++) {
+    const b = env.brief();
+    if (!b) return pb;
+    const prev = env.route();
+    const input = (await routeInputOf(env))!;
+    const r = route(input);
+    if (r.ask === "batch" && !env.run.batch_id) {
+      const answer = await clarifyOnce(env, {
+        id: "batch", title: "一份還是每篇各一份？", prompt: `你給了 ${(env.run.inputs.paper_ids as unknown[] | undefined)?.length ?? "幾"} 篇論文，要做成一份涵蓋它們的${b.deliverable.label}，還是每一篇論文各做一份？`,
+        options: [{ value: "one", label: `合成一份${b.deliverable.label}` }, { value: "each", label: `每一篇論文各做一份${b.deliverable.label}` }], unspecified: "一份或每篇一份",
+      });
+      // The answer joined the user's words (a new Brief version): route again. Unanswered → one artifact.
+      if (answer) continue;
+    }
+    if (r.ask === "producer") {
+      const kinds = BRIEF_KINDS.filter((k) => k !== "other" && listWorkflowPlaybooks().some((p) => playbookKind(p.id) === k));
+      const answer = await clarifyOnce(env, {
+        id: "producer", title: `沒有工作流程能直接產生${b.deliverable.label}`, prompt: "要改做哪一種成果？（不會自動換成別的）",
+        options: kinds.map((k) => ({ value: k, label: BRIEF_KIND_LABEL[k] })), unspecified: "成果種類",
+      });
+      const kind = BRIEF_KINDS.find((k) => k === answer?.value);
+      if (kind && (await chooseDeliverable(env, kind))) continue;
+      throw new WorkflowInputError(`目前沒有工作流程能產生「${b.deliverable.label}」。`);
+    }
+    // 「每一篇文獻」 whose study (or papers) were only known now: the batch creation would have made; this run ends.
+    if (r.batch && !env.run.batch_id) {
+      const message = await splitBatch(env, r.playbook);
+      if (message) {
+        await setStatus(env, "cancelled", { stop_reason: "skipped", question: null, report: { summary_md: message, done: [], issues: [message] }, finished_at: new Date().toISOString() });
+        await env.note(message);
+        return null;
+      }
+    }
+    let next = pb;
+    if (r.playbook !== pb.id) {
+      const target = getWorkflowPlaybook(r.playbook);
+      if (target && sameDeliverable(playbookKind(target.id), b.deliverable.kind)) {
+        await switchPlaybook(env, target);
+        next = target;
+        await prepareBrief(env, next.id, (x) => prepareRequirements(env, next.id, x));
+      }
+    }
+    const changed = !prev || prev.playbook !== next.id || prev.deck !== r.deck || prev.edit !== r.edit || prev.batch !== r.batch;
+    const state = await saveRoute(env, { ...r, playbook: next.id });
+    if (changed) await env.note(routeNote(state));
+    return next;
+  }
+  return pb;
+}
+
 /** Plans the run; returns the playbook it ended up with (a switch to another playbook keeps the Brief's deliverable or asks). */
 async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<WorkflowPlaybook> {
   await env.deps.progress?.("planning", 5).catch(() => undefined);
@@ -165,18 +231,15 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   // read them while planning — target language, edit kind, per-item fields) and what is unspecified; every sub-agent call
   // from here on gets it.
   await prepareBrief(env, pb.id, (b) => prepareRequirements(env, pb.id, b));
-  // Two incompatible deliverables named at once (「做成簡報或筆記」): ask once; the user's choice picks the playbook.
-  const chosen = await clarifyDeliverable(env, pb.id);
-  const chosenPb = chosen ? getWorkflowPlaybook(chosen) : null;
-  if (chosenPb) {
-    await switchPlaybook(env, chosenPb);
-    await env.note(`依你的選擇做「${env.brief()?.deliverable.label ?? chosenPb.title}」，改用「${chosenPb.title}」。`);
-    pb = chosenPb;
-    await prepareBrief(env, pb.id, (b) => prepareRequirements(env, pb.id, b));
-  }
+  // Two incompatible deliverables named at once (「做成簡報或筆記」): ask once; the choice is a new Brief version.
+  await clarifyDeliverable(env);
+  // The routing decision (route.ts) from this Brief: playbook, deck mode / edit kind, batch — or ONE question.
+  const routed = await routePhase(env, pb);
+  if (!routed) return pb;
+  pb = routed;
   let res = await pb.plan(env);
-  // The playbook hands over to a better-fitting one (reading note → topic research): switch once and plan with it — only
-  // when it delivers the same kind, else the user decides.
+  // The playbook hands over to a better-fitting one (a literature review with too few papers → topic research, the user's
+  // choice): switch once and plan with it — only when it delivers the same kind, else the user decides.
   if (res.kind === "redirect") {
     const next = getWorkflowPlaybook(res.playbook);
     if (!next || next.id === pb.id) throw new WorkflowInputError(res.message);
@@ -184,6 +247,7 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
     await switchPlaybook(env, next);
     await env.note(res.message);
     pb = next;
+    await pinRoute(env, next.id, res.message);
     await prepareBrief(env, pb.id, (b) => prepareRequirements(env, pb.id, b));
     res = await pb.plan(env);
   }
@@ -199,6 +263,7 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
       env.run.playbook = "generic";
       await env.note(`「${pb.title}」需要的資料還是不足（${res.question.slice(0, 60)}），改用一般流程：由 Agent 自己蒐集資料（包括線上搜尋論文）再規劃。`);
       pb = fallback;
+      await pinRoute(env, "generic", "上一個流程需要的資料不足");
       await prepareBrief(env, pb.id, (b) => prepareRequirements(env, pb.id, b));
       res = await pb.plan(env);
     }

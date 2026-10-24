@@ -14,8 +14,9 @@ import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRole, type StepRow, type StepSpec } from "../types.js";
-import { clipText, depOutputs, isTopicRequest, paperOf, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { clipText, depOutputs, paperOf, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
 import { requestLine } from "../brief.js";
+import { currentRoute, splitBatch } from "../route.js";
 import { askUser } from "../questions.js";
 import { askStudentView, isAiFilled } from "../student-input.js";
 import { localizeHeadings, runLabels, targetLanguage } from "../requirements.js";
@@ -115,8 +116,6 @@ export const outlineFrom = (sections: { title: string; points?: string[] }[]): O
 
 // ---------------------------------------------------------------- 閱讀筆記
 
-export const TOPIC_REDIRECT = "這個要求是主題調研（沒有指定論文），改用「主題調研」流程：先線上找相關論文，確認後匯入、精讀，再寫成研究筆記。";
-
 const mainSections = (secs: PaperSection[]) => secs.filter((s) => s.level === 1 && s.kind === "body" && !/^(?:references?|bibliography|acknowledge?ments?|參考文獻|致謝)$/i.test(s.title.trim()));
 
 const readingNote: WorkflowPlaybook = {
@@ -130,10 +129,15 @@ const readingNote: WorkflowPlaybook = {
   async plan(env): Promise<PlanResult> {
     const access = await studyOrQuestion(env);
     if ("question" in access) return { kind: "question", question: access.question };
+    // 「每一篇文獻」 whose study was only found now: the router's batch, and this run ends.
+    const r = await currentRoute(env);
+    if (r?.batch && !env.run.batch_id) {
+      const message = await splitBatch(env, "reading_note");
+      if (message) return { kind: "skip", message };
+    }
     let paper = await paperOf(env);
     if (!paper) {
-      // A topic survey (「研究有哪些做法」) without a paper is not a reading note: hand over to topic research.
-      if (isTopicRequest(`${env.run.request}\n${env.run.guidance.map((g) => g.text).join("\n")}`, env.run.inputs)) return { kind: "redirect", playbook: "topic_research", message: TOPIC_REDIRECT };
+      // A topic survey without a paper never gets here: the router sends it to topic research (route.ts).
       return { kind: "question", question: "要讀哪一篇論文？請先把論文加入文獻庫（或附加它），再在補充指示寫出論文標題。" };
     }
     if (!paper.pdf_key) {

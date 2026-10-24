@@ -23,6 +23,10 @@ import { clipText, planningStep, resolveStudy, systemFor, taskPrompt, whichStudy
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 import { generateUnit, unitContext, unitTokens } from "../units.js";
 import { unbalanced } from "../checks.js";
+import { stripPreamble } from "../../lib/latex/section-scope.js";
+
+/** A subsection reply: fence removed and anything that belongs to the root file (preamble, document, bibliography) stripped. */
+const cleanSubsection = (t: string) => stripPreamble(t.replace(/^```(?:latex|tex)?\n|\n```$/g, "").trim(), { keepAbstract: true }).text;
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
 type LatexOutline = { section: string; subsections: { title: string; points?: string[] }[] };
@@ -42,7 +46,7 @@ function latexChecks(keys: string[], subsections: string[]): CheckSpec[] {
 }
 
 /** `\subsection{X}` → `### X` so the Markdown heading check applies to LaTeX too. */
-export const latexHeadings = (tex: string) => tex.replace(/^\s*\\(?:sub)*section\*?\{([^}]*)\}.*$/gm, "### $1");
+export const latexHeadings = (tex: string) => tex.replace(/^[ \t]*\\(?:sub)*section\*?\{([^}]*)\}.*$/gm, "### $1");
 
 async function studyKeys(env: WorkflowEnv, studyId: string) {
   return (await env.db.query<{ cite_key: string }>("SELECT cite_key FROM study_papers WHERE study_id=$1", [studyId])).rows.map((r) => r.cite_key);
@@ -239,7 +243,7 @@ async function execute(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepO
       context: { research: (env.state<string>("brief") ?? "").slice(0, 16_000), all_subsections: subs.map((x, i) => `${i + 1}. ${x.title}`).join("\n"), cite_keys: keys.join(", ") },
       format: [`只輸出這一小節的 LaTeX：第一行是 \\subsection{${s?.title ?? ""}}，接著內文（段落、必要時 itemize/equation）。不要 \\documentclass、不要 \\section、不要 Markdown、不要 \`\`\`。`, u.budget, u.neighbours].filter(Boolean).join("\n"),
     }, fix);
-    const res = await generateUnit(env, { purpose: "latex_write", role: "writer", messages: [{ role: "system", content: systemFor("writer", "你寫學術論文的 LaTeX 內文（中文論文用繁體中文，英文論文用英文，依研究現有章節的語言）。") }, { role: "user", content: user }], maxTokens: unitTokens(u.unit?.budget, 7000) }, step.id, { clean: (t) => t.replace(/^```(?:latex|tex)?\n|\n```$/g, "").trim() });
+    const res = await generateUnit(env, { purpose: "latex_write", role: "writer", messages: [{ role: "system", content: systemFor("writer", "你寫學術論文的 LaTeX 內文（中文論文用繁體中文，英文論文用英文，依研究現有章節的語言）。") }, { role: "user", content: user }], maxTokens: unitTokens(u.unit?.budget, 7000) }, step.id, { clean: cleanSubsection });
     // A rewritten unit replaces an earlier compile repair of it.
     const fixedUnits = { ...(env.state<Record<string, string>>("fixed_units") ?? {}) };
     if (fixedUnits[step.key]) {
@@ -265,7 +269,7 @@ async function execute(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepO
         if (!w) continue;
         await env.activity(step.key, "integrator", `依編譯錯誤修正小節「${clipText(w.title.replace(/^撰寫小節「|」$/g, ""), 30)}」`);
         const res = await env.call({ purpose: "latex_fix", role: "integrator", aiRole: "writing", messages: [{ role: "system", content: systemFor("integrator", "修正這一個小節的 LaTeX 語法錯誤（未跳脫的特殊字元、未關閉的環境、未定義的指令），內容不變。只輸出這個小節完整的 LaTeX（\\subsection 開頭）。") }, { role: "user", content: `整個章節檔的編譯錯誤：\n${prev.errors.join("\n")}\n\n${dataBlock("subsection", parts[i]!)}` }], maxTokens: 6000 }, step.id);
-        const fixed = res.text.replace(/^```(?:latex|tex)?\n|\n```$/g, "").trim();
+        const fixed = cleanSubsection(res.text);
         if (fixed.includes("\\subsection") && fixed.length > parts[i]!.length * 0.5) fixedUnits[w.key] = fixed;
       }
       await env.setState({ fixed_units: fixedUnits });

@@ -2,9 +2,10 @@
 import { describe, expect, it } from "vitest";
 import "../src/workflows/playbooks/index.js";
 import {
-  ambiguousKinds, briefBlock, checklistFrom, checklistOf, clipWords, composeWords, deliverableFromWords, editedBrief, playbookFor, playbookKind, sameDeliverable, scopeLine, seedBrief, unspecifiedOf,
+  ambiguousKinds, briefBlock, checklistFrom, checklistOf, clipWords, composeWords, deliverableFromWords, editedBrief, playbookKind, sameDeliverable, scopeLine, seedBrief, unspecifiedOf,
 } from "../src/workflows/brief.js";
 import { deckModeOf, topicTitleOf } from "../src/workflows/playbooks/slides.js";
+import { route } from "../src/workflows/route.js";
 import { detectRequirements, messageLanguage } from "../src/workflows/requirements.js";
 import type { Requirement } from "../src/workflows/types.js";
 
@@ -42,7 +43,7 @@ describe("brief: deliverable kind", () => {
     // 「論文報告」 is a deck about a paper, 「論文的閱讀筆記」 a reading note — never a LaTeX paper.
     expect(deliverableFromWords(["幫我做一份論文報告簡報，下週 journal club 要用"])).toBe("deck");
     expect(deliverableFromWords(["幫我寫一份論文的閱讀筆記"])).toBe("reading_note");
-    expect(playbookFor("deck", "幫我做一份論文報告簡報", {})).toBe("slides");
+    expect(route({ words: ["幫我做一份論文報告簡報"] }).playbook).toBe("slides");
   });
   it("two incompatible kinds in the newest turn are ambiguous (ask once); a sequence is a goal, not an ambiguity", () => {
     expect(ambiguousKinds(["幫我把這些整理成簡報或筆記"])).toEqual(["deck", "note"]);
@@ -58,8 +59,8 @@ describe("brief: deliverable kind", () => {
     expect(playbookKind("slides")).toBe("deck");
   });
   it("detection keeps the deliverable: an English presentation surveying approaches is a deck, not a topic note", () => {
-    expect(playbookFor("deck", TOPIC_DECK, {})).toBe("slides");
-    expect(playbookFor("note", "研究有哪些 dynamic hotwording 做法", {})).toBe("topic_research");
+    expect(route({ words: [TOPIC_DECK] }).playbook).toBe("slides");
+    expect(route({ words: ["研究有哪些 dynamic hotwording 做法"], kind: "note" }).playbook).toBe("topic_research");
   });
 });
 

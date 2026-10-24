@@ -374,12 +374,10 @@ run("workflow autopilot", () => {
     const s2 = await insertStudy(t.db, alice.id, `批次 ${randomBytes(2).toString("hex")}`);
     const papers = [];
     for (let i = 0; i < 5; i++) papers.push(await addPaper(s2.id, `Paper ${i + 1}`, { pdf: true }));
-    expect(await batchPapers(t.db, { playbook: "slides", request: "把這個研究的每一篇文獻都做成獨立的簡報", studyId: s2.id })).toHaveLength(5);
-    expect(await batchPapers(t.db, { playbook: "lit_review", request: "每一篇文獻", studyId: s2.id })).toBeNull();
-    // Several paper ids from the assistant without the user asking for one per paper → sources of ONE deck.
-    expect(await batchPapers(t.db, { playbook: "slides", request: "Create one English deck from the library", studyId: s2.id, paperIds: papers.slice(0, 3), userText: "幫我做一份英文簡報，根據研究文獻庫整理" })).toBeNull();
-    expect(await batchPapers(t.db, { playbook: "slides", request: "x", studyId: s2.id, paperIds: papers.slice(0, 3), userText: "這三篇各做一份簡報" })).toHaveLength(3);
-    expect(await batchPapers(t.db, { playbook: "slides", request: "x", studyId: s2.id, paperIds: papers.slice(0, 3), userText: "每一篇文獻都做成簡報" })).toHaveLength(3);
+    // Whether it is a batch is the router's decision (route.unit.test.ts); batchPapers only lists the papers.
+    expect(await batchPapers(t.db, { studyId: s2.id })).toHaveLength(5);
+    expect(await batchPapers(t.db, { studyId: s2.id, paperId: papers[0] })).toBeNull();
+    expect(await batchPapers(t.db, { studyId: s2.id, paperIds: papers.slice(0, 3) })).toHaveLength(3);
     const res = await post(alice, "/api/workflows", { request: "把這個研究的每一篇文獻都做成獨立的簡報", context: { studyId: s2.id }, autopilot: true });
     expect(res.statusCode).toBe(201);
     const body = res.json();

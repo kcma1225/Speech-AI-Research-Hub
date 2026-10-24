@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import type { Queryable } from "../db.js";
 import { askUser, asksOf, isSkipped, answerLines } from "./questions.js";
 import { capabilityOf, DELIVERABLE_LABEL, deliverableOf, type DeliverableKind } from "./goals/capabilities.js";
-import { detectPlaybook, getWorkflowPlaybook, listWorkflowPlaybooks } from "./playbooks/registry.js";
+import { getWorkflowPlaybook } from "./playbooks/registry.js";
 import type { WorkflowEnv } from "./env.js";
 import type { CheckSpec, Criterion, Requirement, RunRow, StepRow } from "./types.js";
 
@@ -88,23 +88,6 @@ export function deliverableFor(words: string[], paraphrase: string | null, playb
   if (named) return { kind: briefKindOf(named), label: DELIVERABLE_LABEL[named] };
   const c = capabilityOf(playbook);
   return c ? { kind: briefKindOf(c.produces), label: DELIVERABLE_LABEL[c.produces] } : { kind: "other", label: BRIEF_KIND_LABEL.other };
-}
-
-/**
- * A playbook that produces `kind` (creation without an explicit playbook): the detected one when it fits, else the
- * best-scoring producer of that kind (an English "research presentation surveying …" is a deck, not a topic note).
- */
-export function playbookFor(kind: BriefKind, request: string, inputs: Record<string, unknown>): string {
-  const detected = detectPlaybook(request, inputs);
-  if (sameDeliverable(playbookKind(detected), kind)) return detected;
-  let best: string | null = null;
-  let score = -1;
-  for (const p of listWorkflowPlaybooks()) {
-    if (playbookKind(p.id) !== kind || !capabilityOf(p.id)) continue;
-    const s = p.detect(request, inputs);
-    if (s > score) [best, score] = [p.id, s];
-  }
-  return best ?? detected;
 }
 
 // ---------------------------------------------------------------- the user's words
@@ -380,24 +363,30 @@ export function ambiguousKinds(words: string[]): BriefKind[] {
 
 /**
  * The deliverable is genuinely ambiguous (the user's newest turn names two incompatible kinds without a sequence): ONE
- * clarifying card with the kinds as options. The choice is a new brief version; returns the playbook that produces it
- * (null = keep the run's playbook: answered with the current kind, skipped, or autopilot → 「成果種類：未指定」).
+ * clarifying card with the kinds as options. The choice is a new brief version (the router then picks its producer);
+ * returns true when the deliverable changed (false: answered with the current kind, skipped, or autopilot →
+ * 「成果種類：未指定」).
  */
-export async function clarifyDeliverable(env: WorkflowEnv, playbook: string): Promise<string | null> {
+export async function clarifyDeliverable(env: WorkflowEnv): Promise<boolean> {
   const b = env.run.brief;
-  if (!b || b.version < 1) return null;
+  if (!b || b.version < 1) return false;
   const kinds = ambiguousKinds(baseWords(b));
-  if (!kinds.length) return null;
+  if (!kinds.length) return false;
   const answer = await clarifyOnce(env, {
     id: "deliverable", title: "要交付哪一種成果？", prompt: "你提到了不只一種成果，這次要做哪一種？",
     options: kinds.map((k) => ({ value: k, label: BRIEF_KIND_LABEL[k] })), unspecified: "成果種類",
   });
   const kind = BRIEF_KINDS.find((k) => k === answer?.value);
-  const cur = env.run.brief!;
-  if (!kind || sameDeliverable(kind, cur.deliverable.kind)) return null;
+  if (!kind) return false;
+  return chooseDeliverable(env, kind);
+}
+
+/** The user chose a deliverable on a card (clarify / the router's 「沒有流程能產生」 card): a new brief version. */
+export async function chooseDeliverable(env: WorkflowEnv, kind: BriefKind): Promise<boolean> {
+  const cur = env.run.brief;
+  if (!cur || sameDeliverable(kind, cur.deliverable.kind)) return false;
   await store(env, nextVersion(cur, { deliverable: { kind, label: BRIEF_KIND_LABEL[kind], hard: true }, unspecified: cur.unspecified, requirements: cur.requirements }, "clarify"));
-  const next = playbookFor(kind, env.run.request, env.run.inputs);
-  return next !== playbook && sameDeliverable(playbookKind(next), kind) ? next : null;
+  return true;
 }
 
 // ---------------------------------------------------------------- the deliverable invariant

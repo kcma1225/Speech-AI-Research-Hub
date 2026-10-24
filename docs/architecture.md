@@ -1671,10 +1671,9 @@ source: start|plan|guidance|edit|clarify|deliverable, clarified?, key?, at}`,
   on the plan card as a reference, labelled as such in prompts (`requestLine`), **never a source of requirements**; an
   assistant-given `pages` is dropped unless the user's words have a page count.
 - *Deliverable (hard)*: from the user's words (`deliverableFromWords`: an explicit target 「整理成筆記」「做成簡報」 first,
-  then `deliverableOf` — 「presentation」 is a deck), else the assistant's request, else the playbook's product. Creation
-  without an explicit playbook picks one that produces it (`playbookFor`: an English "presentation surveying the state of
-  the art" is `slides`, not `topic_research`); `start_workflow` / `start_goal` route on the user's words
-  (`routeWorkflowRequest`). **Invariant** (`switchGuard`, engine `planPhase`): a playbook redirect or the repeated-question
+  then `deliverableOf` — 「presentation」 is a deck), else the assistant's request, else the hint's product; a given
+  playbook never overrides the user's words (「做成簡報」 with `reading_note` → a deck). Which playbook executes it is the
+  router's decision (**Routing** below). **Invariant** (`switchGuard`, engine `planPhase`): a playbook redirect or the repeated-question
   fallback to `generic` that would change the kind (notes of different flavours are one family: reading note → topic note
   is allowed and logged) stops and asks a card `deliverable_<n>` (also under autopilot): 「仍做簡報：用研究的文獻庫與筆記
   整理」 (slides → `inputs.mode = topic`), 「改做<kind>」 (the user's choice → a new version, source `deliverable`), 「先停下
@@ -1686,7 +1685,7 @@ source: start|plan|guidance|edit|clarify|deliverable, clarified?, key?, at}`,
   (a deck's working page count is a plan note 「頁數：未指定，大綱暫定 N 頁」).
 - *Clarify once* (`clarifyOnce`): the deliverable is genuinely ambiguous (`ambiguousKinds`: the user's newest turn names
   two incompatible kinds without a sequence, 「整理成簡報或筆記」 → card `clarify_deliverable`, the choice is a new version
-  and picks the producing playbook, `clarifyDeliverable` in planPhase), or a must-have input is genuinely missing (slides:
+  and the router picks its producer, `clarifyDeliverable` in planPhase), or a must-have input is genuinely missing (slides:
   a paper report with no paper given or named → card `clarify_paper`: the study's papers, 「不指定論文：用文獻庫做主題簡報」, 「改做進度報告」, 「其他」 =
   a title) is ONE card with options before planning; the answer joins `user_words`; at most one clarifying card per run;
   under autopilot (or skipped) the item goes to `unspecified` and the playbook takes the deliverable-keeping default.
@@ -1710,6 +1709,47 @@ source: start|plan|guidance|edit|clarify|deliverable, clarified?, key?, at}`,
   deliverable, so a stage's fallback cannot change its kind without asking.
 - *Plan card*: 「任務簡報」 (version, deliverable 「固定」, 「你的原話」, the assistant's summary collapsed, 「未指定」 chips that
   add a requirement row) above 「你的要求」 (each with 「你說：「…」」 from its quote).
+
+**Routing: one decision, made once, from the Brief** (`src/workflows/route.ts`). Production lost intent at ~7 layers that
+each re-read the request (a deck became a note through a fallback; "paper title" made a survey deck a paper report; 5
+paper ids became 5 decks; 「每個方法」 was read as a per-paper batch; `latex_section` was picked for a paper-report deck; a
+goal kept adding research stages). Now one pure function `route({words, paraphrase, kind, hint, pinned, inputs,
+explicitPaper, requirements, ready})` decides, from the user's words only (the paraphrase may name a deliverable when the
+words name none, never a mode):
+- *Deliverable*: the Brief's kind (fixed for goal stages / later versions), else the words, else the paraphrase, else the
+  given `project_id` (LaTeX) / `deck_id` (deck), else the hint's product.
+- *Playbook*: a playbook the user settled on (`pinned`: an accepted redirect such as 文獻太少 → 主題調研, or the
+  repeated-question fallback) while it delivers the kind; else the **hint** (the assistant's `playbook`, the API's, a goal
+  stage's) when it delivers the kind and its must-have input is there (`reading_note` needs a paper or a non-topic request,
+  `experiment_report` needs 實驗結果 words or experiment notes — metric names such as CER alone are not, `latex_section`
+  needs a project); else the kind's producer: deck → `slides`; LaTeX → `latex_section` (a section / a given project) or
+  `paper_draft`; notes → `reading_note` (one paper), `lit_review`, `topic_research` (TOPIC_RE, no paper), `paper_outline`,
+  `meeting_prep`, `experiment_report` (實驗結果／實驗報告 words), else `generic`. A rejected hint is recorded
+  (`hint.accepted = false`) and logged on the run (「助理建議用「閱讀筆記」，但它不符合你要的成果…」).
+- *Slides*: `deck = edit` when a deck with slides is given (`deckPagesOf`: the workflow body or an edited entry; an untouched
+  template or another study's deck is 0) and the words / non-standing requirements edit it (`editAsked`: REVISE_RE,
+  EXPAND_RE, added pages, a removal, a language, a page count, per-item fields), with `edit = revise | expand`
+  (`editKindOf` on the words against the deck's pages); else `deckModeOf` (below) with `explicitPaper` = a paper given at
+  creation or a study paper named in the words (`matchPaperTitle` over the study's titles) or an arXiv id / DOI.
+- *Batch*: per-paper playbooks only when the user's words ask for each paper (`EACH_PAPER_RE`) and there are ≥ 2 papers;
+  「這三篇做成簡報」 with ≥ 2 `paper_ids` and no 「一份／每篇」 → `ask = batch`.
+- *Ask* (engine `routePhase`, one card via `clarifyOnce`): `batch` → 「合成一份…／每一篇論文各做一份…」 (the answer joins
+  the words, route again; autopilot / skipped → one artifact); `producer` (no playbook delivers the kind) → the kinds that
+  exist (the choice is a new Brief version), never a silent `generic`.
+- *When*: at creation (`insertWorkflows`, decides the run's playbook and batch; the decision is stored in
+  `workflow_runs.state.route` = `RouteState {kind, deliverable, playbook, deck?, edit?, batch, ask?, reason, informed, hint?,
+  brief_version, explicit_paper, hint_playbook, pinned?, at}` and logged: 「路由：要交付的是簡報，由「簡報」執行（…）。」), and
+  again at every planning (`routePhase`, after `prepareBrief` / `clarifyDeliverable`, with the Brief's requirements and the
+  study's readiness `routeContext`): a changed decision switches the playbook (always within the Brief's deliverable) and is
+  logged; a batch whose study was only known now is split and the run ends (`cancelled` / `skipped`, 「已拆成 n 個工作流程…」).
+  A decision made before the study was known (`informed = false`) is refreshed by the playbook once it resolved the study
+  (`currentRoute`). Playbooks read `env.route()` and never detect a mode from the request text.
+- *Decision chain* (what remains): ① the assistant chooses to delegate and proposes (`start_workflow` / `start_goal`: request,
+  playbook hint, ids) → ② `routeWorkflowRequest`: a paper / outline the hint does not produce, or a conversation already
+  pursuing a goal → a goal → ③ the Brief (deliverable + words) → ④ `route` (creation, then each planning) → ⑤ the playbook
+  executes the route (its own input cards: which study, which paper, missing PDF, 文獻太少) → ⑥ a redirect / fallback only
+  within the deliverable or through `switchGuard`'s card. Goals: the planner proposes stages, each through `routeStage` and
+  `servesDeliverable` (below).
 
 **Requirements: the user's explicit asks as a ledger** (`src/workflows/requirements.ts`, `playbooks/slides-requirements.ts`,
 `0119_artifact_agent_prefs.sql`). Testing one dimension (e.g. the language) used to break others; every explicit
@@ -1766,12 +1806,12 @@ requirement is now a typed constraint that every step must keep and that is chec
   (「由報告者補充」 / placeholder) from the notes / placeholder checks of writers and criteria. `paper_draft` takes its language from the
   requirement first. At the end (done or partial) the standing types (language, audience, tone) are written to every
   deck / note / LaTeX project the run wrote (`persistStanding`), so a follow-up without the language keeps it.
-- *Edit kinds* (slides on an existing deck, `editKindOf`): `revise` (translate / polish; same pages, criterion `revised`
+- *Edit kinds* (slides on an existing deck, the router's `edit` via `editKindOf` on the user's words): `revise` (translate / polish; same pages, criterion `revised`
   — nothing dropped except pages the user removed) or `expand` (「再詳細一點」「focus 在…」「每個方法要有…」, per-item
   fields, or a page count well above the deck's; a new outline of `inputs.pages` / the requirement / 1.5× pages grounded
   in the original deck + `progressContext` + up to 3 study notes matching the focus words + the paper's digest; writers
   get the original deck as material; criterion `expanded` = depth on the requested focus, grounded). A deck edit is
-  planned when the request revises / expands or a non-standing requirement changes the deck. `plan.edit_kind` is on the
+  planned when the router says `deck = edit` (Routing above). `plan.edit_kind` is on the
   card. Excluded pages are dropped from the outline deterministically (`settleOutline`).
 - *Report back*: a partial run's chat notice lists the unmet items in plain words (`unmetItems`: failed / unjudged
   criteria, else failed steps; content `{items, model: true}`, `messageView.items` + `workflow_id`) with 「要我修這幾項嗎？」
@@ -1782,6 +1822,9 @@ requirement is now a typed constraint that every step must keep and that is chec
   translate incl. cover + render-fix regression, follow-up without the language, expand with per-item fields, remove a
   page + include a topic, exact page count, English note with targeted repair, partial notice + autopilot 繼續改) and
   `scripts/probe-requirements.ts` (staging, cheap model: Chinese deck → 「整份改成英文」 → follow-up).
+- Eval set: `scripts/eval/` (20 fixed tasks on fixture studies, autopilot, staging only; per task outcome, deliverable,
+  deterministic graders, criteria, time, `ai_call_log` calls by purpose, fix rounds, flips, rubric + two-order pairwise
+  judge (`purpose eval_judge`); baseline and how to run: `docs/research/agent-eval.md`).
 
 **Questions to the user** (`src/workflows/questions.ts`, `student-input.ts`). Any playbook step, the orchestrator or
 the planning phase can pause the run and ask: `await askUser(env, card)` returns the stored answers, or stores the card
@@ -1819,13 +1862,13 @@ then a study named in the request (title/slug tokens of a study the user edits: 
 1, ≥ 4 and a unique best), then the user's only active study — so a chat about one study never gets 「要把簡報放在哪個研究？」. When
 planning still has no study (`resolveStudy`), it retries the match on the request + guidance, and a guidance that hands the
 choice back (「你決定」, `DELEGATE_RE`) takes the user's most recently active study; the found study is written to
-`workflow_runs.study_id`. Otherwise the question lists the user's studies (`whichStudyQuestion`). A slides run whose study
-was only found at planning and whose request is 「每一篇文獻」 creates the batch then and ends itself (`cancelled`,
+`workflow_runs.study_id`. Otherwise the question lists the user's studies (`whichStudyQuestion`). A per-paper run whose study
+was only found at planning and whose user asked for 「每一篇文獻」 is split by the router then and ends itself (`cancelled`,
 `stop_reason=skipped`, report 「已拆成 n 個工作流程…」). A slides / reading-note run
 without a `paper_id` takes the study paper the request or the guidance names (full title, or the short name before a colon
 such as 「wav2vec 2.0」; unique match, `matchPaperTitle`), else the study's only paper with a PDF.
-A per-paper playbook (`slides`, `reading_note`) asked for 「每一篇文獻」 (`EACH_PAPER_RE`) without a single paper, or
-given ≥ 2 `paper_ids`, becomes a **batch**: one run per study paper (≤ 10, study order) with a shared `batch_id`,
+A per-paper playbook (`slides`, `reading_note`) whose user asked for 「每一篇文獻」 (`EACH_PAPER_RE`, the router's `batch`)
+becomes a **batch** (`batchPapers`: the ≥ 2 given `paper_ids`, else the study's papers): one run per paper (≤ 10, study order) with a shared `batch_id`,
 `batch_index`, the request + 「（批次 i/n：只處理〈title〉）」 and `inputs.paper_id`. **Queue** (`src/workflows/queue.ts`):
 at most 3 runs per user are working (`planning|running|verifying`); creation takes a per-user advisory lock, and a run
 over the limit (or behind runs already queued — FIFO) gets status `queued` with a **parked** job (`run_after =
@@ -1874,7 +1917,7 @@ detect(request) → score, inputs (zod), autoApprovable, plan(env), execute(step
 better (a topic survey asked as a reading note): the engine switches `workflow_runs.playbook` once, logs the message and
 plans with it — only when the new playbook delivers the Brief's kind, else it asks (Brief → `switchGuard`).
 
-**Slides: which deck** (`deckModeOf`, on the user's words): an explicit progress report (`PROGRESS_RE`: 進度, 週報, 組會,
+**Slides: which deck** (`deckModeOf` inside the router, on the user's words): an explicit progress report (`PROGRESS_RE`: 進度, 週報, 組會,
 progress, weekly) → `progress`; a report on ONE paper (`PAPER_REPORT_RE`: 論文報告, 這篇論文, paper report, journal club,
 present this paper, an arXiv id), or a paper given / named while the words are not about a subject → `paper_report`
 (none given → the `clarify_paper` card); a deck about a subject (`TOPIC_DECK_RE` / `isTopicRequest`: about, 關於, 介紹,
@@ -1906,14 +1949,14 @@ paper, `PAGE_PARTS`), and the content refs are rebuilt from the extractions read
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
 | `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress / topic papers (Topic decks above) → planner outline of exactly N pages (shown on the card; each page a unit with `purpose`, points and a **layout id** from the finite library `LAYOUTS` A–F + T — the model picks layouts, never positions) → **one writer per page** (parallel, `VISUAL_RULES` + the chosen layout, per-page budget, neighbouring pages' summaries; a page cut at the output limit is continued alone) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render (a render error sends only the pages it points at to the syntax fix, `suspectPages`) → speaker-notes pass → `constraints` (the user's requirements, see Requirements) → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, content checks on `data.refs` (`grounded_names`, `figure_refs`, `diagram_semantics`, `chart_semantics`; see **Content checks** below), `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
-| `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection (units with budgets) → integrate → compile-verify (new file); a compile error repairs only the subsection units it points at (`unitsForErrors`: `file:line` → the unit, else open environments; `state.fixed_units`) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
+| `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection (units with budgets; replies and compile repairs stripped of root-file content by `stripPreamble`) → integrate → compile-verify (new file); a compile error repairs only the subsection units it points at (`unitsForErrors`: `file:line` → the unit, else open environments; `state.fixed_units`) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
 | `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table (+ background) → `synthesis` → `gaps` ∥ `relation` (one section unit each, with budgets) → stitched; a study with < 2 papers gets card `lit_too_few` (改做主題調研 → `redirect` to `topic_research` / 我先加入論文 → the old question), autopilot redirects directly | new note | `table_rows` ≥ papers, `citations`, judge |
-| `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate; no resolvable paper + a topic-like request (`isTopicRequest`) → `redirect` to `topic_research` | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
-| `topic_research` | 主題調研 (detect 0.9: `TOPIC_RE` — 有哪些…做法/方法, 調研, 研究現況, survey, state of the art, related approaches, 找…論文 — and no `paper_id` / arXiv id / DOI) | planning: sub-questions (outline, editable) with expanded keyword queries → **one search batch** + citation snowballing, then tainted → planner picks 8–12 papers (seminal + recent) incl. relevant study papers (step `research`, passed); per paper `paper_i` (parallel): import + structured full-text extraction (數字表), 「僅依摘要」 without a PDF → `taxonomy` → `approaches` ∥ `results` ∥ `practice` (stack named) ∥ `discussion` (section units with budgets) → assemble: stitched by code + `scrubNote` (+ 參考文獻, 搜尋紀錄) | new note; `paper` write 「匯入 N 篇論文到實驗室文獻庫…」 (no draft effect → waits for the user unless autopilot) | `sections_present`, `topic_taxonomy`, `topic_approaches`, `topic_cites`, `topic_numbers`, `topic_results_coverage`, `topic_consistency`, `topic_concise`, `topic_reading`, judge |
+| `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate; a topic-like request without a paper never gets here (the router sends it to `topic_research`) | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
+| `topic_research` | 主題調研 (nothing importable online while the study's library has papers → the library's most related ≤ 8 papers by keyword overlap, `libraryFallback`, log 「線上沒有找到可以匯入的論文，改用研究文獻庫…」, instead of stopping on a question; detect 0.9: `TOPIC_RE` — 有哪些…做法/方法, 調研, 研究現況, survey, state of the art, related approaches, 找…論文 — and no `paper_id` / arXiv id / DOI) | planning: sub-questions (outline, editable) with expanded keyword queries → **one search batch** + citation snowballing, then tainted → planner picks 8–12 papers (seminal + recent) incl. relevant study papers (step `research`, passed); per paper `paper_i` (parallel): import + structured full-text extraction (數字表), 「僅依摘要」 without a PDF → `taxonomy` → `approaches` ∥ `results` ∥ `practice` (stack named) ∥ `discussion` (section units with budgets) → assemble: stitched by code + `scrubNote` (+ 參考文獻, 搜尋紀錄) | new note; `paper` write 「匯入 N 篇論文到實驗室文獻庫…」 (no draft effect → waits for the user unless autopilot) | `sections_present`, `topic_taxonomy`, `topic_approaches`, `topic_cites`, `topic_numbers`, `topic_results_coverage`, `topic_consistency`, `topic_concise`, `topic_reading`, judge |
 | `experiment_report` | 實驗報告筆記 | researcher (notes / pasted results) → writer (tables, ```chart) | new note | `table_rows`, `chart_blocks`, `numbers_from_source` |
 | `meeting_prep` | 會議準備 | researcher (open tasks, last feedback, deck changes, recent activity) → writer agenda | new note | `sections_present`, judge |
 | `paper_outline` | 論文大綱 (`playbooks/paper.ts`) | sources = the handed-over notes (`note_ids`) else the newest research / reading notes + the study library with cite keys (step `research`, passed) → writer: fixed Markdown (`# 論文大綱：…`, `## 論文題目`, `## 主要貢獻`, `## 章節規劃` with `### n. 節名` + bullets + 「引用：[@key]」, `## 參考文獻`) → assemble; empty library and no notes → question | new note (kind research) | `sections_present` (三段), `outline_sections` (≥ 4 sections, each with points), `citations`, judge |
-| `paper_draft` | 撰寫 LaTeX 論文 (`playbooks/paper.ts`) | the outline note (`parseOutline`; else a planning-time outline step) + other notes + library → `sec_i` writers in parallel (one `\section`/`\chapter` each, a unit with its budget and neighbours, `\cite` only study keys, language from `inputs.language`) → `abstract` (+ keywords) → `assemble` (`max_rounds` 3): **creates a new LaTeX project** from the template (`inputs.template`: zh → `article-zh`, 碩士論文 → `zh-thesis`, en → `ieee-conference`; `paperMain` replaces the sample `\input`s by `sections/sNN-<slug>.tex`, abstract file kept / added first, `refs.bib` = the library export in the auto-bib format) then a verification compile; a fix round repairs the files the compile errors name (`paper_fix`); later rounds rewrite only the run's own files whose text is unchanged since it wrote them (sha check), else leave them (log) → final; commit requests a real compile for the preview | new LaTeX project (`latex_project`, effect `new`) | `compile_ok`, `paper_sections` (every outline title present, from `data.sections`), `citations`, `no_placeholder`, judge |
+| `paper_draft` | 撰寫 LaTeX 論文 (`playbooks/paper.ts`) | the outline note (`parseOutline`, 摘要 / 參考文獻 entries are not sections; else a planning-time outline step) + other notes + library → `sec_i` writers in parallel (one `\section`/`\chapter` each, a unit with its budget and neighbours, the whole outline with every other section marked 「其他節負責」, the library as `key：title`, language from `inputs.language`). **Section scope by code** (`lib/latex/section-scope.ts`, `sanitizeSection`): the reply loses everything that belongs to main.tex (`\documentclass`, `\usepackage`, document / CJK wrappers, title block, `\maketitle`, abstract, own `thebibliography`, `\input`), blocks headed by another planned section are dropped (other extra top-level headings demoted), the heading is ensured; unknown `\cite` keys → one `paper_cite_fix` (library key or claim removed), then still-unknown keys are dropped by code (never invented); step check `latex_section_scope` (main-file leftovers, a second top-level heading / another section's heading, own 摘要 / 緒論 / 結論 / 參考文獻 headings, a paper roadmap outside the intro, whole-paper framing outside intro + conclusion) → `abstract` (+ keywords) → `assemble` (`max_rounds` 3): **creates a new LaTeX project** from the template (`inputs.template`: zh → `article-zh`, 碩士論文 → `zh-thesis`, en → `ieee-conference`; main.tex is always generated by code: `paperMain` replaces the sample `\input`s by `sections/sNN-<slug>.tex`, abstract file kept / added first, `refs.bib` = the library export in the auto-bib format); **de-duplication** (`sectionOverlap`: a later section's sub-heading equal to an earlier heading, generic 小結 excepted, or a paragraph ≥ 60 chars whose 6-gram shingles are ≥ 60 % contained in an earlier one) → one `paper_dedupe` rewrite of the later section per section version (`state.deduped`), still-repeated paragraphs dropped by code; then a verification compile; a fix round repairs only the files the compile errors name (main.tex / refs.bib never; none named → sections with a visible syntax / scope problem, else all) with `paper_fix`, whose reply is sanitised again and rejected if it still writes outside its section. File repairs (`state.fixed`: `{from: sha of the section text, text}`) apply only while the section is unchanged (a rewritten section drops them). Later rounds rewrite only the run's own files whose text is unchanged since it wrote them (sha check), else leave them (log) → final (text with `## ` / `### ` headings, `paperHeadings`); commit requests a real compile for the preview | new LaTeX project (`latex_project`, effect `new`) | `compile_ok`, `paper_sections` (every outline title present, from `data.sections`), `latex_no_overlap` (criterion `distinct`; repair → the later section of each pair), `citations`, `no_placeholder`, judge |
 | `generic` | 一般任務 | the orchestrator plans ≤ 8 steps: researchers, then writers that each own one `##` section with a `chars` budget (no model integrator; assemble stitches) | new note | `no_placeholder`, `not_truncated`, judge |
 
 **Topic research** (`playbooks/research.ts`). For 「研究有哪些做法」-style requests without a specific paper. Planning
@@ -2082,7 +2125,11 @@ silently substituted: when no playbook produces it, `deliverable.direct = false`
   the fixed deliverable, the catalogue, the readiness lines and the template as a hint → `{title, objective, deliverable,
   cannot?, stages: [{playbook, title, why, request, uses: [earlier indices]}]}`; `validStages` rejects unknown playbooks,
   forward `uses`, > 8 stages and a last stage that does not produce the deliverable (when a producer exists) → template / one
-  stage of the detected playbook. **One stage → exactly today's workflow** (`insertWorkflows`, no goal row, no roadmap card).
+  stage of the router's playbook; every stage goes through the router (`routeStage`: the proposed playbook is a hint
+  against the stage's own deliverable and the readiness — a reading note without a paper for a topic → topic research, an
+  experiment report without data → generic) and a stage whose kind does not serve the deliverable (`servesDeliverable`:
+  paper ← topic / lit review / reading / outline / note; deck ← topic / lit review / reading / experiment / note; …) is
+  dropped (its `uses` remapped). A stage run gets the stage's own deliverable as its Brief kind. **One stage → exactly today's workflow** (`insertWorkflows`, no goal row, no roadmap card).
 - **Goal rows**: `deliverable {kind, label, direct, note?, language?, template?}`, `status planning | awaiting_approval |
   running | awaiting_input | done | partial | failed | cancelled`, `stages [{id, playbook, title, why, request, inputs, uses[],
   status pending|running|waiting|done|partial|failed|skipped|cancelled, run_id, artifacts, summary?, issues?, added_by
@@ -2097,7 +2144,8 @@ silently substituted: when no playbook produces it, `deliverable.direct = false`
   `cancelWorkflow`): waiting (plan card / question / needs PDF / paused) → stage `waiting` (the card opens that stage);
   done / partial → stage records artifacts, summary and issues, **re-plan** (`replanAfter`: a `topic_research` stage that left
   < 4 PDFs before an outline / paper / review gets one more round, ≤ 2 rounds per goal; LLM-planned goals ask `goal_replan`
-  to insert / skip / reorder the rest, applied only when nobody edited the pending stages meanwhile), then the next pending
+  to insert / skip / reorder the rest — through `validStages`, so only stage kinds that serve the deliverable, within the
+  caps (`MAX_REPLANS` 3, a gathering playbook ≤ `MAX_GATHERING_ROUNDS` 2 and never after a building stage finished) — applied only when nobody edited the pending stages meanwhile), then the next pending
   stage starts automatically; skipped (`stop_reason skipped`) → next; failed / cancelled by the user → goal `awaiting_input`
   with 「要重試這個階段、略過它繼續，還是停止整個目標？」. After the last stage: `done` (every stage that ran is done, none failed /
   skipped after running, the last stage produced the deliverable), `partial`, or `failed` (the last stage produced nothing),
@@ -2113,10 +2161,11 @@ silently substituted: when no playbook produces it, `deliverable.direct = false`
   conversation deletes its goals first, then stops and deletes its runs (`conversationActivity` lists goals).
 - **Chat**: tools `start_goal {request, deliverable?, study?, paper_id?, project_id?, note_ids?}` (risk read; one stage →
   the workflow result, else `{goal_id, status, deliverable, stages}`), `update_goal {request, deliverable?, goal_id?}`,
-  `get_goal {goal_id?}`. `start_workflow` routes through `routeWorkflowRequest`: when the request names a deliverable the
-  playbook (given or detected) does not produce — 「寫一篇論文」 with `lit_review` — it plans a goal for that deliverable
-  instead; when the conversation already pursues a goal for the same deliverable (「可以開論文了」) it returns that goal (no
-  second goal, no unrelated runs); a different deliverable updates the conversation's goal. The prompt (`PAPER_RULES`) tells
+  `get_goal {goal_id?}`. `start_workflow` routes through `routeWorkflowRequest`: when the user's words name a paper or a
+  paper outline that the given playbook does not produce — 「寫一篇論文」 with `lit_review` or without a playbook — it plans a
+  goal for that deliverable instead; when the conversation already pursues a goal and the hint does not produce what the
+  words ask, the goal is returned (same deliverable, 「可以開論文了」: no second goal, no unrelated runs) or updated (a
+  different one). Any other mismatch (a deck asked with `reading_note`) is a workflow whose router picks the producer. The prompt (`PAPER_RULES`) tells
   the model to fix the deliverable first, never substitute, use `start_goal` for multi-stage deliverables and `update_goal` when
   the user changes it.
 - Frontend: `lib/goals/api.ts`, `components/workflows/GoalCard.svelte` (deliverable + status, objective, 「無法直接產生」 box,

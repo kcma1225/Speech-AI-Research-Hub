@@ -14,7 +14,7 @@ import { loadStudyAccess } from "../lib/studies/access.js";
 import { cancelJob } from "../jobs/queue.js";
 import { enqueueWorkflow } from "./jobs.js";
 import { emitRun, getRun, getSteps, insertSteps, insertWorkflowEvent, runView, stepView } from "./store.js";
-import { detectPlaybook, getWorkflowPlaybook } from "./playbooks/index.js";
+import { getWorkflowPlaybook } from "./playbooks/index.js";
 import { WorkflowEnv } from "./env.js";
 import { platformPort } from "./llm.js";
 import { aiFor } from "../ai/platform/index.js";
@@ -25,7 +25,9 @@ import { batchPapers, batchRequest, conversationContext, studyFromText } from ".
 import { lockUserSlots, MAX_ACTIVE_PER_USER, promoteAllQueued, promoteQueued, slotUsage } from "./queue.js";
 import { fixLine, loadLedger } from "./ledger.js";
 import { artifactKindOf, detectPageCount, editedRequirements, withRequirementCriteria } from "./requirements.js";
-import { clipWords, collectUserWords, deliverableFor, editedBrief, playbookFor, playbookKind, saveBrief, seedBrief, type BriefKind } from "./brief.js";
+import { clipWords, collectUserWords, deliverableFor, editedBrief, saveBrief, seedBrief, type BriefKind } from "./brief.js";
+import { editAsked, route, routeContext, routeNote, routeState, type RouteState } from "./route.js";
+import { DELIVERABLE_LABEL } from "./goals/capabilities.js";
 import type { Requirement } from "./types.js";
 
 export { MAX_ACTIVE_PER_USER } from "./queue.js";
@@ -59,29 +61,32 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
   const ctx = { ...conv, ...(input.context ?? {}) } as Record<string, unknown>;
   let studyRef = inputs.study ?? (ctx.studyId as string | undefined) ?? (ctx.studySlug as string | undefined);
   if (!inputs.paper_id && typeof ctx.paperId === "string") inputs.paper_id = ctx.paperId;
-  if (!inputs.deck_id && typeof ctx.deckId === "string" && /簡報|投影片|slide|deck/i.test(input.request)) inputs.deck_id = ctx.deckId;
   if (!studyRef && !inputs.paper_id) studyRef = (await studyFromText(client, user, input.request)) ?? undefined;
   let studyId: string | null = null;
   if (studyRef) studyId = (await loadStudyAccess(client, studyRef, user)).study.id;
   if (studyId && !inputs.study) inputs.study = studyId;
-  // The Brief's deliverable (hard) comes from the user's words; a playbook chosen by detection must produce it.
-  const explicit = input.playbook && getWorkflowPlaybook(input.playbook) ? input.playbook : null;
+  // The user's own words are the Brief's source; the assistant's request is its paraphrase (route.ts decides from them).
+  const hint = input.playbook && getWorkflowPlaybook(input.playbook) ? input.playbook : null;
   const words = clipWords(input.userWords?.length ? input.userWords : [input.request]);
   const paraphrase = input.userWords?.length ? input.request : null;
-  const named = deliverableFor(words, paraphrase, explicit ?? detectPlaybook(input.request, inputs as Record<string, unknown>));
-  const deliverable = input.briefDeliverable ?? (explicit && playbookKind(explicit) !== named.kind ? deliverableFor([], null, explicit) : named);
-  const playbook = explicit ?? playbookFor(deliverable.kind, input.request, inputs as Record<string, unknown>);
+  // The page's deck is the run's deck when the words are about a deck or edit one (「全英文翻譯」 on the deck page).
+  if (!inputs.deck_id && typeof ctx.deckId === "string" && (/簡報|投影片|slide|deck/i.test(`${words.join("\n")}\n${paraphrase ?? ""}`) || editAsked(words.join("\n"), []))) inputs.deck_id = ctx.deckId;
   // A page count the assistant passed counts only when the user's own words have one (production: pages: 12 nobody asked for).
   if (paraphrase && inputs.pages && !detectPageCount(words.join("\n"))) delete inputs.pages;
-  const items = await batchPapers(client, { playbook, request: input.request, studyId, paperId: inputs.paper_id, paperIds: inputs.paper_ids, userText: input.userWords?.length ? input.userWords.join("\n") : undefined });
+  // ONE routing decision (route.ts): deliverable, playbook (the given one is a hint), deck mode, batch.
+  const explicitPaper = !!inputs.paper_id;
+  const r = route({ words, paraphrase, kind: input.briefDeliverable?.kind ?? null, hint, inputs: inputs as Record<string, unknown>, explicitPaper, ready: await routeContext(client, studyId, inputs.deck_id) });
+  const playbook = r.playbook;
+  const deliverable = input.briefDeliverable ?? { kind: r.kind, label: r.deliverable ? DELIVERABLE_LABEL[r.deliverable] : deliverableFor([], null, playbook).label };
+  const items = r.batch ? await batchPapers(client, { studyId, paperId: inputs.paper_id, paperIds: inputs.paper_ids }) : null;
   await lockUserSlots(client, user.id);
   const usage = await slotUsage(client, user.id);
   let working = usage.working;
   let queuedBefore = usage.queued;
   const batchId = items ? randomUUID() : null;
   const specs = items
-    ? items.map((it, i) => ({ request: batchRequest(input.request, it, i, items.length), inputs: { ...inputs, paper_id: it.paper_id, paper_ids: undefined, ...(playbook === "slides" ? { mode: "paper_report" as const } : {}) }, title: `${titleFrom(it.title)}`, index: i }))
-    : [{ request: input.request, inputs, title: titleFrom(input.request), index: null as number | null }];
+    ? items.map((it, i) => ({ request: batchRequest(input.request, it, i, items.length), inputs: { ...inputs, paper_id: it.paper_id, paper_ids: undefined, ...(playbook === "slides" ? { mode: "paper_report" as const } : {}) }, title: `${titleFrom(it.title)}`, index: i, route: { ...r, batch: false, ...(playbook === "slides" ? { deck: "paper_report" as const } : {}) } }))
+    : [{ request: input.request, inputs, title: titleFrom(input.request), index: null as number | null, route: r }];
   const runs: RunRow[] = [];
   for (const sp of specs) {
     // FIFO: once anything waits, later runs wait behind it.
@@ -89,10 +94,10 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
     if (status === "planning") working++;
     else queuedBefore++;
     const row = (await client.query<RunRow>(
-      `INSERT INTO workflow_runs(user_id,study_id,conversation_id,tool_call_id,playbook,title,request,inputs,context,autopilot,budget,status,batch_id,batch_index,brief)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      `INSERT INTO workflow_runs(user_id,study_id,conversation_id,tool_call_id,playbook,title,request,inputs,context,autopilot,budget,status,batch_id,batch_index,brief,state)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
       [user.id, studyId, input.conversationId ?? null, input.toolCallId ?? null, playbook, sp.title, sp.request.slice(0, 4000), JSON.stringify(sp.inputs), JSON.stringify(ctx), !!input.autopilot, JSON.stringify(budgetFor(playbook)), status, batchId, sp.index,
-        JSON.stringify(seedBrief(sp.request, playbook, { userWords: words, deliverable }))],
+        JSON.stringify(seedBrief(sp.request, playbook, { userWords: words, deliverable })), JSON.stringify({ route: routeState(sp.route, { briefVersion: 0, explicitPaper, hint }) })],
     )).rows[0]!;
     await enqueueWorkflow(client, row.id, user.id, row.title);
     runs.push((await getRun(client, row.id))!);
@@ -109,6 +114,12 @@ export async function announceRuns(db: Queryable, runs: RunRow[]) {
   for (const run of runs) {
     await emitRun(db, run.id);
     await insertWorkflowEvent(db, run.id, "log", { level: "info", text: run.status === "queued" ? `排隊中：同時最多 ${MAX_ACTIVE_PER_USER} 個工作流程在執行，前面的完成或停下來等你時會自動開始。` : "已收到任務，主要 Agent 開始規劃。" });
+    // The routing decision, and a proposal of the assistant's that the Brief overrode (route.ts).
+    const r = run.state?.route as RouteState | undefined;
+    if (r) {
+      if (r.hint && !r.hint.accepted) await insertWorkflowEvent(db, run.id, "log", { level: "warn", text: `助理建議用「${getWorkflowPlaybook(r.hint.playbook)?.title ?? r.hint.playbook}」，但它不符合你要的成果；照你的話改由「${getWorkflowPlaybook(r.playbook)?.title ?? r.playbook}」執行。` });
+      await insertWorkflowEvent(db, run.id, "log", { level: "info", text: routeNote(r) });
+    }
   }
 }
 
