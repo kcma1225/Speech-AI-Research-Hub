@@ -13,7 +13,7 @@ import { addUsage, getRun, insertWorkflowEvent, markTainted } from "./store.js";
 import { llm, llmJson, type LlmRequest } from "./llm.js";
 import type { ChatRole } from "../ai/platform/roles.js";
 import { WorkflowStop, type ModelPort, type Requirement, type RunRow, type StepRole } from "./types.js";
-import { requirementsBlock, targetLanguage } from "./requirements.js";
+import { notesLanguage, requirementsBlock, targetLanguage } from "./requirements.js";
 import { briefBlock, type Brief } from "./brief.js";
 import type { RouteState } from "./route.js";
 
@@ -39,11 +39,14 @@ export function withRequirements(req: LlmRequest, reqs: Requirement[], brief?: B
   if (head?.role === "system" && typeof head.content === "string") messages[sys] = { role: "system", content: `${head.content}\n\n${block}` };
   else messages.unshift({ role: "system", content: block });
   const lang = targetLanguage(reqs);
+  const notes = notesLanguage(reqs);
   // Cheap models drift back to the default language at the end of a long brief: remind them right after the task.
   if (!verifier && lang) {
     const last = messages.map((m) => m.role).lastIndexOf("user");
     const m = messages[last];
-    const note = lang === "en" ? "（提醒：成果全部用英文。Reminder: write the output in English only.）" : "（提醒：成果用繁體中文。）";
+    const note = notes && notes !== lang
+      ? (lang === "en" ? "（提醒：投影片本體全部用英文，講稿 ::: {.notes} 用繁體中文口語、專有名詞用英文。Reminder: slide text in English only; speaker notes in Traditional Chinese.）" : "（提醒：投影片本體用繁體中文，講稿 ::: {.notes} 用英文。）")
+      : lang === "en" ? "（提醒：成果全部用英文。Reminder: write the output in English only.）" : "（提醒：成果用繁體中文。）";
     if (m?.role === "user" && typeof m.content === "string") messages[last] = { role: "user", content: `${m.content}\n\n${note}` };
   }
   return { ...req, messages };
@@ -158,7 +161,8 @@ export class WorkflowEnv {
 
   /** Guidance the user added (補充指示), for prompts. */
   guidanceText() {
-    const g = this.run.guidance ?? [];
+    // Setup answers (which study / paper) are inputs the playbook already used, not instructions for the content.
+    const g = (this.run.guidance ?? []).filter((x) => !x.setup);
     return g.length ? `使用者在執行中補充的指示（優先遵守）：\n${g.map((x) => `- ${x.text}`).join("\n")}` : "";
   }
 

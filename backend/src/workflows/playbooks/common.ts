@@ -4,7 +4,8 @@ import { loadStudyAccess, type StudyAccess } from "../../lib/studies/access.js";
 import { dataBlock } from "../llm.js";
 import { verifyStep } from "../verify.js";
 import { getSteps } from "../store.js";
-import { studyFromText } from "../context.js";
+import { conversationStudy, REFER_BACK_RE, studyFromText, studyOfInputs } from "../context.js";
+import { askUser, asksOf } from "../questions.js";
 import { scopeLine } from "../brief.js";
 import type { WorkflowEnv } from "../env.js";
 import type { StepOutput, StepRole, StepRow, StepSpec, Verdict } from "../types.js";
@@ -104,45 +105,110 @@ export async function planningStep(
   return { output, ok, spec: { ...spec, done: { output, verdict: verdict ?? undefined, round: history.length - 1, history } } };
 }
 
-/** The study the run works in: inputs.study, the page context, or the paper's single study. */
-export async function resolveStudy(env: WorkflowEnv): Promise<StudyAccess | null> {
-  const ref = (env.run.inputs.study as string | undefined) || env.run.study_id || (env.run.context.studyId as string | undefined) || (env.run.context.studySlug as string | undefined);
-  if (ref) {
-    try {
-      return await loadStudyAccess(env.db, ref, env.user);
-    } catch {
-      return null;
-    }
-  }
-  const paperId = paperIdOf(env);
-  if (paperId) {
-    const rows = (await env.db.query<{ study_id: string }>("SELECT sp.study_id FROM study_papers sp JOIN study_members m ON m.study_id=sp.study_id AND m.user_id=$2 AND m.role IN ('owner','member') WHERE sp.paper_id=$1", [paperId, env.user.id]).catch(() => ({ rows: [] as { study_id: string }[] }))).rows;
-    if (rows.length === 1) return loadStudyAccess(env.db, rows[0]!.study_id, env.user);
-  }
-  // Named in the request or a later guidance (「放在 Lightweight ASR」), else the only study; 「你決定」 → the most
-  // recently active study the user edits. Persisted so the rest of the run (papers, batches) sees it.
-  const guidance = (env.run.guidance ?? []).map((g) => g.text).join("\n");
-  let id = await studyFromText(env.db, env.user, `${env.run.request}\n${guidance}`);
-  if (!id && DELEGATE_RE.test(guidance)) {
-    id = (await env.db.query<{ id: string }>(
-      `SELECT s.id FROM studies s JOIN study_members m ON m.study_id=s.id AND m.user_id=$1 AND m.role IN ('owner','member')
-        WHERE s.archived_at IS NULL AND s.status <> 'archived' ORDER BY s.activity_at DESC LIMIT 1`,
-      [env.user.id],
-    )).rows[0]?.id ?? null;
-  }
-  if (!id) return null;
-  await env.db.query("UPDATE workflow_runs SET study_id=$2, updated_at=now() WHERE id=$1 AND study_id IS NULL", [env.run.id, id]);
-  env.run.study_id = id;
-  return loadStudyAccess(env.db, id, env.user);
+/** The studies the user edits, most recently active first. */
+async function editableStudies(env: WorkflowEnv, limit = 6) {
+  return (await env.db.query<{ id: string; title: string }>(
+    `SELECT s.id, s.title FROM studies s JOIN study_members m ON m.study_id=s.id AND m.user_id=$1 AND m.role IN ('owner','member')
+      WHERE s.archived_at IS NULL AND s.status <> 'archived' ORDER BY s.activity_at DESC LIMIT $2`,
+    [env.user.id, limit],
+  )).rows;
 }
 
-/** 「要把…放在哪個研究？」 with the studies the user can pick (and that 「你決定」 works). */
+/**
+ * The study a free-text answer / guidance points at: a study it names, 「剛剛那個／同一個」 → the conversation's last
+ * workflow study, 「你決定」 → the most recently active study the user edits.
+ */
+export async function studyFromAnswer(env: WorkflowEnv, text: string): Promise<string | null> {
+  if (!text.trim()) return null;
+  const named = await studyFromText(env.db, env.user, text);
+  if (named) return named;
+  if (REFER_BACK_RE.test(text)) {
+    const conv = await conversationStudy(env.db, env.run.conversation_id, env.user.id, env.run.id);
+    if (conv) return conv;
+  }
+  if (DELEGATE_RE.test(text) || REFER_BACK_RE.test(text)) return (await editableStudies(env, 1))[0]?.id ?? null;
+  return null;
+}
+
+async function useStudy(env: WorkflowEnv, id: string): Promise<StudyAccess | null> {
+  let access: StudyAccess;
+  try {
+    access = await loadStudyAccess(env.db, id, env.user);
+  } catch {
+    return null;
+  }
+  await env.db.query("UPDATE workflow_runs SET study_id=$2, updated_at=now() WHERE id=$1 AND study_id IS NULL", [env.run.id, access.study.id]);
+  env.run.study_id = access.study.id;
+  return access;
+}
+
+/**
+ * The study the run works in, without asking: inputs.study / the run's study / the page context, the work object's own
+ * study (deck, note, LaTeX project, paper), the conversation's last workflow study, a study the request or a guidance
+ * names, 「剛剛那個」 / 「你決定」 in a guidance. Persisted so the rest of the run (papers, batches, routing) sees it.
+ */
+export async function resolveStudy(env: WorkflowEnv): Promise<StudyAccess | null> {
+  const ref = (env.run.inputs.study as string | undefined) || env.run.study_id || (env.run.context.studyId as string | undefined) || (env.run.context.studySlug as string | undefined);
+  if (ref) return useStudy(env, ref);
+  const own = await studyOfInputs(env.db, env.user.id, { ...env.run.inputs, paper_id: paperIdOf(env) ?? undefined });
+  if (own) return useStudy(env, own);
+  const conv = await conversationStudy(env.db, env.run.conversation_id, env.user.id, env.run.id);
+  if (conv) return useStudy(env, conv);
+  const guidance = (env.run.guidance ?? []).map((g) => g.text).join("\n");
+  const id = (await studyFromText(env.db, env.user, `${env.run.request}\n${guidance}`)) ?? (guidance ? await studyFromAnswer(env, guidance) : null);
+  return id ? useStudy(env, id) : null;
+}
+
+/**
+ * The study, or ONE study-picker card (never a free-text question, never a reason to change playbooks): the user's
+ * studies as options + 「你決定」; a 「其他」 answer is matched (a study name, 「剛剛那個／同一個」 → the conversation's last
+ * workflow study). An answer that names no study asks again (≤ 3 cards) saying so. The answer is an input, not the
+ * user's words (it never reaches the Brief or the topic).
+ */
+export async function requireStudy(env: WorkflowEnv, what: string): Promise<StudyAccess | { question: string }> {
+  const found = await resolveStudy(env);
+  if (found) return found;
+  const rows = await editableStudies(env);
+  if (!rows.length) return { question: "你還沒有參與任何研究，請先建立研究，再從研究頁面按「交給 Agent」。" };
+  const asks = asksOf(env.run.state);
+  let n = 1;
+  for (; n <= 3; n++) {
+    const card = asks[`study_${n}`];
+    if (!card?.answers) break;
+    const a = card.answers.find((x) => x.id === "study");
+    const value = typeof a?.value === "string" ? a.value : "";
+    const id = value === "__delegate" ? (rows[0]?.id ?? null) : rows.some((r) => r.id === value) || /^[0-9a-f-]{36}$/i.test(value) ? value : await studyFromAnswer(env, a?.other ?? "");
+    const access = id ? await useStudy(env, id) : null;
+    if (access) return access;
+  }
+  if (n > 3) return { question: `還是不知道要把${what}放在哪個研究。請在補充指示寫出研究名稱（${rows.map((r) => `〈${r.title}〉`).join("、")}）。` };
+  await askUser(env, {
+    id: `study_${n}`, title: `要把${what}放在哪個研究？`, step_key: null, purpose: "input", ai_suggested: false,
+    intro: n > 1 ? `上一個回答對不到研究，請從下面選一個（或在「其他」寫研究名稱）。` : undefined,
+    questions: [{
+      id: "study", prompt: "選一個研究", type: "single_choice", required: true, allow_other: true,
+      options: [...rows.map((r) => ({ value: r.id, label: clipText(r.title, 60), description: r.title.length > 60 ? clipText(r.title, 190) : undefined })), { value: "__delegate", label: "你決定（最近在進行的研究）" }],
+    }],
+  });
+  return { question: `要把${what}放在哪個研究？` };
+}
+
+/**
+ * An answer (guidance or a card's 「其他」) that picks one of `items`: a title it names (`matchPaperTitle`), else 「你決定」
+ * / 「剛剛那個」 → the first item (callers order them most recent first). Every setup question honours a delegate answer
+ * (scenario matrix g35/g36: after 「你決定」 the LaTeX project question came back).
+ */
+export function pickFromAnswer<T extends { title: string }>(items: T[], text: string): T | null {
+  if (!items.length || !text.trim()) return null;
+  return matchPaperTitle(text, items) ?? (DELEGATE_RE.test(text) || REFER_BACK_RE.test(text) ? items[0]! : null);
+}
+
+/** The user's guidance lines (setup answers included: they answer exactly these questions). */
+export const guidanceAll = (env: WorkflowEnv) => (env.run.guidance ?? []).filter((g) => !g.system).map((g) => g.text).join("\n");
+
+/** 「要把…放在哪個研究？」 (legacy text form; playbooks use `requireStudy`'s card). */
 export async function whichStudyQuestion(env: WorkflowEnv, what: string): Promise<string> {
-  const rows = (await env.db.query<{ title: string }>(
-    `SELECT s.title FROM studies s JOIN study_members m ON m.study_id=s.id AND m.user_id=$1 AND m.role IN ('owner','member')
-      WHERE s.archived_at IS NULL AND s.status <> 'archived' ORDER BY s.activity_at DESC LIMIT 6`,
-    [env.user.id],
-  )).rows;
+  const rows = await editableStudies(env);
   if (!rows.length) return `你還沒有參與任何研究，請先建立研究，再從研究頁面按「交給 Agent」。`;
   return `要把${what}放在哪個研究？請在補充指示寫研究名稱（${rows.map((r) => `〈${r.title}〉`).join("、")}），或回答「你決定」，我會用最近在進行的研究。`;
 }
@@ -162,11 +228,13 @@ export async function paperOf(env: WorkflowEnv) {
   if (arxiv || doi) found = (await env.db.query<{ id: string }>("SELECT id FROM papers WHERE ($1::text IS NOT NULL AND arxiv_id LIKE $1 || '%') OR ($2::text IS NOT NULL AND lower(doi)=lower($2)) LIMIT 1", [arxiv ?? null, doi ?? null])).rows[0]?.id;
   if (!found && env.run.study_id) {
     // A study paper named in the request or the guidance (「把 wav2vec 2.0 這篇做成簡報」), else the only one with a PDF.
-    const rows = (await env.db.query<{ id: string; title: string; has_pdf: boolean }>("SELECT p.id, p.title, (p.pdf_key IS NOT NULL) AS has_pdf FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 LIMIT 500", [env.run.study_id])).rows;
+    const rows = (await env.db.query<{ id: string; title: string; has_pdf: boolean }>("SELECT p.id, p.title, (p.pdf_key IS NOT NULL) AS has_pdf FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 ORDER BY sp.created_at DESC LIMIT 500", [env.run.study_id])).rows;
     found = matchPaperTitle([env.run.request, ...(env.run.guidance ?? []).map((g) => g.text)].join("\n"), rows)?.id;
     if (!found) {
       const withPdf = rows.filter((r) => r.has_pdf);
       if (withPdf.length === 1) found = withPdf[0]!.id;
+      // 「你決定」 to 「要報告哪一篇論文？」: the most recently added paper with a PDF.
+      else if (withPdf.length && DELEGATE_RE.test(guidanceAll(env))) found = withPdf[0]!.id;
     }
   }
   if (!found) return null;

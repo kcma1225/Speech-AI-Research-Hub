@@ -18,7 +18,7 @@ import { BRIEF_KIND_LABEL, briefKindOf, deliverableFromWords, playbookKind, same
 import type { Queryable } from "../db.js";
 import { capabilityOf, DELIVERABLE_LABEL, deliverableOf, readinessOf, type DeliverableKind, type Readiness } from "./goals/capabilities.js";
 import { isTopicRequest, matchPaperTitle } from "./playbooks/common.js";
-import { detectPlaybook, getWorkflowPlaybook, listWorkflowPlaybooks } from "./playbooks/registry.js";
+import { detectPlaybook, getWorkflowPlaybook, listWorkflowPlaybooks, playbookLabel } from "./playbooks/registry.js";
 import { EACH_PAPER_RE, PER_PAPER_PLAYBOOKS } from "./context.js";
 import { detectExclude, detectLanguage, detectPageCount, detectPerItemFields } from "./requirements.js";
 import type { EditKind, Requirement } from "./types.js";
@@ -89,6 +89,14 @@ export function editKindOf<R extends Pick<Requirement, "type" | "params">>(words
 const EDIT_REQS = new Set<Requirement["type"]>(["language", "page_count", "per_item_fields", "exclude", "include_topics"]);
 
 /** The user's words (+ the Brief's requirements) ask to change the deck itself. */
+/**
+ * The words ask for a NEW deck (「幫我做一份…簡報」「make a progress report deck」), not an edit of the deck on the page
+ * (scenario matrix g03 / g06 / g09: a new deck asked on a deck page became a revise of that deck).
+ */
+export const NEW_DECK_RE = /(?:做|建立|產生|生成|準備|製作|弄)\s*(?:一份|一個|個|份|新的?)?[^。！？\n]{0,30}?(?:簡報|投影片|slides|deck)|\b(?:make|create|build|prepare|generate)\s+(?:me\s+)?(?:a|an|another|new)\b[^.\n]{0,50}?\b(?:deck|presentation|slides)\b/i;
+/** A new-deck request that does not also point at an existing deck (「把這個簡報做成英文版」 is an edit). */
+export const newDeckAsked = (text: string) => NEW_DECK_RE.test(text) && !/(?:這個|那個|這份|那份|同一個|剛剛的?|原本的?)\s*(?:簡報|投影片|deck)|\b(?:this|that|the same) (?:deck|presentation|slides)\b|(?:改|修改|翻譯|翻成|加一頁|刪掉|展開|擴充)/i.test(text);
+
 export function editAsked(words: string, reqs: Pick<Requirement, "type" | "source">[]): boolean {
   if (REVISE_RE.test(words) || EXPAND_RE.test(words) || addedPages(words) > 0 || detectExclude(words)) return true;
   if (detectLanguage(words) || detectPageCount(words) || detectPerItemFields(words)) return true;
@@ -275,7 +283,7 @@ export function route(input: RouteInput): Route {
   // 3. Slides: the given deck itself, or which new deck.
   if (playbook === "slides") {
     const deckGiven = typeof inp.deck_id === "string" && (ready?.deckPages ?? 1) > 0;
-    if (deckGiven && !inp.mode && editAsked(text, input.requirements ?? [])) {
+    if (deckGiven && !inp.mode && editAsked(text, input.requirements ?? []) && !newDeckAsked(text)) {
       out.deck = "edit";
       out.edit = editKindOf(text, (input.requirements ?? []).filter((r) => r.source !== "standing"), ready?.deckPages ?? 0);
       reasons.push(`修改這份簡報（${out.edit === "expand" ? "擴充：重新規劃大綱" : "修訂：頁數與順序照舊"}）`);
@@ -295,7 +303,8 @@ export function route(input: RouteInput): Route {
       reasons.push("你要每一篇各做一份");
     } else if (!each && paperIds.length >= 2 && PLURAL_PAPERS_RE.test(text) && !ONE_ARTIFACT_RE.test(text)) out.ask = "batch";
   }
-  out.reason = reasons.join("；");
+  // An edit of the given deck is named for what it does (「修改簡報」), not 「從 0 到 1 建立簡報」.
+  out.reason = out.deck === "edit" ? reasons.join("；").split(label("slides")).join(playbookLabel("slides", out)) : reasons.join("；");
   return out;
 }
 
@@ -352,7 +361,7 @@ export const routeState = (r: Route, extra: { briefVersion: number; explicitPape
 
 /** One log line for the run (plan card log). */
 export function routeNote(r: Route): string {
-  const pb = getWorkflowPlaybook(r.playbook)?.title ?? r.playbook;
+  const pb = playbookLabel(r.playbook, r);
   return `路由：要交付的是${BRIEF_KIND_LABEL[r.kind]}，由「${pb}」執行${r.reason ? `（${r.reason}）` : ""}。`;
 }
 

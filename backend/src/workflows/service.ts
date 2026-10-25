@@ -16,18 +16,19 @@ import { enqueueWorkflow } from "./jobs.js";
 import { emitRun, getRun, getSteps, insertSteps, insertWorkflowEvent, runView, stepView } from "./store.js";
 import { titleMatches } from "./checks.js";
 import { getWorkflowPlaybook } from "./playbooks/index.js";
+import { playbookLabel } from "./playbooks/registry.js";
 import { WorkflowEnv } from "./env.js";
 import { platformPort } from "./llm.js";
 import { aiFor } from "../ai/platform/index.js";
 import { asksOf, cardAnswersText, validateCardAnswers } from "./questions.js";
 import { budgetFor, DEFAULT_BUDGET, FINISHED_STATUSES, type Criterion, type RunRow, type StepRow } from "./types.js";
 import { randomUUID } from "node:crypto";
-import { batchPapers, batchRequest, conversationContext, studyFromText } from "./context.js";
+import { batchPapers, batchRequest, conversationArtifact, conversationContext, conversationStudy, POINTS_AT_RE, studyFromText, studyOfInputs } from "./context.js";
 import { lockUserSlots, MAX_ACTIVE_PER_USER, promoteAllQueued, promoteQueued, slotUsage } from "./queue.js";
 import { fixLine, loadLedger } from "./ledger.js";
 import { artifactKindOf, detectPageCount, editedRequirements, withRequirementCriteria } from "./requirements.js";
 import { clipWords, collectUserWords, deliverableFor, editedBrief, saveBrief, seedBrief, type BriefKind } from "./brief.js";
-import { editAsked, route, routeContext, routeNote, routeState, type RouteState } from "./route.js";
+import { editAsked, newDeckAsked, route, routeContext, routeNote, routeState, type RouteState } from "./route.js";
 import { DELIVERABLE_LABEL } from "./goals/capabilities.js";
 import type { Requirement } from "./types.js";
 
@@ -60,18 +61,41 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
   const inputs = { ...(input.inputs ?? {}) };
   const conv = await conversationContext(client, input.conversationId, user.id);
   const ctx = { ...conv, ...(input.context ?? {}) } as Record<string, unknown>;
-  let studyRef = inputs.study ?? (ctx.studyId as string | undefined) ?? (ctx.studySlug as string | undefined);
+  // The user's own words are the Brief's source; the assistant's request is its paraphrase (route.ts decides from them).
+  const words = clipWords(input.userWords?.length ? input.userWords : [input.request]);
+  const paraphrase = input.userWords?.length ? input.request : null;
+  const said = words.join("\n");
+  const aboutDeck = /簡報|投影片|slide|deck|presentation/i.test(`${said}\n${paraphrase ?? ""}`);
+  // The work object (scenario matrix: 「剛剛那個簡報」「同一個簡報」「繼續」 with no deck page open lost the deck): the page's
+  // deck when the words are about a deck or edit one and do not ask for a NEW deck; else the deck the conversation's last
+  // workflow wrote when the words point at an existing one or edit one. Notes likewise.
+  if (!inputs.deck_id && typeof ctx.deckId === "string" && (aboutDeck || editAsked(said, [])) && !newDeckAsked(said)) {
+    inputs.deck_id = ctx.deckId;
+    (inputs as Record<string, unknown>).deck_from = "page";
+  }
+  if (!inputs.deck_id && aboutDeck && !newDeckAsked(said) && (POINTS_AT_RE.test(said) || editAsked(said, []))) {
+    const d = await conversationArtifact(client, input.conversationId, user.id, "deck");
+    if (d) {
+      inputs.deck_id = d;
+      (inputs as Record<string, unknown>).deck_from = "conversation";
+    }
+  }
+  if (!inputs.note_ids?.length && /筆記|note/i.test(said) && !/簡報|投影片|slide|deck/i.test(said) && POINTS_AT_RE.test(said) && editAsked(said, [])) {
+    const n = (typeof ctx.noteId === "string" ? ctx.noteId : null) ?? (await conversationArtifact(client, input.conversationId, user.id, "note"));
+    if (n) inputs.note_ids = [n];
+  }
+  // The study: the inputs, the work object's own study (a deck / note / project / paper belongs to one), the current page,
+  // the conversation's last workflow (「同一個簡報繼續做」), the conversation's page context, a study the request names.
+  const page = (input.context ?? {}) as Record<string, unknown>;
+  let studyRef = inputs.study ?? (await studyOfInputs(client, user.id, inputs as Record<string, unknown>)) ?? (page.studyId as string | undefined) ?? (page.studySlug as string | undefined)
+    ?? (await conversationStudy(client, input.conversationId, user.id)) ?? (ctx.studyId as string | undefined) ?? (ctx.studySlug as string | undefined);
   if (!inputs.paper_id && typeof ctx.paperId === "string") inputs.paper_id = ctx.paperId;
+  if (!studyRef && inputs.paper_id) studyRef = (await studyOfInputs(client, user.id, inputs as Record<string, unknown>)) ?? undefined;
   if (!studyRef && !inputs.paper_id) studyRef = (await studyFromText(client, user, input.request)) ?? undefined;
   let studyId: string | null = null;
   if (studyRef) studyId = (await loadStudyAccess(client, studyRef, user)).study.id;
   if (studyId && !inputs.study) inputs.study = studyId;
-  // The user's own words are the Brief's source; the assistant's request is its paraphrase (route.ts decides from them).
   const hint = input.playbook && getWorkflowPlaybook(input.playbook) ? input.playbook : null;
-  const words = clipWords(input.userWords?.length ? input.userWords : [input.request]);
-  const paraphrase = input.userWords?.length ? input.request : null;
-  // The page's deck is the run's deck when the words are about a deck or edit one (「全英文翻譯」 on the deck page).
-  if (!inputs.deck_id && typeof ctx.deckId === "string" && (/簡報|投影片|slide|deck/i.test(`${words.join("\n")}\n${paraphrase ?? ""}`) || editAsked(words.join("\n"), []))) inputs.deck_id = ctx.deckId;
   // A page count the assistant passed counts only when the user's own words have one (production: pages: 12 nobody asked for).
   if (paraphrase && inputs.pages && !detectPageCount(words.join("\n"))) delete inputs.pages;
   // ONE routing decision (route.ts): deliverable, playbook (the given one is a hint), deck mode, batch.
@@ -118,7 +142,7 @@ export async function announceRuns(db: Queryable, runs: RunRow[]) {
     // The routing decision, and a proposal of the assistant's that the Brief overrode (route.ts).
     const r = run.state?.route as RouteState | undefined;
     if (r) {
-      if (r.hint && !r.hint.accepted) await insertWorkflowEvent(db, run.id, "log", { level: "warn", text: `助理建議用「${getWorkflowPlaybook(r.hint.playbook)?.title ?? r.hint.playbook}」，但它不符合你要的成果；照你的話改由「${getWorkflowPlaybook(r.playbook)?.title ?? r.playbook}」執行。` });
+      if (r.hint && !r.hint.accepted) await insertWorkflowEvent(db, run.id, "log", { level: "warn", text: `助理建議用「${getWorkflowPlaybook(r.hint.playbook)?.title ?? r.hint.playbook}」，但它不符合你要的成果；照你的話改由「${playbookLabel(r.playbook, r)}」執行。` });
       await insertWorkflowEvent(db, run.id, "log", { level: "info", text: routeNote(r) });
     }
   }
@@ -313,8 +337,20 @@ export async function revisePlan(app: FastifyInstance, user: CurrentUser, id: st
   await transaction(app.db, async (client) => {
     const r = await ownRun(client, user, id, true);
     const autoApproved = !!(r.state?.auto_approved as { at?: string } | null | undefined)?.at && ["running", "verifying", "paused"].includes(r.status);
-    if (!["awaiting_plan_approval", "awaiting_input"].includes(r.status) && !autoApproved) throw conflict("只有在確認計畫時才能修改計畫。");
+    // A finished run can be planned again (「重新規劃」 on a partial notice: unmet items a rewrite cannot fix — e.g. method
+    // families no paper read covers); its draft is reused, the plan waits for the user's approval.
+    const finished = ["partial", "done", "failed"].includes(r.status);
+    if (!["awaiting_plan_approval", "awaiting_input"].includes(r.status) && !autoApproved && !finished) throw conflict("只有在確認計畫時才能修改計畫。");
     const guidance = [...r.guidance, { at: new Date().toISOString(), text: feedback.slice(0, 2000), applied: false }];
+    if (finished) {
+      await client.query(
+        `UPDATE workflow_runs SET status='planning', guidance=$2, question=NULL, report=NULL, error=NULL, stop_reason=NULL, finished_at=NULL, final_rounds=0, pause_requested=false,
+           budget=$3, state = (state - 'repaired_criteria' - 'replan_needed' - 'final_ledger' - 'topic_refs_n' - 'auto_continued') || '{"manual_approval":true}'::jsonb, updated_at=now() WHERE id=$1`,
+        [id, JSON.stringify(guidance), JSON.stringify({ ...r.budget, max_steps: r.budget.max_steps + 120, max_calls: r.budget.max_calls + 400, max_minutes: r.budget.max_minutes + 90, max_tokens: r.budget.max_tokens + 6_000_000 })],
+      );
+      await enqueueWorkflow(client, id, user.id, r.title);
+      return;
+    }
     if (r.status === "running" || r.status === "verifying") {
       // Working: stop after the current sub-agent call(s), then the engine re-plans (engine.ts, revise_requested).
       await client.query("UPDATE workflow_runs SET pause_requested=true, guidance=$2, state = state || '{\"revise_requested\":true,\"manual_approval\":true}'::jsonb, updated_at=now() WHERE id=$1", [id, JSON.stringify(guidance)]);
@@ -390,7 +426,10 @@ export async function continueRun(db: Db, id: string, guidanceText: string) {
 export async function resumeWorkflow(app: FastifyInstance, user: CurrentUser, id: string, opts: { more?: boolean; guidance?: string } = {}) {
   await transaction(app.db, async (client) => {
     const r = await ownRun(client, user, id, true);
-    const guidance = opts.guidance ? [...r.guidance, { at: new Date().toISOString(), text: opts.guidance.slice(0, 2000), applied: false }] : r.guidance;
+    // An answer to a setup question asked while planning (which study / paper / project) is an input for that question, not
+    // the user's words: it never becomes a requirement or the topic (production 0668a3d7: the study name became the deck title).
+    const setup = r.status === "awaiting_input" && !!r.state?.plan_question_setup && !r.state?.ask_pending;
+    const guidance = opts.guidance ? [...r.guidance, { at: new Date().toISOString(), text: opts.guidance.slice(0, 2000), applied: false, ...(setup ? { setup: true } : {}) }] : r.guidance;
     if (r.status === "paused") {
       await client.query("UPDATE workflow_runs SET status='running', pause_requested=false, guidance=$2, updated_at=now() WHERE id=$1", [id, JSON.stringify(guidance)]);
     } else if (r.status === "needs_pdf") {

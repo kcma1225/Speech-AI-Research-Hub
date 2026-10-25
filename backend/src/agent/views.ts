@@ -109,8 +109,9 @@ export const messageView = (m: MessageRow) => ({
   // Notices carry their kind (limit_steps, repeat, expired…) for the UI's action buttons.
   kind: m.role === "notice" && Array.isArray(m.content) ? ((m.content[0] as { kind?: string } | undefined)?.kind ?? null) : null,
   // A partial workflow's unmet items (「要我修這幾項嗎？」 → 繼續改 with them) and the run they belong to.
-  ...(m.role === "notice" && Array.isArray(m.content) && Array.isArray((m.content[0] as { items?: unknown } | undefined)?.items)
-    ? { items: (m.content[0] as { items: string[] }).items, workflow_id: (m.content[0] as { workflowId?: string }).workflowId ?? null }
+  // `replan`: unmet items only a new plan can meet (「重新規劃」).
+  ...(m.role === "notice" && Array.isArray(m.content) && (Array.isArray((m.content[0] as { items?: unknown } | undefined)?.items) || Array.isArray((m.content[0] as { replan?: unknown } | undefined)?.replan))
+    ? { items: (m.content[0] as { items?: string[] }).items ?? [], replan: (m.content[0] as { replan?: string[] }).replan ?? [], workflow_id: (m.content[0] as { workflowId?: string }).workflowId ?? null }
     : {}),
   memories: m.memories ?? [],
   // `ask_user` answers of this user turn (the card renders them; 「修改答案」 edits them as a new version).

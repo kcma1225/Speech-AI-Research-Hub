@@ -22,18 +22,18 @@ import { bodyIssues, closeOpenBlocks, combineScores, fixContent, fixFor, invente
 import { assignTitles, duplicatePages, findByTitle, keptIssues, matchOriginals, parseSlides, PLACEHOLDER_RE, scrubPlaceholders, titleMatches, unbalanced, type OriginalPage } from "../checks.js";
 import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
-import { addArtifact, getSteps } from "../store.js";
+import { addArtifact, getSteps, insertSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { WorkflowStop, type CheckSpec, type Criterion, type OutlineItem, type PlannedWrite, type StepOutput, type StepRow, type StepSpec } from "../types.js";
 import { abstractBrief, ensurePaperPdf } from "../paper-pdf.js";
-import { clipText, matchPaperTitle, paperIdOf, paperOf, planningStep, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { clipText, matchPaperTitle, paperIdOf, paperOf, planningStep, requireStudy, systemFor, taskPrompt } from "./common.js";
 import { clarifyOnce, requestLine, userGuidance } from "../brief.js";
 import { currentRoute, splitBatch, deckModeOf, PROGRESS_RE, PAPER_REPORT_RE, addedPages, editKindOf, requiredPages } from "../route.js";
 import { registerWorkflowPlaybook, type WorkflowPlaybook } from "./registry.js";
-import { ABSTRACT_ONLY, decompose, extractPart, libraryPapers, paperSteps, pickLine, pickTitle, readPaper, searchOnline, select, stackOf, type Pick as TopicPick, type ReadPaper, type TopicState } from "./research.js";
+import { ABSTRACT_ONLY, bibLine, decompose, extractPart, libraryPapers, paperSteps, pickLine, pickTitle, readPaper, searchOnline, select, stackOf, type Pick as TopicPick, type ReadPaper, type TopicState } from "./research.js";
 import { generateUnit, neighbourBlock } from "../units.js";
 import { applyStudentPages, runStudentInput, STUDENT_INPUT_KEY, studentInputStep, studentPagesOf } from "../student-input.js";
-import { checkedCriteria, localizeLabels, runLabels, targetLanguage, LANGUAGE_LABEL } from "../requirements.js";
+import { checkedCriteria, LIBRARY_SURVEY_RE, localizeLabels, notesLanguage, runLabels, segmentClauses, targetLanguage, LANGUAGE_LABEL } from "../requirements.js";
 import { deckSubtitle, failingPages, fixPages, frontMatterText, frontTitle, guardRequirements, splitChunks } from "./slides-requirements.js";
 import type { EditKind, Requirement } from "../types.js";
 
@@ -87,7 +87,7 @@ const deckRules = (env: WorkflowEnv, mode: DeckMode) => (isTopicDeck(env) ? TOPI
  */
 export const TOPIC_RULES = `主題簡報規則（survey deck，不是 Lab-Hub 固定格式）：
 - 結構：題目 → 動機與問題定義（任務、評估方式）→ 做法分類（kind taxonomy：表格或 grid diagram，一類一列並標代表論文）→ 代表方法一頁一個（kind method：\`\`\`diagram 架構圖畫出元件與「注入位置」（額外資訊接到哪個元件），寫需要訓練或只在推論時加、關鍵結果）→ 結果比較（kind comparison：表格或 \`\`\`chart，只把同資料集、同指標的數字放在一起）→ 綜合比較與開放問題（kind synthesis）→ 小結；頁數依計畫。
-- 內容只用提供的論文摘錄（P1…Pn）與研究資料；提到論文時寫它的簡稱與年份；「僅依摘要」的論文不寫方法細節或數字；資料沒有的數字或結論不要寫。
+- 內容只用提供的論文摘錄（P1…Pn）與研究資料；提到論文時照「書目」寫（例如 Chen et al., 2018, Interspeech）；「僅依摘要」的論文不寫方法細節或數字；資料沒有的數字或結論不要寫。
 - 不要用 paper-fig（論文圖）：架構與流程一律用 \`\`\`diagram。
 - 每頁下方放 ::: {.notes} 講稿 :::。
 - 沒有學生自填頁（student_owned 一律 false）。`;
@@ -97,8 +97,27 @@ export const ONLINE_RE = /線上|上網|網路上|搜尋|搜索|(?:找|查)(?:�
 /** A library with fewer full-text papers than this is thin for a survey deck: search online too. */
 export const THIN_LIBRARY = 4;
 export const TOPIC_DEFAULT_PAGES = 10;
+/** The most library papers a topic deck reads in full (a library survey or a small library reads all of them, up to this). */
+export const LIBRARY_ALL = 12;
+export { LIBRARY_SURVEY_RE } from "../requirements.js";
 // Which deck (PAPER_REPORT_RE, TOPIC_DECK_RE, PROGRESS_RE, deckModeOf) is route.ts: the router decides it once.
 export { PAPER_REPORT_RE, TOPIC_DECK_RE, PROGRESS_RE, deckModeOf, REVISE_RE, EXPAND_RE, addedPages, editKindOf } from "../route.js";
+
+/**
+ * The subject a spoken request describes (「做一個簡報這個簡報裡面詳細描述了目前學界是怎麼在 Zipformer 和 RNNT 的架構下做
+ * 熱詞機制的」 → 「在Zipformer和RNNT的架構下做熱詞機制」), or null when the words have no such phrase. Never the study's name:
+ * the topic comes from the request (production 0668a3d7: the study name became the deck's title and topic).
+ */
+export function topicSubjectOf(words: string): string | null {
+  const text = words.replace(/^（交給 Agent）/, "");
+  const m = /(?:詳細)?(?:描述|介紹|說明|講解|探討|整理|討論|分析|比較)(?:了|一下)?\s*([^。！？!?\n]{4,120})/.exec(text) ?? /(?:關於|有關|針對)\s*([^。！？!?\n]{4,120})/.exec(text);
+  if (!m) return null;
+  // The clause only (a run-on request continues with other asks).
+  let t = segmentClauses(m[1]!)[0] ?? m[1]!;
+  t = t.replace(/^(?:目前|現在|現今|近年)?[^\s，。在]{0,6}?(?:是)?(?:怎麼|如何)/, "").replace(/^(?:的|是)/, "").replace(/(?:的)?(?:英文|中文)?(?:主題)?(?:簡報|投影片)$/, "").replace(/(?:的|呢|吧)$/, "").trim();
+  if (t.replace(/[\s\p{P}]/gu, "").length < 4 || /簡報|投影片/.test(t)) return null;
+  return clipText(t, 80);
+}
 
 /** A topic deck's working title from the user's words: 「幫我做一份關於 X 的簡報」 / "Make a presentation about X" → X. */
 export function topicTitleOf(words: string): string {
@@ -135,14 +154,37 @@ async function topicContext(env: WorkflowEnv, studyId: string): Promise<string> 
 async function topicDeckResearch(env: WorkflowEnv, access: { study: { id: string; title: string } }, words: string, pages: number): Promise<{ brief: string; research: StepSpec; picks: TopicPick[]; note: string }> {
   const library = await libraryPapers(env, access.study.id);
   const stack = stackOf(words);
-  const online = ONLINE_RE.test(words) || library.filter((p) => p.has_pdf).length < THIN_LIBRARY;
+  const withPdf = library.filter((p) => p.has_pdf);
+  const online = ONLINE_RE.test(words) || withPdf.length < THIN_LIBRARY;
+  // How much of the library to read (production 0668a3d7: 4 of 10 papers were read although the user asked to tally the
+  // library's methods; the taxonomy then had families with 「no representative」): the user asks to survey / tally the
+  // library → every paper with a PDF (≤ LIBRARY_ALL); a small library → the planner picks by method family, up to all of
+  // them; otherwise ≤ 8 by family coverage. Extraction runs in parallel, one fresh context per paper.
+  const surveyLibrary = LIBRARY_SURVEY_RE.test(words) && withPdf.length > 0;
+  const small = withPdf.length > 0 && withPdf.length <= LIBRARY_ALL;
+  const readAll = surveyLibrary && withPdf.length <= LIBRARY_ALL;
+  // A survey of a larger library still reads every related paper up to LIBRARY_ALL (the planner drops the off-topic ones).
+  const wide = surveyLibrary || small;
+  const max = wide ? Math.min(LIBRARY_ALL, Math.max(withPdf.length, Math.min(8, pages - 3))) : Math.min(8, Math.max(3, pages - 3));
   await env.activity("research", "orchestrator", "拆解主題與子問題");
   const d = await decompose(env, access.study.title, stack);
   const prev = env.state<TopicState>("topic");
   const found = online ? await searchOnline(env, d.queries) : { hits: [], seeds: [], searched: false, errors: [], queries: [] };
   const hits = found.searched ? found.hits : prev?.hits ?? [];
   await env.activity("research", "planner", "挑選這份簡報要讀的論文");
-  const { picks, excluded } = await select(env, { topic: d.topic, subqs: d.subqs, hits, stack, max: Math.min(8, Math.max(3, pages - 3)) }, library);
+  const libraryRule = wide
+    ? `研究文獻庫有 ${withPdf.length} 篇有全文的論文${surveyLibrary ? "，而且使用者要統計／涵蓋文獻庫裡的方法" : ""}：和主題相關的文獻庫論文全部選（最多 ${LIBRARY_ALL} 篇；每一類做法都要有代表論文，不要只挑幾篇），離題的才不選。`
+    : "每一類做法（method family）都要有代表論文；選的篇數依做法的類別數，不要固定只挑幾篇。";
+  const sel = await select(env, { topic: d.topic, subqs: d.subqs, hits, stack, max, maxLibrary: wide ? LIBRARY_ALL : 8, libraryRule }, library);
+  let picks = sel.picks;
+  const excluded = sel.excluded;
+  // A library survey reads every paper with a PDF, whatever the planner picked.
+  if (readAll) {
+    for (const p of withPdf) {
+      if (picks.some((x) => x.kind === "library" && x.paper_id === p.id)) continue;
+      picks = [...picks, { kind: "library", paper_id: p.id, title: p.title, year: p.year, cite_key: p.cite_key, has_pdf: true, reason: "你要統計文獻庫裡的方法：文獻庫的論文全部讀", role: "core", ...(bibLine(p) ? { bib: bibLine(p) } : {}) }];
+    }
+  }
   if (!picks.length) {
     const data = await topicContext(env, access.study.id);
     const tried = online && d.queries.length ? `線上搜尋（${d.queries.map((q) => `「${q}」`).join("、")}）也沒有找到可以匯入的論文，` : "";
@@ -154,7 +196,7 @@ async function topicDeckResearch(env: WorkflowEnv, access: { study: { id: string
   }
   const st: TopicState = {
     topic: d.topic, subqs: d.subqs, queries: found.searched ? found.queries : prev?.queries ?? [], seeds: found.searched ? found.seeds : prev?.seeds ?? [],
-    hits, picks, excluded, searched: found.searched || !!prev?.searched, search_errors: found.errors, stack,
+    hits, picks, excluded, searched: found.searched || !!prev?.searched, search_errors: found.errors, stack, title: d.title, read_all: readAll || (wide && surveyLibrary) || (small && picks.filter((p) => p.kind === "library").length >= withPdf.length),
   };
   await env.setState({ topic: st });
   const notes = (await env.db.query<{ title: string; content_md: string }>("SELECT title, content_md FROM notes WHERE study_id=$1 AND kind IN ('research','reading') ORDER BY updated_at DESC LIMIT 2", [access.study.id])).rows;
@@ -166,9 +208,13 @@ async function topicDeckResearch(env: WorkflowEnv, access: { study: { id: string
     ...(notes.length ? ["## 研究筆記", ...notes.map((n) => `### ${n.title}\n${n.content_md.slice(0, 2000)}`)] : []),
   ].join("\n\n");
   const imports = picks.filter((p) => p.kind === "online").length;
+  const why = readAll ? `你要統計文獻庫裡的方法，所以文獻庫 ${withPdf.length} 篇有全文的論文全部讀`
+    : surveyLibrary ? `你要統計文獻庫裡的方法：文獻庫 ${withPdf.length} 篇有全文的論文中，和主題相關的都讀（${picks.length} 篇，上限 ${LIBRARY_ALL}）`
+    : small ? `文獻庫只有 ${withPdf.length} 篇有全文的論文，和主題相關的都讀（${picks.length} 篇），每一類做法都有代表論文`
+      : `依做法類別挑代表論文（文獻庫共 ${withPdf.length} 篇有全文）`;
   const note = online
     ? `主題簡報：${st.searched ? `線上搜尋只送出關鍵字（${st.queries.slice(0, 6).join("；")}）` : "沿用先前的線上搜尋結果"}，${imports ? `匯入 ${imports} 篇、` : ""}加上研究文獻庫 ${picks.length - imports} 篇，共 ${picks.length} 篇逐篇精讀後寫成簡報。不想匯入的論文可以在步驟中關掉。`
-    : `主題簡報：研究文獻庫已有足夠的論文，讀其中 ${picks.length} 篇的全文（每篇一個研究者摘錄）寫成簡報；要先線上找新論文，請在要求裡說「搜尋」或「找論文」。`;
+    : `主題簡報：讀 ${picks.length} 篇論文的全文（每篇一個研究者摘錄，平行進行）：${why}；要先線上找新論文，請在要求裡說「搜尋」或「找論文」。`;
   return {
     brief, picks, note,
     research: { key: "research", role: "researcher", title: online ? "拆解主題、線上搜尋與挑選論文" : "拆解主題並從文獻庫挑選論文", instructions: "拆成子問題、挑選要精讀的論文（文獻庫中相關的，以及要匯入的線上候選）。", expected: "子問題 + 要讀的論文（含理由）", done: { output: { summary: `${d.subqs.length} 個子問題${online ? `、${st.queries.length} 個查詢、${hits.length} 筆候選` : ""} → 讀 ${picks.length} 篇（${imports} 篇匯入）`, text: brief } } },
@@ -209,9 +255,18 @@ async function topicPageBrief(env: WorkflowEnv, pages: SlideOutline[]): Promise<
     // The run's material grows with every paper read: the content checks' names (rebuilt) and the brief the final
     // verification judges against (the planning brief only had abstracts: 「P1 只有摘要」 false fails on staging).
     const planBrief = env.state<string>("topic_plan_brief") ?? env.state<string>("brief") ?? "";
-    const share = Math.floor(34_000 / Math.max(1, papers.size));
-    const brief = `${planBrief.slice(0, 5000)}\n\n# 論文摘錄（每篇的全文摘錄）\n\n${[...papers.entries()].map(([k, p]) => clipText(`## P${k.slice(6)}〈${p.title}〉${p.year ? `（${p.year}）` : ""}\n${p.notes}`, share)).join("\n\n")}`;
-    await env.setState({ content_refs: null, topic_refs_n: papers.size, topic_plan_brief: planBrief, brief: brief.slice(0, 40_000) });
+    // Each paper's share of the judge's sources, with the parts a claim is checked against first (numbers table, method,
+    // injection point, limits): with a library survey's 10+ papers a plain clip cut every 數字表 off and the final judge
+    // failed numbers the writers had from the full extraction (staging, 79ab0678 eval).
+    const share = Math.floor(50_000 / Math.max(1, papers.size));
+    const FIRST = ["數字表", "一句話", "方法", "注入位置與訓練／推論", "限制", "實驗設定", "關鍵公式"];
+    const paperBlock = (k: string, p: ReadPaper) => {
+      const head = `## P${k.slice(6)}〈${p.title}〉${p.bib ? `（${p.bib}）` : p.year ? `（${p.year}）` : ""}`;
+      const parts = FIRST.map((n) => { const t = extractPart(p.notes, n); return t ? `#### ${n}\n${t}` : ""; }).filter(Boolean);
+      return clipText(`${head}\n${parts.length >= 2 ? parts.join("\n\n") : p.notes}`, share);
+    };
+    const brief = `${planBrief.slice(0, 5000)}\n\n# 論文摘錄（每篇的全文摘錄）\n\n${[...papers.entries()].map(([k, p]) => paperBlock(k, p)).join("\n\n")}`;
+    await env.setState({ content_refs: null, topic_refs_n: papers.size, topic_plan_brief: planBrief, brief: brief.slice(0, 58_000) });
     await buildContentRefs(env, { brief, extra: [...papers.values()].map((p) => p.title) });
   }
   const keys = [...new Set(pages.flatMap((p) => pageSources(p, n, usedPicks(outlineOf(env), n))))];
@@ -222,9 +277,14 @@ async function topicPageBrief(env: WorkflowEnv, pages: SlideOutline[]): Promise<
     const i = Number(k.slice(6));
     if (!p) return `### P${i}〈${clipText(st?.picks[i - 1] ? pickTitle(st.picks[i - 1]!) : k, 80)}〉\n（這篇沒有讀到，不要寫它的內容）`;
     const got = PAGE_PARTS[kind].map(([name, max]) => { const t = extractPart(p.notes, name); return t ? `**${name}**：${clipText(t, max)}` : ""; }).filter(Boolean);
-    return clipText(`### P${i}〈${p.title}〉${p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}：不寫方法細節或數字）`}\n${got.length ? got.join("\n") : p.notes}`, share);
+    return clipText(`### P${i}〈${p.title}〉${p.bib ? `（${p.bib}）` : p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}：不寫方法細節或數字）`}\n${got.length ? got.join("\n") : p.notes}`, share);
   });
-  const head = `# 主題：${st?.topic ?? ""}\n子問題：${(st?.subqs ?? []).map((q, i) => `Q${i + 1} ${q.q}`).join("；")}`;
+  const bibs = (st?.picks ?? []).map((pk, j) => {
+    const read = papers.get(`paper_${j + 1}`);
+    const line = read?.bib ?? (pk.kind === "library" ? pk.bib : [pk.hit.authors?.split(/[;,]/)[0]?.trim(), pk.hit.year, pk.hit.venue ?? (pk.hit.arxiv_id ? "arXiv preprint" : "")].filter(Boolean).join(", "));
+    return `- P${j + 1}〈${clipText(pickTitle(pk), 90)}〉${line ? `：${line}` : ""}`;
+  });
+  const head = `# 主題：${st?.topic ?? ""}\n子問題：${(st?.subqs ?? []).map((q, i) => `Q${i + 1} ${q.q}`).join("；")}${bibs.length ? `\n\n# 書目（提到論文時照這裡寫：第一作者 et al.、年份、會議／期刊；書目沒列會議／期刊的就省略，不要寫「未提供」）\n${bibs.join("\n")}` : ""}`;
   return `${head}\n\n# 這頁的來源論文（摘錄）\n\n${material.join("\n\n") || "（這頁沒有指定來源論文：只寫標題與主題）"}`;
 }
 
@@ -326,6 +386,15 @@ export function pageSources(p: SlideOutline, papers: number, used?: number[]): s
 export function usedPicks(outline: SlideOutline[], n: number): number[] {
   const used = new Set(outline.flatMap((p) => (p.sources ?? []).map((r) => paperKeyOf(r, n))).filter((k): k is string => !!k).map((k) => Number(k.slice(6)) - 1));
   return used.size ? [...used].sort((a, b) => a - b) : Array.from({ length: n }, (_, i) => i);
+}
+
+/** The taxonomy page (else the first survey-wide page) rests on every pick P1…Pn. */
+export function withAllSources(outline: SlideOutline[], n: number): SlideOutline[] {
+  const all = Array.from({ length: n }, (_, i) => `P${i + 1}`);
+  const at = outline.findIndex((p) => p.kind === "taxonomy");
+  const i = at >= 0 ? at : outline.findIndex((p) => p.kind === "comparison" || p.kind === "synthesis" || p.kind === "motivation");
+  if (i < 0) return outline;
+  return outline.map((p, j) => (j === i ? { ...p, sources: all } : p));
 }
 
 /** Deck extractions read the results-weighted digest of the full text; a few tool rounds for figures / equations only. */
@@ -499,7 +568,7 @@ async function makeOutline(env: WorkflowEnv, mode: DeckMode, pages: number, brie
     env.guidanceText(),
     itemRule(env.requirements()),
     `每頁從版型庫挑一個 layout（只寫代號）：${layoutList(mode === "paper_report")}。版型決定這頁的視覺；不要寫位置、座標或尺寸。`,
-    topicPicks ? `這是 survey 簡報：每頁標 kind（${PAGE_KINDS.join("／")}）與 sources（這頁根據的論文編號，例如 ["P2"]，只能用「要讀的論文」列出的 P1–P${topicPicks}）；每個代表方法一頁（kind method，sources 是提出它的論文，item 寫方法名稱），做法分類（taxonomy）與結果比較（comparison）頁的 sources 列出涵蓋的論文。` : "",
+    topicPicks ? `這是 survey 簡報：每頁標 kind（${PAGE_KINDS.join("／")}）與 sources（這頁根據的論文編號，例如 ["P2"]，只能用「要讀的論文」列出的 P1–P${topicPicks}）；每個代表方法一頁（kind method，sources 是提出它的論文，item 寫方法名稱），做法分類（taxonomy）與結果比較（comparison）頁的 sources 列出涵蓋的論文。${env.state<TopicState>("topic")?.read_all ? `使用者要涵蓋整個文獻庫：做法分類頁要統計 P1–P${topicPicks} 全部論文分成哪幾類（每類幾篇、代表論文），每一類都要有論文，不能寫某類「沒有代表論文」；方法頁依類別安排。` : ""}` : "",
     dataBlock("research", brief.slice(0, SOURCE_CHARS)),
     fix ? `上一版大綱的問題：\n${fix.issues.map((i) => `- ${i}`).join("\n")}` : "",
     `只輸出 JSON：{"pages":[{"title":"頁面標題","purpose":"這頁的目的（一句）","points":["重點"],"layout":"A"${topicPicks ? ',"kind":"method","sources":["P1"],"item":"方法名稱（method 頁）"' : ""},"student_owned":false${perItem(env.requirements()) && !topicPicks ? ',"item":"這頁介紹的項目名稱（沒有就省略）"' : ""}}]}，pages 正好 ${pages} 個。`,
@@ -545,9 +614,9 @@ async function whichPaper(env: WorkflowEnv, studyId: string): Promise<DeckMode |
 }
 
 async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResult> {
-  const access = await resolveStudy(env);
-  if (!access) return { kind: "question", question: await whichStudyQuestion(env, "簡報") };
-  if (!access.canEdit) return { kind: "question", question: `你不是〈${access.study.title}〉的成員，不能在這個研究建立簡報。請指定你參與的研究。` };
+  const access = await requireStudy(env, "簡報");
+  if ("question" in access) return { kind: "question", question: access.question, setup: true };
+  if (!access.canEdit) return { kind: "question", question: `你不是〈${access.study.title}〉的成員，不能在這個研究建立簡報。請指定你參與的研究。`, setup: true };
   // The routing decision (route.ts) says which deck — this deck itself (edit), progress, paper report or topic; the
   // playbook executes it and never re-reads the request for a mode. Batches were split by the router.
   const r = await currentRoute(env);
@@ -640,15 +709,21 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
     // Points of the planner's own pages may not be placeholders (student-owned pages are written as 「學生自填」).
     verify: { checks: [{ id: "slide_count", params: { expected: pages } }, { id: "no_placeholder", params: { on_slide: true } }], judge: false },
   }, (fix) => makeOutline(env, mode, pages, brief, fix), 2);
-  const outline = await settleOutline(env, ((outlineStep.output.data as { outline?: SlideOutline[] } | undefined)?.outline ?? []));
+  let outline = await settleOutline(env, ((outlineStep.output.data as { outline?: SlideOutline[] } | undefined)?.outline ?? []));
   if (!outline.length) throw new WorkflowInputError("無法產生簡報大綱，請稍後再試。");
+  // Every paper read for a library survey is a source of the taxonomy page (so each is read and every family is tallied).
+  if (topic && picks.length && env.state<TopicState>("topic")?.read_all) outline = withAllSources(outline, picks.length);
 
   const vision = await env.vision("slides");
   const owned = studentOwned(outline);
   const date = taipeiToday();
   // No subject in the words (「做一份論文報告簡報」 answered with 「不指定論文」): the study's title.
-  const subject = topic ? topicTitleOf(b?.user_words.at(0) ?? env.run.request) : "";
-  const topicTitle = topic ? (PAPER_REPORT_RE.test(subject) || /簡報|投影片|presentation|slides/i.test(subject) ? access.study.title : subject) : "";
+  // The topic comes from the request: its subject phrase, else the plain 「關於 X」 title, else the decomposition's title (also
+  // from the request); the study's name only when the words name no subject at all.
+  const firstWords = b?.user_words.at(0) ?? env.run.request;
+  const plain = topicTitleOf(firstWords);
+  const subject = topic ? topicSubjectOf(firstWords) ?? (PAPER_REPORT_RE.test(plain) || /簡報|投影片|presentation|slides/i.test(plain) || plain.length > 60 ? "" : plain) : "";
+  const topicTitle = topic ? subject || env.state<TopicState>("topic")?.title || access.study.title : "";
   if (topic) await env.setState({ topic_title: topicTitle });
   const title = mode === "paper_report" ? `${paper!.title}` : topic ? topicTitle : progressTitle(access.study.title, date);
   const steps = [research, outlineStep.spec, ...laterSteps(outline, vision, picks)];
@@ -665,7 +740,7 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   const write = await plannedDeckWrite(env, access.study.id, title);
   const cover = await frontTitle(env, title);
   const grounded = picks.length
-    ? "內容只來自論文摘錄（P1…）與研究資料：方法頁的架構、注入位置、需要訓練或只在推論與數字都有來源論文，「僅依摘要」的論文沒有寫方法細節或數字，沒有捏造"
+    ? "內容只來自讀過的論文摘錄與研究資料：方法頁的架構、注入位置、需要訓練或只在推論與數字都有來源論文，「僅依摘要」的論文沒有寫方法細節或數字，沒有捏造"
     : "內容只來自研究文獻庫的論文（標題、年份、摘要）與研究筆記，提到的論文都在文獻庫裡，沒有捏造的數字或結論";
   return {
     kind: "plan",
@@ -1661,7 +1736,7 @@ async function notesPass(env: WorkflowEnv, step: StepRow, fix: { previous: StepO
   await env.activity(step.key, "writer", `補 ${missing.length} 頁講稿`);
   const user = taskPrompt(env, step, {
     context: { slides: missing.map((s) => `## ${s.title}\n${s.body}`).join("\n\n").slice(0, 20_000), research: (env.state<string>("brief") ?? "").slice(0, 12_000) },
-    format: `為這 ${missing.length} 頁各寫 2–5 句講稿（報告者要說的話，${LANGUAGE_LABEL[targetLanguage(env.requirements()) ?? "zh"]}）。只輸出 JSON：{"notes":[{"title":"頁面標題（照原文）","notes":"講稿"}]}`,
+    format: `為這 ${missing.length} 頁各寫 2–5 句講稿（報告者要說的話，${LANGUAGE_LABEL[notesLanguage(env.requirements()) ?? "zh"]}）。只輸出 JSON：{"notes":[{"title":"頁面標題（照原文）","notes":"講稿"}]}`,
   }, fix);
   const { value } = await env.callJson<NotesJson>({ purpose: "speaker_notes", role: "writer", aiRole: "slides", messages: [{ role: "system", content: systemFor("writer") }, { role: "user", content: user }], maxTokens: 5000 }, isNotes, step.id);
   if (!value?.notes.length) return { summary: "講稿沒有產生成功。", text: body, data: st ? renderData(st) : { renderError: null } };
@@ -1698,6 +1773,83 @@ async function finalText(env: WorkflowEnv) {
   // Requirement checks see the whole deck incl. the cover (`full`).
   const full = `${await frontOf(env)}${body}`;
   return { text: body, data: st ? { ...renderData(st), refs, full } : { renderError: "簡報還沒有寫入。", refs, full } };
+}
+
+const NAME_STOP = new Set(["the", "and", "for", "with", "of", "in", "on", "to", "a", "an", "by", "via", "based", "method", "methods", "approach", "approaches", "model", "models", "using"]);
+const nameTokens = (n: string) => n.toLowerCase().replace(/[-_/]/g, " ").split(/\s+/).filter((w) => w.length >= 3 && !NAME_STOP.has(w));
+/** Method / family names a judged failure says are missing: Latin phrases (≥ 2 words or hyphenated) and 「quoted」 terms. */
+export function missingNames(reason: string): string[] {
+  const latin = (reason.match(/[A-Za-z][A-Za-z0-9]*(?:[-/][A-Za-z0-9]+)*(?:\s+(?:and\s+|of\s+|for\s+)?[A-Za-z][A-Za-z0-9]*(?:[-/][A-Za-z0-9]+)*)*/g) ?? [])
+    .filter((n) => /\s|-/.test(n) && nameTokens(n).length >= 1 && n.length >= 6 && !/^approved_outline$/i.test(n));
+  const quoted = [...reason.matchAll(/[「『"]([^」』"]{3,40})[」』"]/g)].map((m) => m[1]!);
+  return [...new Set([...latin, ...quoted].map((n) => n.trim()))].slice(0, 8);
+}
+/** ≥ 60 % of a name's content words appear in the text. */
+export const nameIn = (name: string, text: string) => {
+  const toks = nameTokens(name);
+  if (!toks.length) return text.toLowerCase().includes(name.toLowerCase());
+  const hay = ` ${text.toLowerCase().replace(/[-_/]/g, " ")} `;
+  return toks.filter((t) => hay.includes(t)).length / toks.length >= 0.6;
+};
+
+/**
+ * Topic decks: a judged failure that names method families none of the papers read covers (e.g. 「缺少 Contextual
+ * density-ratio」) is not a writing fault. Unread library papers that cover them are added (extraction steps + the pages'
+ * sources) and those pages rewritten once with them; names nothing in the library covers need a new plan (told plainly).
+ */
+async function structural(env: WorkflowEnv, failing: Criterion[], open: Set<string> = new Set(failing.map((c) => c.id))) {
+  const none = { sources: [] as { key: string; issues: string[] }[], fixed: [] as string[], replan: [] as { id: string; why: string }[] };
+  const st = env.state<TopicState>("topic");
+  if (!isTopicDeck(env) || !st?.picks.length || !env.run.study_id) return none;
+  const papers = await readPapers(env);
+  const readText = [...papers.values()].map((p) => `${p.title}\n${p.notes}`).join("\n");
+  const library = await libraryPapers(env, env.run.study_id);
+  const unread = library.filter((p) => p.has_pdf && !st.picks.some((k) => k.kind === "library" && k.paper_id === p.id));
+  const outline = outlineOf(env);
+  const add: TopicPick[] = [];
+  const pagesFor = new Map<number, string[]>();
+  for (const c of failing) {
+    if (c.kind !== "judge" && !c.check?.params?.judge_fallback) continue;
+    if (c.id === "grounded") continue;
+    const names = missingNames(c.reason ?? "");
+    const notRead = names.filter((n) => !nameIn(n, readText));
+    if (!notRead.length) continue;
+    const found = unread.filter((p) => notRead.some((n) => nameIn(n, `${p.title}\n${p.abstract ?? ""}`)));
+    // Nothing unread covers it, or sources were already added for it (a repair already tried): only a new plan helps.
+    if (!found.length || !open.has(c.id)) {
+      none.replan.push({ id: c.id, why: `需要的做法（${notRead.join("、")}）在讀過的論文和研究文獻庫裡都找不到，改寫頁面補不出來：要先補論文（例如在要求裡說「搜尋」）再重新規劃。` });
+      continue;
+    }
+    for (const p of found) {
+      if (add.some((x) => x.kind === "library" && x.paper_id === p.id)) continue;
+      add.push({ kind: "library", paper_id: p.id, title: p.title, year: p.year, cite_key: p.cite_key, has_pdf: true, reason: `最終驗收缺少：${notRead.join("、")}`, role: "core", ...(bibLine(p) ? { bib: bibLine(p) } : {}) });
+    }
+    // The pages the reason names, else the taxonomy page.
+    const named = [...(c.reason ?? "").matchAll(/第\s*(\d+)\s*頁/g)].map((m) => Number(m[1]));
+    const targets = named.length ? named : outline.filter((p) => p.kind === "taxonomy").map((p) => p.n);
+    for (const n of targets) pagesFor.set(n, [...(pagesFor.get(n) ?? []), `${c.text}：${c.reason ?? ""}`]);
+    none.fixed.push(c.id);
+  }
+  if (!add.length) return none;
+  const start = st.picks.length;
+  const picks = [...st.picks, ...add];
+  await env.setState({ topic: { ...st, picks } });
+  const fresh = paperSteps(picks, { only: add.map((_, i) => start + i), maxTools: DECK_READ_TOOLS });
+  const steps = await getSteps(env.db, env.run.id);
+  await insertSteps(env.db, env.run.id, fresh, Math.max(0, ...steps.map((s) => s.position ?? 0)) + 1);
+  const refs = add.map((_, i) => `P${start + i + 1}`);
+  const next = outline.map((p) => (pagesFor.has(p.n) ? { ...p, sources: [...new Set([...(p.sources ?? []), ...refs])] } : p));
+  await env.db.query("UPDATE workflow_runs SET plan = jsonb_set(plan, '{outline}', $2::jsonb), updated_at=now() WHERE id=$1", [env.run.id, JSON.stringify(next)]);
+  const writes = writerSteps(next);
+  for (const [n, issues] of pagesFor) {
+    const key = writes.find((w) => ((w.inputs?.pages as number[]) ?? []).includes(n))?.key;
+    if (!key) continue;
+    await env.db.query("UPDATE workflow_steps SET depends_on = (SELECT array_agg(DISTINCT x) FROM unnest(depends_on || $3::text[]) x) WHERE run_id=$1 AND key=$2", [env.run.id, key, fresh.map((f) => f.key)]);
+    none.sources.push({ key, issues: [...issues, `新增來源 ${refs.join("、")}（${add.map((p) => `〈${clipText(pickTitle(p), 50)}〉`).join("、")}）：用它們補上缺少的做法。`] });
+  }
+  await env.refresh();
+  await env.note(`最終驗收缺少的做法不在讀過的論文裡：加讀文獻庫的 ${add.length} 篇（${add.map((p) => `〈${clipText(pickTitle(p), 40)}〉`).join("、")}），再改寫相關頁面一次。`);
+  return none;
 }
 
 /** Maps failing criteria back to the steps that can fix them. */
@@ -1788,6 +1940,7 @@ export const slidesPlaybook: WorkflowPlaybook = {
   execute,
   finalText,
   repair,
+  structural,
   handlesRequirements: true,
   // The deck's own criteria re-check every writer / assemble check on the shipped deck: pages (count, outline titles
   // one-to-one, order, no duplicates), notes, placeholders, truncation; density / length are judged on the rendered

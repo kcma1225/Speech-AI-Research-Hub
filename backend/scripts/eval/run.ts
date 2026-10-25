@@ -108,8 +108,9 @@ const ctx: Ctx = {
   },
 };
 
-async function newConversation(studyId: string): Promise<string> {
-  return (await hub.api<{ conversation: { id: string } }>("POST", "/agent/conversations", { autopilot: true, context: { studyId } })).conversation.id;
+/** A conversation in the study (its page context), or a home-page one (`null`: no study anywhere). */
+async function newConversation(studyId: string | null): Promise<string> {
+  return (await hub.api<{ conversation: { id: string } }>("POST", "/agent/conversations", { autopilot: true, ...(studyId ? { context: { studyId } } : {}) })).conversation.id;
 }
 
 /** Chat: the assistant must start a workflow or goal; returns its ids (none → the assistant answered itself). */
@@ -136,6 +137,7 @@ async function viaChat(task: Task, studyId: string, deadline: number): Promise<{
 async function waitRuns(task: Task, runIds: string[], goalId: string | null, limitMs: number): Promise<{ status: string; runs: Wf[]; goal: Goal | null; timedOut: boolean }> {
   let startedAt: number | null = null;
   let goal: Goal | null = null;
+  const answered = new Set<string>();
   for (;;) {
     let ids = runIds;
     if (goalId) {
@@ -152,6 +154,22 @@ async function waitRuns(task: Task, runIds: string[], goalId: string | null, lim
         log(task.id, `${r.id.slice(0, 8)} waits for plan approval → approve`);
         await hub.api("POST", `/workflows/${r.id}/approve`, {}).catch(() => undefined);
       }
+    }
+    // Tasks that answer a card (task.answer): once per card, then keep waiting.
+    let answeredNow = false;
+    for (const r of runs) {
+      const card = r.status === "awaiting_input" ? (r.asks ?? []).find((a) => a.pending) : undefined;
+      const answers = card && !answered.has(card.id) && task.answer ? task.answer(card) : null;
+      if (card && answers) {
+        answered.add(card.id);
+        log(task.id, `${r.id.slice(0, 8)} asks 「${card.title ?? card.id}」 → answer`);
+        await hub.api("POST", `/workflows/${r.id}/answer`, { card_id: card.id, answers }).catch((e) => log(task.id, `answer failed: ${(e as Error).message}`));
+        answeredNow = true;
+      }
+    }
+    if (answeredNow) {
+      await sleep(POLL_MS);
+      continue;
     }
     const working = runs.some((r) => !TERMINAL.has(r.status) && !STOPPED.has(r.status) && r.status !== "queued") || (goal && ["planning", "running"].includes(goal.status));
     // The time limit counts from the moment a run really started executing (started_at): time spent queued behind other
@@ -306,8 +324,9 @@ async function runTask(task: Task): Promise<TaskResult> {
       goalId = r.goal?.id ?? null;
       if (r.workflow) runIds = [r.workflow.id];
     } else {
-      conv ??= await newConversation(studyId);
-      const r = await hub.api<{ workflows: { id: string }[] }>("POST", "/workflows", { request: task.request, ...(task.playbook ? { playbook: task.playbook } : {}), conversation_id: conv, context: { studyId }, inputs: { study: studyId, ...(prep.inputs ?? {}) }, autopilot: true });
+      // A home-page start (task.home): no study in the conversation, the page context or the inputs.
+      conv ??= await newConversation(task.home ? null : studyId);
+      const r = await hub.api<{ workflows: { id: string }[] }>("POST", "/workflows", { request: task.request, ...(task.playbook ? { playbook: task.playbook } : {}), conversation_id: conv, ...(task.home ? {} : { context: { studyId } }), inputs: { ...(task.home ? {} : { study: studyId }), ...(prep.inputs ?? {}) }, autopilot: true });
       runIds = r.workflows.map((w) => w.id);
     }
     log(task.id, `started ${goalId ? `goal ${goalId.slice(0, 8)} ` : ""}${runIds.map((x) => x.slice(0, 8)).join(",") || "(no run)"}`);

@@ -10,10 +10,10 @@ import { CURRENT_USER_COLUMNS, toCurrentUser } from "../lib/auth.js";
 import { loadStudyAccess } from "../lib/studies/access.js";
 import { WorkflowEnv, type EnvDeps } from "./env.js";
 import { addUsage, emitRun, emitStep, getRun, getSteps, insertSteps, insertWorkflowEvent, stepView } from "./store.js";
-import { getWorkflowPlaybook, listWorkflowPlaybooks, type WorkflowPlaybook } from "./playbooks/registry.js";
+import { getWorkflowPlaybook, listWorkflowPlaybooks, playbookLabel, type WorkflowPlaybook } from "./playbooks/registry.js";
 import { verifyCriteria, verifyUnit } from "./verify.js";
 import { fixLine, HARD_FIX_ROUNDS, ledgerReport, loadConv, loadLedger, nextMove, recordRound, STOP_LABEL, type Convergence, type StopReason, type UnitRound } from "./ledger.js";
-import { finishNotice } from "./notify.js";
+import { finishNotice, plainLabels } from "./notify.js";
 import { asksOf, blockedQuestion, pendingAsk } from "./questions.js";
 import { autoApproval, autoApprovalNote } from "./autopilot.js";
 import { promoteQueued } from "./queue.js";
@@ -144,7 +144,8 @@ async function switchPlaybook(env: WorkflowEnv, next: WorkflowPlaybook) {
  * switch; false = plan again later (the user chose 「仍做簡報」, wrote what is missing, or stop → the run ends skipped).
  */
 async function mayChangeTo(env: WorkflowEnv, pb: WorkflowPlaybook, to: string, why: string): Promise<boolean> {
-  const d = await switchGuard(env, pb, to, why);
+  const route = env.route();
+  const d = await switchGuard(env, { id: pb.id, title: playbookLabel(pb.id, route), edit: route?.deck === "edit" }, to, why);
   if (d.ok) return true;
   if (d.action === "topic") {
     await env.db.query("UPDATE workflow_runs SET inputs = inputs || '{\"mode\":\"topic\"}'::jsonb, updated_at=now() WHERE id=$1", [env.run.id]);
@@ -255,13 +256,16 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   // survey keeps asking which paper): don't loop — the general workflow gathers what it needs (incl. online search). It
   // writes a note, so for a deck / LaTeX deliverable the user decides first (never a silent substitute).
   const asked = env.state<string>("plan_question");
-  if (res.kind === "question" && pb.id !== "generic" && env.run.guidance.length > 0 && (asked === res.question || asked === undefined)) {
+  // Never for a setup question (which study / paper / project: the general workflow needs it too) or an edit of a given
+  // deck (production e6d552fc: a notes revise was offered 「仍做簡報」 = a NEW topic deck, or a note).
+  const editing = env.route()?.deck === "edit";
+  if (res.kind === "question" && !res.setup && !editing && pb.id !== "generic" && env.run.guidance.length > 0 && (asked === res.question || asked === undefined)) {
     const fallback = getWorkflowPlaybook("generic");
     if (fallback) {
       if (!(await mayChangeTo(env, pb, fallback.id, res.question))) return pb;
       await env.db.query("UPDATE workflow_runs SET playbook='generic', updated_at=now() WHERE id=$1", [env.run.id]);
       env.run.playbook = "generic";
-      await env.note(`「${pb.title}」需要的資料還是不足（${res.question.slice(0, 60)}），改用一般流程：由 Agent 自己蒐集資料（包括線上搜尋論文）再規劃。`);
+      await env.note(`「${playbookLabel(pb.id, env.route())}」需要的資料還是不足（${res.question.slice(0, 60)}），改用一般流程：由 Agent 自己蒐集資料（包括線上搜尋論文）再規劃。`);
       pb = fallback;
       await pinRoute(env, "generic", "上一個流程需要的資料不足");
       await prepareBrief(env, pb.id, (b) => prepareRequirements(env, pb.id, b));
@@ -272,7 +276,7 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   await env.refresh();
   if (env.run.status === "cancelled") throw new WorkflowStop("cancelled", "已停止。");
   if (res.kind === "question") {
-    await env.setState({ plan_question: res.question });
+    await env.setState({ plan_question: res.question, plan_question_setup: !!res.setup });
     await setStatus(env, "awaiting_input", { question: res.question });
     await finishNotice(env, "awaiting_input");
     return pb;
@@ -293,7 +297,10 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   // Every requirement is a criterion and is shown on the plan card (「你的要求」).
   const reqs = env.requirements();
   const kind = artifactKindOf(pb.id);
-  res.plan = { ...res.plan, requirements: reqs };
+  // Clauses of the user's words the extraction set aside, with its reason (shown, so a dropped ask is visible and editable).
+  const dropped = (env.state<{ clause: string; reason: string }[]>("requirements_dropped") ?? []).filter((d) => d.clause && d.reason);
+  const droppedNote = dropped.length ? `沒有列成要求的話（可在「你的要求」補上）：${dropped.slice(0, 6).map((d) => `「${d.clause.slice(0, 40)}」（${d.reason}）`).join("；")}` : "";
+  res.plan = { ...res.plan, requirements: reqs, ...(droppedNote ? { notes: [res.plan.notes, droppedNote].filter(Boolean).join("\n") } : {}) };
   // Notes: the title in the target language; the playbook's fixed section headings are localized at commit instead.
   const noteTitle = env.state<string>("note_title");
   if (kind !== "deck" && noteTitle) {
@@ -595,9 +602,16 @@ async function finalStep(env: WorkflowEnv, pb: WorkflowPlaybook, step: StepRow) 
   }
   // The same failures the last repair already targeted are not repaired again (no zero-sum re-runs).
   const targeted = new Set(env.state<string[]>("repaired_criteria") ?? []);
-  const fresh = failing.filter((c) => !targeted.has(c.id));
-  if (env.run.final_rounds < MAX_FINAL_ROUNDS && fresh.length) {
-    let reopen = pb.repair ? await pb.repair(env, fresh) : [];
+  let fresh = failing.filter((c) => !targeted.has(c.id));
+  // Failures a rewrite cannot fix (missing sources → added and those pages rewritten once; only a new plan → told plainly,
+  // never sent to the writers again: production 0668a3d7 looped 修 on a taxonomy the plan never had papers for).
+  // Sources are added only while a final repair round is left (otherwise those failures are reported for a new plan).
+  const structural = pb.structural ? await pb.structural(env, failing, new Set(env.run.final_rounds < MAX_FINAL_ROUNDS ? fresh.map((c) => c.id) : [])) : null;
+  const replan = structural?.replan ?? [];
+  await env.setState({ replan_needed: replan.length ? replan : null });
+  if (structural) fresh = fresh.filter((c) => !replan.some((r) => r.id === c.id) && !structural.fixed.includes(c.id));
+  if (env.run.final_rounds < MAX_FINAL_ROUNDS && (fresh.length || structural?.sources.length)) {
+    let reopen = [...(structural?.sources ?? []), ...(pb.repair && fresh.length ? await pb.repair(env, fresh) : [])];
     const steps = await getSteps(env.db, env.run.id);
     // Requirement criteria the playbook does not map itself: reopen the writers whose own output fails them.
     if (!pb.handlesRequirements) {
@@ -621,7 +635,7 @@ async function finalStep(env: WorkflowEnv, pb: WorkflowPlaybook, step: StepRow) 
         await updateStep(env, s.id, { status: "pending", inputs: { ...s.inputs, fix_issues: [] } });
       }
       await addUsage(env.db, env.run.id, { fix_rounds: 1 });
-      await env.setState({ repaired_criteria: [...targeted, ...fresh.map((c) => c.id)] });
+      await env.setState({ repaired_criteria: [...targeted, ...fresh.map((c) => c.id), ...(structural?.fixed ?? [])] });
       await env.db.query("UPDATE workflow_runs SET final_rounds=final_rounds+1 WHERE id=$1", [env.run.id]);
       await updateStep(env, step.id, { status: "pending", verdict, history, round: step.round + 1, ms: step.ms + (Date.now() - t0) });
       await setStatus(env, "running");
@@ -753,7 +767,7 @@ export function buildReport(run: RunRow, steps: StepRow[], outcome: "done" | "pa
   const done = passed.filter((s) => s.kind !== "final").map((s) => `${s.title}${s.history.length > 1 ? `（經 ${s.history.length - 1} 輪修正後通過）` : ""}`);
   const issues: string[] = [];
   // A criterion the final verification never reached (budget / stop) or could not judge is 「未驗收」, not failed.
-  for (const c of run.criteria) if (c.status !== "pass") issues.push(`${c.status === "fail" ? "未達成" : "未驗收"}：${c.text}${c.reason ? `（${c.reason}）` : ""}`);
+  for (const c of run.criteria) if (c.status !== "pass") issues.push(plainLabels(run, `${c.status === "fail" ? "未達成" : "未驗收"}：${c.text}${c.reason ? `（${c.reason}）` : ""}`));
   for (const s of steps) if (s.status === "failed") issues.push(`「${s.title}」未通過驗收：${(s.verdict?.issues ?? []).filter((i) => i.severity !== "low").map((i) => i.text).slice(0, 3).join("；") || s.error || ""}`);
   // Issue ledgers: problems a passed step could not fix within its rounds are report items too.
   const ledger = ledgerReport(run, steps);

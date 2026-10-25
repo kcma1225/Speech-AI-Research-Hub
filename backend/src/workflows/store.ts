@@ -5,7 +5,7 @@
 import type pg from "pg";
 import type { Db, Queryable } from "../db.js";
 import type { Artifact, RunRow, StepRow, StepSpec, Usage } from "./types.js";
-import { getWorkflowPlaybook } from "./playbooks/registry.js";
+import { getWorkflowPlaybook, playbookLabel } from "./playbooks/registry.js";
 import { asksOf } from "./questions.js";
 import { loadConv, loadLedger } from "./ledger.js";
 
@@ -67,8 +67,8 @@ export async function runView(db: Queryable, r: RunRow) {
     id: r.id,
     title: r.title,
     playbook: r.playbook,
-    playbook_title: pb?.title ?? r.playbook,
-    playbook_title_en: pb?.titleEn ?? r.playbook,
+    playbook_title: playbookLabel(r.playbook, r.state?.route as { deck?: string; edit?: string } | undefined),
+    playbook_title_en: playbookLabel(r.playbook, r.state?.route as { deck?: string; edit?: string } | undefined, true),
     status: r.status,
     request: r.request,
     objective: r.objective,

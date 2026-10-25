@@ -48,6 +48,8 @@ export type Requirement = {
   params?: {
     language?: "en" | "zh"; exact?: number; min?: number; max?: number; topics?: RequirementTerm[]; terms?: RequirementTerm[]; scope?: "page" | "content";
     pages?: number[]; item_kind?: string; items?: string[]; fields?: RequirementTerm[]; allow?: string[];
+    /** Which part of a deck a language / tone requirement is about (absent = the whole artifact): slides = cover, titles, slide text; notes = speaker notes. */
+    part?: "slides" | "notes";
   };
   source: "request" | "guidance" | "conversation" | "standing" | "user";
   /** The user's own words this requirement rests on (verbatim, from `brief.user_words` / guidance); standing ones have none. */
@@ -107,7 +109,7 @@ export type RunRow = {
   inputs: Record<string, unknown>; context: Record<string, unknown>; state: Record<string, unknown>; status: WorkflowStatus;
   question: string | null; autopilot: boolean; tainted: boolean; taint_sources: string[]; budget: Budget; usage: Usage;
   /** `system`: written by the engine (autopilot 繼續改), not the user's words (not part of the Brief). */
-  artifacts: Artifact[]; guidance: { at: string; text: string; applied: boolean; system?: boolean }[];
+  artifacts: Artifact[]; guidance: { at: string; text: string; applied: boolean; system?: boolean; /** Answers a setup question (which study / paper): an input, not the user's words (never a requirement or the topic). */ setup?: boolean }[];
   report: {
     summary_md: string; done: string[]; issues: string[]; confirm?: string[];
     /** issue ledgers: 已修正 / 仍未解決 / 判定無效 / 資料未提供 */ ledger?: { fixed: string[]; unresolved: string[]; invalid: string[]; notes?: string[] };

@@ -12,7 +12,7 @@ import { aiFor } from "../../ai/platform/index.js";
 import { platformPort } from "../llm.js";
 import { getWorkflowPlaybook } from "../playbooks/registry.js";
 import { announceRuns, cancelWorkflow, insertWorkflows, type CreateInput } from "../service.js";
-import { conversationContext, studyFromText } from "../context.js";
+import { conversationContext, conversationStudy, studyFromText, studyOfInputs } from "../context.js";
 import type { ModelPort, RunRow } from "../types.js";
 import { capabilityOf, DELIVERABLE_LABEL, deliverableOf, readinessOf, type DeliverableKind } from "./capabilities.js";
 import { goalNotice, moveOn, newStageId, nextPending, startStage } from "./advance.js";
@@ -61,7 +61,9 @@ export async function createGoal(app: FastifyInstance, user: CurrentUser, input:
   if (user.role === "admin") throw forbidden("管理員帳號只能管理系統設定與使用者。");
   const conv = await conversationContext(app.db, input.conversationId, user.id);
   const ctx = { ...conv, ...(input.context ?? {}) } as Record<string, unknown>;
-  let studyRef = input.inputs?.study ?? (ctx.studyId as string | undefined) ?? (ctx.studySlug as string | undefined);
+  const page = (input.context ?? {}) as Record<string, unknown>;
+  let studyRef = input.inputs?.study ?? (await studyOfInputs(app.db, user.id, (input.inputs ?? {}) as Record<string, unknown>)) ?? (page.studyId as string | undefined) ?? (page.studySlug as string | undefined)
+    ?? (await conversationStudy(app.db, input.conversationId, user.id)) ?? (ctx.studyId as string | undefined) ?? (ctx.studySlug as string | undefined);
   if (!studyRef) studyRef = (await studyFromText(app.db, user, input.request)) ?? undefined;
   const studyId = studyRef ? (await loadStudyAccess(app.db, studyRef, user)).study.id : null;
   const readiness = await readinessOf(app.db, studyId);

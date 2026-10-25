@@ -3,6 +3,7 @@ import { z } from "zod";
 import { notFound } from "../../lib/http.js";
 import { loadStudyAccess } from "../../lib/studies/access.js";
 import { registerAgentTool } from "./registry.js";
+import { parseSlides } from "../../workflows/checks.js";
 import { clip, isUuid, readStudy, scrub, studyRef, uuidArg } from "./util.js";
 
 const deckUrl = (studySlug: string, deckId: string) => `/studies/${encodeURIComponent(studySlug)}/decks/${deckId}`;
@@ -35,8 +36,8 @@ registerAgentTool({
   title: "讀取簡報",
   titleEn: "Read deck",
   risk: "read",
-  description: "Read a deck: title, kind, versions, and (for in-app Quarto decks) the file list and the entry .qmd text (≤ 12 000 characters).",
-  input: z.object({ deck_id: uuidArg("Deck") }),
+  description: "Read a deck's content: title, kind, versions and (for in-app Quarto decks) every slide's title, a short preview of its text and speaker notes, plus the entry .qmd text (≤ 12 000 characters). Pass `pages` (e.g. [3, 5]) to get those slides in full (body + speaker notes). Use it before answering any question about what a deck says or covers.",
+  input: z.object({ deck_id: uuidArg("Deck"), pages: z.array(z.number().int().min(1).max(200)).max(20).optional().describe("Slide numbers (1-based) to return in full") }),
   summarize: () => "讀取簡報",
   async execute(a, ctx) {
     if (!isUuid(a.deck_id)) throw notFound("簡報不存在。");
@@ -54,7 +55,14 @@ registerAgentTool({
       const files = (await ctx.db.query<{ id: string; path: string; kind: string; bytes: number; content: string | null; updated_by: string | null }>("SELECT id,path,kind,bytes,CASE WHEN path=$2 THEN content END AS content,updated_by FROM deck_sources WHERE deck_id=$1 ORDER BY path", [deck.id, tree.entry])).rows;
       const entry = files.find((f) => f.path === tree.entry);
       othersWrote ||= files.some((f) => f.updated_by && f.updated_by !== ctx.user.id);
-      source = { entry: tree.entry, entry_file_id: entry?.id ?? null, files: files.map((f) => ({ id: f.id, path: f.path, kind: f.kind, bytes: f.bytes })), entry_text: entry?.content ? clip(scrub(entry.content), 12000) : null };
+      // Every slide is listed (a long deck's clipped entry text once hid half of it from the assistant), the asked pages in full.
+      const slides = entry?.content ? parseSlides(entry.content.replace(/^---\n[\s\S]*?\n---\n?/, "")) : [];
+      const want = new Set(a.pages ?? []);
+      source = {
+        entry: tree.entry, entry_file_id: entry?.id ?? null, files: files.map((f) => ({ id: f.id, path: f.path, kind: f.kind, bytes: f.bytes })),
+        slides: slides.map((s, i) => (want.has(i + 1) ? { n: i + 1, title: scrub(s.title), body: clip(scrub(s.body), 4000), notes: clip(scrub(s.notes), 3000) } : { n: i + 1, title: scrub(s.title), preview: clip(scrub(s.body.replace(/\s+/g, " ")), 240), notes_preview: clip(scrub(s.notes.replace(/\s+/g, " ")), 160) })),
+        entry_text: entry?.content && !want.size ? clip(scrub(entry.content), 12000) : null,
+      };
     }
     return {
       data: { deck: { id: deck.id, title: scrub(deck.title), kind: deck.kind, url: deckUrl(access.study.slug, deck.id) }, study: { id: access.study.id, slug: access.study.slug, title: access.study.title }, can_edit: access.canEdit, versions, source },

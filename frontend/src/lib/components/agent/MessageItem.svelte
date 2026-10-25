@@ -22,7 +22,7 @@
    * ⋯ or a long press on phones. Answers to a question card render as a compact summary with 「修改答案」.
    */
   let { message, streaming = false, canRemember = false, conversationId = null, onContinue, ask = null, busy = false, onEdit, onEditAnswers, onRegenerate, onSwitch }: {
-    message: Pick<Message, "role" | "text" | "reasoning" | "status" | "memories" | "kind" | "page_context"> & { id?: string; answers?: Message["answers"]; versions?: string[] | null; attachments?: Message["attachments"]; items?: string[]; workflow_id?: string | null };
+    message: Pick<Message, "role" | "text" | "reasoning" | "status" | "memories" | "kind" | "page_context"> & { id?: string; answers?: Message["answers"]; versions?: string[] | null; attachments?: Message["attachments"]; items?: string[]; replan?: string[]; workflow_id?: string | null };
     streaming?: boolean;
     canRemember?: boolean;
     conversationId?: string | null;
@@ -41,6 +41,19 @@
   // 「要我修這幾項嗎？」 on a partial workflow notice: 繼續改 with exactly these items as the guidance.
   let fixBusy = $state(false);
   let fixStarted = $state(false);
+  let replanStarted = $state(false);
+  async function replanRun() {
+    if (!message.workflow_id || !message.replan?.length) return;
+    fixBusy = true;
+    try {
+      await workflowsApi.revise(message.workflow_id, `${t("wf.partial.replanGuidance")}\n${message.replan.map((i) => `- ${i}`).join("\n")}`.slice(0, 2000));
+      replanStarted = true;
+    } catch (e) {
+      toasts.show(`${t("wf.actionFailed")}：${(e as Error).message}`, "error");
+    } finally {
+      fixBusy = false;
+    }
+  }
   async function fixItems() {
     if (!message.workflow_id || !message.items?.length) return;
     fixBusy = true;
@@ -246,18 +259,32 @@
     </div>
   {/if}
 {:else if message.role === "notice"}
-  {#if message.kind === "workflow_partial" && message.items?.length && message.workflow_id}
+  {#if message.kind === "workflow_partial" && (message.items?.length || message.replan?.length) && message.workflow_id}
     <!-- A partial run: what is still unmet, in plain words, and one click to fix exactly those (繼續改 with them). -->
     <div class="flex w-full max-w-[90ch] flex-col gap-2 rounded-2xl border border-[var(--pill-peach-ink)]/30 bg-[var(--pill-peach)]/40 px-4 py-3 text-[13px] text-ink-2" role="note" data-wf-partial>
-      <p class="flex items-center gap-1.5 font-medium text-ink"><Info class="size-4 text-ink-3" />{t("wf.partial.unmet")}</p>
-      <ul class="flex flex-col gap-1">{#each message.items as item, i (i)}<li class="break-words">・{item}</li>{/each}</ul>
-      <div>
-        {#if fixStarted}
-          <span class="text-[12.5px] text-ink-3">{t("wf.partial.fixing")}</span>
-        {:else}
-          <button type="button" class="inline-flex min-h-9 items-center rounded-full bg-ink px-3.5 text-[12.5px] font-medium text-primary-ink disabled:opacity-50" disabled={fixBusy} onclick={fixItems}>{t("wf.partial.fix")}</button>
-        {/if}
-      </div>
+      {#if message.items?.length}
+        <p class="flex items-center gap-1.5 font-medium text-ink"><Info class="size-4 text-ink-3" />{t("wf.partial.unmet")}</p>
+        <ul class="flex flex-col gap-1">{#each message.items as item, i (i)}<li class="break-words">・{item}</li>{/each}</ul>
+        <div>
+          {#if fixStarted}
+            <span class="text-[12.5px] text-ink-3">{t("wf.partial.fixing")}</span>
+          {:else}
+            <button type="button" class="inline-flex min-h-9 items-center rounded-full bg-ink px-3.5 text-[12.5px] font-medium text-primary-ink disabled:opacity-50" disabled={fixBusy} onclick={fixItems}>{t("wf.partial.fix")}</button>
+          {/if}
+        </div>
+      {/if}
+      {#if message.replan?.length}
+        <!-- Unmet items a rewrite cannot fix (missing sources): one click plans the run again; never another rewrite round. -->
+        <p class="flex items-center gap-1.5 font-medium text-ink"><Info class="size-4 text-ink-3" />{t("wf.partial.replanTitle")}</p>
+        <ul class="flex flex-col gap-1">{#each message.replan as item, i (i)}<li class="break-words">・{item}</li>{/each}</ul>
+        <div>
+          {#if replanStarted}
+            <span class="text-[12.5px] text-ink-3">{t("wf.partial.replanning")}</span>
+          {:else}
+            <button type="button" class="inline-flex min-h-9 items-center rounded-full border border-line-2 bg-surface px-3.5 text-[12.5px] font-medium text-ink disabled:opacity-50" disabled={fixBusy} onclick={replanRun}>{t("wf.partial.replan")}</button>
+          {/if}
+        </div>
+      {/if}
     </div>
   {:else if message.kind?.startsWith("workflow_") || message.kind?.startsWith("goal_")}
     <!-- Workflow status: the card above carries the details; one quiet line. -->

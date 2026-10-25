@@ -1668,17 +1668,25 @@ base, paraphrase, requirements: Requirement[] (each with its verbatim quote), un
 source: start|plan|guidance|edit|clarify|deliverable, clarified?, key?, at}`,
 `ChecklistItem = {id, text, kind: check|judge, check?, requirement_id?, source: user|playbook}`.
 - *Sources*: `user_words` = the user's own turns, verbatim (`collectUserWords`: the conversation's latest user messages
-  since its previous start_workflow / start_goal, ≤ 3, newest kept whole, ≤ 1500 chars; the composer / API request
-  itself) + their guidance, clarifying answers and choices (the autopilot's own 繼續改 guidance lines carry `system: true`
-  and are not the user's words). The assistant's start_workflow / start_goal `request` is stored as `paraphrase` — shown
+  since its previous start_workflow / start_goal that belong to the task — `taskTurns`: walking back from the newest turn over
+  consecutive user messages and over assistant turns that asked back (an `ask_user` card / ending with a question mark);
+  an assistant answer ends the task — earlier turns were another exchange; acknowledgements (「ok」「好」「謝謝」) never
+  count (the same rule as invariant `req.user_words_scope`) (production e6d552fc: an answered question and an 「ok」 became the
+  notes request's words) — ≤ 3, newest kept whole, ≤ 1500 chars; the composer / API request itself) + their guidance,
+  clarifying answers and choices (the autopilot's own 繼續改 guidance lines carry `system: true`, and an answer to a
+  **setup** question — which study / LaTeX project, `PlanResult.question.setup`, guidance tagged `setup: true` by
+  `resumeWorkflow` — is an input, not the user's words: never a requirement, the topic or `guidanceText`; production
+  0668a3d7: the study's name became the deck's topic). The assistant's start_workflow / start_goal `request` is stored as `paraphrase` — shown
   on the plan card as a reference, labelled as such in prompts (`requestLine`), **never a source of requirements**; an
   assistant-given `pages` is dropped unless the user's words have a page count.
-- *Deliverable (hard)*: from the user's words (`deliverableFromWords`: an explicit target 「整理成筆記」「做成簡報」 first,
+- *Deliverable (hard)*: from the user's words (`deliverableFromWords`: an explicit target 「整理成筆記」「整理一份筆記」「做成簡報」 first
+  — papers named as the source 「用我們文獻庫的論文」 never make the deliverable a paper,
   then `deliverableOf` — 「presentation」 is a deck), else the assistant's request, else the hint's product; a given
   playbook never overrides the user's words (「做成簡報」 with `reading_note` → a deck). Which playbook executes it is the
   router's decision (**Routing** below). **Invariant** (`switchGuard`, engine `planPhase`): a playbook redirect or the repeated-question
   fallback to `generic` that would change the kind (notes of different flavours are one family: reading note → topic note
-  is allowed and logged) stops and asks a card `deliverable_<n>` (also under autopilot): 「仍做簡報：用研究的文獻庫與筆記
+  is allowed and logged; the fallback never runs for a setup question or a deck edit; an edit route's card offers only
+  「繼續修改簡報」 / 「先停下來」 / 「其他」 — never a new deck or another kind) stops and asks a card `deliverable_<n>` (also under autopilot): 「仍做簡報：用研究的文獻庫與筆記
   整理」 (slides → `inputs.mode = topic`), 「改做<kind>」 (the user's choice → a new version, source `deliverable`), 「先停下
   來」 (run `cancelled`, `stop_reason skipped`) or 「其他」 text (→ guidance, plan again).
 - *Requirements*: requirements.ts (below), grounded in `user_words` only; the artifact's standing preferences fill what
@@ -1743,7 +1751,8 @@ words name none, never a mode):
   `workflow_runs.state.route` = `RouteState {kind, deliverable, playbook, deck?, edit?, batch, ask?, reason, informed, hint?,
   brief_version, explicit_paper, hint_playbook, pinned?, at}` and logged: 「路由：要交付的是簡報，由「簡報」執行（…）。」), and
   again at every planning (`routePhase`, after `prepareBrief` / `clarifyDeliverable`, with the Brief's requirements and the
-  study's readiness `routeContext`): a changed decision switches the playbook (always within the Brief's deliverable) and is
+  study's readiness `routeContext`). User-facing names follow the route (`playbookLabel`): a deck edit is 「修改簡報」 /
+  「擴充簡報」 in the route log, cards, notices and the run view's `playbook_title`, never 「從 0 到 1 建立簡報」. A changed decision switches the playbook (always within the Brief's deliverable) and is
   logged; a batch whose study was only known now is split and the run ends (`cancelled` / `skipped`, 「已拆成 n 個工作流程…」).
   A decision made before the study was known (`informed = false`) is refreshed by the playbook once it resolved the study
   (`currentRoute`). Playbooks read `env.route()` and never detect a mode from the request text.
@@ -1761,20 +1770,41 @@ requirement is now a typed constraint that every step must keep and that is chec
   the user's words, the guidance or the standing preferences changed): deterministic detection on the Brief's start words
   (the user's own turns — never the assistant's paraphrase; each item keeps its `quote`) and every guidance line
   (`detectLanguage` 「整份改成英文」「我整個簡報要用英文」「in English」 — 「專有名詞保留英文」 is not a language request;
-  `detectPageCount` exact / range / at least / at most, inputs.pages wins; `detectPerItemFields` 「每個方法要有架構、
-  Pros/Cons」「for each method include …」 with bilingual field aliases (Pros ⇄ 優點 / Advantages, Cons ⇄ 缺點 / Limitations,
-  架構 ⇄ Architecture…); `detectExclude` 「刪掉第 3 頁」「拿掉「卡住」這頁」) + one model call (`purpose requirements`, no
+  **per part** `detectPartLanguages` 「講稿要是中文的」「投影片用英文、講稿用中文」「speaker notes in Chinese」 → `params.part`
+  `notes` | `slides` (decks; 「多用英文的專用名詞」 adds 「專有名詞多用英文」 to the notes text); `READ_ALOUD_RE`
+  「一比一的念出來不會有違和」「照稿念」 → a judged `tone` requirement on the notes (natural spoken text readable verbatim);
+  `detectPageCount` exact / range / at least / at most / 「大概 8 頁」, inputs.pages wins; clauses that only extend a stated
+  language (「包含封面和講稿」「cover 跟 speaker notes 也要」) or keep terms in English (「專有名詞保留英文」「technical terms
+  保留英文」) join that language requirement's quote; 「參考我們的文獻庫…統計有哪幾種方法」 is a judged `other` requirement
+  (`LIBRARY_SURVEY_RE`); a model item restating words a deterministic requirement already quotes is dropped; `detectPerItemFields` 「每個方法要有架構、
+  Pros/Cons」「for each method include …」 and the spoken forms spread over a run-on request (「每一種方法的好處跟壞處」,
+  「在講解方法的時候要搭配模型的架構圖」, 「在提到方法的時候要講到這一篇論文是哪一篇還有他們的會議或是期刊」 → ONE requirement
+  方法: 優點、缺點、架構圖、論文、發表會議／期刊, `canonicalField`) with bilingual field aliases (Pros ⇄ 優點 / 好處 / Advantages,
+  Cons ⇄ 缺點 / 壞處 / Limitations, 架構圖 ⇄ Architecture / ```diagram, 論文 ⇄ Paper / et al, 發表會議／期刊 ⇄ Interspeech /
+  ICASSP / arXiv / Venue…); quotes are the clause(s) the item came from (`clauseOf` on `segmentClauses`); `detectExclude` 「刪掉第 3 頁」「拿掉「卡住」這頁」) + one model call (`purpose requirements`, no
   retry; `include_topics` with aliases, `per_item_fields` items, audience / tone / length / format / other — it may not
-  set language or page count; its items must quote the user's words verbatim, `groundedInWords`) + (runs without a Brief)
+  set language or page count; its items must quote the user's words verbatim, `groundedInWords`). **Clause coverage**
+  (production 0668a3d7: an ASR request with no punctuation and six asks became ONE requirement): the user's words are
+  split into clauses (`segmentClauses`: punctuation, the spaces ASR writes at pauses, spoken connectors 並且／還有／然後／
+  那請你／我要…), the model gets them numbered and maps each to a requirement (`clauses`, the quote is then those clauses
+  verbatim) or drops it with a reason (`dropped`, shown on the plan card as 「沒有列成要求的話」); every content clause no
+  requirement accounts for becomes a judged `other` requirement in the user's words 「照你說的：「…」」 (`uncoveredClauses`;
+  trivial / task-statement clauses and a one-ask request are exempt; not for goal stages); the 「請修正這幾項」 /
+  「重新規劃：」 guidance is a fix request, never new requirements (`FIX_REQUEST_RE`) + (runs without a Brief)
   the language of recent user turns of the conversation + the target artifact's
   **standing preferences** (`decks|notes|latex_projects.agent_prefs {requirements, run_id, updated_at}`; an artifact without
   any whose content is English (`inferLanguage`) keeps English). Merge order (single-valued types: first wins): the
-  user's plan-card edits → deterministic (guidance before request) → model → recent chat → standing → the message's
-  language (`messageLanguage`). Types: `language`
+  user's plan-card edits → deterministic (guidance before request) → model → clause coverage → recent chat → standing →
+  the message's language (`messageLanguage`). **Language is per part**: a newer statement about one part overrides only
+  that part (production e6d552fc: 「講稿要是中文的」 against the deck's standing 「全部 English」 → notes 繁體中文 (request) +
+  「投影片（封面、標題、內文、圖表標籤）用 English（沿用…）」 (standing, narrowed to slides)); `targetLanguage` = the slides'
+  / whole artifact's language (cover, titles, labels), `notesLanguage` = the notes'. Types: `language`
   (`en` | `zh`), `page_count`, `include_topics`, `exclude`, `per_item_fields`, `audience`, `tone`, `length`, `format`,
   `other`; `source` request | guidance | conversation | standing | user. Stored in `state.requirements` and shown as
   `plan.requirements` (plan card 「你的要求」 with 「沿用」 for standing ones; autopilot cards list them too).
-- *Criteria*: every requirement is a criterion `req_<id>` (`requirementCriteria`): `req_language` (en: no CJK letter or
+- *Criteria*: every requirement is a criterion `req_<id>` (`requirementCriteria`): `req_language` (`params.part`:
+  `slides` = cover, titles, slide text; `notes` = speaker notes only, and zh notes are strict: a note with ≥ 8 English words
+  and fewer Han characters than English words fails; en: no CJK letter or
   full-width punctuation in visible text — front matter title / subtitle (the cover; author / date are names), slide or
   section titles, bullets, tables, diagram / chart labels, captions, speaker notes; 〈quoted titles〉 and `allow` pass; a
   note's fixed section headings (`fixedHeadings`) pass and are localized at commit (`localizeHeadings`); LaTeX comments
@@ -1849,6 +1879,17 @@ requirement is now a typed constraint that every step must keep and that is chec
   original slides) have is not applied (`inventedNumbers`, log 「版面修正在這些頁加了資料裡沒有的數字…」).
   `stripPositions` also removes hand-shrunk text (`<small>`, inline `font-size`, `[x]{.small}`): it lands below the
   16 px floor and failed pages as 「字太小」 round after round.
+- *Structural failures* (playbook `structural`, engine `finalStep`; production 0668a3d7: 修 rewrote the taxonomy page and it
+  failed the same way, because the plan never read papers for the missing families): before rewriting, judged failures are
+  classified. Names a fail says are missing (`missingNames`: 「缺少 Contextual density-ratio」) that no extraction covers but
+  an unread library paper does (`nameIn` ≥ 60 % of the name's words in its title / abstract) → those papers are added (new
+  `paper_i` steps, the failing pages' sources and writers' `depends_on`) and only those pages rewritten once; names nothing
+  in the library covers, or that a repair already tried → `state.replan_needed` (never sent to writers again). The partial
+  notice lists them apart (`replan`, 「這些要重新規劃才做得到」) with **「重新規劃」** (`POST /workflows/:id/revise` on a
+  finished run: planning again with the items as guidance, draft reused, plan waits for approval).
+- *Located fails*: a judged fail's reason names where it is — the page holding its quoted evidence and the numbers in it
+  (`withLocation`: 「…（第 5 頁「Method 2」：「…0.934 to 0.922」；數字 0.934、0.922）」), so the repair reopens that page's
+  writer (the judge is also asked to name the number and page).
 - *Report back*: a partial run's chat notice lists the unmet items in plain words (`unmetItems`: failed / unjudged
   criteria, else failed steps; content `{items, model: true}`, `messageView.items` + `workflow_id`) with 「要我修這幾項嗎？」
   (→ `POST …/guidance` = 繼續改 with those items); the notice stays visible in the chat and is carried into the model's
@@ -1892,13 +1933,24 @@ answerable: the user's 「修改答案」 clears `ai_filled` and re-runs the ste
 as before. `askStudentView(env, step, {cardId, title, questions})` is the same pattern (incl. the autopilot fill,
 `isAiFilled`) for a 「我的想法」-style section in other playbooks.
 
-**Context and batches** (`src/workflows/context.ts`). A new run inherits its study / paper from the inputs, the page
-context, then the conversation (`conversations.context` / `study_id`, the page context of its recent user messages),
-then a study named in the request (title/slug tokens of a study the user edits: English word = 2 points, CJK bigram =
-1, ≥ 4 and a unique best), then the user's only active study — so a chat about one study never gets 「要把簡報放在哪個研究？」. When
-planning still has no study (`resolveStudy`), it retries the match on the request + guidance, and a guidance that hands the
-choice back (「你決定」, `DELEGATE_RE`) takes the user's most recently active study; the found study is written to
-`workflow_runs.study_id`. Otherwise the question lists the user's studies (`whichStudyQuestion`). A per-paper run whose study
+**Context and batches** (`src/workflows/context.ts`). A new run inherits its study / paper from the inputs, the **work
+object's own study** (`studyOfInputs`: a `deck_id`, `note_ids`, `project_id`, or a paper in exactly one study the user
+edits), the current page context, the **conversation's last workflow / goal study** (`conversationStudy`), then the
+conversation (`conversations.context` / `study_id`, the page context of its recent user messages), then a study named in
+the request (title/slug tokens of a study the user edits: English word = 2 points, CJK bigram =
+1, ≥ 4 and a unique best), then the user's only active study — so a chat about one study never gets 「要把簡報放在哪個研究？」. (Production e6d552fc: start_workflow{deck_id} from a home-page chat asked 「哪個研究」 twice, then fell back to the
+general workflow and offered a NEW topic deck.) When planning still has no study (`resolveStudy`: the same order, then the
+request + guidance; a guidance pointing back — 「剛剛那個／同一個」, `REFER_BACK_RE` → the conversation's last workflow
+study — or handing the choice back — 「你決定」, `DELEGATE_RE` → the most recently active study), `requireStudy` asks ONE
+**study-picker card** `study_<n>` (the user's studies as options + 「你決定」, 「其他」 matched the same way; an answer
+that matches nothing asks again, ≤ 3) — never a free-text question, never a reason for the generic fallback. The found
+study is written to `workflow_runs.study_id`. **The work object** (`insertWorkflows`; scenario matrix: 「剛剛那個簡報」「同一個
+簡報」「繼續」 with no deck page open lost the deck): the page's deck when the words are about a deck or edit one and do not
+ask for a NEW deck (`newDeckAsked`: 「幫我做一份…簡報」「make a … deck」 on a deck page is a new deck, also in the router);
+else, when the words point at an existing one (`POINTS_AT_RE`) or edit one, the deck the conversation's last workflow wrote
+(`conversationArtifact`; notes likewise); `inputs.deck_from` = page | conversation. Every setup answer honours 「你決定」:
+the study card, the LaTeX project question (`pickFromAnswer`: a named title, else the most recently updated), the paper
+question (the most recently added paper with a PDF) and `clarifyOnce` (a 「其他」 delegate → the first option). A per-paper run whose study
 was only found at planning and whose user asked for 「每一篇文獻」 is split by the router then and ends itself (`cancelled`,
 `stop_reason=skipped`, report 「已拆成 n 個工作流程…」). A slides / reading-note run
 without a `paper_id` takes the study paper the request or the guidance names (full title, or the short name before a colon
@@ -1965,8 +2017,17 @@ pages, title from the user's words `topicTitleOf`). Planning (`topicDeckResearch
 `decompose` (sub-questions + keyword queries from the request and study title only) → **one online search batch** +
 snowballing (`searchOnline`; keywords / ids only, then the run is tainted) **only when the user's words ask for it**
 (`ONLINE_RE`: 搜尋, 找論文, 最新, search, online…) **or the library is thin** (< `THIN_LIBRARY` = 4 papers with a PDF) →
-`select` picks ≤ min(8, pages − 3) papers (library + importable candidates), stored as `state.topic` → the brief lists
-them as `P1…Pn` with abstracts (+ the 2 newest research / reading notes). The survey outline (exactly N pages) gives
+`select` picks papers by method family (library + importable candidates), stored as `state.topic`. **How much of the
+library** (production 0668a3d7: 4 of 10 papers read although the user asked to tally the library's methods): words asking
+to cover / tally the library (`LIBRARY_SURVEY_RE`: 參考我們的文獻庫、統計有哪幾種方法…) → every library paper with a PDF
+(≤ `LIBRARY_ALL` = 12; the planner's picks + the rest, `state.topic.read_all`, and the taxonomy page rests on all of them,
+`withAllSources`); a larger library surveyed, or a small library (≤ 12 with PDFs) → the planner picks every related paper
+(≤ 12); otherwise ≤ min(8, pages − 3)
+by family coverage; the plan note says how many papers are read and why. The topic comes from the request
+(`topicSubjectOf`: 「詳細描述了…怎麼在 Zipformer 和 RNNT 的架構下做熱詞機制」 → that subject; else `topicTitleOf`, else the
+decomposition's title), never from the study's name — `decompose` gets the study title as background only. The brief lists
+the picks as `P1…Pn` with abstracts and their **bibliographic line** (`bibLine`: 「Chen et al., 2019, Interspeech」; no venue
+but an arXiv id → 「arXiv preprint」; never 「未提供」) (+ the 2 newest research / reading notes). The survey outline (exactly N pages) gives
 every page a `kind` (title / motivation / taxonomy / method / comparison / synthesis / other), `sources` (`P<n>`), a
 `layout`, a `purpose` and, for method pages, `item`; `TOPIC_RULES`: taxonomy page, one page per method with a
 ```` ```diagram ```` architecture and its **injection point** + training vs. inference, comparison of like-for-like
@@ -1976,8 +2037,8 @@ digest carries the full text; skippable on the plan card) — only for picks som
 pick the outline does not use is neither imported nor read, said in `plan.notes`) →
 `write_<n>` per page depending on its source papers' steps (`pageSources`: a page without valid refs rests on every
 paper, a title page on none) → the usual assemble → notes → constraints → visual_qa → final. A page's writer (and so its
-judge) gets only its sources (`topicPageBrief`: the topic header + the extraction parts its `kind` needs from each source
-paper, `PAGE_PARTS`), and the content refs are rebuilt from the extractions read so far; assemble adds a deterministic
+judge) gets only its sources (`topicPageBrief`: the topic header with the **書目** of every pick (first author et al., year,
+venue — writers cite papers this way), the extraction parts its `kind` needs from each source paper, `PAGE_PARTS`), and the content refs are rebuilt from the extractions read so far; assemble adds a deterministic
 `::: {.page-source}` line per page from its source papers (`withSourceLines`, 「來源」/ "Sources"). Online imports appear in
 `plan.writes` as a `paper` write without a draft effect, so the plan waits for the user unless autopilot is on. No picks
 → the minimal topic deck over the library's abstracts and notes (`topicContext`), said in `plan.notes`.
@@ -2232,8 +2293,17 @@ before the plan is approved — by the user, or by autopilot for draft-only plan
 conversation's context) → `{workflow_id, status, playbook}` or, for a batch, `{batch_id, workflow_ids, workflows:
 [{id, title, status, paper_id}], status: "batch"}` (the tool row renders the **batch card**); the prompt tells the
 model to call it once for 「每一篇文獻」 and not to drop papers without a PDF; the model must end its turn without describing
-results; `get_workflow {workflow_id?}` (read) → status, criteria, report (the model reports state honestly: queued /
-running / partial — never outcomes that were not verified). `ask_user` refuses a card whose question refers to
+results; `get_workflow {workflow_id?}` (read) → status, criteria, report, artifacts with ids + `content_note` (the model
+reports state honestly: queued / running / partial — never outcomes that were not verified; it is not the artifact's
+content: CHAT_RULES and the note say to read the deck / note itself with `get_deck` / `get_note` before answering what it
+says — production 79ab0678 listed a method the deck did not have, from a criterion's reason). **Target grounding**
+(`artifactGrounded`, start_workflow / suggest_deck_edit; scenario matrix g22: with no deck open the assistant searched,
+picked an unrelated deck and proposed deleting its page): the assistant may act only on the conversation's own artifact
+(a page it was on, a workflow of this conversation wrote or was given it, a create_* tool of this conversation made it) or
+one whose exact title the user said; otherwise the tool refuses with 「先用 ask_user 問使用者要改哪一份」 (CHAT_RULES say the
+same; invariant `assistant.target_grounded`). Partial reports and notices use plain words (`plainLabels`: P<n> → the
+paper's short title, approved_outline → 確認的大綱, no `req_*` ids). `get_deck {deck_id, pages?}`
+lists every slide (title + short preview of body and notes) and returns the asked pages in full. `ask_user` refuses a card whose question refers to
 「以下／下列／上述／這個架構…」 unless `intro` contains the referenced content (≥ 3 list lines or ≥ 120 chars).
 The composer has 「交給 Agent」 and the slash command `/agent <request>` → `POST /workflows {conversation_id, request}`,
 which appends the user message and a synthetic `start_workflow` call (valid transcript, no model call) and starts
@@ -2248,7 +2318,7 @@ planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
 | GET `/workflows/:id` | owner | `{workflow, steps: StepView[], resumeFrom}` |
 | GET `/workflows/:id/events` | owner | SSE (as the agent's: `Last-Event-ID` / `?after=`, `?once=1`, 15 s ping, 5 s poll fallback) |
 | POST `/workflows/:id/approve` `{objective?, criteria?: [{id?, text}] ≤ 40, steps?: [{key, title?, instructions?, skip?}], outline?: [{title, points[]}], requirements?: [{id?, type?, text}] ≤ 12}` | owner | only `awaiting_plan_approval` (409) → `{workflow}`; edits are applied first (outline edits re-derive the writer steps; `requirements` = the whole edited 「你的要求」 list: reworded / new text is typed again (`editedRequirements`), removed ones stay removed on re-plans, `req_*` criteria re-derived; a `criteria` edit never drops `req_*` criteria) |
-| POST `/workflows/:id/revise` `{feedback ≤ 2000}` | owner | 「修改」 at plan approval (or 「修改計畫」 on an autopilot-approved run: running → stops between calls then re-plans; paused → re-plans) → `planning`; the new plan waits for the user |
+| POST `/workflows/:id/revise` `{feedback ≤ 2000}` | owner | 「修改」 at plan approval (or 「修改計畫」 on an autopilot-approved run: running → stops between calls then re-plans; paused → re-plans; or 「重新規劃」 on a finished partial / done / failed run: final rounds, repairs and the final ledger reset, a little more budget, draft reused) → `planning`; the new plan waits for the user |
 | POST `/workflows/:id/pause` · `/resume {more?}` · `/cancel` | owner | pause while running; resume a paused / `needs_pdf` (re-plan) / partial (`more`: 繼續改) / failed run; cancel any active run (frees a slot → queued runs start) → `{workflow}` |
 | POST `/workflows/:id/guidance` `{text ≤ 2000}` | owner | 補充指示; on a finished `partial`/`done` run it starts 繼續改 with that guidance |
 | POST `/workflows/:id/answer` `{card_id, answers: [{id, value?, other?, skipped?}]}` | owner | answers a question card (400 invalid answer, 404 unknown card, 409 while working when editing) → `{workflow}`; resumes / re-runs from the asking step |

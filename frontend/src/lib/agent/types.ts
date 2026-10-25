@@ -61,6 +61,8 @@ export type Message = {
   kind: string | null;
   /** A partial workflow notice: what is still unmet (「要我修這幾項嗎？」) and its run. */
   items?: string[];
+  /** Unmet items only a new plan can meet (「重新規劃」). */
+  replan?: string[];
   workflow_id?: string | null;
   memories: { id: string; content: string }[];
   /** `ask_user` answers sent as this user turn. */

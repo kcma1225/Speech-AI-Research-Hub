@@ -49,7 +49,8 @@ describe("detection", () => {
 
   it("removals by page number or quoted title", () => {
     expect(detectExclude("刪掉第 3 頁")).toEqual({ scope: "page", pages: [3], terms: [] });
-    expect(detectExclude("把「卡住」這頁拿掉")).toBeNull();
+    // 「「X」這頁拿掉」 (title before the verb) is a removal too (scenario matrix g24: 「這個簡報裡「卡住」這頁刪掉」).
+    expect(detectExclude("把「卡住」這頁拿掉")!.terms).toEqual([{ name: "卡住" }]);
     expect(detectExclude("拿掉「卡住」這頁")!.terms).toEqual([{ name: "卡住" }]);
   });
 

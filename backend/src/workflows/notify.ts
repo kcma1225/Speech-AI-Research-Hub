@@ -42,11 +42,39 @@ const TEXT: Record<NoticeKind, (t: string) => { notice: string; title: string } 
  * What a partial run left unmet, in plain words (failed / unjudged criteria, else failed steps), ≤ 6 items: the chat
  * notice lists them with 「要我修這幾項嗎？」 (→ 繼續改 with these items as guidance).
  */
-export function unmetItems(run: Pick<RunRow, "criteria">, failedSteps: { title: string; error: string | null }[] = []): string[] {
-  const plain = (s: string) => s.replace(/^你的要求：/, "").replace(/\s+/g, " ").trim();
-  const items = run.criteria.filter((c) => c.status !== "pass").map((c) => `${plain(c.text)}${c.reason && c.status === "fail" ? `：${plain(c.reason).slice(0, 160)}` : c.status !== "fail" ? "（還沒驗收）" : ""}`);
+/**
+ * Internal labels a reader cannot know replaced by plain words (invariant outcome.partial_explained: reports said
+ * 「P1…」「approved_outline」): P<n> → the paper's short title, approved_outline / sources → 確認的大綱 / 來源，req ids dropped.
+ */
+export function plainLabels(run: { state?: RunRow["state"] }, text: string): string {
+  const picks = ((run.state?.topic as { picks?: ({ title?: string; hit?: { title?: string } })[] } | undefined)?.picks) ?? [];
+  const short = (t: string) => (t.split(/[:：]/)[0] ?? t).trim().slice(0, 40);
+  return text
+    .replace(/[（(]P\d+…?[）)]/g, "")
+    .replace(/\bP(\d+)(?:\s*[-–]\s*P(\d+))?\b/g, (m, a: string, b?: string) => {
+      if (b) return "這些論文";
+      const p = picks[Number(a) - 1];
+      const t = p?.title ?? p?.hit?.title;
+      return t ? `〈${short(t)}〉` : "那篇論文";
+    })
+    .replace(/approved_outline/g, "確認的大綱").replace(/<?sources>?/g, "來源").replace(/\breq_[a-z0-9]+\b/gi, "").replace(/\s{2,}/g, " ");
+}
+
+export function unmetItems(run: Pick<RunRow, "criteria"> & { state?: RunRow["state"] }, failedSteps: { title: string; error: string | null }[] = []): string[] {
+  const plain = (s: string) => plainLabels(run, s.replace(/^你的要求：/, "")).replace(/\s+/g, " ").trim();
+  const replan = new Set(replanItems(run).map((r) => r.id));
+  const items = run.criteria.filter((c) => c.status !== "pass" && !replan.has(c.id)).map((c) => `${plain(c.text)}${c.reason && c.status === "fail" ? `：${plain(c.reason).slice(0, 160)}` : c.status !== "fail" ? "（還沒驗收）" : ""}`);
   if (!items.length) for (const s of failedSteps) items.push(`「${s.title}」沒有完成${s.error ? `：${s.error.slice(0, 120)}` : ""}`);
   return items.slice(0, 6);
+}
+
+/** Unmet criteria only a new plan can meet (engine finalStep → playbook `structural`): listed apart, with 「重新規劃」. */
+export function replanItems(run: { criteria: RunRow["criteria"]; state?: RunRow["state"] }): { id: string; text: string }[] {
+  const list = (run.state?.replan_needed as { id: string; why: string }[] | null | undefined) ?? [];
+  return list.map((r) => {
+    const c = run.criteria.find((x) => x.id === r.id);
+    return c && c.status !== "pass" ? { id: r.id, text: plainLabels(run, `${c.text.replace(/^你的要求：/, "")}：${r.why}`).replace(/\s+/g, " ").slice(0, 300) } : null;
+  }).filter((x): x is { id: string; text: string } => !!x).slice(0, 4);
 }
 
 export async function finishNotice(env: WorkflowEnv, kind: NoticeKind) {
@@ -55,10 +83,16 @@ export async function finishNotice(env: WorkflowEnv, kind: NoticeKind) {
   if (!t) return;
   // Partial: say what is still wrong and offer to fix exactly those items (the user should not have to hunt for them).
   let items: string[] = [];
+  let replan: string[] = [];
   if (kind === "partial") {
     const failed = (await env.db.query<{ title: string; error: string | null }>("SELECT title, error FROM workflow_steps WHERE run_id=$1 AND status='failed' ORDER BY position", [run.id]).catch(() => ({ rows: [] as { title: string; error: string | null }[] }))).rows;
     items = unmetItems(run, failed);
-    if (items.length) t = { ...t, notice: `工作流程「${run.title || "工作流程"}」已結束，還有 ${items.length} 項沒有達成：\n${items.map((i) => `・${i}`).join("\n")}\n要我修這幾項嗎？` };
+    replan = replanItems(run).map((r) => r.text);
+    const parts = [
+      items.length ? `還有 ${items.length} 項沒有達成：\n${items.map((i) => `・${i}`).join("\n")}\n要我修這幾項嗎？` : "",
+      replan.length ? `這些要重新規劃才做得到（改寫頁面補不出來）：\n${replan.map((i) => `・${i}`).join("\n")}` : "",
+    ].filter(Boolean);
+    if (parts.length) t = { ...t, notice: `工作流程「${run.title || "工作流程"}」已結束，${parts.join("\n")}` };
   }
   // Deep link to the run's card in its conversation (scrolled to + highlighted), or the expanded run on /assistant/workflows.
   const url = run.goal_id ? focusHref(run.conversation_id, `goal:${run.goal_id}`, run.id) : focusHref(run.conversation_id, `workflow:${run.id}`, run.id);
@@ -66,7 +100,7 @@ export async function finishNotice(env: WorkflowEnv, kind: NoticeKind) {
     if (run.conversation_id) {
       const m = (await env.db.query<MessageRow>(
         "INSERT INTO agent_messages(conversation_id,role,content,text) VALUES($1,'notice',$2,$3) RETURNING *",
-        [run.conversation_id, JSON.stringify([{ type: "notice", kind: `workflow_${kind}`, workflowId: run.id, ...(items.length ? { items, model: true } : {}) }]), t.notice],
+        [run.conversation_id, JSON.stringify([{ type: "notice", kind: `workflow_${kind}`, workflowId: run.id, ...(items.length ? { items, model: true } : {}), ...(replan.length ? { replan, model: true } : {}) }]), t.notice],
       )).rows[0]!;
       await insertEvent(env.db, run.conversation_id, null, "message", { message: messageView(m) });
     }

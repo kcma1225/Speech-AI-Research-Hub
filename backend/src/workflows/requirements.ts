@@ -109,7 +109,16 @@ export type Violation = { page: number; title: string; part: "front" | "title" |
  * tables, diagram / chart labels, captions, speaker notes — except 〈quoted titles〉 and the allow-list. `zh` (lenient):
  * only a unit written entirely in English (≥ 30 words, no Han character outside code).
  */
-export function languageViolations(text: string, language: "en" | "zh", allow: string[] = [], doc = false): Violation[] {
+export function languageViolations(text: string, language: "en" | "zh", allow: string[] = [], doc = false, part?: "slides" | "notes"): Violation[] {
+  const out = languageViolationsAll(text, language, allow, doc, part === "notes");
+  if (!part || doc) return out;
+  return out.filter((v) => (part === "notes" ? v.part === "notes" : v.part !== "notes"));
+}
+
+/** A speaker note in 繁體中文 (with English technical terms): mostly Han text — fewer Han characters than English words fails. */
+const mostlyEnglish = (vis: string) => latinWords(vis) >= 8 && (vis.match(HAN_G) ?? []).length < latinWords(vis);
+
+function languageViolationsAll(text: string, language: "en" | "zh", allow: string[], doc: boolean, strictNotes: boolean): Violation[] {
   const out: Violation[] = [];
   const { units, slides } = unitsOf(text, doc);
   if (language === "en") {
@@ -129,7 +138,7 @@ export function languageViolations(text: string, language: "en" | "zh", allow: s
   for (const u of units) {
     for (const [part, raw] of [["body", u.body], ["notes", u.notes]] as const) {
       const vis = visibleText(raw.replace(/```[\s\S]*?```/g, " ").replace(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, " "));
-      if (latinWords(vis) >= 30 && !(vis.match(HAN_G) ?? []).length) out.push({ page: u.page, title: u.title, part, snippet: vis.trim().slice(0, 40) });
+      if (part === "notes" && strictNotes ? mostlyEnglish(vis) : latinWords(vis) >= 30 && !(vis.match(HAN_G) ?? []).length) out.push({ page: u.page, title: u.title, part, snippet: vis.trim().slice(0, 40) });
     }
   }
   void slides;
@@ -157,8 +166,8 @@ const termHit = (hay: string, t: RequirementTerm) => [t.name, ...(t.aliases ?? [
 // ---------------------------------------------------------------- deterministic detection
 
 /** Output language the user explicitly asks for (「整份改成英文」「我整個簡報要用英文」「in English」); null = not said. */
-const LANG_ZH_RE = /(?:用|改成|改為|改回|換成|換回|轉成|翻成|翻譯成|寫成|做成|全部|整份|都(?:要)?用?)\s*(?:繁體|正體)?中文|(?:繁體|正體)?中文(?:版|簡報|投影片|報告|筆記)|\b(?:in|into|to) (?:traditional )?chinese\b|chinese version/i;
-const LANG_EN_RE = /(?:用|改成|改為|換成|轉成|翻成|翻譯成|寫成|做成|全部|整份|整個|都(?:要)?用?|純|全)\s*英文|英文(?:版|簡報|投影片|報告|筆記|論文)|\b(?:in|into|to) (?:(?:clear|plain|academic|fluent|formal|natural|proper|simple)\s+)*english\b|\benglish (?:(?:research|academic|technical)\s+)?(?:version|deck|slides|slide deck|presentation|talk|report|note|paper)\b|\ball[- ]english\b/i;
+const LANG_ZH_RE = /(?:用|改成|改為|改回|換成|換回|轉成|翻成|翻譯成|翻譯為|譯成|寫成|做成|全部|整份|都(?:要)?用?)\s*(?:繁體|正體)?中文|(?:translate|翻譯|翻)\s*(?:成|為|to|into)\s*(?:繁體|正體)?(?:中文|chinese)|(?:繁體|正體)?中文(?:版|簡報|投影片|報告|筆記)|\b(?:in|into|to) (?:traditional )?chinese\b|chinese version/i;
+const LANG_EN_RE = /(?:用|改成|改為|換成|轉成|翻成|翻譯成|翻譯為|譯成|寫成|做成|全部|整份|整個|都(?:要)?用?|純|全)\s*英文|(?:translate|翻譯|翻)\s*(?:成|為|to|into)\s*(?:英文|english)|英文(?:版|簡報|投影片|報告|筆記|論文)|\b(?:in|into|to) (?:(?:clear|plain|academic|fluent|formal|natural|proper|simple)\s+)*english\b|\benglish (?:(?:research|academic|technical)\s+)?(?:version|deck|slides|slide deck|presentation|talk|report|note|paper)\b|\ball[- ]english\b/i;
 export function detectLanguage(text: string): "en" | "zh" | null {
   const z = LANG_ZH_RE.test(text);
   const e = LANG_EN_RE.test(text);
@@ -167,16 +176,80 @@ export function detectLanguage(text: string): "en" | "zh" | null {
   return null;
 }
 
-/** The clause of `text` around the first match of `re` (≤ 120 chars): the user's own words a requirement quotes. */
+export type LanguagePart = "slides" | "notes";
+const NOTES_WORD = "(?:講稿|逐字稿|口稿|講詞|演講稿|speaker\\s*notes?|notes)";
+const SLIDES_WORD = "(?:投影片(?:本體|本身|內容|上的字|上面的字|文字)?|頁面(?:內容|文字)?|簡報(?:本體|本身|內容|上的字|上面的字|頁面)|slides?(?:\\s*text)?|slide\\s*content)";
+const LANG_WORD = "(?:(?:繁體|正體)?中文|英文|english|chinese)";
+const partRe = (part: string) => new RegExp(`${part}[^。，,；;！？!?\\n]{0,12}?(?:要是|要用|都用|都是|全部用|全用|請用|改成|改為|換成|轉成|翻成|翻譯成|寫成|維持|保持|保留|還是|用|是|stay in|stays in|remain in|keep in|in|into|to)\\s*(?:一樣用\\s*)?${LANG_WORD}`, "gi");
+const PART_RES: [LanguagePart, RegExp][] = [["notes", partRe(NOTES_WORD)], ["slides", partRe(SLIDES_WORD)]];
+const langOf = (s: string): "en" | "zh" => (/英文|english/i.test(s) ? "en" : "zh");
+
+/**
+ * Per-part language (「講稿要是中文的」「投影片用英文、講稿用中文」「speaker notes in Chinese」): one entry per part the
+ * words set, with the matched span (removed before the whole-artifact detection, so 「講稿用中文」 is not 「全部中文」).
+ */
+export function detectPartLanguages(text: string): { part: LanguagePart; language: "en" | "zh"; span: string }[] {
+  const out: { part: LanguagePart; language: "en" | "zh"; span: string }[] = [];
+  for (const [part, re] of PART_RES) {
+    for (const m of text.matchAll(re)) {
+      if (out.some((o) => o.part === part)) break;
+      if (part === "slides" && (out.some((o) => o.span.includes(m[0]) || m[0].includes(o.span)) || new RegExp(NOTES_WORD, "i").test(m[0]))) continue;
+      out.push({ part, language: langOf(m[0]), span: m[0] });
+    }
+  }
+  return out;
+}
+
+/** 「多用一點英文的專用名詞」「專有名詞保留英文」: English technical terms inside a Chinese text. */
+/** 「參考我們的文獻庫…統計有哪幾種方法」「survey our library」: the user asks to cover the study's library. */
+export const LIBRARY_SURVEY_RE = /(?:參考|根據|依據|用|整理|統計|涵蓋|看)(?:一下)?(?:我們|我|實驗室|研究)?的?文獻庫|文獻庫(?:裡|中|內|的)(?:所有|全部|每一?篇|有哪些|的方法|的論文)|(?:統計|列出|整理)[^。，,；;\n]{0,8}(?:有哪幾種|有哪些|所有|全部)(?:方法|做法|methods?)|(?:all|every) (?:the )?papers in (?:our|the|my) (?:study )?library|(?:survey|cover|tally) (?:our|the|my) (?:study )?(?:library|collection)|(?:use|using) our (?:study )?library[^.\n]{0,40}(?:count|which methods)/i;
+export const TERMS_EN_RE = /英文的?(?:專用|專有)?(?:名詞|術語|用語)|(?:專用|專有)名詞[^。，,；;\n]{0,6}英文|術語[^。，,；;\n]{0,6}英文|technical terms?[^。，,；;\n]{0,8}(?:英文|english)|english (?:technical )?terms|(?:keep|leave) (?:the )?(?:technical )?terms in english/i;
+/** 「講稿要我能夠一比一的念出來不會有違和」「可以直接照念」「read aloud verbatim」: notes written to be read out as they are. */
+export const READ_ALOUD_RE = /一比一的?(?:照著?)?(?:念|唸|讀)|一字一句|照(?:著)?(?:稿)?(?:念|唸|讀)|直接(?:念|唸|讀)|(?:念|唸|讀)出來[^。，,；;\n]{0,8}(?:不會|沒有|不)(?:有)?(?:違和|卡|奇怪|不順)|(?:念|唸)起來(?:要)?(?:順|自然|通順)|口語化|read (?:it )?(?:aloud|out loud)|verbatim/i;
+
+export const languageText = (language: "en" | "zh", part?: LanguagePart, termsEn = false) =>
+  part === "notes" ? `講稿用${LANGUAGE_LABEL[language]}${language === "zh" && termsEn ? "（專有名詞多用英文）" : ""}`
+    : part === "slides" ? `投影片（封面、標題、內文、圖表標籤）用${LANGUAGE_LABEL[language]}`
+      : `成果全部用${LANGUAGE_LABEL[language]}${language === "en" ? "（封面、標題、內文、圖表標籤與講稿都不留中文）" : termsEn ? "（專有名詞多用英文）" : ""}`;
+
+/** Spoken connectors that start a new ask in a run-on (ASR) request: 「並且」「還有」「然後」「那請你」「我要」… */
+const CONNECTOR_RE = /(?=並且|而且|還有|然後|另外|此外|同時|以及|再來|接著|當然|那請你|那你|(?<!那)請你|(?<!那)我要你|(?<![那你])我要|我想要|我希望|也要|還要|最後)/g;
+
+/**
+ * The clauses of the user's words (production 0668a3d7: an ASR-transcribed request with no punctuation hid 5 of 6
+ * asks): split at punctuation, at the pauses ASR writes as spaces between Chinese words, and before spoken connectors.
+ * Each clause is one candidate ask; requirement extraction must account for every content clause.
+ */
+export function segmentClauses(text: string): string[] {
+  const out: string[] = [];
+  for (const sentence of text.replace(/\r\n/g, "\n").split(/[。！？!?；;\n]+|[，,]\s*|(?<=[\p{Script=Han}）」])\s+(?=[\p{Script=Han}（「])/u)) {
+    for (const part of sentence.split(CONNECTOR_RE)) {
+      const t = part.replace(/\s+/g, " ").trim();
+      if (!t) continue;
+      // A connector alone or a two-character fragment joins the previous clause.
+      if (t.replace(/[\s\p{P}]/gu, "").length < 4 && out.length) out[out.length - 1] = `${out[out.length - 1]}${/[A-Za-z0-9]$/.test(out[out.length - 1]!) || /^[A-Za-z0-9]/.test(t) ? " " : ""}${t}`;
+      else out.push(t);
+    }
+  }
+  return out;
+}
+
+/** The clause of `text` around the first match of `re` (≤ 160 chars): the user's own words a requirement quotes. */
 export function clauseOf(text: string, re: RegExp | null): string | undefined {
   const m = re ? new RegExp(re.source, re.flags.replace("g", "")).exec(text) : null;
   if (!m) return undefined;
-  const stop = /[。！？!?\n；;]/;
-  let a = m.index;
-  let b = m.index + m[0].length;
-  while (a > 0 && !stop.test(text[a - 1]!) && m.index - a < 50) a--;
-  while (b < text.length && !stop.test(text[b]!) && b - (m.index + m[0].length) < 50) b++;
-  return text.slice(a, b).replace(/\s+/g, " ").trim().slice(0, 120) || undefined;
+  // The clause (segmentClauses) holding the match; a match spanning clauses keeps them all.
+  let pos = 0;
+  const hit: string[] = [];
+  for (const c of segmentClauses(text)) {
+    const at = text.indexOf(c.slice(0, 12), pos);
+    const start = at < 0 ? pos : at;
+    const end = start + c.length;
+    if (end > m.index && start < m.index + m[0].length) hit.push(c);
+    pos = at < 0 ? pos : end;
+  }
+  const q = (hit.length ? hit.join(" ") : m[0]).replace(/\s+/g, " ").trim();
+  return q.slice(0, 160) || undefined;
 }
 
 /** Explicit page counts: 「做成 20 頁」「15–20 頁」「至少 10 頁」「12 slides」; inputs.pages wins. */
@@ -191,18 +264,28 @@ export function detectPageCount(text: string, pages?: unknown): Requirement["par
   if (min) return { min: +min[1]! };
   const max = /(?:最多|不超過|以內|at most|no more than)\s*(\d{1,2})\s*(?:頁|張|pages?\b|slides?\b)|(\d{1,2})\s*頁以內/i.exec(text);
   if (max) return { max: +(max[1] ?? max[2])! };
-  const exact = /(?:做成|做|共|總共|剛好|正好|改成|變成|擴充到|擴充成|擴到|增加到|縮成|縮減到|精簡到|控制在|大約|約|一份|exactly|about|around|into|to)\s*(\d{1,2})\s*(?:頁|張|pages?\b|slides?\b)|(?<![第\d])(\d{1,2})\s*(?:頁(?:的|簡報|投影片|左右)|-?(?:page|slide)\b(?: deck| presentation)?|\s(?:pages|slides)\b)/i.exec(text);
+  const exact = /(?:做成|做|共|總共|剛好|正好|改成|變成|擴充到|擴充成|擴到|增加到|縮成|縮減到|精簡到|控制在|大約|大概|差不多|約|一份|exactly|about|around|roughly|approximately|into|to)\s*(\d{1,2})\s*(?:頁|張|pages?\b|slides?\b)|(?<![第\d])(\d{1,2})\s*(?:頁(?:的|簡報|投影片|左右)|-?(?:page|slide)\b(?: deck| presentation)?|\s(?:pages|slides)\b)/i.exec(text);
   if (exact) {
     const n = +(exact[1] ?? exact[2])!;
+    if (n >= 1 && n <= 60) return { exact: n };
+  }
+  // A bare 「…，8 頁」 at the end of a clause (eval deck_study_answer_topic: 「用我們的文獻庫，8 頁」 got the default 10).
+  const bare = /(?:^|[，,、；;\s])(\d{1,2})\s*(?:頁|張投影片)\s*(?:$|[，,。.！!；;])/.exec(text);
+  if (bare && !/第\s*$/.test(text.slice(0, bare.index + 1))) {
+    const n = +bare[1]!;
     if (n >= 1 && n <= 60) return { exact: n };
   }
   return null;
 }
 
+const VENUE_ALIASES = ["Venue", "Conference", "Journal", "Proceedings", "Proc.", "Interspeech", "ICASSP", "ASRU", "SLT", "ACL", "EMNLP", "NAACL", "NeurIPS", "ICML", "ICLR", "AAAI", "TASLP", "Transactions", "IEEE", "arXiv", "preprint", "會議", "期刊"];
 const FIELD_ALIASES: [RegExp, string[]][] = [
-  [/^(?:pros?|優點|優勢|advantages?|strengths?)$/i, ["Pros", "Pro", "Advantages", "Advantage", "Strengths", "優點", "優勢"]],
-  [/^(?:cons?|缺點|劣勢|disadvantages?|limitations?|weakness(?:es)?|drawbacks?)$/i, ["Cons", "Con", "Disadvantages", "Limitations", "Limitation", "Weaknesses", "Drawbacks", "缺點", "限制", "劣勢"]],
+  [/^(?:pros?|優點|優勢|好處|benefits?|advantages?|strengths?)$/i, ["Pros", "Pro", "Advantages", "Advantage", "Benefits", "Strengths", "優點", "優勢", "好處"]],
+  [/^(?:cons?|缺點|劣勢|壞處|disadvantages?|limitations?|weakness(?:es)?|drawbacks?)$/i, ["Cons", "Con", "Disadvantages", "Limitations", "Limitation", "Weaknesses", "Drawbacks", "Trade-off", "缺點", "限制", "劣勢", "壞處"]],
+  [/架構圖|architecture diagram|diagram|示意圖|流程圖/i, ["Architecture", "架構", "Diagram", "```diagram", "```mermaid", "paper-fig", "架構圖"]],
   [/架構|architecture|structure/i, ["Architecture", "架構", "Structure", "Model structure"]],
+  [/會議|期刊|venue|conference|journal|發表/i, VENUE_ALIASES],
+  [/論文|paper|出處|reference|citation/i, ["Paper", "論文", "et al", "[@"]],
   [/運作|原理|怎麼做|做法|how it works|mechanism|how/i, ["How it works", "How It Works", "Mechanism", "運作方式", "運作", "原理", "Works by"]],
   [/結果|results?|performance|效果/i, ["Results", "Result", "Performance", "結果", "效果", "WER", "CER"]],
   [/公式|equation|formula/i, ["Equation", "Formula", "公式", "$"]],
@@ -215,31 +298,61 @@ export function fieldTerm(name: string, aliases: string[] = []): RequirementTerm
   return { name: n, aliases: [...new Set([...aliases, ...known].filter((a) => a && a !== n))] };
 }
 
-/** 「每個方法要有架構、Pros/Cons」「for each method include architecture, pros and cons」. */
+/** A spoken field phrase → its usual name (「好處」→ 優點, 「模型的架構圖」→ 架構圖, 「他們的會議或是期刊是哪一個」→ 發表會議／期刊). */
+export function canonicalField(phrase: string): string {
+  if (!/\p{Script=Han}/u.test(phrase)) return phrase.trim();
+  const f = phrase.replace(/^(?:要|有|都有|都要|一個|一張|是|這一?篇|他們的|它的|它們的|模型的|方法的|論文的)\s*/g, "").replace(/(?:是哪一?(?:篇|個|種)|來更好的?演示|來(?:更好地?)?(?:說明|呈現|演示)|來演示|等等?|之類)$/g, "").trim();
+  if (/好處|優點|優勢/.test(f)) return "優點";
+  if (/壞處|缺點|劣勢/.test(f)) return "缺點";
+  if (/架構圖|示意圖/.test(f)) return "架構圖";
+  if (/會議|期刊/.test(f)) return "發表會議／期刊";
+  if (/論文/.test(f) && f.length <= 12) return "論文";
+  return f;
+}
+
+const FIELD_SPLIT_RE = /[、,，/／]|\s+(?:and|&)\s+|還有|以及|和|及|與|跟(?![隨著])|並且|而且/;
+const NOT_FIELD_RE = /english|chinese|英文|中文|everything|整份|全部|slides?|deck|簡報|投影片/i;
+const fieldList = (list: string) => list.replace(/優缺點/g, "優點、缺點").replace(/好壞處/g, "好處、壞處").split(FIELD_SPLIT_RE)
+  .map((f) => canonicalField(f.replace(/^(?:the|its|their|each)\s+/i, "").replace(/[「」"'.]/g, "").replace(/(?:等|等等|之類)$/, "").trim()))
+  .filter((f) => !NOT_FIELD_RE.test(f))
+  .filter((f) => f.length >= 2 && f.length <= (/[A-Za-z]/.test(f) ? 24 : 10));
+
+/**
+ * 「每個方法要有架構、Pros/Cons」「for each method include architecture, pros and cons」, and the spoken forms of the
+ * same ask spread over a run-on request (production 0668a3d7): 「詳細敘述每一種方法的好處跟壞處」, 「在講解方法的時候要搭配
+ * 模型的架構圖」, 「在提到方法的時候要講到這一篇論文是哪一篇還有他們的會議或是期刊是哪一個」 → one per-item requirement
+ * (方法: 優點、缺點、架構圖、論文、發表會議／期刊).
+ */
 export function detectPerItemFields(text: string): Requirement["params"] | null {
-  const zh = /(?:每|各)(?:一)?(?:個|種|篇|項)?\s*([^\s，。,；;、\n]{1,10}?)\s*(?:都)?(?:要|需要|必須|得|請)?(?:有|包含|包括|列出|寫出|說明|附上|附|加上)\s*([^。；;\n]{2,80})/.exec(text);
-  const en = /\b(?:for )?(?:each|every)\s+(method|approach|model|paper|technique|system)\b[^.\n]{0,40}?\b(?:include|includes|cover|covers|with|should have|must have|has|have|:)\s*([^.\n]{2,120})/i.exec(text);
-  const m = zh ?? en;
-  let kind = m?.[1]?.trim() ?? "";
-  let list = m?.[2] ?? "";
-  if (!m && /pros\s*(?:\/|and|&|、)\s*cons|優缺點|優點(?:和|與|跟|、)缺點/i.test(text) && /每|各|each|every/i.test(text)) {
-    kind = /方法|method|approach/i.test(text) ? "方法" : "項目";
-    list = "Pros、Cons";
-  }
-  if (!kind || !list) return null;
-  const fields = list
-    .replace(/優缺點/g, "優點、缺點")
-    .split(/[、,，/／]|\s+(?:and|&)\s+|和|及|與|跟|以及/)
-    .map((f) => f.replace(/^(?:the|its|their)\s+/i, "").replace(/[「」"'.]/g, "").replace(/(?:等|等等|之類)$/, "").trim())
-    .filter((f) => f.length >= 2 && f.length <= 24);
-  if (!fields.length) return null;
-  return { item_kind: kind.replace(/^(?:個|種)/, ""), fields: fields.slice(0, 8).map((f) => fieldTerm(f)) };
+  const KIND = "(方法|模型|做法|作法|技術|論文|系統)";
+  let kind = "";
+  const fields: string[] = [];
+  const add = (k: string, list: string) => {
+    const got = fieldList(list);
+    if (!got.length) return;
+    kind ||= k.replace(/^(?:個|種)/, "");
+    for (const f of got) if (!fields.includes(f)) fields.push(f);
+  };
+  // 「每個方法(都)要有 X、Y」
+  for (const m of text.matchAll(/(?:每|各)(?:一)?(?:個|種|篇|項)?\s*([^\s，。,；;、\n]{1,10}?)\s*(?:都)?(?:要|需要|必須|得|請)?(?:有|包含|包括|列出|寫出|寫|說明|附上|附|加上|標出|標明|註明)\s*([^。；;，,\n]{2,80})/g)) add(m[1]!, m[2]!);
+  // 「(敘述／說明)每一種方法的好處跟壞處」
+  for (const m of text.matchAll(new RegExp(`(?:每|各)(?:一)?(?:個|種|篇|項)?\\s*${KIND}的\\s*([^。，,；;\\s]{2,30})`, "g"))) add(m[1]!, m[2]!);
+  // 「在講解／提到方法的時候要搭配／講到 X」
+  for (const m of text.matchAll(new RegExp(`(?:講解|介紹|提到|說明|描述|講到|呈現|談到)(?:每一?(?:個|種))?${KIND}(?:的)?(?:時候|時)?[^。，,；;\\n]{0,6}?(?:要|需要|都要|請|得)(?:搭配|講到|講出|附上|說明|包含|寫出|寫明|寫|列出|列|標出|標明|標註|註明|指出|提到|給出|放上|附|有|加上)([^。；;，,\\s]{2,60})`, "g"))) add(m[1]!, m[2]!);
+  for (const en of text.matchAll(/\b(?:for )?(?:each|every)\s+(method|approach|model|paper|technique|system)\b[^.\n]{0,40}?\b(?:include|includes|cover|covers|with|should have|must have|has|have|name|names|give|list|show|state|cite|:)\s*([^.\n]{2,120})/gi)) add(en[1]!, en[2]!);
+  // 「give the pros and cons of each method」
+  for (const en of text.matchAll(/\b(?:give|include|list|show|state|with|add)\s+(?:the\s+)?([a-z][a-z ,/&-]{2,60}?)\s+(?:of|for)\s+(?:each|every)\s+(method|approach|model|paper|technique)\b/gi)) add(en[2]!, en[1]!);
+  // A continuation of a per-item ask without 「每」: 「要寫是哪篇 paper 跟 venue」「註明論文和會議或期刊」.
+  if (kind) for (const m of text.matchAll(/(?:要|請|都要)?(?:寫|註明|標明|標出|列出|附上|寫出)\s*(?:是)?([^。，,；;\n]{0,4}(?:論文|paper|會議|期刊|venue)[^。，,；;\n]{0,24})/gi)) add(kind, m[1]!.replace(/哪(?:一)?篇\s*/g, ""));
+  if (!fields.length && /pros\s*(?:\/|and|&|、)\s*cons|優缺點|優點(?:和|與|跟|、)缺點|好處(?:和|與|跟|、)壞處/i.test(text) && /每|各|each|every/i.test(text)) add(/方法|method|approach/i.test(text) ? "方法" : "項目", "Pros、Cons");
+  if (!kind || !fields.length) return null;
+  return { item_kind: kind, fields: fields.slice(0, 8).map((f) => fieldTerm(f)) };
 }
 
 /** 「刪掉第 3 頁」「拿掉「卡住」這頁」「remove the slide "Blocked"」. */
 export function detectExclude(text: string): Requirement["params"] | null {
   const pages = [...text.matchAll(/(?:刪掉|刪除|拿掉|去掉|移除|不要)\s*第\s*(\d{1,2})\s*頁/g)].map((m) => +m[1]!);
-  const titles = [...text.matchAll(/(?:刪掉|刪除|拿掉|去掉|移除|不要)\s*[「『"]([^」』"]{1,60})[」』"](?:\s*(?:這|那)?一?頁)?/g), ...text.matchAll(/\b(?:remove|delete|drop)\s+(?:the\s+)?(?:slide|page|section)\s+["“']([^"”']{1,60})["”']/gi)].map((m) => m[1]!.trim());
+  const titles = [...text.matchAll(/(?:刪掉|刪除|拿掉|去掉|移除|不要)\s*[「『"]([^」』"]{1,60})[」』"](?:\s*(?:這|那)?一?頁)?/g), ...text.matchAll(/[「『"]([^」』"]{1,60})[」』"]\s*(?:這|那)?一?頁\s*(?:要|請)?(?:刪掉|刪除|拿掉|去掉|移除)/g), ...text.matchAll(/\b(?:remove|delete|drop)\s+(?:the\s+)?(?:slide|page|section)\s+["“']([^"”']{1,60})["”']/gi)].map((m) => m[1]!.trim());
   if (!pages.length && !titles.length) return null;
   return { scope: "page", ...(pages.length ? { pages } : {}), terms: titles.map((t) => ({ name: t })) };
 }
@@ -248,14 +361,63 @@ export function detectExclude(text: string): Requirement["params"] | null {
 export function detectRequirements(text: string, opts: { pages?: unknown; kind?: ArtifactKind } = {}): Omit<Requirement, "id" | "source">[] {
   const out: Omit<Requirement, "id" | "source">[] = [];
   const q = (re: RegExp) => { const c = clauseOf(text, re); return c ? { quote: c } : {}; };
-  const lang = detectLanguage(text);
-  if (lang) out.push({ type: "language", text: `成果全部用${LANGUAGE_LABEL[lang]}${lang === "en" ? "（封面、標題、內文、圖表標籤與講稿都不留中文）" : ""}`, params: { language: lang }, ...q(lang === "en" ? LANG_EN_RE : LANG_ZH_RE) });
+  const termsEn = TERMS_EN_RE.test(text);
+  const parts = opts.kind === "doc" || opts.kind === "latex" ? [] : detectPartLanguages(text);
+  for (const pl of parts) out.push({ type: "language", text: languageText(pl.language, pl.part, termsEn), params: { language: pl.language, part: pl.part }, ...q(new RegExp(pl.span.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))) });
+  // The rest of the text (part statements removed) for a whole-artifact language (or the other part's).
+  const rest = parts.reduce((t, pl) => t.split(pl.span).join(" "), text);
+  const lang = parts.length === 2 ? null : detectLanguage(rest);
+  const other: LanguagePart | undefined = parts.length ? (parts[0]!.part === "notes" ? "slides" : "notes") : undefined;
+  if (lang) out.push({ type: "language", text: languageText(lang, other, termsEn), params: { language: lang, ...(other ? { part: other } : {}) }, ...q(lang === "en" ? LANG_EN_RE : LANG_ZH_RE) });
+  // Clauses that only extend a stated language (「包含封面和講稿」「cover 跟 speaker notes 也要」) or keep terms in English
+  // (「專有名詞保留英文」) belong to the language requirement's quote — every clause of the user's is accounted for.
+  const cl = segmentClauses(text);
+  const extend = (pred: (c: string) => boolean, r: Omit<Requirement, "id" | "source"> | undefined) => {
+    const extra = cl.filter((c) => pred(c) && !(r?.quote ?? "").includes(c));
+    if (r && extra.length) r.quote = [r.quote, ...extra].filter(Boolean).join(" ").slice(0, 300);
+    return extra;
+  };
+  const langs = out.filter((r) => r.type === "language");
+  const whole = langs.find((r) => !r.params?.part);
+  extend((c) => /(?:封面|cover|講稿|speaker notes?|notes|標題|圖表|titles?)[^。！？\n]{0,16}(?:也要|也是|一起|都要|都)|^(?:包含|包括|including|incl\.)/i.test(c) && !detectPartLanguages(c).length && !detectLanguage(c), whole);
+  const termsTarget = langs.find((r) => r.params?.language === "zh") ?? langs[0];
+  const termClauses = cl.filter((c) => TERMS_EN_RE.test(c));
+  if (termClauses.length && termsTarget) extend((c) => TERMS_EN_RE.test(c), termsTarget);
+  else if (termClauses.length) out.push({ type: "other", text: "專有名詞與技術術語保留英文", quote: termClauses.join(" ").slice(0, 200) });
+  // 「參考我們的文獻庫，統計有哪幾種方法」: the sources and the tally the user asked for (judged; the topic deck reads the library).
+  const lib = cl.filter((c) => LIBRARY_SURVEY_RE.test(c) || /文獻庫|library/i.test(c) && /參考|根據|用|統計|整理|比較|use|using|based|in our|from our|compar/i.test(c));
+  // 「要有比較表」「with a comparison table」: the form the user asked for.
+  const table = cl.filter((c) => /(?:要有|加|附|附上|包含|做|需要|with|include|add)\s*(?:一個|一張|a|an)?\s*(?:比較表|對照表|comparison table|表格|table)/i.test(c) && !/加一頁/.test(c));
+  if (table.length) out.push({ type: "format", text: "要有比較表（表格）", quote: table.join(" ").slice(0, 200) });
+  // 「比較 shallow fusion、CLAS 和 contextual adapters」「compare A, B and C」: what must be covered.
+  for (const c of cl) {
+    const m = /(?:比較|涵蓋|包含|compare|comparing|cover)\s+([^。！？\n]{3,120})/i.exec(c);
+    const items = m ? m[1]!.split(/、|，|,|\s+(?:and|&)\s+|和|跟|與|及/).map((x) => x.trim().replace(/^(?:the)\s+/i, "")).filter((x) => /[A-Za-z]{2}/.test(x) && x.length <= 40 && !/library|文獻庫|papers?$/i.test(x)) : [];
+    if (items.length >= 2) { out.push({ type: "include_topics", text: `要涵蓋：${items.join("、")}`, params: { topics: items.map((name) => ({ name })) }, quote: c.slice(0, 200) }); break; }
+  }
+  // 「加一頁 comparison table」「把「動態熱詞的做法」那頁展開」: the edit itself, checked by the judge (the router plans it).
+  if (opts.kind !== "doc" && opts.kind !== "latex") {
+    const edits = cl.filter((c) => /加(?:一|兩|三|\d)\s*頁|新增(?:一|\d)?\s*頁|add (?:a|one|\d+) (?:new )?(?:slide|page)|[」』"]\s*(?:那|這)?頁\s*展開|展開\s*[「『"]|\bexpand the\b/i.test(c) && !out.some((r) => (r.quote ?? "").includes(c)));
+    if (edits.length) out.push({ type: "other", text: `照你說的修改：${edits.join("；").slice(0, 120)}`, quote: edits.join(" ").slice(0, 200) });
+  }
+  // 「每個方法一頁」「one slide per method」
+  const perPage = cl.filter((c) => /(?:每|各)(?:一)?(?:個|種|篇)\s*[^\s，。,]{1,8}?\s*(?:都)?(?:要)?(?:獨立)?(?:一頁|各一頁|一張)|one (?:slide|page) (?:per|for each)/i.test(c));
+  if (perPage.length) out.push({ type: "format", text: "每個項目獨立一頁", quote: perPage.join(" ").slice(0, 200) });
+  if (lib.length) out.push({ type: "other", text: `以研究文獻庫的論文為來源${lib.some((c) => /統計|有哪(?:幾|些)種|count|tally/i.test(c)) ? "，統計並列出有哪幾種方法（每一類都有代表論文）" : ""}`, quote: lib.join(" ").slice(0, 300) });
+  if (opts.kind !== "doc" && opts.kind !== "latex" && READ_ALOUD_RE.test(text)) {
+    out.push({ type: "tone", text: "講稿寫成可以一字一句照念的自然口語：句子通順、像真的在講話，專有名詞用英文，不生硬、沒有違和感", params: { part: "notes" }, ...q(READ_ALOUD_RE) });
+  }
   if (opts.kind !== "doc" && opts.kind !== "latex") {
     const pc = detectPageCount(text, opts.pages);
     if (pc) out.push({ type: "page_count", text: pageText(pc), params: pc, ...q(PAGE_PHRASE_RE) });
   }
   const fields = detectPerItemFields(text);
-  if (fields) out.push({ type: "per_item_fields", text: `每個${fields.item_kind}都要有：${fields.fields!.map((f) => f.name).join("、")}`, params: fields, ...q(/每|各|each|every/i) });
+  if (fields) {
+    // The quote: every clause that adds a field (「…好處跟壞處」「…架構圖」「…論文是哪一篇」「還有…會議或是期刊」).
+    const cl = segmentClauses(text);
+    const own = cl.filter((c, i) => detectPerItemFields(c) || (i > 0 && /^(?:還有|以及|和|跟)/.test(c) && !!detectPerItemFields(`${cl[i - 1]}${c}`)));
+    out.push({ type: "per_item_fields", text: `每個${fields.item_kind}都要有：${fields.fields!.map((f) => f.name).join("、")}`, params: fields, ...(own.length ? { quote: own.join(" ").slice(0, 300) } : q(/每|各|each|every/i)) });
+  }
   const ex = detectExclude(text);
   if (ex) out.push({ type: "exclude", text: `刪掉：${[...(ex.pages ?? []).map((p) => `第 ${p} 頁`), ...(ex.terms ?? []).map((t) => `「${t.name}」`)].join("、")}`, params: ex, ...q(/刪掉|刪除|拿掉|去掉|移除|不要|remove|delete|drop/i) });
   return out;
@@ -284,6 +446,7 @@ export function cleanRequirement(raw: unknown, source: Requirement["source"], ki
     const l = p.language === "en" || p.language === "zh" ? p.language : detectLanguage(text) ?? (/english|英文/i.test(text) ? "en" : /中文|chinese/i.test(text) ? "zh" : null);
     if (!l) return text ? { type: "other", text, source } : null;
     params.language = l;
+    if (p.part === "slides" || p.part === "notes") params.part = p.part;
     if (Array.isArray(p.allow)) params.allow = p.allow.map((a) => str(a, 80)).filter(Boolean).slice(0, 12);
   } else if (type === "page_count") {
     for (const k of ["exact", "min", "max"] as const) if (typeof p[k] === "number" && (p[k] as number) > 0 && (p[k] as number) <= 80) params[k] = Math.round(p[k] as number);
@@ -308,6 +471,7 @@ export function cleanRequirement(raw: unknown, source: Requirement["source"], ki
     params.item_kind = str(p.item_kind, 20) || "項目";
     if (!params.fields.length) return text ? { type: "other", text, source } : null;
   }
+  if (type === "tone" && (p.part === "notes" || p.part === "slides")) params.part = p.part;
   if (!text && type !== "language" && type !== "page_count") return null;
   return { type, text: text || (type === "language" ? `成果全部用${LANGUAGE_LABEL[params.language!]}` : pageText(params)), ...(Object.keys(params).length ? { params } : {}), source };
 }
@@ -322,9 +486,29 @@ const SINGLE: RequirementType[] = ["language", "page_count", "audience", "tone",
  */
 export function mergeRequirements(...lists: Omit<Requirement, "id">[][]): Requirement[] {
   const out: Omit<Requirement, "id">[] = [];
+  // Language is per part (slides / notes): a newer statement about one part overrides only that part of an older one
+  // (production e6d552fc: 「講稿要是中文的」 vs the deck's standing 「全部 English」 → notes 繁中, slides stay English).
+  const claimed = new Set<LanguagePart>();
   for (const list of lists) {
     for (const r of list) {
-      if (SINGLE.includes(r.type) && out.some((o) => o.type === r.type)) continue;
+      if (r.type === "language" && r.params?.language) {
+        const parts: LanguagePart[] = r.params.part ? [r.params.part] : ["slides", "notes"];
+        const left = parts.filter((x) => !claimed.has(x));
+        if (!left.length) continue;
+        left.forEach((x) => claimed.add(x));
+        if (left.length === parts.length) out.push({ ...r, params: JSON.parse(JSON.stringify(r.params)) });
+        else {
+          const kept = r.text.match(/（沿用[^）]*）$/)?.[0] ?? "";
+          out.push({ ...r, text: `${languageText(r.params.language, left[0])}${kept}`, params: { ...JSON.parse(JSON.stringify(r.params)), part: left[0] } });
+        }
+        continue;
+      }
+      if (r.type === "tone" && r.params?.part) {
+        if (out.some((o) => o.type === "tone" && o.params?.part === r.params!.part)) continue;
+        out.push({ ...r, params: { ...r.params } });
+        continue;
+      }
+      if (SINGLE.includes(r.type) && out.some((o) => o.type === r.type && !o.params?.part)) continue;
       if (r.type === "per_item_fields") {
         const prev = out.find((o) => o.type === "per_item_fields");
         if (prev) {
@@ -352,7 +536,7 @@ export function requirementCriteria(reqs: Requirement[], kind: ArtifactKind, all
     const id = `req_${r.id}`;
     const text = `你的要求：${r.text}`;
     const p = r.params ?? {};
-    if (r.type === "language" && p.language) return { id, kind: "check", text, check: { id: "req_language", params: { language: p.language, allow: [...(p.allow ?? []), ...allow], ...doc } } };
+    if (r.type === "language" && p.language) return { id, kind: "check", text, check: { id: "req_language", params: { language: p.language, allow: [...(p.allow ?? []), ...allow], ...(p.part && kind === "deck" ? { part: p.part } : {}), ...doc } } };
     if (r.type === "page_count" && kind === "deck") return { id, kind: "check", text, check: { id: "req_pages", params: { exact: p.exact, min: p.min, max: p.max } } };
     if (r.type === "include_topics" && p.topics?.length) return { id, kind: "check", text, check: { id: "req_include", params: { topics: p.topics, judge_fallback: true, ...doc } } };
     if (r.type === "exclude" && p.terms?.length) return { id, kind: "check", text, check: { id: "req_exclude", params: { terms: p.terms, scope: kind === "deck" ? p.scope ?? "page" : "content", ...doc } } };
@@ -379,10 +563,12 @@ const REQUIREMENT_CHECKS: typeof CHECKS = {
     const lang = params.language === "zh" ? "zh" : "en";
     // LaTeX: comments are not visible (\% is a percent sign, not a comment).
     const src = params.latex ? fullOf(text, data).replace(/(?<!\\)%.*$/gm, "") : fullOf(text, data);
-    const vs = languageViolations(src, lang, Array.isArray(params.allow) ? (params.allow as string[]) : [], !!params.doc);
-    if (!vs.length) return { ok: true, detail: `全部是${LANGUAGE_LABEL[lang]}` };
+    const part = params.part === "slides" || params.part === "notes" ? params.part : undefined;
+    const vs = languageViolations(src, lang, Array.isArray(params.allow) ? (params.allow as string[]) : [], !!params.doc, part);
+    const what = part === "notes" ? "講稿" : part === "slides" ? "投影片" : "";
+    if (!vs.length) return { ok: true, detail: `${what}全部是${LANGUAGE_LABEL[lang]}` };
     const slides = unitsOf(src, !!params.doc).slides;
-    return { ok: false, detail: `語言要求（${LANGUAGE_LABEL[lang]}）未達成，這些地方${lang === "en" ? "還有中文" : "整段是英文"}：${vs.slice(0, 10).map((v) => `${whereOf(v, slides)}：「${v.snippet}」`).join("；")}${vs.length > 10 ? `；另外還有 ${vs.length - 10} 處` : ""}。請改成${LANGUAGE_LABEL[lang]}（專有名詞與〈論文原標題〉可保留原文）。` };
+    return { ok: false, detail: `語言要求（${what}${LANGUAGE_LABEL[lang]}）未達成，這些地方${lang === "en" ? "還有中文" : part === "notes" ? "主要是英文" : "整段是英文"}：${vs.slice(0, 10).map((v) => `${whereOf(v, slides)}：「${v.snippet}」`).join("；")}${vs.length > 10 ? `；另外還有 ${vs.length - 10} 處` : ""}。請改成${LANGUAGE_LABEL[lang]}（專有名詞與〈論文原標題〉可保留原文）。` };
   },
   req_pages(text, { params, data }) {
     const n = parseSlides(fullOf(text, data)).length;
@@ -453,6 +639,8 @@ export function requirementsBlock(reqs: Requirement[], audience: "producer" | "v
   if (!reqs.length) return "";
   const lines = reqs.map((r) => {
     const p = r.params ?? {};
+    if (r.type === "language" && p.part === "notes") return p.language === "en" ? "- 講稿（::: {.notes}）語言：English。Write the speaker notes in English." : `- 講稿（::: {.notes}）語言：繁體中文（台灣用語）的口語句子${/專有名詞/.test(r.text) ? "，專有名詞與技術術語用英文（例如 RNN-T、contextual biasing、beam search）" : "，專有名詞保留英文"}。投影片本體的語言照另一條要求，不要改。`;
+    if (r.type === "language" && p.part === "slides") return p.language === "en" ? "- 投影片本體（封面、頁面標題、條列、表格、圖表與流程圖標籤、圖說）語言：English，不要有中文字或全形標點；講稿的語言照另一條要求。" : "- 投影片本體語言：繁體中文（台灣用語），專有名詞保留英文；講稿的語言照另一條要求。";
     if (r.type === "language" && p.language === "en") return "- 成果語言：English。讀者看得到的所有文字（封面與文件標題、副標題、頁面／段落標題、條列、表格、圖表與流程圖的標籤、圖說、講稿、標註）一律用英文；專有名詞與〈論文原標題〉照原文。不要輸出任何中文字或全形標點。Write every visible word of the output in English.";
     if (r.type === "language") return "- 成果語言：繁體中文（台灣用語），專有名詞保留英文。";
     if (r.type === "page_count") return `- 頁數：${pageText(p)}。`;
@@ -468,7 +656,9 @@ export function requirementsBlock(reqs: Requirement[], audience: "producer" | "v
 }
 
 /** The target language of the run's artifact, when the user set one. */
-export const targetLanguage = (reqs: Requirement[] | undefined): "en" | "zh" | null => (reqs ?? []).find((r) => r.type === "language")?.params?.language ?? null;
+export const targetLanguage = (reqs: Requirement[] | undefined): "en" | "zh" | null => (reqs ?? []).find((r) => r.type === "language" && r.params?.part !== "notes")?.params?.language ?? null;
+/** The speaker notes' language (a notes-only requirement, else the artifact's). */
+export const notesLanguage = (reqs: Requirement[] | undefined): "en" | "zh" | null => (reqs ?? []).find((r) => r.type === "language" && r.params?.part === "notes")?.params?.language ?? targetLanguage(reqs);
 
 // ---------------------------------------------------------------- built-in labels in the artifact's language
 
@@ -521,7 +711,41 @@ export const runLabels = (env: Pick<WorkflowEnv, "run">) => labelsFor(targetLang
 
 // ---------------------------------------------------------------- plan time
 
-type Ctx = { request: string; guidance: string[]; recent: string[]; standing: Omit<Requirement, "id">[]; kind: ArtifactKind; pages?: unknown; userWords?: string[] };
+type Ctx = { request: string; guidance: string[]; recent: string[]; standing: Omit<Requirement, "id">[]; kind: ArtifactKind; pages?: unknown; userWords?: string[]; clauses?: string[] };
+
+/** The 「要我修這幾項嗎？」 button's guidance (請修正這幾項：…): a fix request for the listed items, not new requirements. */
+export const FIX_REQUEST_RE = /^\s*(?:請修正這幾項|please fix these items|重新規劃)[:：]/i;
+
+const FILLER_RE = /我要你|我想要你|我想要|我希望|我要|我想|請你|麻煩你|幫我|幫忙|有個東西|東西|那請你|那你|一下|一個|一份|一篇|一張|這個|這份|那個|寫成|做成|整理成|改成|做|改|弄|寫|你|的|了|吧|呢|啊|喔|哦|嗎|那|也|就|好|先|再|然後/g;
+const DELIVERABLE_WORDS_RE = /簡報|投影片|報告|筆記|文件|論文|latex|deck|slides?|presentation|note|paper/gi;
+/** A clause that only states the deliverable or is filler (「我要你幫我做一個簡報」「有個東西」): nothing to verify. */
+export const trivialClause = (c: string) => {
+  const rest = c.replace(DELIVERABLE_WORDS_RE, "").replace(FILLER_RE, "").replace(/[\s\p{P}\p{S}]/gu, "");
+  // The task statement itself (「寫一份熱詞方法比較筆記」): the deliverable + a short subject, judged by the coverage criterion.
+  return rest.length < 3 || (/簡報|投影片|報告|筆記|文件|論文|latex|deck|slides?|presentation|note|paper/i.test(c) && rest.length < 12);
+};
+
+const normClause = (t: string) => t.toLowerCase().replace(/[\s，,。.、；;：:「」『』（）()"'`*！!？?]/g, "");
+/** Does a requirement's quote account for this clause (it contains it, or the clause contains the quote)? */
+const quoteCovers = (quote: string | undefined, clause: string) => {
+  if (!quote) return false;
+  const q = normClause(quote);
+  const c = normClause(clause);
+  return q.length >= 2 && c.length >= 2 && (q.includes(c) || c.includes(q));
+};
+
+/**
+ * Coverage of the user's words (pure, unit-tested): every content clause maps to a requirement (deterministic or the
+ * model's, by its clause numbers or quote), is dropped by the model with a reason, or is trivial; the rest become judged
+ * requirements in the user's own words (「照你說的：「…」」), so no ask is silently lost (production 0668a3d7: 1 of 6).
+ */
+export function uncoveredClauses(clauses: string[], reqs: Pick<Requirement, "quote">[], mapped: Set<number>, dropped: Set<number>, kind: ArtifactKind): string[] {
+  // One content clause is the task itself (the deliverable + its subject): nothing more to account for.
+  if (clauses.filter((c) => !trivialClause(c)).length <= 1) return [];
+  return clauses.filter((c, i) => !mapped.has(i) && !dropped.has(i) && !trivialClause(c) && !detectRequirements(c, { kind }).length && !reqs.some((r) => quoteCovers(r.quote, c)));
+}
+const clipQuote = (c: string) => (c.length > 80 ? `${c.slice(0, 79)}…` : c);
+export const clauseRequirement = (c: string): Omit<Requirement, "id"> => ({ type: "other", text: `照你說的：「${clipQuote(c)}」`, quote: c.slice(0, 200), source: "request" });
 
 /**
  * The user's own words when the run's request was written by the assistant (a start_workflow call from a chat turn), else
@@ -536,10 +760,12 @@ export function ownWords(env: Pick<WorkflowEnv, "run">, recent: string[], guidan
 
 const EXTRACT_SYSTEM = [
   "你從使用者的話裡整理出他對這次成果的「明確要求」，讓後續每一步都遵守、最後逐條驗收。只輸出 JSON。",
+  "使用者的話常是語音輸入、沒有標點的長句，裡面通常有好幾個要求。下面會把它切成編號的子句（clauses）：每一個子句都要處理——列成要求（clauses 填它的編號；一個要求可以涵蓋多個子句），或放進 dropped 並寫原因（例如：只是在說要做簡報、寒暄、和成果無關）。不要漏掉任何子句。",
+  "同一種「每個方法／每篇論文都要…」的欄位（優缺點、架構圖、出處論文、會議或期刊…）合成一個 per_item_fields；主題或聚焦範圍（例如在某些模型架構下）是 include_topics；要用哪些來源、要統計或列出什麼（例如參考文獻庫、統計有哪幾種方法）寫成 other。",
   "只收使用者明確說出的要求（這次的要求、補充指示、最近幾輪對話中關於這份成果的要求）；不要加入一般性的品質期望，也不要替使用者決定研究方向或時程。",
   "type：language（成果語言；只在明確要求時）、page_count（明確的頁數或範圍）、include_topics（一定要涵蓋的主題，topics 每個附 aliases：中英文說法與縮寫）、exclude（要刪掉的頁面或內容，terms 附 aliases；刪頁面 scope=page）、per_item_fields（每個方法／模型要有的欄位，fields 附 aliases；使用者有列出項目時填 items）、audience（對象）、tone（語氣）、length（篇幅）、format（成果形式，例如 LaTeX、表格）、other。",
   "text 用繁體中文寫一句可以驗收的要求。quote 逐字複製使用者說出這個要求的原話（找不到原話就不要列）。主題、欄位、要刪的內容只能用使用者自己提到的詞（可以補上同義的中英文 aliases），不要自己細分出使用者沒說的欄位或主題。沒有要求就回 {\"requirements\":[]}。",
-  '格式：{"requirements":[{"type":"include_topics","text":"聚焦在動態熱詞（dynamic hotwording）","quote":"我想要 focus 在動態熱詞","params":{"topics":[{"name":"dynamic hotwording","aliases":["動態熱詞","contextual biasing"]}]}}]}',
+  '格式：{"requirements":[{"type":"include_topics","text":"聚焦在動態熱詞（dynamic hotwording）","quote":"我想要 focus 在動態熱詞","clauses":[2],"params":{"topics":[{"name":"dynamic hotwording","aliases":["動態熱詞","contextual biasing"]}]}}],"dropped":[{"clause":1,"reason":"只是在說要做簡報"}]}',
 ].join("\n");
 
 /** Recent user turns of the conversation that started the run (before it was created), newest last. */
@@ -593,7 +819,8 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string, br
   const kind = artifactKindOf(playbook);
   const brief = briefArg ?? env.run.brief ?? null;
   // The user's guidance only (the autopilot's own 繼續改 lines are not the user's words).
-  const guidance = brief ? userGuidance(env.run) : (env.run.guidance ?? []).map((g) => g.text);
+  // A 「請修正這幾項」 click is a fix request for listed items, not new requirements.
+  const guidance = (brief ? userGuidance(env.run) : (env.run.guidance ?? []).map((g) => g.text)).filter((g) => !FIX_REQUEST_RE.test(g));
   const standing = await standingOf(env);
   // With a Brief its `user_words` are the conversation turns that asked; older runs read the recent turns themselves.
   const recent = brief ? [] : await recentTurns(env);
@@ -609,7 +836,10 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string, br
   const inputPages = (env.run.inputs as { pages?: unknown }).pages;
   // An assistant-given page count counts only when the user's words have one.
   const pages = paraphrase && !detectPageCount(startText) ? undefined : inputPages;
-  const ctx: Ctx = { request: startText, guidance, recent, standing: standing.list, kind, pages, userWords: [...start, ...guidance] };
+  // Every clause of the user's own words must be accounted for (segmentClauses → the model maps or drops each one).
+  // (Not for a goal's stage: its words describe the whole goal, the stage delivers only a part of it.)
+  const clauses = brief && !env.run.goal_id ? [...start, ...guidance].flatMap(segmentClauses).slice(0, 40) : [];
+  const ctx: Ctx = { request: startText, guidance, recent, standing: standing.list, kind, pages, userWords: [...start, ...guidance], clauses };
   const det = [
     ...start.flatMap((t) => detectRequirements(t, { pages, kind })).map((r) => ({ ...r, source: "request" as const })),
     ...guidance.flatMap((g) => detectRequirements(g, { kind }).map((r) => ({ ...r, source: "guidance" as const }))),
@@ -617,12 +847,20 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string, br
   // Guidance is newer than the request: its single-valued statements win.
   det.sort((a, b) => (a.source === b.source ? 0 : a.source === "guidance" ? -1 : 1));
   const fromChat = recent.slice(0, -1).reverse().flatMap((t) => detectRequirements(t, { kind }).filter((r) => r.type === "language").map((r) => ({ ...r, source: "conversation" as const })));
-  const llm = await extractWithModel(env, ctx).catch(() => [] as Omit<Requirement, "id">[]);
+  const extracted = await extractWithModel(env, ctx).catch(() => ({ list: [] as Omit<Requirement, "id">[], mapped: new Set<number>(), dropped: [] as { clause: string; reason: string }[] }));
+  // A judged item the model restated from words a deterministic requirement already quotes (「講稿要能一字一句照念」 next to
+  // the read-aloud tone) is a duplicate on the card and in the verdict: dropped.
+  const llm = extracted.list.filter((r) => !(["other", "tone", "format", "audience"].includes(r.type) && r.quote && det.some((d) => d.quote && normClause(d.quote).includes(normClause(r.quote!)))));
+  // Coverage: a content clause no requirement accounts for (and the model did not drop with a reason) becomes a judged
+  // requirement in the user's words — a cheap model's miss can no longer lose an ask.
+  const droppedIdx = new Set(extracted.dropped.map((d) => clauses.indexOf(d.clause)).filter((i) => i >= 0));
+  const fromClauses = uncoveredClauses(clauses, [...det, ...llm], extracted.mapped, droppedIdx, kind).slice(0, 6).map(clauseRequirement);
+  await env.setState({ requirements_dropped: extracted.dropped.slice(0, 12) });
   const removed = new Set(env.state<string[]>("requirements_removed") ?? []);
   const userEdits = (prev ?? []).filter((r) => r.source === "user").map(({ id: _id, ...r }) => r);
   // Last resort for the language (after the artifact's own): the user wrote the request in English → English.
   const fromMessage = messageLanguage(start);
-  const merged = mergeRequirements(userEdits, det, llm, fromChat, standing.list, fromMessage).filter((r) => !removed.has(keyOf(r)));
+  const merged = mergeRequirements(userEdits, det, llm, fromClauses, fromChat, standing.list, fromMessage).filter((r) => !removed.has(keyOf(r)));
   const reqs = merged.map((r, i) => ({ ...r, id: `r${i + 1}` }));
   await env.setState({ requirements: reqs, requirements_key: key });
   return reqs;
@@ -639,29 +877,45 @@ export function messageLanguage(words: string[]): Omit<Requirement, "id">[] {
   return [{ type: "language", text: "成果用 English（你用英文提出這個要求）", params: { language: "en" }, source: "request", ...(quote ? { quote } : {}) }];
 }
 
-async function extractWithModel(env: WorkflowEnv, ctx: Ctx): Promise<Omit<Requirement, "id">[]> {
+async function extractWithModel(env: WorkflowEnv, ctx: Ctx): Promise<{ list: Omit<Requirement, "id">[]; mapped: Set<number>; dropped: { clause: string; reason: string }[] }> {
+  const clauses = ctx.clauses ?? [];
   const user = [
     `成果類型：${ctx.kind === "deck" ? "簡報" : ctx.kind === "latex" ? "LaTeX 論文" : "筆記／文件"}`,
     dataBlock("user_words", ctx.request.slice(0, 4000)),
     ctx.guidance.length ? dataBlock("guidance", ctx.guidance.join("\n").slice(0, 3000)) : "",
+    clauses.length ? dataBlock("clauses", clauses.map((c, i) => `${i + 1}. ${c}`).join("\n")) : "",
     ctx.recent.length ? dataBlock("recent_turns", ctx.recent.map((t) => `- ${t}`).join("\n").slice(0, 5000)) : "",
     ctx.standing.length ? `這份成果先前確認過的設定（沒有被這次的要求推翻就沿用，不必重複列出）：${ctx.standing.map((s) => s.text).join("；")}` : "",
   ].filter(Boolean).join("\n\n");
-  // One call, no retry: the deterministic detection already covers language, page count, per-item fields and removals.
-  const res = await env.call({ purpose: "requirements", role: "planner", messages: [{ role: "system", content: EXTRACT_SYSTEM }, { role: "user", content: user }], maxTokens: 2500 });
-  const v = parseJson<{ requirements?: unknown[] }>(res.text);
+  // One call, no retry: the deterministic detection already covers language, page count, per-item fields and removals,
+  // and the clause coverage below turns whatever this call misses into judged requirements.
+  const res = await env.call({ purpose: "requirements", role: "planner", messages: [{ role: "system", content: EXTRACT_SYSTEM }, { role: "user", content: user }], maxTokens: 3000 });
+  const v = parseJson<{ requirements?: unknown[]; dropped?: unknown[] }>(res.text);
   const list = Array.isArray(v?.requirements) ? v!.requirements : [];
   // Grounding: the user's own words (not the assistant's paraphrase) when the request is a paraphrase.
   const words = (ctx.userWords ?? [ctx.request, ...ctx.guidance, ...ctx.recent]).join("\n");
+  const idxOf = (raw: unknown) => (Array.isArray((raw as { clauses?: unknown })?.clauses) ? ((raw as { clauses: unknown[] }).clauses) : []).map((n) => (typeof n === "number" ? n - 1 : -1)).filter((n) => n >= 0 && n < clauses.length);
+  const mapped = new Set<number>();
   // The model may not change what the user's words settle deterministically (language / page count come from the text).
-  return list
-    .filter((r) => groundedInWords(r, words))
+  const out = list
     .map((r) => {
+      const idx = idxOf(r);
+      // A requirement on numbered clauses quotes them (verbatim by construction); otherwise its own quote must be the user's.
+      const quote = idx.length ? idx.map((i) => clauses[i]).join(" ") : str((r as { quote?: unknown }).quote, 200);
+      if (!idx.length && !groundedInWords(r, words)) return null;
       const c = cleanRequirement(r, "request", ctx.kind);
-      return c ? ({ ...c, quote: str((r as { quote?: unknown }).quote, 200) } as Omit<Requirement, "id">) : null;
+      // Only a kept item accounts for its clauses (a language / page item the model may not set leaves them to detection).
+      if (!c || c.type === "language" || c.type === "page_count") return null;
+      idx.forEach((i) => mapped.add(i));
+      return { ...c, quote: quote.slice(0, 300) } as Omit<Requirement, "id">;
     })
-    .filter((r): r is Omit<Requirement, "id"> => !!r && r.type !== "language" && r.type !== "page_count")
+    .filter((r): r is Omit<Requirement, "id"> => !!r)
     .map((r) => anchorTerms(r, words));
+  const dropped = (Array.isArray(v?.dropped) ? v!.dropped : [])
+    .map((d) => ({ n: typeof (d as { clause?: unknown })?.clause === "number" ? ((d as { clause: number }).clause - 1) : -1, reason: str((d as { reason?: unknown })?.reason, 120) }))
+    .filter((d) => d.n >= 0 && d.n < clauses.length && d.reason && !mapped.has(d.n))
+    .map((d) => ({ clause: clauses[d.n]!, reason: d.reason }));
+  return { list: out, mapped, dropped };
 }
 
 const squash = (t: string) => t.toLowerCase().replace(/[\s，,。.、；;：:「」『』（）()"'`*]/g, "");

@@ -66,7 +66,7 @@ const NOTE_FAMILY = new Set<BriefKind>(["note", "lit_review", "reading_note"]);
 export const sameDeliverable = (a: BriefKind, b: BriefKind) => a === b || (NOTE_FAMILY.has(a) && NOTE_FAMILY.has(b));
 
 /** 「整理成筆記」「做成簡報」「write it up as a note」: the target the user names explicitly (wins over a mention). */
-const TARGET_RE = /(?:做成|整理成|寫成|轉成|改成|變成|弄成|產出|生成|做一份|寫一份|給我一份|給我一個|turn (?:it|this) into|make (?:it|this) (?:into )?|write (?:it|this) up as)\s*(?:一份|一個|一篇|an?\s+)?(英文|中文|english\s+)?(論文報告|閱讀筆記|文獻回顧|簡報|投影片|筆記|latex\s*論文|論文(?![報的筆大摘])|slides?|deck|presentation|reading note|literature review|note|paper(?!\s*(?:report|title|summary)))/i;
+const TARGET_RE = /(?:做成|整理成|寫成|轉成|改成|變成|弄成|產出|生成|做一份|寫一份|整理一份|準備一份|弄一份|做一篇|寫一篇|給我一份|給我一個|turn (?:it|this) into|make (?:it|this) (?:into )?|write (?:it|this) up as)\s*(?:一份|一個|一篇|an?\s+)?(英文|中文|english\s+)?(論文報告|閱讀筆記|文獻回顧|簡報|投影片|筆記|latex\s*論文|論文(?![報的筆大摘])|slides?|deck|presentation|reading note|literature review|note|paper(?!\s*(?:report|title|summary)))/i;
 const TARGET_KIND: [RegExp, DeliverableKind][] = [[/論文報告|簡報|投影片|slide|deck|presentation/i, "deck"], [/閱讀筆記|reading note/i, "reading_note"], [/文獻回顧|literature review/i, "lit_review"], [/latex|論文|paper/i, "paper"], [/筆記|note/i, "note"]];
 
 /** The deliverable the user's words name, newest turn first: an explicit target (「整理成筆記」), else a mention (簡報 …). */
@@ -106,9 +106,45 @@ export function clipWords(words: string[], max = USER_WORDS_MAX): string[] {
   return out;
 }
 
+/** 「ok」「好」「謝謝」: an acknowledgement, never part of a task. */
+const ACK_RE = /^(?:ok(?:ay)?|k|好的?|好喔|好哦|嗯+|恩+|收到|了解|知道了|謝謝|感謝|thanks?(?: you)?|thx|got it|sure|沒問題|讚|👍)[\s。.!！~～]*$/i;
+
+type Turn = { role: string; text: string; content: unknown };
+const asksBack = (t: Turn) => {
+  const blocks = Array.isArray(t.content) ? (t.content as { type?: string; name?: string }[]) : [];
+  if (blocks.some((b) => b.type === "tool_use" && b.name === "ask_user")) return true;
+  return /[？?]\s*$/.test(t.text.trim());
+};
+
+/**
+ * Which of the conversation's recent user turns are part of the task (pure, unit-tested; production e6d552fc: a question
+ * the assistant had already answered — 「偏向 Hot Word 還是 Contextual Biasing」 — and an 「ok」 became the notes request's
+ * words): walking back from the newest turn over consecutive user messages and over assistant turns that asked back
+ * (an ask_user card / ending with a question mark); an assistant answer ends the task — earlier turns were another
+ * exchange. Acknowledgements (「ok」「好」) never count unless they are the only turn.
+ */
+export function taskTurns(turns: Turn[]): string[] {
+  const out: string[] = [];
+  for (let j = turns.length - 1; j >= 0; j--) {
+    const m = turns[j]!;
+    if (m.role === "user") {
+      if (m.text.trim()) out.unshift(m.text);
+      continue;
+    }
+    if (m.role !== "assistant") continue;
+    if (!out.length) continue; // the same agent turn's preamble before its tool call
+    if (asksBack(m)) continue;
+    if (!m.text.trim()) continue; // a tool-only step of the same agent turn
+    break;
+  }
+  const kept = out.filter((t, i) => i === out.length - 1 || !ACK_RE.test(t.trim()));
+  return kept.slice(-3);
+}
+
 /**
  * The user's own turns that asked for this task: the conversation's latest user messages since the previous
- * start_workflow / start_goal of that conversation (≤ 3, newest last), verbatim. Empty without a conversation.
+ * start_workflow / start_goal of that conversation that belong to the task (`taskTurns`, ≤ 3, newest last), verbatim.
+ * Empty without a conversation.
  */
 export async function collectUserWords(db: Queryable, conversationId: string | null | undefined): Promise<string[]> {
   if (!conversationId) return [];
@@ -118,11 +154,14 @@ export async function collectUserWords(db: Queryable, conversationId: string | n
         AND seq < (SELECT coalesce(max(seq), 0) FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL)`,
     [conversationId],
   ).catch(() => ({ rows: [] as { seq: string | null }[] }))).rows[0]?.seq ?? "0";
-  const rows = (await db.query<{ text: string | null }>(
-    "SELECT text FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL AND seq > $2 AND coalesce(text,'') <> '' ORDER BY seq DESC LIMIT 3",
+  const rows = (await db.query<{ role: string; text: string | null; content: unknown }>(
+    "SELECT role, text, content FROM agent_messages WHERE conversation_id=$1 AND role IN ('user','assistant') AND hidden_by IS NULL AND seq > $2 ORDER BY seq DESC LIMIT 40",
     [conversationId, boundary],
-  ).catch(() => ({ rows: [] as { text: string | null }[] }))).rows;
-  return clipWords(rows.map((r) => (r.text ?? "").replace(/^（交給 Agent）/, "")).reverse());
+  ).catch(() => ({ rows: [] as { role: string; text: string | null; content: unknown }[] }))).rows.reverse();
+  // Only what came up to the newest user turn (the assistant's start_workflow reply is after it).
+  const lastUser = rows.map((r) => r.role).lastIndexOf("user");
+  const turns = rows.slice(0, lastUser + 1).map((r) => ({ role: r.role, text: (r.text ?? "").replace(/^（交給 Agent）/, ""), content: r.content }));
+  return clipWords(taskTurns(turns));
 }
 
 export const baseWords = (b: Brief) => b.user_words.slice(0, b.base);
@@ -135,7 +174,7 @@ export function composeWords(base: string[], rest: string[]): { user_words: stri
 /** The words with one more line of the user's (a clarifying answer, a choice) at the end of the start's part. */
 const withLine = (b: Brief, line: string) => composeWords([...baseWords(b), line], b.user_words.slice(b.base));
 /** Guidance lines the user wrote (補充指示, answers, 修改); the autopilot's own 繼續改 lines are not the user's words. */
-export const userGuidance = (run: Pick<RunRow, "guidance">) => (run.guidance ?? []).filter((g) => !(g as { system?: boolean }).system).map((g) => g.text);
+export const userGuidance = (run: Pick<RunRow, "guidance">) => (run.guidance ?? []).filter((g) => !g.system && !g.setup).map((g) => g.text);
 
 // ---------------------------------------------------------------- versions
 
@@ -336,7 +375,8 @@ export async function clarifyOnce(env: WorkflowEnv, q: { id: string; title: stri
     else await record({ clarified: true, ...withLine(b, line) });
   }
   if (isSkipped(a)) return null;
-  const value = typeof a?.value === "string" && q.options.some((o) => o.value === a.value) ? a.value : null;
+  // A 「其他」 answer that hands the choice back (「你決定」) takes the first option (the deliverable-keeping default).
+  const value = typeof a?.value === "string" && q.options.some((o) => o.value === a.value) ? a.value : a?.other && /你(來)?(決定|選|挑|判斷)|交給你|都可以|隨便|you (decide|choose|pick)|up to you/i.test(a.other) ? q.options[0]?.value ?? null : null;
   return { value, ...(a?.other?.trim() ? { other: a.other.trim() } : {}) };
 }
 
@@ -399,7 +439,7 @@ export type SwitchDecision = { ok: true } | { ok: false; action: "topic" | "retr
  * and build it from the study's library and notes, switch to the other kind (the user's choice → a new brief version),
  * stop, or write what is missing (「其他」 → guidance, plan again). Same kind (or the note family) → `{ ok: true }`.
  */
-export async function switchGuard(env: WorkflowEnv, from: { id: string; title: string }, to: string, why: string): Promise<SwitchDecision> {
+export async function switchGuard(env: WorkflowEnv, from: { id: string; title: string; edit?: boolean }, to: string, why: string): Promise<SwitchDecision> {
   const b = env.run.brief;
   const target = playbookKind(to);
   if (!b || sameDeliverable(b.deliverable.kind, target)) return { ok: true };
@@ -407,7 +447,11 @@ export async function switchGuard(env: WorkflowEnv, from: { id: string; title: s
   const id = `deliverable_${Object.keys(done).length + 1}`;
   const toPb = getWorkflowPlaybook(to);
   const targetLabel = BRIEF_KIND_LABEL[target];
-  const options: ClarifyOption[] = [
+  // An edit of a given artifact is never offered a new deck or another kind: only 「其他」 (what is missing) or stop.
+  const options: ClarifyOption[] = from.edit ? [
+    { value: "retry", label: `繼續${from.title}`, description: "照原本的要求再規劃一次（可以在「其他」補充資料）。" },
+    { value: "stop", label: "先停下來", description: "結束這個工作流程（原本的成果不變），我補好資料再重新開始。" },
+  ] : [
     ...(from.id === "slides" ? [{ value: "topic", label: "仍做簡報：用研究的文獻庫與筆記整理", description: "不指定單篇論文，依研究已有的文獻與筆記做主題簡報。" }] : []),
     { value: "switch", label: `改做${targetLabel}`, description: `改用「${toPb?.title ?? to}」，成果會是${targetLabel}，不是${b.deliverable.label}。` },
     { value: "stop", label: "先停下來", description: "結束這個工作流程（已寫的草稿保留），我補好資料再重新開始。" },
@@ -415,7 +459,7 @@ export async function switchGuard(env: WorkflowEnv, from: { id: string; title: s
   await env.note(`「${from.title}」沒辦法照你要的成果（${b.deliverable.label}）繼續：${why.slice(0, 120)}。不會自動改成${targetLabel}，先問你。`, "warn");
   const answers = await askUser(env, {
     id, title: `要怎麼繼續？你要的是${b.deliverable.label}`, step_key: null, purpose: "input", ai_suggested: false,
-    intro: `「${from.title}」需要的資料不足：${why.slice(0, 300)}\n你要的成果是「${b.deliverable.label}」，我不會自己改成${targetLabel}。也可以在「其他」寫下補充資料（例如論文標題、要用的筆記），我會照它重新規劃。`,
+    intro: `「${from.title}」還缺少資料才能繼續：${why.slice(0, 300)}\n你要的成果是「${b.deliverable.label}」，我不會自己改成${targetLabel}。也可以在「其他」寫下補充資料（例如論文標題、要用的筆記），我會照它重新規劃。`,
     questions: [{ id: "q", prompt: "要怎麼繼續？", type: "single_choice", options, allow_other: true, required: true }],
   });
   const a = answers.find((x) => x.id === "q");
@@ -425,6 +469,7 @@ export async function switchGuard(env: WorkflowEnv, from: { id: string; title: s
     await store(env, nextVersion(b, { deliverable: { kind: target, label: capabilityOf(to) ? DELIVERABLE_LABEL[capabilityOf(to)!.produces] : targetLabel, hard: true }, ...withLine(b, `（選擇改做${targetLabel}）`), unspecified: b.unspecified, requirements: b.requirements }, "deliverable"));
     return { ok: true };
   }
+  if (value === "retry") return { ok: false, action: "retry" };
   if (value === "other") {
     // The user's own words: guidance for the re-plan (a new brief version is built from it).
     await env.db.query("UPDATE workflow_runs SET guidance = guidance || $2::jsonb, updated_at=now() WHERE id=$1", [env.run.id, JSON.stringify([{ at: now(), text: a!.other!.trim().slice(0, 2000), applied: false }])]);

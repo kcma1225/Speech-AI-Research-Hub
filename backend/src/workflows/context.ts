@@ -34,6 +34,57 @@ export async function conversationContext(db: Queryable, conversationId: string 
   return Object.fromEntries(Object.entries(out).filter(([, v]) => v !== undefined && v !== null && v !== ""));
 }
 
+/**
+ * The study a work object implies (docs/architecture.md "Context and batches"): a deck, a note, a LaTeX project or a paper
+ * (when it is in exactly one study the user edits) belongs to one study, so a run on it never asks 「哪個研究？」
+ * (production e6d552fc: start_workflow{deck_id} from a home-page chat asked which study, twice).
+ */
+export async function studyOfInputs(db: Queryable, userId: string, inputs: Record<string, unknown>): Promise<string | null> {
+  const uuid = (v: unknown) => (typeof v === "string" && /^[0-9a-f-]{36}$/i.test(v) ? v : null);
+  const one = async (sql: string, id: string | null) => (id ? (await db.query<{ study_id: string | null }>(sql, [id]).catch(() => ({ rows: [] as { study_id: string | null }[] }))).rows[0]?.study_id ?? null : null);
+  const noteId = Array.isArray(inputs.note_ids) ? uuid(inputs.note_ids[0]) : null;
+  const found = (await one("SELECT study_id FROM decks WHERE id=$1", uuid(inputs.deck_id)))
+    ?? (await one("SELECT study_id FROM notes WHERE id=$1", noteId))
+    ?? (await one("SELECT study_id FROM latex_projects WHERE id=$1", uuid(inputs.project_id)));
+  if (found) return found;
+  const paperId = uuid(inputs.paper_id);
+  if (!paperId) return null;
+  const rows = (await db.query<{ study_id: string }>(
+    "SELECT sp.study_id FROM study_papers sp JOIN study_members m ON m.study_id=sp.study_id AND m.user_id=$2 AND m.role IN ('owner','member') WHERE sp.paper_id=$1",
+    [paperId, userId],
+  ).catch(() => ({ rows: [] as { study_id: string }[] }))).rows;
+  return rows.length === 1 ? rows[0]!.study_id : null;
+}
+
+/** The study of the conversation's most recent workflow / goal (「剛剛那個研究」): the work it has been doing. */
+export async function conversationStudy(db: Queryable, conversationId: string | null | undefined, userId: string, excludeRun?: string | null): Promise<string | null> {
+  if (!conversationId) return null;
+  return (await db.query<{ study_id: string }>(
+    `SELECT study_id FROM (
+       SELECT study_id, created_at FROM workflow_runs WHERE conversation_id=$1 AND user_id=$2 AND study_id IS NOT NULL AND ($3::uuid IS NULL OR id<>$3)
+       UNION ALL SELECT study_id, created_at FROM workflow_goals WHERE conversation_id=$1 AND user_id=$2 AND study_id IS NOT NULL
+     ) t ORDER BY created_at DESC LIMIT 1`,
+    [conversationId, userId, excludeRun ?? null],
+  ).catch(() => ({ rows: [] as { study_id: string }[] }))).rows[0]?.study_id ?? null;
+}
+
+/** The newest artifact of a kind the conversation's workflows wrote (「剛剛那個簡報」「同一個簡報」「繼續」). */
+export async function conversationArtifact(db: Queryable, conversationId: string | null | undefined, userId: string, kind: "deck" | "note" | "latex_project", excludeRun?: string | null): Promise<string | null> {
+  if (!conversationId) return null;
+  return (await db.query<{ id: string }>(
+    `SELECT a->>'id' AS id FROM workflow_runs r, jsonb_array_elements(r.artifacts) WITH ORDINALITY x(a, n)
+      WHERE r.conversation_id=$1 AND r.user_id=$2 AND a->>'kind'=$3 AND ($4::uuid IS NULL OR r.id<>$4)
+      ORDER BY r.created_at DESC, x.n DESC LIMIT 1`,
+    [conversationId, userId, kind, excludeRun ?? null],
+  ).catch(() => ({ rows: [] as { id: string }[] }))).rows[0]?.id ?? null;
+}
+
+/** The words point at an existing one (「這個／那個／這份／剛剛那個／同一個／繼續」「this / that / the same deck」). */
+export const POINTS_AT_RE = /這個|那個|這份|那份|這篇|那篇|剛剛|剛才|同一個|同個|上一個|上一份|前面那|之前那|原本的|繼續|\b(?:this|that|the same|the previous|my|our) (?:deck|presentation|slides?|note)\b|\bcontinue\b/i;
+
+/** 「就剛剛的那個研究」「同一個」「上一個」「the same one」: the user points back at what the conversation was doing. */
+export const REFER_BACK_RE = /剛剛|剛才|方才|同一個|同個|一樣的|上一個|上一份|前面那個|之前那個|原本那個|那個研究|這個研究|same (?:one|study|deck)|that (?:one|study)|the previous|the last one/i;
+
 const STOP = new Set(["study", "the", "and", "for", "with", "our", "research", "研究", "this", "that"]);
 /** Latin words (≥ 3 chars) and CJK bigrams of a text, lower-cased. */
 export function textTokens(text: string): Set<string> {
@@ -100,3 +151,30 @@ export async function batchPapers(db: Queryable, input: { studyId: string | null
 /** The request of one batch item: the user's words + which paper this run covers. */
 export const batchRequest = (request: string, item: BatchItem, i: number, n: number) =>
   `${request.slice(0, 3700)}\n\n（批次 ${i + 1}/${n}：這個工作流程只處理〈${item.title.slice(0, 200)}〉這一篇。）`;
+
+/**
+ * Whether the assistant may act on this artifact (scenario matrix g22: with no deck open the assistant searched, picked an
+ * unrelated deck and proposed deleting its page). Grounded = the conversation's own artifact (a page it was on, a workflow
+ * of this conversation wrote or edited it, a create_* tool of this conversation made it) or the user's words name its
+ * title exactly; otherwise the assistant must ask which one is meant. Calls outside a conversation are not checked.
+ */
+export async function artifactGrounded(db: Queryable, conversationId: string | null | undefined, userId: string, kind: "deck" | "note" | "latex_project", id: string): Promise<boolean> {
+  if (!conversationId || !/^[0-9a-f-]{36}$/i.test(id)) return true;
+  const pageKey = kind === "deck" ? "deckId" : kind === "note" ? "noteId" : "projectId";
+  const inputKey = kind === "deck" ? "deck_id" : kind === "note" ? "note_ids" : "project_id";
+  const row = (await db.query<{ ok: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM conversations c WHERE c.id=$1 AND c.context->>$3 = $2)
+         OR EXISTS (SELECT 1 FROM agent_messages m WHERE m.conversation_id=$1 AND m.role='user' AND m.page_context->>$3 = $2)
+         OR EXISTS (SELECT 1 FROM workflow_runs r WHERE r.conversation_id=$1 AND r.user_id=$4 AND (r.artifacts @> jsonb_build_array(jsonb_build_object('id', $2::text)) OR r.inputs->>$5 = $2 OR r.inputs->$5 ? $2))
+         OR EXISTS (SELECT 1 FROM agent_messages m WHERE m.conversation_id=$1 AND m.role='tool' AND m.content::text LIKE '%' || $2 || '%' AND m.content::text LIKE '%tool=\\"create\\_%' ESCAPE '\\') AS ok`,
+    [conversationId, id, pageKey, userId, inputKey],
+  ).catch(() => ({ rows: [{ ok: true }] }))).rows[0];
+  if (row?.ok) return true;
+  const table = kind === "deck" ? "decks" : kind === "note" ? "notes" : "latex_projects";
+  const title = (await db.query<{ title: string }>(`SELECT title FROM ${table} WHERE id=$1`, [id]).catch(() => ({ rows: [] as { title: string }[] }))).rows[0]?.title ?? "";
+  const norm = (t: string) => t.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  if (norm(title).length < 6) return false;
+  const said = (await db.query<{ text: string }>("SELECT text FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq DESC LIMIT 6", [conversationId]).catch(() => ({ rows: [] as { text: string }[] }))).rows.map((r) => norm(r.text ?? "")).join("|");
+  return said.includes(norm(title));
+}
+export const UNGROUNDED_TARGET = "這份成果不是這個對話裡的成果（不是使用者開著的頁面、不是這個對話的工作流程或工具建立的），使用者也沒有說出它的標題：不要對用搜尋或列表挑出來的成果動手。先用 ask_user 問使用者要改哪一份（列出候選的標題），或請使用者打開那份成果再說一次。";

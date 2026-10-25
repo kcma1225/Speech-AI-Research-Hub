@@ -10,6 +10,7 @@ import { createSuggestion } from "../suggestions/service.js";
 import { badRequest, conflict, forbidden, notFound } from "../http.js";
 import { loadStudyAccess } from "../studies/access.js";
 import { deckEditorUrl } from "./suggest-target.js";
+import { artifactGrounded, UNGROUNDED_TARGET } from "../../workflows/context.js";
 
 type DeckFile = { id: string; path: string; kind: string; content: string | null; deck_id: string; title: string; study_id: string };
 
@@ -51,6 +52,8 @@ registerAgentTool({
   summarize: (a) => `建議修改簡報${a.path ? ` ${a.path}` : ""}${a.title ? `：${a.title}` : ""}${a.edits ? `（${a.edits.length} 處）` : ""}`,
   async target(a, ctx) {
     const { file, access } = await deckFile(ctx, a);
+    // Only the conversation's own deck or one the user named exactly (scenario matrix g22: a search pick was edited).
+    if (ctx.source === "agent" && !(await artifactGrounded(ctx.db, ctx.conversationId, ctx.user.id, "deck", file.deck_id))) throw badRequest(UNGROUNDED_TARGET);
     return { studyId: access.study.id, studySlug: access.study.slug, label: `${file.title} · ${file.path}`, url: deckEditorUrl(access.study.slug, file.deck_id, file.id) };
   },
   async execute(a, ctx) {

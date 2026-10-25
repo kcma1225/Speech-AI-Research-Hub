@@ -418,10 +418,12 @@ run("workflow autopilot", () => {
     const id = (await createWorkflow(t.app, await asUser(alice.id), { request, playbook: "slides" })).id;
     expect((await getRun(t.db, id))!.study_id).toBeNull();
     expect((await runWorkflow(deps(), id)).status).toBe("awaiting_input");
-    const q = (await getRun(t.db, id))!.question!;
-    expect(q).toContain(`〈${title}〉`);
-    expect(q).toContain("你決定");
-    await addGuidance(t.app, await asUser(alice.id), id, "你決定");
+    // A study-picker card (never free text): the user's studies as options + 「你決定」.
+    const card = pendingAsk((await getRun(t.db, id))!.state)!;
+    expect(card.id).toBe("study_1");
+    expect(card.questions[0]!.options!.map((o) => o.label)).toContain(title);
+    expect(card.questions[0]!.options!.map((o) => o.value)).toContain("__delegate");
+    await post(alice, `/api/workflows/${id}/answer`, { card_id: card.id, answers: [{ id: "study", value: "__delegate" }] });
     expect((await runWorkflow(deps(), id)).status).toBe("cancelled");
     const r = (await getRun(t.db, id))!;
     expect(r.study_id).toBe(s4.id);

@@ -185,7 +185,7 @@ const paperOutline: WorkflowPlaybook = {
   detect: (req) => (/(?:論文|paper).{0,6}大綱|大綱.{0,6}(?:論文|paper)|paper outline/i.test(req) ? 0.8 : 0),
   async plan(env): Promise<PlanResult> {
     const access = await studyOrQuestion(env);
-    if ("question" in access) return { kind: "question", question: access.question };
+    if ("question" in access) return { kind: "question", question: access.question, setup: true };
     const src = await gatherSources(env, access.study.id);
     if (!src.keys.length && !src.noteIds.length) return { kind: "question", question: `〈${access.study.title}〉的文獻庫與筆記都是空的，沒有資料可以擬大綱。請先加入論文或做一次主題調研，再按「繼續」。` };
     const lang = targetLanguage(env.requirements()) ?? (env.run.inputs.language as "zh" | "en" | undefined) ?? languageOf(env.run.request);
@@ -332,7 +332,7 @@ async function writeOwn(client: Queryable, projectId: string, path: string, text
 
 async function draftPlan(env: WorkflowEnv): Promise<PlanResult> {
   const access = await studyOrQuestion(env);
-  if ("question" in access) return { kind: "question", question: access.question };
+  if ("question" in access) return { kind: "question", question: access.question, setup: true };
   const studyId = access.study.id;
   // The outline: a handed-over note in the outline format (or the study's newest outline note).
   const ids = Array.isArray(env.run.inputs.note_ids) ? (env.run.inputs.note_ids as string[]) : [];

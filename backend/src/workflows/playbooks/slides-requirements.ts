@@ -56,14 +56,34 @@ export async function fixPages(env: WorkflowEnv, body: string, pages: number[], 
   if (!targets.length) return null;
   const user = [
     VISUAL_RULES,
-    `下面這 ${targets.length} 頁投影片沒有符合使用者的要求。逐頁重寫成符合要求的版本：頁數與順序不變，每頁以「## 標題」開頭並保留 ::: {.notes} 講稿；保留原本的版型、圖（\`\`\`diagram / \`\`\`chart 規格只改文字標籤）、論文圖（paper-fig 語法不要動）、公式、表格、數字與出處。只輸出這 ${targets.length} 頁，不要其他文字。`,
+    `下面這 ${targets.length} 頁投影片沒有符合使用者的要求。逐頁重寫成符合要求的版本：頁數與順序不變，每頁以「## 標題」開頭（標題逐字不變，只有語言要求要換語言時才翻譯標題）並保留 ::: {.notes} 講稿；保留原本的版型、圖（\`\`\`diagram / \`\`\`chart 規格只改文字標籤）、論文圖（paper-fig 語法不要動）、公式、表格、數字與出處。只輸出這 ${targets.length} 頁，不要其他文字。`,
     `要修正的問題：\n${issues.map((i) => `- ${i}`).join("\n")}`,
     ...targets.map((p) => dataBlock(`page_${p}`, chunks[p - 1]!.trim())),
   ].join("\n\n");
   const res = await env.call({ purpose: "requirement_fix", role: "writer", aiRole: "slides", messages: [{ role: "system", content: systemFor("writer", "你寫 Quarto revealjs 投影片的 Markdown 本體。") }, { role: "user", content: user }], maxTokens: 12_000 }, stepId);
   const fixed = cleanBody(res.text);
   if (!fixed) return null;
-  return replacePages(body, targets, normalizeDiagrams(fixed));
+  const out = replacePages(body, targets, normalizeDiagrams(fixed));
+  return out ? keepTitles(body, out, targets, env) : null;
+}
+
+/**
+ * The rewritten pages keep their titles unless the title itself breaks a language requirement (production-style eval
+ * 79ab0678: a per-item-field fix retitled three method pages 「Shallow Fusion Cuts B-WER from 30.6…」 and the deck lost its
+ * outline pages one-to-one).
+ */
+function keepTitles(before: string, after: string, pages: number[], env: WorkflowEnv): string {
+  const a = splitChunks(before).chunks;
+  const { pre, chunks } = splitChunks(after);
+  const langs = checkedCriteria(env.run.criteria).filter((c) => c.check?.id === "req_language");
+  for (const p of pages) {
+    const old = /^## (.+)$/m.exec(a[p - 1] ?? "")?.[1]?.trim();
+    const cur = /^## (.+)$/m.exec(chunks[p - 1] ?? "")?.[1]?.trim();
+    if (!old || !cur || old === cur) continue;
+    const oldBreaks = langs.some((c) => languageViolations(`## ${old}\n`, c.check!.params?.language === "zh" ? "zh" : "en", [], false, (c.check!.params?.part as "slides" | "notes" | undefined)).some((v) => v.part === "title"));
+    if (!oldBreaks) chunks[p - 1] = chunks[p - 1]!.replace(/^## .+$/m, `## ${old}`);
+  }
+  return `${pre}${chunks.join("")}`;
 }
 
 /** Pages whose requirement checks fail, with the problems per check (language: the exact spots; per-item fields: the item's pages). */
@@ -79,7 +99,8 @@ export function failingPages(env: WorkflowEnv, body: string, front: string): { p
   for (const r of res) {
     if (r.check.id === "req_language") {
       const lang = r.check.params?.language === "zh" ? "zh" : "en";
-      for (const v of languageViolations(`${front}${body}`, lang, (r.check.params?.allow as string[] | undefined) ?? [])) v.page === 0 ? (cover = true) : pages.add(v.page);
+      const part = r.check.params?.part === "notes" || r.check.params?.part === "slides" ? (r.check.params.part as "notes" | "slides") : undefined;
+      for (const v of languageViolations(`${front}${body}`, lang, (r.check.params?.allow as string[] | undefined) ?? [], false, part)) v.page === 0 ? (cover = true) : pages.add(v.page);
     } else for (const m of r.detail.matchAll(/第\s*(\d+)\s*頁/g)) pages.add(Number(m[1]));
   }
   return { pages: [...pages].sort((a, b) => a - b), issues: res.map((r) => r.detail), hard: res.filter((r) => !r.check.params?.judge_fallback).map((r) => r.detail), cover };

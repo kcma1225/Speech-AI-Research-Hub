@@ -145,7 +145,7 @@ export function gapsOf(req: Requirements, r: Readiness, inputs: Record<string, u
 /** A deck about a paper (「論文報告」「這篇論文做成簡報」) is a deck, never a paper. */
 const DECK_RE = /簡報|投影片|slides?\b|deck|\bppt\b|\bpowerpoint\b|\bpresentation\b|論文報告|報告用的/i;
 /** Writing a whole paper: 「寫一篇 paper」「可以開論文了」「給我一個 latex 論文」「論文初稿」「write a paper」. */
-const PAPER_RE = /(?:寫|撰寫|起草)[^。！？\n]{0,40}(?:論文|paper)|(?:產出|生成|給我|開|做|完成)[^。！？\n]{0,12}(?:論文|paper|latex)|latex\s*(?:的)?\s*論文|論文(?:初稿|草稿|全文)|一篇[^。！？\n]{0,6}(?:paper|論文)|write (?:a|the|my) (?:full )?paper|paper draft|full paper/i;
+const PAPER_RE = /(?:寫|撰寫|起草)[^。！？\n]{0,40}(?:論文|paper)|(?:產出|生成|給我|開|做(?!法)|完成)[^。！？\n，,]{0,12}(?:論文|paper|latex)|latex\s*(?:的)?\s*論文|論文(?:初稿|草稿|全文)|一篇[^。！？\n]{0,6}(?:paper|論文)|write (?:a|the|my) (?:full )?paper|paper draft|full paper/i;
 const SECTION_RE = /章節|這一節|一節|\bsection\b|introduction|related work 章|方法章|實驗章|緒論|結論章/i;
 const LIT_RE = /文獻回顧|文獻探討|literature review|related work(?! 章)/i;
 const READING_RE = /閱讀筆記|精讀筆記|reading note/i;
@@ -156,7 +156,8 @@ const MEETING_RE = /會議準備|會議議程|meeting prep|agenda/i;
 /** A paper the user wants written — not one that exists (「這篇論文的摘要」「給我那篇論文」). */
 function wantsPaper(t: string) {
   const m = PAPER_RE.exec(t);
-  if (m && !/這篇|那篇|該篇|此篇|這幾篇|幾篇|一些|相關(?:的)?(?:論文|paper)|推薦/.test(m[0])) return true;
+  // 「用我們文獻庫的論文」「參考這些論文」: papers as the source, not the deliverable.
+  if (m && !/這篇|那篇|該篇|此篇|這幾篇|幾篇|一些|相關(?:的)?(?:論文|paper)|推薦|文獻庫|library|(?:用|參考|根據|依據)[^。！？\n]{0,10}(?:的)?(?:論文|papers?)/i.test(m[0])) return true;
   return /latex/i.test(t) && /論文|paper/i.test(t) && !/這篇|那篇/.test(t);
 }
 

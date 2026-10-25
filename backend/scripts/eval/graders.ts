@@ -367,3 +367,47 @@ export function checkFlips(rounds: { round: number; failures: string[] }[], chec
   }
   return out;
 }
+
+// ---------------------------------------------------------------- production conversation 79ab0678
+
+/**
+ * Slides English, every speaker note 繁中 with English terms (「講稿要是中文的…多用一點英文的專用名詞」): the cover and every
+ * slide's title / body have no CJK; each note has Han characters and at least as many Han characters as English words.
+ */
+export function slidesEnNotesZh(deck: Deck): Grade {
+  const where: string[] = [];
+  if (cjkCount(deck.title)) where.push("封面有中文");
+  for (const s of deck.slides) {
+    if (cjkCount(visible(`${s.title}\n${s.body}`)) > 0) where.push(`p${s.n} 投影片有中文`);
+    const notes = visible(s.notes);
+    const h = hanCount(notes);
+    const w = latinWords(notes.replace(/\$[^$\n]+\$/g, " "));
+    if (!notes.trim()) where.push(`p${s.n} 沒有講稿`);
+    else if (!h || h < w) where.push(`p${s.n} 講稿不是中文為主（漢字 ${h}、英文字 ${w}）`);
+  }
+  return grade("slides_en_notes_zh", !where.length && deck.slides.length > 0, where.length ? where.slice(0, 6).join("、") + (where.length > 6 ? `…共 ${where.length} 處` : "") : `${deck.slides.length} 頁：投影片英文、講稿繁中`);
+}
+
+const VENUE_RE = /Interspeech|ICASSP|ASRU|\bSLT\b|\bACL\b|EMNLP|NAACL|NeurIPS|ICML|ICLR|AAAI|TASLP|Transactions|\bIEEE\b|Journal|Proceedings|Proc\.|Conference|arXiv|preprint|會議|期刊/i;
+const CITES_PAPER_RE = /et al\.?|\b(?:19|20)\d{2}\b/;
+/** Every slide that names a paper (author et al. / a year) also names its venue (「會議或是期刊是哪一個」); ≥ `minShare`. */
+export function venuePerMethod(deck: Deck, minShare = 0.8): Grade {
+  const cited = deck.slides.slice(1).filter((s) => CITES_PAPER_RE.test(visible(`${s.title}\n${s.body}`)));
+  const with_ = cited.filter((s) => VENUE_RE.test(visible(`${s.body}\n${s.notes}`)));
+  const ok = cited.length >= 2 && with_.length / cited.length >= minShare;
+  const missing = cited.filter((s) => !with_.includes(s)).map((s) => `p${s.n}`);
+  return grade("venue_per_method", ok, `${with_.length}/${cited.length} 頁提到論文也寫了會議／期刊${missing.length ? `（沒有：${missing.slice(0, 6).join("、")}）` : ""}${/not (?:been )?provided|未提供/i.test(deck.slides.map((s) => s.body + s.notes).join("\n")) ? "；有「未提供」字樣" : ""}`);
+}
+
+/** The deck's cover and slide titles never drift to words the user never asked for (0668a3d7: 「efficiency」 from the study name). */
+export function noTopicDrift(deck: Deck, banned: RegExp, request: string): Grade {
+  const hits = [deck.title, ...deck.slides.map((s) => s.title)].filter((t) => banned.test(t) && !banned.test(request));
+  return grade("no_topic_drift", !hits.length, hits.length ? `標題出現使用者沒說的主題：${hits.slice(0, 4).map((h) => `「${h}」`).join("、")}` : `封面「${deck.title}」`);
+}
+
+/** The Brief holds the user's words only: a setup answer (the study's name) is not one of them and no requirement quotes it. */
+export function briefWithout(brief: BriefLike, text: string): Grade {
+  const inWords = (brief?.user_words ?? []).some((w) => w.includes(text));
+  const inReqs = (brief?.requirements ?? []).some((r) => `${r.text ?? ""}${r.quote ?? ""}`.includes(text));
+  return grade("answer_not_words", !inWords && !inReqs, inWords ? "研究名稱進了使用者的原話" : inReqs ? "有要求引用了研究名稱" : "研究名稱只當作設定，沒有進原話或要求");
+}

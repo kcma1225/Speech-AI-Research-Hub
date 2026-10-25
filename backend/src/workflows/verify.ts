@@ -6,7 +6,7 @@
  * (same blocks, same order, no shorter cut) and only the checklist items of its own scope. No holistic scores, no
  * "find the gaps" prompts.
  */
-import { runChecks } from "./checks.js";
+import { parseSlides, runChecks } from "./checks.js";
 import { getSteps } from "./store.js";
 import { dataBlock } from "./llm.js";
 import type { WorkflowEnv } from "./env.js";
@@ -267,7 +267,7 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
       `目標：${env.run.objective}`,
       `請逐條判斷下列驗收項目是否達成（只根據 <final> 中的最終成果，YES/NO）：\n${list.map(line).join("\n")}`,
       note,
-      "每一條先寫證據再下判斷：evidence 逐字引用成果中的一小段原文（≤ 80 字）。不通過時：成果中某段寫錯（kind = wrong），evidence 引用那一段；缺少內容（kind = missing），reason 寫缺什麼，source_quote 逐字引用 <sources> 或 <approved_outline> 中有這項內容的原文——來源沒有的內容不算缺漏，不要判不通過。無法判斷給 pass: null。",
+      "每一條先寫證據再下判斷：evidence 逐字引用成果中的一小段原文（≤ 80 字）。不通過時：成果中某段寫錯（kind = wrong），evidence 引用那一段；數字或主張找不到來源時，reason 寫出是哪個數字（照原文）與在第幾頁。缺少內容（kind = missing），reason 寫缺什麼，source_quote 逐字引用 <sources> 或 <approved_outline> 中有這項內容的原文——來源沒有的內容不算缺漏，不要判不通過。無法判斷給 pass: null。",
       env.guidanceText(),
       '只輸出 JSON：{"results":[{"id":"標準 id","evidence":"成果原文","kind":"wrong"|"missing","source_quote":"來源原文（missing 時）","pass":true|false|null,"reason":"一句理由"}]}',
       src.blocks,
@@ -316,7 +316,10 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
       }
       // A criterion that could not be judged is skipped (「未驗收」), never passed.
       const status = !r || r.pass === null ? "skipped" : r.pass ? "pass" : "fail";
-      const reason = !r ? (value ? "驗收者沒有判斷這一條。" : "驗收者沒有給出可解析的判定。") : r.pass === null ? (r.reason ?? "無法判斷") : r.reason;
+      let reason = !r ? (value ? "驗收者沒有判斷這一條。" : "驗收者沒有給出可解析的判定。") : r.pass === null ? (r.reason ?? "無法判斷") : r.reason;
+      // A fail names where it is (production 0668a3d7: 「此數字…找不到對應來源」 with no number or page, so the repair could
+      // not target it): the page holding the quoted evidence, and the numbers in it.
+      if (status === "fail" && r?.evidence) reason = withLocation(reason ?? "", String(r.evidence), text);
       out.push({ ...rest, status, reason: reason?.slice(0, 400), ...(r?.evidence ? { evidence: String(r.evidence).slice(0, 200) } : {}), ...(r?.pass && !(r.evidence ?? "").trim() ? { note: "驗收者沒有引用證據" } : {}) });
     }
   }
@@ -328,6 +331,18 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
   }
   await env.setState({ final_ledger: { sections: sectionHashes(text), items } satisfies FinalLedger });
   return final;
+}
+
+/** 「第 N 頁「title」」 of the slide that holds `evidence` (+ the numbers it quotes) appended to a fail reason that names no page. */
+export function withLocation(reason: string, evidence: string, text: string): string {
+  if (/第\s*\d+\s*頁/.test(reason)) return reason;
+  const slides = parseSlides(text.replace(/^---\n[\s\S]*?\n---\n?/, ""));
+  if (!slides.length) return reason;
+  const want = evidence.replace(/\s+/g, " ").trim().slice(0, 60);
+  const i = slides.findIndex((s) => quoteIn(want, `${s.title}\n${s.body}\n${s.notes}`));
+  if (i < 0) return reason;
+  const nums = [...new Set(evidence.match(/\d+(?:\.\d+)?%?/g) ?? [])].slice(0, 4);
+  return `${reason}（第 ${i + 1} 頁「${slides[i]!.title}」：「${want}」${nums.length ? `；數字 ${nums.join("、")}` : ""}）`.slice(0, 400);
 }
 
 export type { CheckResult };

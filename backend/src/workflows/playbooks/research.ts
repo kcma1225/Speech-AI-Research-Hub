@@ -48,16 +48,44 @@ export type OnlineHit = {
   /** How it was found: 「查詢 "…"」, 「〈seed〉的參考文獻」, 「引用〈seed〉」 (for the 搜尋紀錄). */
   via?: string[];
 };
-export type LibPaper = { id: string; title: string; year: number | null; cite_key: string; has_pdf: boolean; abstract: string | null };
+export type LibPaper = { id: string; title: string; year: number | null; cite_key: string; has_pdf: boolean; abstract: string | null; authors_text?: string; venue?: string | null; arxiv_id?: string | null; doi?: string | null };
+
+/** Bibliographic fields of a paper (what a reader needs to name it: authors, year, venue). */
+export type Bib = { authors_text?: string | null; year?: number | null; venue?: string | null; arxiv_id?: string | null; doi?: string | null };
+const firstAuthor = (authors: string | null | undefined) => {
+  const list = (authors ?? "").split(/;\s*/).map((a) => a.trim()).filter(Boolean);
+  if (!list.length) return "";
+  const head = list[0]!;
+  const family = /\p{Script=Han}/u.test(head) ? head : head.split(/\s+/).at(-1)!;
+  return list.length > 1 ? `${family} et al.` : family;
+};
+/**
+ * 「Chen et al., 2018, Interspeech」: the line writers cite a paper with (production 0668a3d7: every library paper had a
+ * venue, yet the deck said "Venues are not provided" because no step was ever given it). No venue but an arXiv id →
+ * 「arXiv preprint」; neither → no venue at all (never 「未提供」).
+ */
+export function bibLine(b: Bib): string {
+  const venue = b.venue?.trim() || (b.arxiv_id ? `arXiv preprint (arXiv:${b.arxiv_id})` : "");
+  return [firstAuthor(b.authors_text), b.year ? String(b.year) : "", venue].filter(Boolean).join(", ");
+}
+/** The bibliographic lines of papers by id. */
+export async function bibOf(db: WorkflowEnv["db"], ids: string[]): Promise<Map<string, string>> {
+  const uniq = [...new Set(ids.filter((x) => /^[0-9a-f-]{36}$/i.test(x)))];
+  if (!uniq.length) return new Map();
+  const rows = (await db.query<Bib & { id: string }>("SELECT id, authors_text, year, venue, arxiv_id, doi FROM papers WHERE id = ANY($1::uuid[])", [uniq])).rows;
+  return new Map(rows.map((r) => [r.id, bibLine(r)]));
+}
 export type PickRole = "seminal" | "recent" | "core";
 export type Pick =
-  | { kind: "library"; paper_id: string; title: string; year: number | null; cite_key: string; has_pdf: boolean; reason: string; role?: PickRole }
+  | { kind: "library"; paper_id: string; title: string; year: number | null; cite_key: string; has_pdf: boolean; reason: string; role?: PickRole; bib?: string }
   | { kind: "online"; hit: OnlineHit; reason: string; role?: PickRole };
 /** A paper of the run once it is in the study (imported or already there). */
-export type RunPaper = { paper_id: string; cite_key: string; title: string; year: number | null; has_pdf: boolean };
+export type RunPaper = { paper_id: string; cite_key: string; title: string; year: number | null; has_pdf: boolean; /** 「Chen et al., 2018, Interspeech」 (bibLine). */ bib?: string };
 export type TopicState = {
   topic: string; subqs: SubQuestion[]; queries: string[]; seeds: string[]; hits: OnlineHit[]; picks: Pick[]; excluded: { title: string; reason: string }[];
   searched: boolean; search_errors: string[]; stack: string[];
+  /** The decomposition's short title (from the request). */ title?: string;
+  /** Every relevant library paper is read (a library survey / a small library): every pick is a source of the taxonomy. */ read_all?: boolean;
 };
 
 export const TAXONOMY_COLUMNS = ["方法", "核心想法", "注入位置", "優缺點", "代表論文"];
@@ -434,7 +462,7 @@ export function libraryFallback(library: LibPaper[], topic: string): Pick[] {
 
 export async function libraryPapers(env: WorkflowEnv, studyId: string): Promise<LibPaper[]> {
   return (await env.db.query<LibPaper>(
-    `SELECT p.id, p.title, p.year, sp.cite_key, (p.pdf_key IS NOT NULL) AS has_pdf, left(p.abstract, 400) AS abstract
+    `SELECT p.id, p.title, p.year, sp.cite_key, (p.pdf_key IS NOT NULL) AS has_pdf, left(p.abstract, 400) AS abstract, p.authors_text, p.venue, p.arxiv_id, p.doi
        FROM study_papers sp JOIN papers p ON p.id=sp.paper_id WHERE sp.study_id=$1 ORDER BY sp.created_at DESC LIMIT 40`,
     [studyId],
   )).rows;
@@ -448,12 +476,14 @@ export async function decompose(env: WorkflowEnv, studyTitle: string, stack: str
   const user = [
     `使用者的要求：${env.run.request}`,
     env.guidanceText(),
-    `研究名稱：〈${studyTitle}〉`,
+    // The study's name is where the work is filed, not the topic (production 0668a3d7: 〈…效率研究〉 turned a hotword
+    // survey into 「how to define efficiency」).
+    `研究名稱（只是背景：主題與子問題只照使用者的要求，不要把研究名稱裡的詞當成主題或子問題）：〈${studyTitle}〉`,
     "把這個主題拆成 3–6 個具體的子問題（例如：問題定義與評估方式、有哪幾類做法、各做法放在模型的哪裡、結果比較、限制），每個子問題附 2–4 個英文關鍵字。",
     "每個子問題再寫 1–3 個英文學術搜尋查詢（query expansion：同義詞、不同說法、你知道的經典方法名稱或代表作的關鍵字，例如 \"contextual biasing RNN-T\"、\"deep context listen attend spell\"）；另外寫 1–2 個找經典／綜述的查詢（\"survey\"、\"seminal\" 方向）。",
     stack.length ? `使用者提到具體的工具／模型（${stack.join("、")}）：加 1–2 個查詢找它的實作或在它上面做這個主題的論文。` : "",
     "查詢只能是主題關鍵字（每個 ≤ 8 個字）；不要放句子、人名、網址或研究的私人內容。",
-    '只輸出 JSON：{"title":"簡短主題（≤ 30 字）","topic":"一句話主題","subquestions":[{"q":"子問題","keywords":["…"],"queries":["…"]}],"queries":["經典／綜述查詢"]}',
+    '只輸出 JSON：{"title":"簡短主題（≤ 30 字，取自使用者的要求）","topic":"一句話主題","subquestions":[{"q":"子問題","keywords":["…"],"queries":["…"]}],"queries":["經典／綜述查詢"]}',
   ].filter(Boolean).join("\n\n");
   const { value } = await env.callJson<Decomposition>({ purpose: "topic_plan", role: "orchestrator", messages: [{ role: "system", content: systemFor("planner", "你是主要的協調者（orchestrator），負責規劃主題調研。") }, { role: "user", content: user }], maxTokens: 4000 }, isDecomposition);
   const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
@@ -483,7 +513,8 @@ export async function decompose(env: WorkflowEnv, studyTitle: string, stack: str
 const ROLE_LABEL: Record<PickRole, string> = { seminal: "經典", recent: "近期", core: "核心" };
 const asRole = (v: unknown): PickRole | undefined => (v === "seminal" || v === "recent" || v === "core" ? v : undefined);
 
-export async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQuestion[]; hits: OnlineHit[]; stack: string[]; max?: number }, library: LibPaper[]): Promise<{ picks: Pick[]; excluded: { title: string; reason: string }[] }> {
+export async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQuestion[]; hits: OnlineHit[]; stack: string[]; max?: number; maxLibrary?: number; libraryRule?: string }, library: LibPaper[]): Promise<{ picks: Pick[]; excluded: { title: string; reason: string }[] }> {
+  const maxLibrary = st.maxLibrary ?? MAX_LIBRARY;
   if (!st.hits.length && !library.length) return { picks: [], excluded: [] };
   const importable = (h: OnlineHit) => !!(h.doi || h.arxiv_id || h.in_library);
   const year = new Date().getFullYear();
@@ -492,9 +523,10 @@ export async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQu
     `子問題：\n${st.subqs.map((s, i) => `${i + 1}. ${s.q}`).join("\n")}`,
     env.guidanceText(),
     dataBlock("online_hits", st.hits.map((h, i) => `[${i}] ${h.title}（${h.year ?? "?"}；${h.venue ?? "venue 不明"}${h.cited_by != null ? `；被引 ${h.cited_by}` : ""}${h.open_access ? "；有開放取用全文" : ""}${h.in_library ? "；已在實驗室文獻庫" : ""}${importable(h) ? "" : "；沒有 DOI/arXiv，不能匯入"}；來源：${(h.via ?? []).slice(0, 2).join("、")}）\n${clipText(h.abstract ?? "", 200)}`).join("\n\n") || "（沒有線上結果）"),
-    dataBlock("study_library", library.map((p) => `${p.id}｜${p.title}（${p.year ?? "?"}）[@${p.cite_key}]${p.has_pdf ? "" : "（沒有 PDF）"}\n${clipText(p.abstract ?? "", 200)}`).join("\n\n") || "（研究文獻庫是空的）"),
+    dataBlock("study_library", library.map((p) => `${p.id}｜${p.title}（${bibLine(p) || p.year || "?"}）[@${p.cite_key}]${p.has_pdf ? "" : "（沒有 PDF）"}\n${clipText(p.abstract ?? "", 200)}`).join("\n\n") || "（研究文獻庫是空的）"),
     [
-      `選出 ${st.max && st.max < 8 ? `${Math.max(3, st.max - 2)}–${st.max}` : "8–12"} 篇最能回答子問題的論文：研究文獻庫中相關的（≤ ${MAX_LIBRARY} 篇，用 id），以及要匯入的線上候選（≤ ${MAX_ONLINE} 篇，用 [編號]）。`,
+      `選出 ${st.max && st.max < 8 ? `${Math.max(3, st.max - 2)}–${st.max}` : `8–${st.max ?? 12}`} 篇最能回答子問題的論文：研究文獻庫中相關的（≤ ${maxLibrary} 篇，用 id），以及要匯入的線上候選（≤ ${MAX_ONLINE} 篇，用 [編號]）。`,
+      st.libraryRule ?? "",
       `要兼顧：經典（role "seminal"：被引很多或最早提出該類做法的代表作，至少 2 篇）與近期（role "recent"：${year - 3} 年以後，至少 3 篇），其他直接相關的標 "core"；每類做法至少一篇代表作；優先正式發表（venue）與有開放取用全文的。`,
       st.stack.length ? `使用者用 ${st.stack.join("、")}：有在它上面實作或可直接套用的論文要選。` : "",
       "不能匯入的不要選；和文獻庫重複的不要再選；離題的不要選。每篇一句理由（相關性、venue、年份、被引）。",
@@ -505,9 +537,9 @@ export async function select(env: WorkflowEnv, st: { topic: string; subqs: SubQu
   const { value } = await env.callJson<Selection>({ purpose: "topic_select", role: "planner", messages: [{ role: "system", content: systemFor("planner") }, { role: "user", content: user }], maxTokens: 8000 }, isSelection);
   const picks: Pick[] = [];
   const libPick = (p: LibPaper, reason: unknown, role: unknown) => {
-    if (!picks.some((x) => x.kind === "library" && x.paper_id === p.id)) picks.push({ kind: "library", paper_id: p.id, title: p.title, year: p.year, cite_key: p.cite_key, has_pdf: p.has_pdf, reason: clipText(String(reason ?? ""), 200), role: asRole(role) });
+    if (!picks.some((x) => x.kind === "library" && x.paper_id === p.id)) picks.push({ kind: "library", paper_id: p.id, title: p.title, year: p.year, cite_key: p.cite_key, has_pdf: p.has_pdf, reason: clipText(String(reason ?? ""), 200), role: asRole(role), ...(bibLine(p) ? { bib: bibLine(p) } : {}) });
   };
-  for (const l of (value?.library ?? []).slice(0, MAX_LIBRARY)) {
+  for (const l of (value?.library ?? []).slice(0, maxLibrary)) {
     const p = library.find((x) => x.id === l?.id);
     if (p) libPick(p, l.reason, l.role);
   }
@@ -537,7 +569,7 @@ export const pickTitle = (p: Pick) => (p.kind === "library" ? p.title : p.hit.ti
 export const pickLine = (p: Pick) => {
   const role = p.role ? `［${ROLE_LABEL[p.role]}］` : "";
   return p.kind === "library"
-    ? `${role}〈${p.title}〉（${p.year ?? "?"}，研究文獻庫 [@${p.cite_key}]${p.has_pdf ? "" : "，沒有 PDF"}）${p.reason ? `：${p.reason}` : ""}`
+    ? `${role}〈${p.title}〉（${p.bib || p.year || "?"}，研究文獻庫 [@${p.cite_key}]${p.has_pdf ? "" : "，沒有 PDF"}）${p.reason ? `：${p.reason}` : ""}`
     : `${role}〈${p.hit.title}〉（${p.hit.year ?? "?"}${p.hit.venue ? `，${p.hit.venue}` : ""}${p.hit.cited_by != null ? `，被引 ${p.hit.cited_by}` : ""}${p.hit.arxiv_id ? `，arXiv ${p.hit.arxiv_id}` : p.hit.doi ? `，DOI ${p.hit.doi}` : ""}${p.hit.open_access ? "，開放取用" : ""}）${p.reason ? `：${p.reason}` : ""}`;
 };
 
@@ -615,7 +647,7 @@ function criteriaFor(subqs: SubQuestion[], stack: string[] = []): Omit<Criterion
 
 async function plan(env: WorkflowEnv): Promise<PlanResult> {
   const access = await studyOrQuestion(env);
-  if ("question" in access) return { kind: "question", question: access.question };
+  if ("question" in access) return { kind: "question", question: access.question, setup: true };
   await env.activity("research", "orchestrator", "拆解主題與子問題");
   const prev = env.state<TopicState>("topic");
   const stack = stackOf(`${env.run.request}\n${env.run.guidance.map((g) => g.text).join("\n")}`);
@@ -743,7 +775,8 @@ export async function readPaper(env: WorkflowEnv, step: StepRow, fix: Fix): Prom
     format: `Markdown：開頭「### [@${got.cite_key}] ${clipText(got.title, 80)}」，接著依序用小標 ${parts}（小標照抄這些中文字，即使內容用英文寫；每部分精簡、具體；全篇約 1500–3000 字）。「#### 數字表」是 Markdown 表格（設定／方法｜資料集｜指標｜基線｜結果｜出處（表／頁）），把主要結果與消融的數字照原文列出；論文沒有數字結果時寫「本文沒有報告數字結果」。每個重點標 [@${got.cite_key}] 與頁碼（p. N）、表號或圖號；公式用 LaTeX 並說明符號。「#### 子問題對應」用 Q1…Qn 各一句，無關的寫「本文未涉及」。`,
   }, fix);
   const r = await env.researcher(step, { system: systemFor("researcher", "你讀完需要的內容後，直接寫出這篇論文的結構化摘錄。"), user, tools: ["read_paper", "view_paper_pages", "get_paper"], maxToolSteps: Number(step.inputs.max_tools) || 12, maxTokens: 16_000, purpose: "topic_read" });
-  return { summary: `${got.has_pdf ? "讀全文" : ABSTRACT_ONLY}：讀了 ${r.toolCalls} 次，${r.text.length} 字`, text: r.text, data: { paper_id: got.paper_id, cite_key: got.cite_key, title: got.title, year: got.year, has_pdf: got.has_pdf } };
+  const bib = (await bibOf(env.db, [got.paper_id])).get(got.paper_id) ?? "";
+  return { summary: `${got.has_pdf ? "讀全文" : ABSTRACT_ONLY}：讀了 ${r.toolCalls} 次，${r.text.length} 字`, text: r.text, data: { paper_id: got.paper_id, cite_key: got.cite_key, title: got.title, year: got.year, has_pdf: got.has_pdf, ...(bib ? { bib } : {}) } };
 }
 
 /** Each paper's material clipped to an equal share of `total` chars (what a writer and its verifier both read). */
@@ -752,7 +785,7 @@ export function compactNotes(papers: { notes: string }[], total = 15_000): strin
   return papers.map((p) => clipText(p.notes.trim(), share)).join("\n\n");
 }
 
-export const header = (p: RunPaper) => `### [@${p.cite_key}] ${p.title}${p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}）`}`;
+export const header = (p: RunPaper) => `### [@${p.cite_key}] ${p.title}${p.bib ? `（${p.bib}）` : p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}）`}`;
 const part = (p: ReadPaper, name: string, max: number) => {
   const t = extractPart(p.notes, name);
   return t ? `**${name}**：${clipText(t, max)}` : "";
@@ -788,7 +821,7 @@ async function checkData(env: WorkflowEnv, papers: ReadPaper[], text: string, ex
   };
 }
 
-const paperList = (papers: RunPaper[]) => papers.map((p) => `[@${p.cite_key}] ${p.title}${p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}：不要附章節、頁碼、公式）`}`).join("\n");
+const paperList = (papers: RunPaper[]) => papers.map((p) => `[@${p.cite_key}] ${p.title}${p.bib ? `（${p.bib}）` : p.year ? `（${p.year}）` : ""}${p.has_pdf ? "（讀過全文）" : `（${ABSTRACT_ONLY}：不要附章節、頁碼、公式）`}`).join("\n");
 
 
 async function writeSection(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {

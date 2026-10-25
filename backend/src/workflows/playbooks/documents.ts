@@ -14,7 +14,7 @@ import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import { type CheckSpec, type Criterion, type OutlineItem, type StepOutput, type StepRole, type StepRow, type StepSpec } from "../types.js";
-import { clipText, depOutputs, paperOf, resolveStudy, systemFor, taskPrompt, whichStudyQuestion } from "./common.js";
+import { clipText, depOutputs, paperOf, requireStudy, systemFor, taskPrompt } from "./common.js";
 import { requestLine } from "../brief.js";
 import { currentRoute, splitBatch } from "../route.js";
 import { askUser } from "../questions.js";
@@ -37,8 +37,8 @@ export const RESEARCH_TOOLS = [
 const PART_CHECKS: CheckSpec[] = [{ id: "min_length", params: { chars: 150 } }, { id: "no_placeholder" }, { id: "not_truncated" }];
 
 export async function studyOrQuestion(env: WorkflowEnv): Promise<StudyAccess | { question: string }> {
-  const access = await resolveStudy(env);
-  if (!access) return { question: await whichStudyQuestion(env, "這份成果") };
+  const access = await requireStudy(env, "這份成果");
+  if ("question" in access) return access;
   if (!access.canEdit) return { question: `你不是〈${access.study.title}〉的成員，工作流程不能在這裡建立筆記。請指定你參與的研究。` };
   return access;
 }
@@ -128,7 +128,7 @@ const readingNote: WorkflowPlaybook = {
   detect: (req, inputs) => (/閱讀筆記|讀書筆記|reading note|精讀|整理.*論文.*筆記|論文筆記/i.test(req) ? 0.85 : inputs.paper_id && /筆記|note/i.test(req) ? 0.6 : 0),
   async plan(env): Promise<PlanResult> {
     const access = await studyOrQuestion(env);
-    if ("question" in access) return { kind: "question", question: access.question };
+    if ("question" in access) return { kind: "question", question: access.question, setup: true };
     // 「每一篇文獻」 whose study was only found now: the router's batch, and this run ends.
     const r = await currentRoute(env);
     if (r?.batch && !env.run.batch_id) {
@@ -273,7 +273,7 @@ const litReview: WorkflowPlaybook = {
   detect: (req) => (/文獻回顧|文獻探討|related work|literature review|survey|比較.*論文|整理.*文獻/i.test(req) ? 0.85 : 0),
   async plan(env) {
     const access = await studyOrQuestion(env);
-    if ("question" in access) return { kind: "question", question: access.question };
+    if ("question" in access) return { kind: "question", question: access.question, setup: true };
     const papers = await studyPapers(env, access.study.id);
     if (papers.length < 2) {
       // Too few papers: offer topic research (search online, import, read) instead of refusing. Autopilot switches
@@ -392,7 +392,7 @@ const experimentReport: WorkflowPlaybook = {
   detect: (req) => (/實驗報告|實驗結果|實驗紀錄|experiment|CER|WER|BLEU|accuracy|消融|ablation/i.test(req) ? 0.75 : 0),
   async plan(env) {
     const access = await studyOrQuestion(env);
-    if ("question" in access) return { kind: "question", question: access.question };
+    if ("question" in access) return { kind: "question", question: access.question, setup: true };
     const notes = await noteSources(env);
     const source = [env.run.request, notes.text].filter(Boolean).join("\n\n");
     if (!/\d/.test(source) || source.length < 40) return { kind: "question", question: "找不到實驗數據。請把結果貼在補充指示，或附加實驗筆記後按「繼續」。" };
@@ -449,7 +449,7 @@ const meetingPrep: WorkflowPlaybook = {
   detect: (req) => (/會議準備|議程|agenda|meeting prep|組會準備|準備.*會議|開會/i.test(req) ? 0.8 : 0),
   async plan(env) {
     const access = await studyOrQuestion(env);
-    if ("question" in access) return { kind: "question", question: access.question };
+    if ("question" in access) return { kind: "question", question: access.question, setup: true };
     const progress = await env.tool("get_study_progress", { study: access.study.id });
     const activity = await env.tool("get_recent_activity", { study: access.study.id, limit: 30 });
     const source = [progress.ok ? progress.text : "", activity.ok ? activity.text : ""].join("\n\n");
@@ -505,7 +505,7 @@ const generic: WorkflowPlaybook = {
   detect: () => 0.1,
   async plan(env) {
     const access = await studyOrQuestion(env);
-    if ("question" in access) return { kind: "question", question: access.question };
+    if ("question" in access) return { kind: "question", question: access.question, setup: true };
     const context = await env.tool("get_study", { study: access.study.id });
     const user = [
       requestLine(env),

@@ -6,7 +6,8 @@
 import { z } from "zod";
 import { transaction } from "../db.js";
 import { registerAgentTool } from "../agent/tools/registry.js";
-import { notFound } from "../lib/http.js";
+import { badRequest, notFound } from "../lib/http.js";
+import { artifactGrounded, UNGROUNDED_TARGET } from "./context.js";
 import { getRun, getSteps } from "./store.js";
 import { announceRuns, insertWorkflows, startResult } from "./service.js";
 import { listWorkflowPlaybooks } from "./playbooks/index.js";
@@ -53,6 +54,11 @@ registerAgentTool({
   }),
   summarize: (a) => `交給 Agent：${a.request.replace(/\s+/g, " ").slice(0, 50)}`,
   async execute(a, ctx) {
+    const uuid = (v?: string) => (v && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);
+    // Act only on the conversation's own artifacts or one the user named exactly (never a search pick).
+    for (const [kind, id] of [["deck", uuid(a.deck_id)], ["latex_project", uuid(a.project_id)], ...(a.note_ids ?? []).map((n) => ["note", uuid(n)])] as ["deck" | "note" | "latex_project", string | undefined][]) {
+      if (id && ctx.source === "agent" && !(await artifactGrounded(ctx.db, ctx.conversationId, ctx.user.id, kind, id))) throw badRequest(UNGROUNDED_TARGET);
+    }
     // The user's own words (verbatim chat turns): the Brief's source of requirements; `request` is the assistant's paraphrase.
     const userWords = await collectUserWords(ctx.db, ctx.conversationId);
     // Deliverable first (goals/agent-tools.ts): a playbook that would not produce what the user asked for → a goal.
@@ -60,7 +66,6 @@ registerAgentTool({
     if (routed) return routed;
     const conv = ctx.conversationId ? (await ctx.db.query<{ context: Record<string, unknown>; autopilot: boolean }>("SELECT context, autopilot FROM conversations WHERE id=$1", [ctx.conversationId])).rows[0] : undefined;
     const callId = ctx.runId ? (await ctx.db.query<{ id: string }>("SELECT id FROM tool_calls WHERE run_id=$1 AND tool='start_workflow' AND status='running' ORDER BY created_at DESC LIMIT 1", [ctx.runId])).rows[0]?.id : undefined;
-    const uuid = (v?: string) => (v && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);
     const out = await transaction(ctx.db, (client) =>
       insertWorkflows(client, ctx.user, {
         request: a.request,
@@ -91,7 +96,7 @@ registerAgentTool({
   titleEn: "Read workflow",
   risk: "read",
   mcp: false,
-  description: "Status of a workflow started in this conversation (or by id): objective, acceptance criteria with pass/fail, step statuses, artifacts with links, and the final report. Report exactly this state to the user (planning / waiting for approval / running / partial / done) — never claim results the workflow has not verified.",
+  description: "Status of a workflow started in this conversation (or by id): objective, acceptance criteria with pass/fail, step statuses, artifacts with ids and links, and the final report. Report exactly this state to the user (planning / waiting for approval / running / partial / done) — never claim results the workflow has not verified. It does not contain the artifact's content: to answer what a deck / note says, read it with get_deck / get_note.",
   input: z.object({ workflow_id: z.string().max(64).optional() }),
   summarize: () => "查看工作流程的進度",
   async execute(a, ctx) {
@@ -106,7 +111,10 @@ registerAgentTool({
         id: r.id, title: r.title, status: r.status, objective: r.objective, question: r.question,
         criteria: r.criteria.map((c) => ({ text: c.text, status: c.status, reason: c.reason })),
         steps: steps.map((s) => ({ title: s.title, role: s.role, status: s.status, round: s.round, summary: s.output?.summary })),
-        artifacts: r.artifacts.map((x) => ({ kind: x.kind, title: x.title, url: x.url, role: x.role })),
+        artifacts: r.artifacts.map((x) => ({ kind: x.kind, id: x.id, title: x.title, url: x.url, role: x.role })),
+        // The run's status is not the artifact's content (production 79ab0678: the assistant listed a method the deck does
+        // not have, from a criterion's reason).
+        content_note: r.artifacts.length ? "這裡只有進度與驗收結果，不是成果的內容。被問到成果講了什麼、涵蓋哪些內容時，先用 get_deck（deck_id）／get_note（note_id）／latex_read_file 讀成果本身，再依讀到的內容回答；不要從驗收理由推測內容。" : undefined,
         report: r.report?.summary_md ?? null,
         usage: r.usage,
       },

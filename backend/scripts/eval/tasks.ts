@@ -6,7 +6,12 @@
  * Requests are fixed: change one only together with a note in docs/research/agent-eval.md (results stop being comparable).
  */
 import * as G from "./graders.js";
-import { EN_DECK, EN_DECK_TITLE, EN_DECK_TITLES, NO_PDF_TITLE, ZH_DECK, ZH_DECK_TITLE, ZH_DECK_TITLES, createDeck, type Fixtures } from "./fixtures.js";
+import { EN_DECK, EN_DECK_TITLE, EN_DECK_TITLES, MAIN_TITLE, NO_PDF_TITLE, ZH_DECK, ZH_DECK_TITLE, ZH_DECK_TITLES, createDeck, type Fixtures } from "./fixtures.js";
+
+/** Production conversation 79ab0678 (2026-10-25): the user's exact, ASR-transcribed words. */
+const SPOKEN_SURVEY = "我要你幫我做一個簡報這個簡報裡面詳細描述了目前時數界是怎麼在Zipformer和RNNT的架構下做熱詞機制的\n我要你參考我們的文獻庫 那請你詳細統計一下有哪幾種方法並且詳細敘述每一種方法的好處跟壞處 我要這份報告簡報是用英文的 並且在講解方法的時候要搭配模型的架構圖來更好的演示 並且在提到方法的時候要講到這一篇論文是哪一篇還有他們的會議或是期刊是哪一個";
+const NOTES_ZH = "有個東西我想要你幫我改這個簡報裡面的講稿要是中文的當然你應該要多用一點英文的專用名詞這個講稿要我能夠一比一的念出來不會有違和";
+const HOME_TOPIC = "幫我做一份簡報，介紹串流 ASR 的 contextual biasing 有哪些做法，用我們的文獻庫，8 頁";
 import type { Hub } from "./client.js";
 
 export type Kind = "deck" | "note" | "latex";
@@ -45,6 +50,10 @@ export type Task = {
   /** Rubric focus for the quality judge (no judge when absent). */
   judge?: string;
   timeoutMin?: number;
+  /** Started from a home-page chat: no study in the conversation, the page context or the inputs (the run must find it). */
+  home?: boolean;
+  /** Answers a question card (the runner otherwise never answers): null leaves it unanswered. */
+  answer?: (card: { id: string; title?: string }) => { id: string; value?: unknown; other?: string }[] | null;
 };
 
 /** The fixture deck an edit task starts from (a fresh copy per run) and what it looked like before. */
@@ -190,5 +199,44 @@ export const TASKS: Task[] = [
     request: "整理串流語音辨識常用的評估指標（CER、罕見詞 recall、誤觸發率、延遲）與計算方式，寫成一份筆記", expect: { kind: "note" },
     grade: (o) => [G.docLanguage(noteText(o), "zh"), G.grade("covers_metrics", ["CER", "recall", "誤觸發", "延遲"].every((t) => noteText(o).toLowerCase().includes(t.toLowerCase())), "四個指標都有寫到"), G.minLength(noteText(o), 800)],
     judge: "correct definitions and formulas of each metric; streaming-specific notes",
+  },
+  {
+    id: "deck_spoken_survey", title: "語音輸入的長句主題簡報：統計文獻庫的方法、每個方法的優缺點／架構圖／論文與會議期刊（79ab0678）", tags: ["deck", "create", "topic", "lang", "spoken", "79ab", "slow"], mode: "api", study: "main",
+    request: SPOKEN_SURVEY, expect: { kind: "deck" }, timeoutMin: 120,
+    grade: (o, c) => [
+      lang(o, "en"),
+      G.venuePerMethod(deckOf(o)),
+      // The fixture library (10 papers) is a part of the study's library (other runs import more): most of it must be covered.
+      G.mentionsPapers(o.deck?.qmd ?? "", c.fx.main.papers, 6),
+      G.noTopicDrift(deckOf(o), /efficien|效率|評估集|evaluation set/i, SPOKEN_SURVEY),
+      G.perItemFields(deckOf(o), [["pros", "advantage", "benefit", "strength"], ["cons", "limitation", "drawback", "weakness", "trade-off"]], 3),
+      // Diagrams are materialized as SVG images in the shipped source (`.hub-diagram`), or still ```diagram blocks.
+      G.grade("diagrams", ((o.deck?.qmd ?? "").match(/^```diagram|\{\.hub-diagram/gm) ?? []).length >= 3, `${((o.deck?.qmd ?? "").match(/^```diagram|\{\.hub-diagram/gm) ?? []).length} 張架構圖（≥ 3）`),
+    ],
+    judge: "an English survey of hotword / contextual-biasing mechanisms under Zipformer and RNN-T that tallies the library's method families; every method with pros, cons, an architecture diagram, its paper and venue",
+  },
+  {
+    id: "deck_notes_zh_home", title: "首頁聊天：把英文簡報的講稿改成中文（研究從簡報得知、投影片維持英文、不問問題）（79ab0678）", tags: ["deck", "edit", "lang", "79ab", "quick"], mode: "api", study: "main", home: true,
+    request: NOTES_ZH, deck: "en", expect: { kind: "deck" },
+    grade: (o, _c, p) => [
+      G.slidesEnNotesZh(deckOf(o)),
+      G.pageCount(deckOf(o), p.before!.pages),
+      G.titlesKept(deckOf(o), p.before!.titles),
+      G.grade("no_question", !o.asks.length, o.asks.length ? `問了：${o.asks.map((a) => a.title ?? a.id).join("、")}` : "沒有問問題"),
+      G.grade("brief_notes_zh", (o.brief?.requirements ?? []).some((r) => r.type === "language" && /講稿用繁體中文/.test(r.text ?? "")), (o.brief?.requirements ?? []).map((r) => r.text).join("；") || "沒有要求"),
+    ],
+    judge: "speaker notes in natural spoken Traditional Chinese with English technical terms, readable aloud verbatim; slide text unchanged and English",
+  },
+  {
+    id: "deck_study_answer_topic", title: "首頁聊天、沒有研究：回答「放在哪個研究」不會變成主題（79ab0678）", tags: ["deck", "create", "topic", "brief", "79ab"], mode: "api", study: "main", home: true,
+    request: HOME_TOPIC, expect: { kind: "deck" }, timeoutMin: 90,
+    answer: (card) => (card.id.startsWith("study_") ? [{ id: "study", other: MAIN_TITLE }] : null),
+    grade: (o) => [
+      G.grade("asked_study", o.asks.some((a) => a.id.startsWith("study_")), `問題卡：${o.asks.map((a) => a.id).join("、") || "無"}`),
+      G.briefWithout(o.brief, MAIN_TITLE),
+      G.noTopicDrift(deckOf(o), /評估集|evaluation set|eval(?:uation)? (?:suite|fixture)/i, HOME_TOPIC),
+      lang(o, "zh"),
+      G.pageCount(deckOf(o), 8),
+    ],
   },
 ];

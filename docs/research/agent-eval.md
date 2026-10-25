@@ -53,8 +53,11 @@ npx tsx scripts/eval/run.ts                                # 全部 20 個（便
 | `deck_missing_pdf` | 論文沒有 PDF | 交給 Agent | 停在 `needs_pdf`，不寫任何替代成果 |
 | `kind_conflict` | 指定 reading_note 流程，原話卻是「做成簡報」 | 交給 Agent | 交付物是簡報或先問交付物；絕不能是筆記；Brief 交付物 = deck |
 | `note_generic_metrics` | 一般筆記：評估指標與計算方式 | 交給 Agent | 繁中、四個指標都寫到、≥ 800 字 |
+| `deck_spoken_survey` | 正式站 79ab0678 的原話（語音輸入、沒有標點的長句）：統計文獻庫的熱詞方法，每個方法優缺點、架構圖、論文與會議／期刊，英文 | 交給 Agent | 全英文、提到論文的頁都寫了會議／期刊（≥ 80%）、提到固定文獻庫 ≥ 6 篇、標題沒有使用者沒說的主題（efficiency／評估集）、≥ 3 頁有 pros 與 cons、≥ 3 張架構圖 |
+| `deck_notes_zh_home` | 79ab0678：首頁聊天（沒有研究）對英文簡報說「講稿要是中文的…一比一的念出來」 | 交給 Agent（`home`：對話、頁面、inputs 都沒有研究，只有 deck_id） | 投影片（含封面）英文、每頁講稿以中文為主、頁數與標題不變、沒有問問題、Brief 有「講稿用繁體中文」 |
+| `deck_study_answer_topic` | 79ab0678：首頁聊天沒有研究 → 研究選擇卡，Runner 以「其他」回答研究名稱 | 交給 Agent（`home` + `answer`） | 有問研究卡、研究名稱沒有進原話或要求、標題沒有研究名稱的詞、繁中、8 頁 |
 
-每個任務都在自動駕駛下跑；Runner 只核准計畫卡、**從不回答問題卡**（停下來問就記為 `awaiting_input` 後取消）；時間上限從 run 真正開始執行（`started_at`）起算（預設 60 分，主題／論文 90–120，目標 240），排隊時間另記為 `queued_s`。
+每個任務都在自動駕駛下跑；Runner 只核准計畫卡、**不回答問題卡**（例外：任務有 `answer`，例如 `deck_study_answer_topic` 回答研究選擇卡；`home` 任務從沒有研究的首頁對話開始）（停下來問就記為 `awaiting_input` 後取消）；時間上限從 run 真正開始執行（`started_at`）起算（預設 60 分，主題／論文 90–120，目標 240），排隊時間另記為 `queued_s`。
 
 ## 記錄與評分
 
@@ -179,3 +182,42 @@ P5 之後 20/20 通過，但 4 個任務的 run 狀態是 `partial`。根因與�
 - 評審與被測物同模型；rubric 不給原始來源（翻譯類評審看不到原文），只當輔助訊號。
 - `--regrade` 讀回當時存下的成果文字，但簡報種類／編譯狀態等中繼資料是從 hub 重新讀取。
 - 改任務的請求文字會讓結果不可比較：改的時候在這份文件記下來，並重跑基準。
+
+## 情境矩陣與不變量稽核（2026-10-25）
+
+20 個固定任務只能抓到它們剛好涵蓋的失敗；正式站對話 79ab0678 的 9 個問題（講稿語言被 standing 蓋掉、放錯研究、澄清回答變主題、6 句要求只抓到 1 句…）全都不在裡面。所以加了一層**不變量**：一個 run 必須滿足的規則，寫成存下來的資料上的純函式（`backend/src/workflows/invariants.ts`，22 條，目錄與每條的正式站例子見 `agent-invariants.md`），同一套規則用在單元測試（79ab0678 兩個 run 的資料形狀）、唯讀稽核（`scripts/audit/run.ts`）和情境矩陣（`scripts/eval/scenarios/`）。
+
+**情境矩陣**：進入點 × 對話歷史 × 說法（含口語無標點）× 12 種意圖 × 各部分語言 × 指代 × 澄清回答 × 啟動方式 → 66 個情境，只跑到計畫卡或路由＋需求完成（`--depth route`：Brief、要求、路由都存好、規劃者又跑了 90 秒沒問問題就停；問研究／論文／交付物的卡片都在大綱之前），檢查全部規則＋情境期望，然後取消。
+
+第一次全套（`runs/scenarios-matrix-1/`，gitignored）：staging 中途被另一個 agent 部署了兩次，66 個情境分屬三個 ai-worker image（a1c6eb 12 個、48adcc 14 個、b5f346 40 個；後者已含 79ab0678 的修正）；前 18 個用 `linyating`，之後改用新建的 `scenario-eval`（同研究的成員），因為 eval runner 佔滿了 linyating 每人 3 個的工作流程上限；ai-worker 兩個槽被 eval 的長流程佔住時，暫時加開一個**同 image** 的 ai-worker 容器（`hubv3-ai-worker-scen`，image 一變就由看門程式停掉，跑完已移除）。每個開始的 run 都已取消（59/59 cancelled）。
+
+| 規則 | 情境數 | 其中最新 image（40） | 代表情境 |
+|---|---|---|---|
+| `req.clause_coverage` | 18 | 13 | 「大概 8 頁」沒有頁數要求（l58/l60/l62/c50/c53/c56）；「提到方法時要註明論文和會議或期刊」（c55、l61、l63）；「專有名詞／technical terms 保留英文」（a37、a41）；p64＝run A 原文仍漏「統計有哪幾種方法」 |
+| `scenario.deck_resolved` | 9 | 7 | 前一個 run 做了簡報、使用者說「這個／剛剛那個／同一個簡報／繼續」→ 沒有 deck_id，被當成新簡報（p66＝run B 原文用交給 Agent） |
+| `req.user_words_scope` | 8 | 4 | 先前另一段問答（「CER 和 WER 有什麼差別？」）進了 Brief 的原話 |
+| `scenario.part_language` | 6 | 1 | 舊 image：「投影片英文、講稿中文」沒有分部語言要求；最新：「整份 translate 成英文」（中英混）沒有任何要求 |
+| `route.wording` / `scenario.new_not_edit` | 4 / 3 | 0 | 舊 image：在簡報頁要「新」簡報（含語言字）被當成修改那份簡報 |
+| `scenario.kind` | 3 | 3 | 「幫我整理一份筆記…用我們文獻庫的論文」→ Brief 是 **LaTeX 論文**（c51/c54/c57） |
+| `q.not_repeated` | 2 | 2 | 「要寫進哪一份 LaTeX 專案？」回答「你決定」後立刻又問 |
+| `ctx.no_derivable_study_question` 等 | 1 | 0 | 舊 image：前一個 run 已在研究裡仍問研究 |
+| `scenario.started`（資訊） | 11 | — | 聊天沒有交給工作流程：講稿改中文、刪頁直接用 `suggest_deck_edit`（p65＝run B 原文）；沒有簡報時從首頁說「這個 deck 刪掉卡住」，助理用 search 找到**另一份無關的 eval 簡報**並提議刪頁（g22） |
+
+**稽核**（`scripts/audit/run.ts --staging --since 30d`，211 個 run、153 個對話，唯讀）：扣掉矩陣自己的 run 與種子，44 個 finding：修改簡報的紀錄寫「由「從 0 到 1 建立簡報」執行」18 個 run；partial 說明含「P1…」3 個（含另一個 agent 今天的 eval run）；修正後同樣的驗收（grounded、coverage）又失敗 2 個（674cce09 是今天最新 image）；venue 說成未提供 1 個；smoke 的 c49 舊 image 重現了 run A 的「研究名稱變主題」（新 image 已不再出現）。
+
+跑法與規則目錄：`agent-invariants.md`。改 workflow 之後：`npx tsx scripts/eval/scenarios/run.ts --concurrency 2`（約 2–3 分／情境，取決於 ai-worker 槽），偵測程式改了用 `--recheck <dir>` 重評，不必重跑。
+
+## 正式站對話 79ab0678 的修正（2026-10-25，`runs/p6-conv-79ab`，對照 `p5-kept-pages`）
+
+新任務 3 個＋回歸子集 8 個，staging ai-worker image b5f346be（部分任務跨 48adcc70→b5f346be 的重新部署）。staging 同時有其他人用同一個評估帳號跑 probe，兩個 ai_workflow 槽長時間被佔滿：`deck_study_answer_topic` 兩次都在等槽時逾時（計時從第一次規劃開始，回答研究卡後等了 > 60 分鐘），`kind_conflict` 第一次逾時、重跑通過。
+
+| 任務 | p5 | p6 | 備註 |
+|---|---|---|---|
+| `deck_spoken_survey`（新） | – | PASS 6/6（partial） | 9/9 頁有會議／期刊、提到文獻庫 9 篇、沒有 efficiency 漂移；系統驗收 18/19 |
+| `deck_notes_zh_home`（新） | – | PASS 5/5（done） | 研究從簡報推得、沒有問題、投影片英文＋講稿繁中 |
+| `deck_study_answer_topic`（新） | – | FAIL（逾時）4/5 | 研究卡回答沒有進原話／要求、主題來自請求；頁數 10 ≠ 8（「，8 頁」沒被偵測，已修正、未重新部署驗證） |
+| `deck_translate_en` | PASS done | PASS partial | grounded：模型把「待驗證」翻成「verified」（評審正確） |
+| `deck_add_page` / `deck_remove_page` / `deck_progress_single_paper` / `deck_missing_pdf` | PASS | PASS | 同 |
+| `deck_topic_paper_title` | PASS done | PASS partial | 104 分（槽位爭用）；系統驗收 18/19 |
+| `note_reading` | PASS done | PASS partial | grounded：「我的想法」AI 代填用了週會筆記的內容，評審的來源沒有研究資料（既有缺口） |
+| `kind_conflict` | PASS done | PASS partial | 重跑 33 分 |
