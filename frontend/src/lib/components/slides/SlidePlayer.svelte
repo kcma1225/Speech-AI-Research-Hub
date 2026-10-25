@@ -6,6 +6,8 @@
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { loadManifest, notesHtml, openSpeaker, pageAt, preload, readPosition, writePosition } from "#lib/slides/pages.ts";
   import { deckChannel, type DeckChannel } from "#lib/slides/sync.ts";
+  import { containBox, revealFitTracker, revealSlideBox } from "#lib/slides/laser.ts";
+  import LaserOverlay from "./LaserOverlay.svelte";
   import type { PageManifest, SlideVersion } from "#lib/slides/types.ts";
 
   /**
@@ -50,6 +52,8 @@
   } = $props();
 
   let root = $state<HTMLDivElement | null>(null);
+  let stage = $state<HTMLDivElement | null>(null);
+  let laser = $state<ReturnType<typeof LaserOverlay> | null>(null);
   let frame = $state<HTMLIFrameElement | null>(null);
   let strip = $state<HTMLDivElement | null>(null);
   let manifestState = $state<"idle" | "loading" | "ready" | "missing">("idle");
@@ -89,6 +93,8 @@
       versionId = id;
       frameSrc = v && v.sourceType === "quarto" ? v.viewUrl : null;
       ready = false;
+      fit.reset();
+      laser?.hide();
       revealTotal = null;
       revealPage = 0;
       manifest = null;
@@ -168,6 +174,7 @@
     }
     if (msg.namespace !== "reveal") return;
     if (msg.eventName === "callback") {
+      if (fit.onCallback(msg.method, msg.result)) laser?.refresh();
       if (msg.method === "getTotalSlides" && Number.isInteger(msg.result)) revealTotal = msg.result as number;
       else if (msg.method === "getSlidePastCount" && Number.isInteger(msg.result) && !manifest) {
         revealPage = (msg.result as number) + 1;
@@ -176,6 +183,8 @@
       return;
     }
     const state = msg.state as { indexh?: unknown; indexv?: unknown } | undefined;
+    // Slide size and scale inside the frame, for the speaker's mirrored laser.
+    if (msg.eventName === "ready" || msg.eventName === "resize") for (const m of fit.methods) reveal(m);
     if (msg.eventName === "ready") {
       ready = true;
       reveal("getTotalSlides");
@@ -199,6 +208,24 @@
       } else if (!manifest && msg.eventName === "slidechanged") reveal("getSlidePastCount");
     }
   }
+
+  // ---- Mirrored laser (drawn by the speaker window) ----------------------------------------------
+  // Drawn above the deck in this page rather than inside it, so it works for every rendered deck.
+  const fit = revealFitTracker();
+  const dims = $derived(manifest ? { width: manifest.width, height: manifest.height } : null);
+  function slideBox() {
+    if (live) {
+      const r = frame?.getBoundingClientRect();
+      return r ? revealSlideBox(r, fit.fit, dims) : null;
+    }
+    const r = stage?.getBoundingClientRect();
+    return r && dims ? containBox(r, dims.width, dims.height) : null;
+  }
+  // Changing slides clears it.
+  $effect(() => {
+    void page;
+    untrack(() => laser?.hide());
+  });
 
   // ---- Fullscreen -----------------------------------------------------------------------------
   let native = $state(false);
@@ -229,6 +256,8 @@
         remotePage = m.page;
         goto(m.page);
       } else if (m.type === "step") step(m.dir);
+      else if (m.type === "laser") m.page === page ? laser?.point(m.x, m.y, m.down) : laser?.hide();
+      else if (m.type === "laserOff" || m.type === "bye") laser?.hide();
     });
     channel = ch;
     const bye = () => ch?.close();
@@ -341,6 +370,7 @@
 >
   <!-- Stage -->
   <div
+    bind:this={stage}
     class="relative min-h-0 overflow-hidden {isFullscreen ? 'flex-1 bg-black' : variant === 'stage' ? 'flex-1 bg-canvas-2' : 'mx-auto w-full rounded-[22px] border border-line/70 bg-surface-2 shadow-card'}"
     style={!isFullscreen && variant === "embedded" ? embeddedStyle : undefined}
   >
@@ -392,6 +422,8 @@
         </div>
       </div>
     {/if}
+
+    {#if version}<LaserOverlay bind:this={laser} box={slideBox} />{/if}
 
     {#if isFullscreen}
       <div class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-3 transition-opacity duration-300 {idle && !live ? 'opacity-0' : 'opacity-100'}">

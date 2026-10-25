@@ -129,6 +129,8 @@ export const zh = {
   "slides.speaker.textSize": "備註文字 {n}px",
   "slides.speaker.split": "調整備註欄寬度",
   "slides.speaker.noNotesHint": "照著投影片講就好；有備註的頁面會顯示在這裡。",
+  "slides.speaker.laser": "雷射筆",
+  "slides.speaker.laserHint": "雷射筆：在目前投影片上移動或拖曳，簡報視窗同步顯示",
 
   "slides.tab.reviews": "評論",
   "slides.tab.versions": "版本",
@@ -509,6 +511,8 @@ export const en: Record<keyof typeof zh, string> = {
   "slides.speaker.textSize": "Notes text {n}px",
   "slides.speaker.split": "Resize the notes column",
   "slides.speaker.noNotesHint": "Speak to the slide. Pages with notes show them here.",
+  "slides.speaker.laser": "Laser pointer",
+  "slides.speaker.laserHint": "Laser pointer: move or drag over the current slide to show it in the presentation window",
 
   "slides.tab.reviews": "Reviews",
   "slides.tab.versions": "Versions",

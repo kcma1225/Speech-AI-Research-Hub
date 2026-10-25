@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { AArrowDown, AArrowUp, ChevronLeft, ChevronRight, Minus, NotebookText, Pause, Play, Plus, Presentation, RotateCcw, Timer } from "@lucide/svelte";
+  import { AArrowDown, AArrowUp, ChevronLeft, ChevronRight, Crosshair, Minus, NotebookText, Pause, Play, Plus, Presentation, RotateCcw, Timer } from "@lucide/svelte";
   import { page as appPage } from "$app/state";
   import { api, ApiError } from "#lib/api.ts";
   import { i18n, t } from "#lib/i18n.svelte.ts";
@@ -8,6 +8,8 @@
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Spinner from "#lib/components/ui/Spinner.svelte";
   import Switch from "#lib/components/ui/Switch.svelte";
+  import LaserOverlay from "#lib/components/slides/LaserOverlay.svelte";
+  import { containBox, revealFitTracker, revealSlideBox, toSlide } from "#lib/slides/laser.ts";
   import { loadManifest, notesHtml, preload } from "#lib/slides/pages.ts";
   import { deckChannel, type DeckChannel } from "#lib/slides/sync.ts";
   import type { PageManifest, SlideDetail, SlideVersion } from "#lib/slides/types.ts";
@@ -66,17 +68,24 @@
   });
   function onFrameMessage(event: MessageEvent) {
     if (!frame || event.source !== frame.contentWindow || typeof event.data !== "string" || event.data.length > 100_000) return;
-    let data: { namespace?: unknown; eventName?: unknown };
+    let data: { namespace?: unknown; eventName?: unknown; method?: unknown; result?: unknown };
     try {
       data = JSON.parse(event.data);
     } catch {
       return;
     }
-    if (data?.namespace !== "reveal" || data.eventName !== "ready") return;
+    if (data?.namespace !== "reveal") return;
+    if (data.eventName === "callback") {
+      if (fit.onCallback(data.method, data.result)) laser?.refresh();
+      return;
+    }
+    if (data.eventName === "resize") return void fit.methods.forEach(m => reveal(m));
+    if (data.eventName !== "ready") return;
     // slideNumber stays as the deck has it: some themes force the number visible, and it must then stay right.
     reveal("configure", [{ fragments: false, controls: false, progress: false, keyboard: false, touch: false, overview: false, help: false }]);
     frameReady = true;
     showInFrame(current);
+    fit.methods.forEach(m => reveal(m));
   }
   $effect(() => {
     preload(pages.find(p => p.index === current + 1)?.full);
@@ -113,6 +122,72 @@
     if (peer && channel) channel.step(dir);
     else goto(current + dir);
   }
+
+  // ---- Laser pointer on the current slide, mirrored in the player ------------------------------
+  // Positions go out as fractions of the slide's own box (Reveal's configured size inside the preview,
+  // or the page image), so they land on the same spot whatever the size of either window.
+  const fit = revealFitTracker();
+  const dims = $derived(manifest ? { width: manifest.width, height: manifest.height } : null);
+  let slideEl = $state<HTMLElement | null>(null);
+  let pageImg = $state<HTMLImageElement | null>(null);
+  let laser = $state<ReturnType<typeof LaserOverlay> | null>(null);
+  let laserOn = $state(false);
+  let pointing = false;
+  let pressed = false;
+  function slideBox() {
+    if (liveSrc) {
+      const r = frame?.getBoundingClientRect();
+      return r ? revealSlideBox(r, fit.fit, dims) : null;
+    }
+    const r = slideEl?.getBoundingClientRect();
+    const w = dims?.width ?? pageImg?.naturalWidth;
+    const h = dims?.height ?? pageImg?.naturalHeight;
+    return r && w && h ? containBox(r, w, h) : null;
+  }
+  function laserAt(e: PointerEvent, down: boolean) {
+    const box = slideBox();
+    const p = box && toSlide(box, e.clientX, e.clientY);
+    if (!p) return laserHide();
+    pointing = true;
+    laser?.point(p.x, p.y, down);
+    channel?.laser(current, p.x, p.y, down);
+  }
+  function laserHide() {
+    if (!pointing) return;
+    pointing = false;
+    laser?.hide();
+    channel?.laserOff();
+  }
+  function toggleLaser(force = !laserOn) {
+    laserOn = force;
+    if (!laserOn) {
+      pressed = false;
+      laserHide();
+    }
+  }
+  function onLaserDown(e: PointerEvent) {
+    if (e.button > 0) return;
+    e.preventDefault();
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+    pressed = true;
+    laserAt(e, true);
+  }
+  function onLaserMove(e: PointerEvent) {
+    if (e.pointerType === "mouse" || pressed) laserAt(e, pressed);
+  }
+  function onLaserUp(e: PointerEvent) {
+    pressed = false;
+    // Touch and pen lift off the screen: hide, like the plugin's laser. A mouse keeps hovering.
+    if (e.pointerType === "mouse" && e.type === "pointerup") laserAt(e, false);
+    else laserHide();
+  }
+  // Changing slides clears it (the player clears its own copy too).
+  $effect(() => {
+    void current;
+    untrack(laserHide);
+  });
 
   // ---- Timer (survives a reload of this window) ------------------------------------------------
   const timerKey = $derived(`hub-speaker-timer:${slug}`);
@@ -232,6 +307,8 @@
     else if (k === "Home") goto(1);
     else if (k === "End" && total) goto(total);
     else if (k === "t" || k === "T") toggleTimer();
+    else if (k === "1") toggleLaser(); // the annotate plugin's laser key
+    else if (k === "Escape" && laserOn) toggleLaser(false);
     else handled = false;
     if (handled) e.preventDefault();
   }
@@ -272,7 +349,7 @@
     <main bind:this={layout} class="speaker-layout min-h-0 flex-1 overflow-y-auto p-3 sm:p-4" class:dragging style="--notes:{split}fr; --slides:{100 - split}fr">
       <!-- Current page -->
       <section class="area-cur flex min-w-0 flex-col gap-3">
-        <div class="slide-box relative overflow-hidden rounded-[22px] border border-line/70 bg-surface-2 shadow-card" style="--r:{ratio}">
+        <div bind:this={slideEl} class="slide-box relative overflow-hidden rounded-[22px] border border-line/70 bg-surface-2 shadow-card" style="--r:{ratio}">
           {#if liveSrc}
             <iframe
               bind:this={frame}
@@ -285,7 +362,7 @@
             ></iframe>
           {:else if now}
             {#key now.index}
-              <img src={now.full ?? now.thumb} alt={now.title ?? t("slides.player.pageAlt", { n: now.index })} class="absolute inset-0 size-full object-contain" />
+              <img bind:this={pageImg} src={now.full ?? now.thumb} alt={now.title ?? t("slides.player.pageAlt", { n: now.index })} class="absolute inset-0 size-full object-contain" />
             {/key}
           {:else}
             <div class="absolute inset-0 grid place-items-center p-6 text-center">
@@ -295,6 +372,22 @@
               </div>
             </div>
           {/if}
+          {#if liveSrc || now}
+            <LaserOverlay bind:this={laser} box={slideBox} />
+            {#if laserOn}
+              <!-- Pointer events (mouse, pen and touch drag) over the slide drive the laser here and in the player. -->
+              <div
+                class="absolute inset-0 cursor-none touch-none select-none"
+                role="presentation"
+                onpointerdown={onLaserDown}
+                onpointermove={onLaserMove}
+                onpointerup={onLaserUp}
+                onpointercancel={onLaserUp}
+                onpointerleave={e => e.pointerType === "mouse" && !pressed && laserHide()}
+                oncontextmenu={e => e.preventDefault()}
+              ></div>
+            {/if}
+          {/if}
         </div>
         <div class="flex items-center gap-3">
           <button type="button" class={navBtn} aria-label={t("slides.player.prev")} disabled={!peer && current <= 1} onclick={() => step(-1)}><ChevronLeft /></button>
@@ -303,6 +396,16 @@
             {#if now?.title}<p class="truncate text-[12.5px] text-ink-3">{now.title}</p>{/if}
           </div>
           <button type="button" class={navBtn} aria-label={t("slides.player.next")} disabled={!peer && total > 0 && current >= total} onclick={() => step(1)}><ChevronRight /></button>
+          {#if liveSrc || now}
+            <button
+              type="button"
+              class="{navBtn} {laserOn ? 'border-transparent !bg-[oklch(.58_.21_27)] !text-white' : ''}"
+              aria-pressed={laserOn}
+              aria-label={t("slides.speaker.laser")}
+              title="{t('slides.speaker.laserHint')} (1)"
+              onclick={() => toggleLaser()}
+            ><Crosshair /></button>
+          {/if}
         </div>
       </section>
 

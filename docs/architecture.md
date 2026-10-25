@@ -2399,6 +2399,18 @@ fragments), `{type:"hello"}` and `{type:"bye"}`, each carrying `from: "player"|"
 decks in a second sandboxed iframe with `?receiver` (the annotate plugin stays off) and Reveal reconfigured to no
 fragments/controls/keyboard.
 
+Mirrored laser (speaker → player, `lib/slides/laser.ts`, `components/slides/LaserOverlay.svelte`): the speaker view's laser
+toggle (button or `1`, the annotate plugin's laser key; `Esc` turns it off) puts a pointer-event layer over the current-slide
+preview; moving (mouse) or dragging (mouse/pen/touch) sends `{type:"laser",page,x,y,down}` and leaving the slide, lifting a
+touch/pen or turning the mode off sends `{type:"laserOff"}`. `x`,`y` are fractions 0–1 of the slide's own box, never pixels:
+for quarto decks Reveal's configured size × scale centred in the frame (each window asks its iframe for
+`getComputedSlideSize` and `getScale` through Reveal's postMessage API after `ready` and every `resize`; callback results are
+validated), for page images the `object-fit: contain` box of the manifest size. Receivers validate the shape (`laser` only
+from `"speaker"`, finite fractions, integer page, boolean `down`). The player draws the dot + fading trail (same look as the
+plugin's laser) in a `pointer-events: none` overlay above the iframe/image in its stage, so it works for every already
+rendered deck, stays visible in fullscreen and leaves the deck's own annotate tools untouched; it ignores lasers for another
+page and clears on every page change, `laserOff` or `bye`. The speaker preview shows the same overlay locally.
+
 ## AI platform (`backend/src/ai/`, routes `ai-status.ts` + `ai-admin.ts`, `ai-worker/`)
 
 Layers: **provider accounts → model profiles → (groups) → role bindings** — ONE routing configuration. Code asks for a
