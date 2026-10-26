@@ -243,4 +243,52 @@ run("production conversation 79ab0678", () => {
     const out = await getAgentTool("start_workflow")!.execute({ deck_id: unrelated, request: "刪掉第 3 頁", playbook: "slides" } as never, await toolCtx(conv) as never);
     expect((out.data as { workflow_id: string }).workflow_id).toBeTruthy();
   });
+  it("4. which LaTeX project: a card with the projects as options; an answer naming none asks again saying so, then the pick is used (matrix g35)", async () => {
+    const { transaction } = await import("../src/db.js");
+    const { createProjectFromTemplate } = await import("../src/lib/latex-projects/service.js");
+    const mk = (title: string) => transaction(t.db, (c) => createProjectFromTemplate(c, { studyId: studyS.id, studySlug: studyS.slug, title, kind: "paper", template: "article-zh", actorId: user.id }));
+    await t.db.query("UPDATE workflow_runs SET status='cancelled' WHERE user_id=$1", [user.id]);
+    const p1 = await mk("熱詞偏置方法綜述");
+    const p2 = await mk("熱詞偏置方法綜述");
+    const id = (await createWorkflow(t.app, await asUser(), { request: "幫我寫論文的 Related Work 章節（LaTeX），整理文獻庫裡的熱詞偏置方法，全部用中文。", playbook: "latex_section", inputs: { study: studyS.id } })).id;
+    expect((await runWorkflow(deps(), id)).status).toBe("awaiting_input");
+    const card = pendingAsk((await getRun(t.db, id))!.state)!;
+    expect(card.title).toBe("要寫進哪一份 LaTeX 專案？");
+    const opts = card.questions[0]!.options!;
+    expect(opts.map((o) => o.value)).toEqual(expect.arrayContaining([p1, p2, "__delegate"]));
+    // Same-titled projects are told apart.
+    expect(opts.filter((o) => o.value === p1 || o.value === p2).every((o) => /最近更新/.test(o.description ?? ""))).toBe(true);
+    // A study name typed into 「其他」 names no project: a second card that says so (not the same question verbatim).
+    await answerWorkflow(t.app, await asUser(), id, { card_id: card.id, answers: [{ id: "project", other: STUDY }] });
+    expect((await runWorkflow(deps(), id)).status).toBe("awaiting_input");
+    const again = pendingAsk((await getRun(t.db, id))!.state)!;
+    expect(again.id).toBe("project_2");
+    expect(again.intro).toContain("對不到");
+    await answerWorkflow(t.app, await asUser(), id, { card_id: again.id, answers: [{ id: "project", value: p2 }] });
+    await runWorkflow(deps(), id);
+    expect((await getRun(t.db, id))!.state.project_id).toBe(p2);
+  });
+  it("5. guidance typed while the plan is being made reaches the plan card (matrix s74: 「改成 10 頁」 during planning)", async () => {
+    await t.db.query("UPDATE workflow_runs SET status='cancelled' WHERE user_id=$1", [user.id]);
+    const id = (await createWorkflow(t.app, await asUser(), { request: "幫我做一份熱詞做法的主題簡報，大概 8 頁。", playbook: "slides", inputs: { study: studyS.id } })).id;
+    m.set("topic_plan", JSON.stringify({ title: "熱詞", topic: "熱詞做法", subquestions: [{ q: "做法？", keywords: ["biasing"] }, { q: "比較？", keywords: ["WER"] }] }));
+    m.set("topic_select", '{"library":[],"candidates":[]}');
+    m.set("outline", (req: Req) => JSON.stringify({ pages: Array.from({ length: /10 頁/.test(textOf(req)) ? 10 : 8 }, (_, i) => ({ title: `Page ${i + 1}`, points: ["x"] })) }));
+    // The chat's steer_workflow lands while the outline is being written.
+    const chat = m.port.chat.bind(m.port);
+    let steered = false;
+    m.port.chat = async (role, req, ctx) => {
+      if (ctx.purpose === "outline" && !steered) {
+        steered = true;
+        await t.db.query("UPDATE workflow_runs SET guidance = guidance || $2::jsonb WHERE id=$1", [id, JSON.stringify([{ at: new Date().toISOString(), text: "改成 10 頁", applied: false }])]);
+      }
+      return chat(role, req, ctx);
+    };
+    expect((await runWorkflow(deps(), id)).status).toBe("awaiting_plan_approval");
+    const r = (await getRun(t.db, id))!;
+    expect(steered).toBe(true);
+    const pages = r.brief!.requirements.filter((x) => x.type === "page_count").map((x) => x.params);
+    expect(pages).toEqual([expect.objectContaining({ exact: 10 })]);
+    expect(r.brief!.user_words).toContain("改成 10 頁");
+  });
 });

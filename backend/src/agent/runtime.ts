@@ -12,6 +12,7 @@
  */
 import { MATERIAL_REF_RE } from "../workflows/material.js";
 import { conversationWorkflowsBlock } from "../workflows/chat-steer.js";
+import { pendingAsk } from "../workflows/questions.js";
 import { labelSummary } from "./summary-labels.js";
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -527,12 +528,33 @@ export class AgentRuntime {
       return { queued: result.conversation.queued! };
     }
     if (result.superseded) await this.emitRun(result.superseded);
+    // A reply that IS one of the options of the card a workflow of this conversation waits on answers that card before
+    // the model runs (scenario matrix s77: the model asked the study again instead of calling answer_workflow); any other
+    // text is left to the model (answer_workflow / steer_workflow). Not after 「改成一般對話」 (context.chatOnly).
+    if (!turnInput.answers && !turnInput.attachments?.length && !carry && turnInput.text && !(ctx as { chatOnly?: string } | null)?.chatOnly)
+      await this.answerWaitingCard(user, conversationId, turnInput.text).catch((e) => this.app.log.warn({ err: e, conversationId }, "workflow card answer from chat failed"));
     await this.emitAll(conversationId, result.superseded, result.events);
     await insertEvent(this.db, conversationId, result.run.id, "message", { message: messageView(result.msg) });
     await insertEvent(this.db, conversationId, result.run.id, "conversation", { conversation: conversationView(result.conversation) });
     await insertEvent(this.db, conversationId, result.run.id, "run", { run: runView(result.run) });
     this.kick(result.run.id);
     return { message: messageView(result.msg), run: runView(result.run) };
+  }
+
+  /** `postMessage`: the one waiting workflow card whose option the text names exactly → answered (true). */
+  private async answerWaitingCard(user: CurrentUser, conversationId: string, text: string): Promise<boolean> {
+    const runs = (await this.db.query<{ id: string; state: Record<string, unknown> }>(
+      "SELECT id, state FROM workflow_runs WHERE conversation_id=$1 AND user_id=$2 AND status='awaiting_input'", [conversationId, user.id],
+    )).rows;
+    if (runs.length !== 1) return false;
+    const card = pendingAsk(runs[0]!.state);
+    if (!card) return false;
+    const answers = answersFromText(card.questions, text);
+    // Only an exact option (a typed 「其他」 is the model's call: it may be about something else).
+    if (!answers?.some((a) => "value" in a && a.value !== null && !(Array.isArray(a.value) && !a.value.length) && !("other" in a && a.other))) return false;
+    const { answerWorkflow } = await import("../workflows/service.js");
+    await answerWorkflow(this.app, user, runs[0]!.id, { card_id: card.id, answers });
+    return true;
   }
 
   /** The consent cards of the open step (what a new message would cancel). */

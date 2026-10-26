@@ -758,4 +758,31 @@ describe.skipIf(!hasTestDb)("agent runtime", () => {
     await patch(alice, "/api/agent/settings", { memory_enabled: false });
     await t.app.inject({ method: "DELETE", url: "/api/memories", headers: { origin: ORIGIN, cookie: alice.cookie } });
   });
+
+  it("a chat reply that is an option of the card a workflow waits on answers it before the model runs (matrix s77); other text is the model's", async () => {
+    const conv = await newConversation();
+    const card = {
+      id: "study_1", title: "要把簡報放在哪個研究？", step_key: null, purpose: "input", ai_suggested: false, asked_at: new Date().toISOString(),
+      questions: [{ id: "study", prompt: "選一個研究", type: "single_choice", required: true, allow_other: true, options: [{ value: study.id, label: "語音情緒辨識" }, { value: "__delegate", label: "你決定（最近在進行的研究）" }] }],
+    };
+    const wf = (await t.db.query<{ id: string }>(
+      "INSERT INTO workflow_runs(user_id,conversation_id,playbook,title,request,status,question,state) VALUES($1,$2,'slides','進度報告','做一份進度報告','awaiting_input','要把簡報放在哪個研究？',$3) RETURNING id",
+      [alice.id, conv, JSON.stringify({ asks: { study_1: card }, ask_pending: "study_1" })],
+    )).rows[0]!.id;
+    // Free text that is not an option: left to the model, the card stays open.
+    script = [say("好的")];
+    await send(conv, "等一下，我先想想");
+    expect((await t.db.query<{ status: string }>("SELECT status FROM workflow_runs WHERE id=$1", [wf])).rows[0]!.status).toBe("awaiting_input");
+    // 「改成一般對話」: not routed even when it is an option.
+    script = [say("好的")];
+    await send(conv, "語音情緒辨識", alice, { chatOnly: wf });
+    expect((await t.db.query<{ status: string }>("SELECT status FROM workflow_runs WHERE id=$1", [wf])).rows[0]!.status).toBe("awaiting_input");
+    // The option typed in chat: the card is answered before the model's turn (which sees the run moving).
+    script = [say("已交給工作流程")];
+    await send(conv, "語音情緒辨識");
+    const r = (await t.db.query<{ status: string; state: { asks: Record<string, { answers?: { id: string; value: unknown }[] }> } }>("SELECT status, state FROM workflow_runs WHERE id=$1", [wf])).rows[0]!;
+    expect(r.status).not.toBe("awaiting_input");
+    expect(r.state.asks.study_1!.answers).toEqual([expect.objectContaining({ id: "study", value: study.id })]);
+    await t.db.query("UPDATE workflow_runs SET status='cancelled' WHERE id=$1", [wf]);
+  });
 });

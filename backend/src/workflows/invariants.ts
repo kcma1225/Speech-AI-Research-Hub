@@ -157,8 +157,10 @@ export function contentClauses(text: string): { clause: string; core: boolean }[
   return clauses(text)
     .filter((c) => norm(c).length >= 4 && !FILLER.test(norm(c)))
     .map((c) => {
-      const rest = norm(c.replace(/〈[^〉]*〉|「[^」]*」|“[^”]*”|"[^"]*"/g, "")).replace(/我要你|我想要你|我想要|幫我|一個|一份|一篇|請你|這個|這份/g, "");
-      return { clause: c, core: ((DELIVERABLE_NOUN.test(c) && CREATE_VERB.test(c)) || EDIT_VERB.test(c)) && rest.replace(DELIVERABLE_NOUN, "").length <= 6 };
+      // English request scaffolding (「Write me a note」, "Please make a deck for me") is the deliverable ask, not content.
+      const bare = c.replace(/〈[^〉]*〉|「[^」]*」|“[^”]*”|"[^"]*"/g, "").replace(/\b(?:please|can you|could you|i (?:want|need|would like)(?: you)?(?: to)?|for me|me|us|a|an|the|this|new)\b/gi, " ");
+      const rest = norm(bare).replace(/我要你|我想要你|我想要|幫我|一個|一份|一篇|請你|這個|這份/g, "");
+      return { clause: c, core: ((DELIVERABLE_NOUN.test(c) && CREATE_VERB.test(c)) || EDIT_VERB.test(c)) && rest.replace(DELIVERABLE_NOUN, "").replace(CREATE_VERB, "").length <= 6 };
     });
 }
 
@@ -560,6 +562,12 @@ export const INVARIANTS: Invariant[] = [
         for (const { clause, core } of cs) {
           if (core) continue;
           if (reqs.some((q) => covers(q, clause))) continue;
+          // Superseded by the user's newer words on the same dimension (「大概 8 頁」 then 「改成 10 頁」 → 10 頁 only).
+          if (PAGES_RE.test(clause) && reqs.some((q) => q.type === "page_count" && q.source === "guidance")) continue;
+          if ((LANG_ZH.test(clause) || LANG_EN.test(clause)) && reqs.some((q) => q.type === "language" && q.source === "guidance")) continue;
+          // A clause listing several asks (「with a comparison table, everything in English」) is covered piece by piece.
+          const pieces = clause.split(/[,，、;；]\s*|\band\b|以及/).map((x) => x.trim()).filter((x) => norm(x).length >= 4);
+          if (pieces.length >= 2 && pieces.every((p) => reqs.some((q) => covers(q, p)))) continue;
           if (dropped.some((d) => d.clause && (containment(clause, d.clause) >= 0.6 || containment(d.clause, clause) >= 0.8))) continue;
           // The topic / focus clause is carried by the plan's topic, not a requirement.
           if (topic && TOPIC_CLAUSE.test(clause) && salientOverlap(clause, topic) >= 2) continue;
@@ -718,6 +726,10 @@ export const INVARIANTS: Invariant[] = [
           const c = qs[j]!;
           const between = answers.filter((x) => Date.parse(x.at) > Date.parse(a.at!) && Date.parse(x.at) <= Date.parse(c.at!));
           if (!between.length) continue;
+          // An informed re-ask (「上一個回答對不到…，請從下面選一個」, options shown) is not the same question again; its
+          // status line comes with it.
+          const informed = (q: { at?: string | null; text: string }) => /對不到/.test(q.text) || qs.some((e) => /對不到/.test(e.text) && e.at && q.at && Math.abs(Date.parse(e.at) - Date.parse(q.at)) < 10_000);
+          if (informed(c)) continue;
           if (containment(a.text, c.text) >= 0.6 || containment(c.text, a.text) >= 0.6)
             hits.push({ message: `回答「${clip(between.at(-1)!.text, 30)}」之後又問了同一個問題`, evidence: { first: { at: a.at, source: a.source, text: clip(a.text, 120) }, again: { at: c.at, source: c.source, text: clip(c.text, 160) }, answer: between.map((x) => clip(x.text, 80)) } });
         }

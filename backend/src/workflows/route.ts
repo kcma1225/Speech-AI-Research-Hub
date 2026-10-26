@@ -20,7 +20,7 @@ import { capabilityOf, DELIVERABLE_LABEL, deliverableOf, readinessOf, type Deliv
 import { isTopicRequest, matchPaperTitle } from "./playbooks/common.js";
 import { detectPlaybook, getWorkflowPlaybook, listWorkflowPlaybooks, playbookLabel } from "./playbooks/registry.js";
 import { EACH_PAPER_RE, PER_PAPER_PLAYBOOKS } from "./context.js";
-import { detectExclude, detectLanguage, detectPageCount, detectPerItemFields } from "./requirements.js";
+import { detectExclude, detectLanguage, detectPartLanguages, detectPageCount, detectPerItemFields } from "./requirements.js";
 import type { EditKind, Requirement } from "./types.js";
 import type { WorkflowEnv } from "./env.js";
 import { ASKS_SEARCH_RE } from "./material.js";
@@ -58,7 +58,7 @@ export function deckModeOf(words: string, opts: { inputMode?: string; explicitPa
 // ---------------------------------------------------------------- editing an existing deck
 
 /** 「把這份簡報改成英文」、「精簡」、「重排」… — an edit of the deck itself, not a new deck. */
-export const REVISE_RE = /翻譯|translate|改成|改為|轉成|換成|修改|改寫|重寫|精簡|潤飾|潤稿|調整|英文版|中文版|英文|rewrite|revise|edit|polish|shorten|condense/i;
+export const REVISE_RE = /翻譯|translate|改成|改為|轉成|換成|修改|改寫|重寫|精簡|潤飾|潤稿|調整|英文版|中文版|英文|rewrite|revise|edit|polish|shorten|condense|\bchange\b|\bconvert|\bswitch\b|\b(?:to|into) (?:english|chinese|mandarin)\b/i;
 /** 「再詳細一點」「focus 在…」「擴充成 20 頁」「每個方法要有 Pros/Cons」: a deeper / restructured version (new outline). */
 export const EXPAND_RE = /詳細|細一點|不夠細|更細|太淺|擴充|擴寫|展開|加深|深入|聚焦|重點放在|主軸|重新規劃|重新組織|重組|focus|expand|elaborate|in[- ]depth|more detail|detailed|deeper|restructure|reorgani[sz]e|rework|每(?:一)?(?:個|種)[^，。\n]{0,10}(?:都)?要有/i;
 /** Translation / language-only passes stay revisions even when they say "detailed" in passing. */
@@ -105,7 +105,7 @@ export const newDeckAsked = (text: string) => NEW_DECK_RE.test(text) && !/(?:這
 
 export function editAsked(words: string, reqs: Pick<Requirement, "type" | "source">[]): boolean {
   if (REVISE_RE.test(words) || EXPAND_RE.test(words) || addedPages(words) > 0 || detectExclude(words)) return true;
-  if (detectLanguage(words) || detectPageCount(words) || detectPerItemFields(words)) return true;
+  if (detectLanguage(words) || detectPartLanguages(words).length || detectPageCount(words) || detectPerItemFields(words)) return true;
   return reqs.some((r) => r.source !== "standing" && EDIT_REQS.has(r.type));
 }
 

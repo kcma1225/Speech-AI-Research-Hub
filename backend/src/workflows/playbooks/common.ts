@@ -6,7 +6,7 @@ import { verifyStep } from "../verify.js";
 import { getSteps } from "../store.js";
 import { conversationStudy, REFER_BACK_RE, studyFromText, studyOfInputs } from "../context.js";
 import { askUser, asksOf } from "../questions.js";
-import { scopeLine } from "../brief.js";
+import { scopeLine, userGuidance } from "../brief.js";
 import type { WorkflowEnv } from "../env.js";
 import type { StepOutput, StepRole, StepRow, StepSpec, Verdict } from "../types.js";
 
@@ -69,6 +69,15 @@ export function taskPrompt(env: WorkflowEnv, step: StepRow, parts: { context?: R
   ].filter(Boolean).join("\n\n");
 }
 
+/** How many user guidance lines the current plan started from (set by engine `planPhase`). */
+export const PLAN_GUIDANCE = new WeakMap<WorkflowEnv, number>();
+async function guidanceSincePlanStart(env: WorkflowEnv): Promise<boolean> {
+  const mark = PLAN_GUIDANCE.get(env);
+  if (mark === undefined) return false;
+  await env.refresh();
+  return userGuidance(env.run).length > mark;
+}
+
 /**
  * A step executed during planning (research, outline): execute → verify → up to `rounds` fixes, recorded as a passed
  * (or best-effort) step so the plan card shows it. Returns the output and the spec to insert.
@@ -98,6 +107,8 @@ export async function planningStep(
     history.push({ round, verdict, summary: output.summary.slice(0, 300) });
     await env.event("verdict", { step_key: spec.key, round, verdict });
     if (verdict.verdict === "pass") break;
+    // The user's guidance arrived meanwhile: no fix rounds on a plan that is about to be re-made (engine planPhase re-plans).
+    if (round < rounds && (await guidanceSincePlanStart(env))) break;
     if (round < rounds) await env.note(`「${spec.title}」未通過檢查，修正中。`);
     fix = { previous: output, issues: verdict.issues.filter((i) => i.severity !== "low").map((i) => i.text) };
   }
@@ -201,6 +212,40 @@ export async function requireStudy(env: WorkflowEnv, what: string): Promise<Stud
 export function pickFromAnswer<T extends { title: string }>(items: T[], text: string): T | null {
   if (!items.length || !text.trim()) return null;
   return matchPaperTitle(text, items) ?? (DELEGATE_RE.test(text) || REFER_BACK_RE.test(text) ? items[0]! : null);
+}
+
+/**
+ * One of `items` (most recent first) picked by a setup card, the way `requireStudy` picks a study: the items as options
+ * + 「你決定」, 「其他」 matched by `pickFromAnswer`, guidance too. An answer that names none asks again (≤ 3 cards) saying so,
+ * never the same free-text question (scenario matrix g35: a study name typed for 「哪一份 LaTeX 專案」 re-asked it verbatim).
+ * Same-titled items are told apart by their description.
+ */
+export async function requirePick<T extends { id: string; title: string; description?: string }>(
+  env: WorkflowEnv, key: string, items: T[], ask: { title: string; prompt: string; none: string },
+): Promise<T | { question: string }> {
+  const fromGuidance = pickFromAnswer(items, guidanceAll(env));
+  if (fromGuidance) return fromGuidance;
+  const asks = asksOf(env.run.state);
+  let n = 1;
+  for (; n <= 3; n++) {
+    const card = asks[`${key}_${n}`];
+    if (!card?.answers) break;
+    const a = card.answers.find((x) => x.id === key);
+    const value = typeof a?.value === "string" ? a.value : "";
+    const hit = value === "__delegate" ? items[0] : items.find((i) => i.id === value) ?? pickFromAnswer(items, a?.other ?? "");
+    if (hit) return hit;
+  }
+  if (n > 3) return { question: `${ask.none}（${items.map((i) => `〈${i.title}〉`).join("、")}）` };
+  const dup = (t: string) => items.filter((i) => i.title === t).length > 1;
+  await askUser(env, {
+    id: `${key}_${n}`, title: ask.title, step_key: null, purpose: "input", ai_suggested: false,
+    intro: n > 1 ? "上一個回答對不到任何一個，請從下面選一個（或在「其他」寫名稱）。" : undefined,
+    questions: [{
+      id: key, prompt: ask.prompt, type: "single_choice", required: true, allow_other: true,
+      options: [...items.map((i) => ({ value: i.id, label: clipText(i.title, 60), description: i.description ?? (dup(i.title) || i.title.length > 60 ? clipText(i.title, 190) : undefined) })), { value: "__delegate", label: "你決定（最近更新的那一份）" }],
+    }],
+  });
+  return { question: ask.title };
 }
 
 /** The user's guidance lines (setup answers included: they answer exactly these questions). */

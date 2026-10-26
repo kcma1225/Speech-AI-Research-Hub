@@ -2029,7 +2029,7 @@ study is written to `workflow_runs.study_id`. **The work object** (`insertWorkfl
 ask for a NEW deck (`newDeckAsked`: 「幫我做一份…簡報」「make a … deck」 on a deck page is a new deck, also in the router);
 else, when the words point at an existing one (`POINTS_AT_RE`) or edit one, the deck the conversation's last workflow wrote
 (`conversationArtifact`; notes likewise); `inputs.deck_from` = page | conversation. Every setup answer honours 「你決定」:
-the study card, the LaTeX project question (`pickFromAnswer`: a named title, else the most recently updated), the paper
+the study card, the LaTeX project card (`requirePick` → `project_<n>`: the study's projects as options, same-titled ones told apart by their last update, + 「你決定」 = the most recently updated; 「其他」 / guidance matched by `pickFromAnswer`; an answer naming none asks again saying so, ≤ 3), the paper
 question (the most recently added paper with a PDF) and `clarifyOnce` (a 「其他」 delegate → the first option). A per-paper run whose study
 was only found at planning and whose user asked for 「每一篇文獻」 is split by the router then and ends itself (`cancelled`,
 `stop_reason=skipped`, report 「已拆成 n 個工作流程…」). A slides / reading-note run
@@ -2399,11 +2399,11 @@ chat appends `<conversation_workflows>` to the newest user turn (built fresh, ne
 conversation (not finished, not a goal stage or batch member: id, title, deliverable, status in 繁中, progress + the
 running step, the artifact it works on, the question it waits on) and the routing rule; the system prompt says the same.
 `steer_workflow {workflow_id?, action: guidance|pause|resume, text?}` (read, chat, not on MCP): `guidance` → `addGuidance`
-(before approval a re-plan, while running the next steps follow it, paused → resumes with it), `pause` → `pauseWorkflow`,
+(while planning: `planPhase` sees user guidance newer than its start and plans again from a Brief that includes it, ≤ 2 times, so the plan card never ignores it; at the plan card a re-plan; while running the next steps follow it; paused → resumes with it), `pause` → `pauseWorkflow`,
 `resume` → `resumeWorkflow`; only runs of this conversation; `text` must be the user's own words (≥ 60 % of its n-grams
 in their last 3 turns, else a tool error) — guidance lines are the user's words for the Brief. `answer_workflow
 {workflow_id?, text}` (read, chat): the user's reply to an `awaiting_input` run → `answerWorkflowText` (same own-words
-check). **Duplicate guard**: `start_workflow` (from the agent) refuses when an active run of the conversation already
+check). A chat message (no attachments, not 「改成一般對話」) that is exactly one option of the card the conversation's ONE `awaiting_input` run waits on answers that card in `postMessage` before the model runs (`answerWaitingCard`); other text is the model's call. **Duplicate guard**: `start_workflow` (from the agent) refuses when an active run of the conversation already
 targets the same deck / note / LaTeX project (input or artifact) or — no target named — makes the same deliverable kind
 in the same study (and paper), unless `separate: true` or the user's newest turn asks for 「另外一份」/another
 (`SEPARATE_RE`): result `{status:"duplicate", existing_workflow_id, reason: same_target|same_kind}` + a message pointing to

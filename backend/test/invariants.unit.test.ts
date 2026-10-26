@@ -312,3 +312,43 @@ describe("wf.chat_answer_lost (production e6d552fc shape: a reply typed in chat 
     expect(count(bundle(RUN_B), "wf.chat_answer_lost")).toBe(0);
   });
 });
+
+describe("req.clause_coverage on English requests (scenario matrix g29 / g31)", () => {
+  const english = (words: string, reqs: { id: string; type: string; quote: string }[]) => bundle(RUN_A, (b) => {
+    b.messages = undefined;
+    b.run.guidance = [];
+    b.run.brief = { ...b.run.brief!, version: 1, base: 1, user_words: [words], requirements: reqs.map((q) => ({ ...q, text: q.quote, source: "request" })) } as never;
+    b.run.state = { ...(b.run.state ?? {}), requirements: [], requirements_dropped: [] };
+  });
+  it("treats 「Write me a note」 as the deliverable ask, not a lost requirement", () => {
+    expect(contentClauses("Write me a note").map((c) => c.core)).toEqual([true]);
+    expect(contentClauses("Please make a deck for me").map((c) => c.core)).toEqual([true]);
+    expect(contentClauses("Write a note comparing CLAS and contextual adapters")[0]!.core).toBe(false);
+  });
+  it("covers a clause listing two asks by the two requirements that quote its pieces", () => {
+    const b = english("Write a literature review note, comparing the contextual biasing papers in our library, with a comparison table, everything in English.", [
+      { id: "r1", type: "language", quote: "everything in English." }, { id: "r2", type: "format", quote: "with a comparison table" },
+      { id: "r3", type: "other", quote: "comparing the contextual biasing papers in our library" }, { id: "r4", type: "other", quote: "Write a literature review note" },
+    ]);
+    expect(count(b, "req.clause_coverage")).toBe(0);
+  });
+  it("still flags the piece no requirement carries", () => {
+    const b = english("Write a literature review note, comparing the contextual biasing papers in our library, with a comparison table, everything in English.", [
+      { id: "r1", type: "language", quote: "everything in English." },
+      { id: "r3", type: "other", quote: "comparing the contextual biasing papers in our library" }, { id: "r4", type: "other", quote: "Write a literature review note" },
+    ]);
+    expect(count(b, "req.clause_coverage")).toBe(1);
+  });
+});
+
+describe("superseded and informed re-asks (scenario matrix s74 / g35)", () => {
+  it("a page count the user changed by guidance is covered by the newer requirement", () => {
+    const b = bundle(RUN_A, (x) => {
+      x.messages = undefined;
+      x.run.guidance = [{ at: "2026-10-26T18:45:08Z", text: "改成 10 頁", applied: false }] as never;
+      x.run.brief = { ...x.run.brief!, version: 2, base: 1, user_words: ["幫我做一份這週的研究進度報告簡報，大概 8 頁。", "改成 10 頁"], requirements: [{ id: "r1", type: "page_count", text: "正好 10 頁", quote: "改成 10 頁", source: "guidance", params: { exact: 10 } }] } as never;
+      x.run.state = { ...(x.run.state ?? {}), requirements: [], requirements_dropped: [] };
+    });
+    expect(checkRun(b, ["req.clause_coverage"]).map((f) => f.evidence.clause)).not.toContain("大概 8 頁");
+  });
+});

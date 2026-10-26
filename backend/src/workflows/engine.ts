@@ -12,6 +12,7 @@ import { loadStudyAccess } from "../lib/studies/access.js";
 import { WorkflowEnv, type EnvDeps } from "./env.js";
 import { addUsage, emitRun, emitStep, getRun, getSteps, insertSteps, insertWorkflowEvent, stepView } from "./store.js";
 import { getWorkflowPlaybook, listWorkflowPlaybooks, playbookLabel, type WorkflowPlaybook } from "./playbooks/registry.js";
+import { PLAN_GUIDANCE } from "./playbooks/common.js";
 import { verifyCriteria, verifyUnit } from "./verify.js";
 import { fixLine, HARD_FIX_ROUNDS, ledgerReport, loadConv, loadLedger, nextMove, recordRound, STOP_LABEL, type Convergence, type StopReason, type UnitRound } from "./ledger.js";
 import { finishNotice, plainLabels } from "./notify.js";
@@ -20,7 +21,7 @@ import { autoApproval, autoApprovalNote } from "./autopilot.js";
 import { promoteQueued } from "./queue.js";
 import { runChecks } from "./checks.js";
 import { artifactKindOf, fixedHeadings, persistStanding, prepareRequirements, requirementRepair, translateTitle, withRequirementCriteria } from "./requirements.js";
-import { BRIEF_KIND_LABEL, BRIEF_KINDS, chooseDeliverable, clarifyDeliverable, clarifyOnce, playbookKind, prepareBrief, sameDeliverable, setChecklist, switchGuard } from "./brief.js";
+import { BRIEF_KIND_LABEL, BRIEF_KINDS, chooseDeliverable, clarifyDeliverable, clarifyOnce, playbookKind, prepareBrief, sameDeliverable, setChecklist, switchGuard, userGuidance } from "./brief.js";
 import { route, routeInputOf, routeNote, saveRoute, splitBatch } from "./route.js";
 import { budgetFor, WorkflowStop, type Criterion, type Ledger, type RunRow, type StepOutput, type StepReport, type StepRow, type Verdict, type WorkflowStatus } from "./types.js";
 
@@ -226,9 +227,12 @@ async function routePhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workf
 }
 
 /** Plans the run; returns the playbook it ended up with (a switch to another playbook keeps the Brief's deliverable or asks). */
-async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<WorkflowPlaybook> {
+async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook, replans = 0): Promise<WorkflowPlaybook> {
   await env.deps.progress?.("planning", 5).catch(() => undefined);
-  await env.note("理解目標並蒐集資料，準備工作計畫。");
+  if (!replans) await env.note("理解目標並蒐集資料，準備工作計畫。");
+  // Guidance the user adds while this plan is being made (chat steering 「改成 10 頁」) must reach the plan card.
+  const guidanceAtStart = userGuidance(env.run).length;
+  PLAN_GUIDANCE.set(env, guidanceAtStart);
   // The Brief first (brief.ts): deliverable, the user's own words, their explicit requirements (requirements.ts: playbooks
   // read them while planning — target language, edit kind, per-item fields) and what is unspecified; every sub-agent call
   // from here on gets it.
@@ -279,6 +283,12 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   if (res.kind === "redirect") throw new WorkflowInputError(res.message);
   await env.refresh();
   if (env.run.status === "cancelled") throw new WorkflowStop("cancelled", "已停止。");
+  // New guidance arrived meanwhile (scenario matrix s74/s75: the plan card still said 8 頁 after 「改成 10 頁」): plan again
+  // from a Brief that includes it, instead of showing a plan that ignores the user's newest words.
+  if (userGuidance(env.run).length > guidanceAtStart && replans < 2) {
+    await env.note("規劃途中收到你的補充指示，依照新的指示重新規劃。");
+    return planPhase(env, pb, replans + 1);
+  }
   if (res.kind === "question") {
     await env.setState({ plan_question: res.question, plan_question_setup: !!res.setup });
     await setStatus(env, "awaiting_input", { question: res.question });

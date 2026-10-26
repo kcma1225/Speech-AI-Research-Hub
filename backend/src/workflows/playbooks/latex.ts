@@ -19,7 +19,7 @@ import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps } from "../store.js";
 import type { WorkflowEnv } from "../env.js";
 import type { CheckSpec, Criterion, StepOutput, StepRow, StepSpec } from "../types.js";
-import { clipText, planningStep, guidanceAll, pickFromAnswer, requireStudy, systemFor, taskPrompt } from "./common.js";
+import { clipText, planningStep, guidanceAll, pickFromAnswer, requirePick, requireStudy, systemFor, taskPrompt } from "./common.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 import { generateUnit, unitContext, unitTokens } from "../units.js";
 import { unbalanced } from "../checks.js";
@@ -108,11 +108,19 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
   const access = await requireStudy(env, "這段論文內容");
   if ("question" in access) return { kind: "question", question: access.question, setup: true };
   if (!access.canEdit) return { kind: "question", question: `你不是〈${access.study.title}〉的成員，不能修改這份論文。` };
-  const projects = (await env.db.query<{ id: string; title: string }>("SELECT id,title FROM latex_projects WHERE study_id=$1 ORDER BY updated_at DESC", [access.study.id])).rows;
-  // The given project, the only one, or the one the user's answer names / delegates (「你決定」 → the most recently updated).
-  const projectId = (env.run.inputs.project_id as string | undefined) ?? (projects.length === 1 ? projects[0]!.id : pickFromAnswer(projects, guidanceAll(env))?.id);
-  const project = projectId ? await findProject(env.db, projectId) : null;
-  if (!project || project.study_id !== access.study.id) return { kind: "question", question: projects.length ? `要寫進哪一份 LaTeX 專案？${projects.map((p) => `〈${p.title}〉`).join("、")}——請在補充指示寫出專案名稱。` : `〈${access.study.title}〉還沒有 LaTeX 專案，請先在「論文」分頁建立。`, setup: true };
+  const projects = (await env.db.query<{ id: string; title: string; updated_at: Date }>("SELECT id,title,updated_at FROM latex_projects WHERE study_id=$1 ORDER BY updated_at DESC", [access.study.id])).rows;
+  if (!projects.length) return { kind: "question", question: `〈${access.study.title}〉還沒有 LaTeX 專案，請先在「論文」分頁建立。`, setup: true };
+  // The given project, the only one, or one picked on a card (options, 「其他」 / guidance naming it, 「你決定」 → the most recently updated).
+  let projectId = (env.run.inputs.project_id as string | undefined) ?? (projects.length === 1 ? projects[0]!.id : undefined);
+  if (!projectId) {
+    const picked = await requirePick(env, "project", projects.map((p) => ({ id: p.id, title: p.title, description: `最近更新 ${new Date(p.updated_at).toISOString().slice(0, 16).replace("T", " ")}` })), {
+      title: "要寫進哪一份 LaTeX 專案？", prompt: "選一份 LaTeX 專案", none: "還是不知道要寫進哪一份 LaTeX 專案。請在補充指示寫出專案名稱",
+    });
+    if ("question" in picked) return { kind: "question", question: picked.question, setup: true };
+    projectId = picked.id;
+  }
+  const project = await findProject(env.db, projectId);
+  if (!project || project.study_id !== access.study.id) return { kind: "question", question: `這份 LaTeX 專案不在〈${access.study.title}〉裡。`, setup: true };
   const keys = await studyKeys(env, access.study.id);
   const files = await listFiles(env.db, project.id);
   const existing = files.filter((f) => f.kind === "text" && /\.tex$/.test(f.path) && f.path !== project.root_file).map((f) => ({ id: f.id, path: f.path, heading: sectionTitle(f.content ?? "") }));
