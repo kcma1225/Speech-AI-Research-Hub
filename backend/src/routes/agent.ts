@@ -33,14 +33,17 @@ export const pageContextSchema = z
     meetingId: uuidLike.optional(),
     paperId: uuidLike.optional(),
     taskId: uuidLike.optional(),
+    chatOnly: uuidLike.optional(),
   })
   .nullable()
   .optional();
 const createInput = z.object({ mode: z.enum(["chat", "interview"]).optional(), context: pageContextSchema, autopilot: z.boolean().optional(), title: z.string().trim().min(1).max(120).optional() });
 const patchInput = z.object({ title: z.string().trim().min(1).max(120).optional(), autopilot: z.boolean().optional(), memory_enabled: z.boolean().optional() });
 const messageInput = z
-  .object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema, intent: z.enum(["make_note"]).optional(), attachments: attachmentsInput.optional() })
+  .object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema, intent: z.enum(["make_note"]).optional(), attachments: attachmentsInput.optional(), supersede: z.boolean().optional() })
   .refine((v) => !!v.answers || !!v.text, { message: "empty" });
+const queuedEditInput = z.object({ text: z.string().trim().min(1).max(20000).optional(), attachments: attachmentsInput.optional() });
+const queuedSendInput = z.object({ supersede: z.boolean().optional() });
 const editInput = z.object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema, attachments: attachmentsInput.optional() });
 const messageParams = z.object({ id: z.uuid(), messageId: z.uuid() });
 const decisionInput = z.object({ decision: z.enum(["approve", "approve_conversation", "deny"]), reason: z.string().max(500).optional(), edited_args: z.record(z.string(), z.unknown()).optional() });
@@ -233,7 +236,28 @@ export default async function agent(app: FastifyInstance) {
     await ownConversation(app, user.id, id);
     await requireAvailable();
     reply.code(202);
-    return runtime.postMessage(user, id, { text: input.text, answers: input.answers, context: input.context ?? null, ...(input.intent ? { intent: input.intent } : {}), ...(input.attachments ? { attachments: input.attachments } : {}) });
+    return runtime.postMessage(user, id, { text: input.text, answers: input.answers, context: input.context ?? null, ...(input.intent ? { intent: input.intent } : {}), ...(input.attachments ? { attachments: input.attachments } : {}), ...(input.supersede ? { supersede: true } : {}) });
+  });
+
+  // The composer's queued message (sent when the reply ends): edit, remove, send now (stop + send / cancel cards + send).
+  app.put("/agent/conversations/:id/queued", async (request) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params, "找不到這個對話。");
+    const input = parse(queuedEditInput, request.body, "訊息不能是空的（最多 20 000 字）。");
+    return runtime.editQueued(user, id, input);
+  });
+  app.delete("/agent/conversations/:id/queued", async (request) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params, "找不到這個對話。");
+    return runtime.removeQueued(user, id);
+  });
+  app.post("/agent/conversations/:id/queued/send", async (request) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params, "找不到這個對話。");
+    const input = parse(queuedSendInput, request.body ?? {});
+    await ownConversation(app, user.id, id);
+    await requireAvailable();
+    return runtime.sendQueued(user, id, input);
   });
 
   const requireAvailable = async () => {

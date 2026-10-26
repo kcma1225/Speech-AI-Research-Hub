@@ -5,7 +5,7 @@ import { z } from "zod";
  * when given (AI and admin errors: machine-readable code and a 繁中 next step).
  */
 export class HttpError extends Error {
-  constructor(public readonly status: number, message: string, public readonly extra: { code?: string; hint?: string } = {}) {
+  constructor(public readonly status: number, message: string, public readonly extra: { code?: string; hint?: string; [k: string]: unknown } = {}) {
     super(message);
   }
 }

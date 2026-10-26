@@ -1,6 +1,6 @@
 import { api } from "#lib/api.ts";
 import { emitChanged, kindsOfTool } from "#lib/changes.ts";
-import type { AgentSettings, Answer, Conversation, ConversationDetail, ConversationMode, Message, PageContext, Run, ToolCall } from "./types.ts";
+import type { AgentSettings, Answer, Conversation, ConversationDetail, ConversationMode, Message, PageContext, QueuedMessage, Run, ToolCall } from "./types.ts";
 
 export type Streaming = { runId: string; text: string; reasoning: string; inputs: { index: number; name: string; title: string }[]; startedAt: number };
 
@@ -36,6 +36,10 @@ export class ChatSession {
 
   get busy() {
     return this.run?.status === "running" || this.sending;
+  }
+  /** Consent cards of the open step (a new message would cancel them). */
+  get pendingApprovals() {
+    return this.run?.status === "awaiting_approval" ? this.toolCalls.filter((c) => c.status === "pending_approval" && c.run_id === this.run!.id) : [];
   }
   get pendingCalls() {
     return this.toolCalls.filter((c) => c.status === "pending_approval");
@@ -86,18 +90,48 @@ export class ChatSession {
     return r.conversation;
   }
 
-  /** `intent: "make_note"` (「整理成筆記」) asks the server to synthesise the conversation into a reading note. */
-  async send(text: string, context: PageContext | null = null, intent?: "make_note", attachments: { kind: string; id: string; project_id?: string; version?: string }[] = []) {
+  /**
+   * `intent: "make_note"` (「整理成筆記」) asks the server to synthesise the conversation into a reading note.
+   * While a reply is running the server queues the message instead (`{queued}`; sent when the reply ends).
+   * `supersede`: the user confirmed cancelling the pending consent cards (otherwise 409 `pending_decision`).
+   */
+  async send(text: string, context: PageContext | null = null, intent?: "make_note", attachments: { kind: string; id: string; project_id?: string; version?: string }[] = [], opts: { supersede?: boolean } = {}) {
     this.sending = true;
     try {
       if (!this.id) await this.create({ context });
-      const r = await api.post<{ message: Message; run: Run }>(`/agent/conversations/${this.id}/messages`, { text, ...(context ? { context } : {}), ...(intent ? { intent } : {}), ...(attachments.length ? { attachments } : {}) });
-      this.upsertMessage(r.message);
-      this.setRun(r.run);
-      // Pending cards of a superseded step are denied by the server; the events update them.
+      const r = await api.post<{ message?: Message; run?: Run; queued?: QueuedMessage }>(`/agent/conversations/${this.id}/messages`, { text, ...(context ? { context } : {}), ...(intent ? { intent } : {}), ...(attachments.length ? { attachments } : {}), ...(opts.supersede ? { supersede: true } : {}) });
+      if (r.queued) this.setQueued(r.queued);
+      if (r.message) this.upsertMessage(r.message);
+      if (r.run) this.setRun(r.run);
+      return r.queued ? ("queued" as const) : ("sent" as const);
     } finally {
       this.sending = false;
     }
+  }
+
+  get queued(): QueuedMessage | null {
+    return this.conversation?.queued ?? null;
+  }
+  private setQueued(q: QueuedMessage | null) {
+    if (this.conversation) this.conversation = { ...this.conversation, queued: q };
+  }
+  /** Edits the queued message's text. */
+  async editQueued(text: string) {
+    if (!this.id) return;
+    const r = await api.put<{ queued: QueuedMessage }>(`/agent/conversations/${this.id}/queued`, { text });
+    this.setQueued(r.queued);
+  }
+  /** Removes the queued message (nothing is sent). */
+  async removeQueued() {
+    if (!this.id) return;
+    await api.del(`/agent/conversations/${this.id}/queued`);
+    this.setQueued(null);
+  }
+  /** 「停止並立即送出」 / 「取消它並送出」 (`supersede`) / 「當一般訊息送出」. */
+  async sendQueued(opts: { supersede?: boolean } = {}) {
+    if (!this.id) return;
+    const r = await api.post<{ sent: boolean; queued: QueuedMessage | null }>(`/agent/conversations/${this.id}/queued/send`, opts.supersede ? { supersede: true } : {});
+    this.setQueued(r.queued);
   }
 
   /** Answers an `ask_user` card (a special user turn). */

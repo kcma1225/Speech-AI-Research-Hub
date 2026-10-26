@@ -71,6 +71,12 @@ export type Scenario = {
   extraTurns?: string[];
   /** The user's own material (material block): how it reaches the chat; the run must carry and read it. */
   material?: Material;
+  /**
+   * Steering block (composer behaviours): a chat message typed while the run is active — once it is planned
+   * (`planned`: an adjustment / 停) or while it waits for its first question (`question`: the answer typed in chat).
+   * The assistant must route it to the run (guidance / pause / answer) and never start a second run.
+   */
+  followUp?: { text: string; when: "planned" | "question"; expect: "guidance" | "pause" | "answer" };
 };
 
 // ---------------------------------------------------------------- wording
@@ -137,7 +143,7 @@ const partsOf = (intent: Intent, lang: Lang): Scenario["expect"]["parts"] => {
   return {};
 };
 
-function scenario(id: string, d: Omit<Scenario, "id" | "request" | "expect" | "production" | "extraTurns" | "material">, production?: string, extraTurns?: string[], material?: Material): Scenario {
+function scenario(id: string, d: Omit<Scenario, "id" | "request" | "expect" | "production" | "extraTurns" | "material" | "followUp">, production?: string, extraTurns?: string[], material?: Material, followUp?: Scenario["followUp"]): Scenario {
   const deckKnown = EDIT_INTENTS.has(d.intent) && (d.entry === "deck" || d.history === "artifact");
   return {
     id, ...d,
@@ -152,6 +158,7 @@ function scenario(id: string, d: Omit<Scenario, "id" | "request" | "expect" | "p
     ...(production ? { production } : {}),
     ...(extraTurns ? { extraTurns } : {}),
     ...(material ? { material } : {}),
+    ...(followUp ? { followUp } : {}),
   };
 }
 
@@ -210,6 +217,15 @@ export function buildMatrix(): Scenario[] {
   out.push(scenario(`m${String(++k).padStart(2, "0")}_material_pdf_chat`, { entry: "study", history: "none", style: "typed", intent: "material_deck", lang: "unstated", anaphora: "none", answer: "study_name", start: "chat" }, UPLOADED_PDF.zh, undefined, "earlier_pdf"));
   out.push(scenario(`m${String(++k).padStart(2, "0")}_material_pdf_spoken_delegate`, { entry: "study", history: "none", style: "spoken", intent: "material_deck", lang: "unstated", anaphora: "none", answer: "study_name", start: "delegate" }, UPLOADED_PDF.spoken, undefined, "earlier_pdf"));
   out.push(scenario(`m${String(++k).padStart(2, "0")}_material_note_chat`, { entry: "study", history: "none", style: "mixed", intent: "material_note", lang: "unstated", anaphora: "none", answer: "study_name", start: "chat" }, undefined, undefined, "attach"));
+  // 7. Chat while the workflow is active (composer behaviours): an adjustment or 停 typed in chat goes to the run as
+  //    guidance / pause (no second run, chat.duplicate_workflow), a reply to its question typed in chat answers it
+  //    (wf.chat_answer_lost). Route depth is enough: the run only has to be planning / asking.
+  const base = { history: "none", lang: "unstated", anaphora: "none", answer: "study_name", start: "delegate" } as const;
+  out.push(scenario(`s${String(++k).padStart(2, "0")}_steer_pages`, { ...base, entry: "study", style: "typed", intent: "new_progress" }, undefined, undefined, undefined, { text: "改成 10 頁", when: "planned", expect: "guidance" }));
+  out.push(scenario(`s${String(++k).padStart(2, "0")}_steer_language_spoken`, { ...base, entry: "study", style: "spoken", intent: "new_topic", start: "chat" }, undefined, undefined, undefined, { text: "對了投影片要改成用英文的", when: "planned", expect: "guidance" }));
+  out.push(scenario(`s${String(++k).padStart(2, "0")}_steer_pause`, { ...base, entry: "study", style: "typed", intent: "note_topic" }, undefined, undefined, undefined, { text: "先停一下，我晚點再決定", when: "planned", expect: "pause" }));
+  out.push(scenario(`s${String(++k).padStart(2, "0")}_chat_answer_study`, { ...base, entry: "home", style: "typed", intent: "new_progress" }, undefined, undefined, undefined, { text: "Agent 評估集：串流 ASR 熱詞偏置", when: "question", expect: "answer" }));
+  out.push(scenario(`s${String(++k).padStart(2, "0")}_chat_answer_free_text`, { ...base, entry: "home", style: "mixed", intent: "note_topic", answer: "free_text" }, undefined, undefined, undefined, { text: "就是我們做串流 ASR 熱詞偏置的那個研究", when: "question", expect: "answer" }));
   return out;
 }
 

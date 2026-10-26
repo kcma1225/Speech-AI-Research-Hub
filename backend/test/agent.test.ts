@@ -452,7 +452,11 @@ describe.skipIf(!hasTestDb)("agent runtime", () => {
     expect(r.statusCode).toBe(202);
     await streaming;
     await new Promise((res) => setTimeout(res, 150));
-    expect((await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "又一則" })).statusCode).toBe(409);
+    // A message while replying is queued (never rejected); removed again here so the cancel below sends nothing.
+    const queued = await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "又一則" });
+    expect(queued.statusCode).toBe(202);
+    expect(json(queued).queued).toMatchObject({ text: "又一則", hold: null });
+    expect((await t.app.inject({ method: "DELETE", url: `/api/agent/conversations/${conv}/queued`, headers: { origin: ORIGIN, cookie: alice.cookie } })).statusCode).toBe(200);
     const c = await post(alice, `/api/agent/conversations/${conv}/cancel`);
     expect(json(c).run.status).toBe("cancelled");
     await runtime().settle();
@@ -471,17 +475,149 @@ describe.skipIf(!hasTestDb)("agent runtime", () => {
     expect(JSON.stringify(requests.at(-1)!.messages)).toContain("已被使用者中止");
   });
 
-  it("a new message supersedes pending approvals", async () => {
+  it("a new message never silently supersedes pending approvals: 409 pending_decision, then supersede: true", async () => {
     const conv = await newConversation();
     script = [calls(["create_task", { study: study.slug, title: "被取代" }])];
     await send(conv, "建立");
     const id = (await state(conv)).toolCalls[0].id;
+    // A plain send (older clients too): refused, naming what would be cancelled; nothing changes.
+    const refused = await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "算了，改成別的" });
+    expect(refused.statusCode).toBe(409);
+    expect(json(refused)).toMatchObject({ code: "pending_decision", pending: [{ id, tool: "create_task" }] });
+    expect(json(refused).error).toContain("被取代");
+    expect((await state(conv)).toolCalls[0].status).toBe("pending_approval");
+    // Confirmed: the card is denied with the user's reason, the new turn runs.
     script = [say("改做別的")];
-    await send(conv, "算了，改成別的");
+    const r = await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "算了，改成別的", supersede: true });
+    expect(r.statusCode, r.body).toBe(202);
+    await runtime().settle();
     const s = await state(conv);
-    expect(s.toolCalls.find((x: any) => x.id === id)).toMatchObject({ status: "denied" });
+    expect(s.toolCalls.find((x: any) => x.id === id)).toMatchObject({ status: "denied", deny_reason: "使用者確認取消，改提其他要求" });
     expect(s.run.status).toBe("done");
+    expect(JSON.stringify(requests.at(-1)!.messages)).toContain("使用者確認取消這個操作");
     expect((await decide(id, "approve")).statusCode).toBe(409);
+  });
+
+  it("queues a message sent while replying and sends it when the reply ends (with its attachments' turn order)", async () => {
+    const conv = await newConversation();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let started!: () => void;
+    const streaming = new Promise<void>((r) => (started = r));
+    script = [
+      async function* () {
+        yield { type: "text_delta", text: "第一個回答" } as ChatEvent;
+        started();
+        await gate;
+        yield { type: "done", stopReason: "end_turn" } as ChatEvent;
+      },
+      say("第二個回答"),
+    ];
+    expect((await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "第一題" })).statusCode).toBe(202);
+    await streaming;
+    const q1 = json(await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "第二題" }));
+    expect(q1.queued).toMatchObject({ text: "第二題", hold: null });
+    // A second queued send is appended to the same queued message; edit replaces the text.
+    const q2 = json(await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "補充一句" }));
+    expect(q2.queued.text).toBe("第二題\n\n補充一句");
+    expect(q2.queued.id).toBe(q1.queued.id);
+    const edited = await t.app.inject({ method: "PUT", url: `/api/agent/conversations/${conv}/queued`, headers: { origin: ORIGIN, cookie: alice.cookie }, payload: { text: "第二題（改過）" } });
+    expect(json(edited).queued.text).toBe("第二題（改過）");
+    expect((await state(conv)).conversation.queued.text).toBe("第二題（改過）");
+    release();
+    await runtime().settle();
+    const s = await state(conv);
+    expect(s.conversation.queued).toBeNull();
+    expect(s.messages.filter((m: any) => m.role === "user").map((m: any) => m.text)).toEqual(["第一題", "第二題（改過）"]);
+    expect(s.messages.at(-1).text).toBe("第二個回答");
+  });
+
+  it("「停止並立即送出」 cancels the reply and sends the queued message", async () => {
+    const conv = await newConversation();
+    let started!: () => void;
+    const streaming = new Promise<void>((r) => (started = r));
+    script = [
+      async function* (_req, signal) {
+        yield { type: "text_delta", text: "很長的回答……" } as ChatEvent;
+        started();
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+        throw new Error("aborted");
+      },
+      say("馬上回答"),
+    ];
+    await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "慢慢講" });
+    await streaming;
+    await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "先回答這個" });
+    const r = await post(alice, `/api/agent/conversations/${conv}/queued/send`, {});
+    expect(r.statusCode, r.body).toBe(200);
+    expect(json(r).sent).toBe(true);
+    await runtime().settle();
+    const s = await state(conv);
+    expect(s.conversation.queued).toBeNull();
+    expect(s.messages.filter((m: any) => m.role === "assistant").map((m: any) => [m.text, m.status])).toEqual([["很長的回答……", "cancelled"], ["馬上回答", "complete"]]);
+  });
+
+  it("a queued message is held when the reply stops on a consent card, and answers a free-text ask_user card", async () => {
+    // 1. Consent card: held (approval), not superseded; deciding the card lets the queue go out when the run ends.
+    const conv = await newConversation();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let started!: () => void;
+    const streaming = new Promise<void>((r) => (started = r));
+    script = [
+      async function* () {
+        started();
+        await gate;
+        for (const e of calls(["create_task", { study: study.slug, title: "排隊時的待辦" }])) yield e;
+      },
+      say("已建立"),
+      say("回答排隊的訊息"),
+    ];
+    await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "建一個待辦" });
+    await streaming;
+    await post(alice, `/api/agent/conversations/${conv}/messages`, { text: "順便問一下進度" });
+    release();
+    await runtime().settle();
+    let s = await state(conv);
+    expect(s.run.status).toBe("awaiting_approval");
+    expect(s.conversation.queued).toMatchObject({ text: "順便問一下進度", hold: "approval" });
+    const card = s.toolCalls.find((c: any) => c.tool === "create_task");
+    expect(card.status).toBe("pending_approval");
+    // 「取消它並送出」 without supersede → 409; the card is untouched.
+    const refused = await post(alice, `/api/agent/conversations/${conv}/queued/send`, {});
+    expect(refused.statusCode).toBe(409);
+    expect(json(refused).code).toBe("pending_decision");
+    await decide(card.id, "approve");
+    await runtime().settle();
+    s = await state(conv);
+    expect(s.toolCalls.find((c: any) => c.id === card.id).status).toBe("done");
+    expect(s.conversation.queued).toBeNull();
+    expect(s.messages.filter((m: any) => m.role === "user").map((m: any) => m.text)).toEqual(["建一個待辦", "順便問一下進度"]);
+
+    // 2. ask_user with one free-text question: the queued text becomes its answer.
+    const conv2 = await newConversation();
+    let release2!: () => void;
+    const gate2 = new Promise<void>((r) => (release2 = r));
+    let started2!: () => void;
+    const streaming2 = new Promise<void>((r) => (started2 = r));
+    script = [
+      async function* () {
+        started2();
+        await gate2;
+        for (const e of calls(["ask_user", { questions: [{ id: "topic", prompt: "簡報主題是什麼？", type: "short_text" }] }])) yield e;
+      },
+      say("收到主題"),
+    ];
+    await post(alice, `/api/agent/conversations/${conv2}/messages`, { text: "幫我想簡報" });
+    await streaming2;
+    await post(alice, `/api/agent/conversations/${conv2}/messages`, { text: "語音情緒辨識" });
+    release2();
+    await runtime().settle();
+    s = await state(conv2);
+    expect(s.conversation.queued).toBeNull();
+    const answer = s.messages.filter((m: any) => m.role === "user").at(-1);
+    expect(answer.answers).toMatchObject({ answers: [{ id: "topic", value: "語音情緒辨識" }] });
+    expect(s.messages.at(-1).text).toBe("收到主題");
   });
 
   it("replays events after Last-Event-ID", async () => {

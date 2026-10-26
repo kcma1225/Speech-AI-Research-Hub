@@ -50,6 +50,9 @@
 | `outcome.not_stuck_awaiting` | 結果 | high | 使用者回答後超過 10 分鐘仍停在 awaiting_input、之後沒有進展 | 回答時間、之後的狀態快照 | e6d552fc：卡了一小時以上 |
 | `assistant.read_before_claim` | 助理 | high | 使用者問成果內容時，助理談內容（列出 ≥ 2 項＋涵蓋／包括…）之前，同一輪要有讀內容的工具（get_deck、get_deck_pages、get_note、read_paper…；get_workflow 不算） | 對話訊息與工具呼叫 | 79ab0678：只呼叫 get_workflow 就說簡報涵蓋 density-ratio |
 | `assistant.target_grounded` | 助理 | critical | 助理對某份成果（deck_id／note_id／project_id）呼叫會動手的工具（start_workflow、suggest_deck_edit、刪除…）時，那份成果要是這個對話的（頁面、這個對話的 run 的 inputs／artifacts、create_* 的結果）或使用者指定的；只在搜尋／列表結果出現過的不行 | 對話訊息的工具呼叫與結果、page_context、對話的 runs | 情境 g22：沒開簡報，助理搜尋後挑了無關的評估集簡報並提議刪頁 |
+| `chat.no_silent_supersede` | 對話 | critical | 待確認的操作（同意卡片）只有在使用者明確確認「取消它並送出」後，才會因為新訊息被取消；結果文字／拒絕理由要記錄「使用者確認取消」 | 對話的 tool_calls：denied／cancelled 且結果是「改提其他要求」、deny_reason | 舊行為：送新訊息就把待確認的動作默默拒絕（「使用者改提了其他要求，這個操作沒有執行。」） |
+| `chat.duplicate_workflow` | 對話 | high | 同一個對話裡，前一個工作流程還在進行（建立時尚未結束）時，不能為同一份成果再開一個：同一份簡報／筆記／LaTeX 專案（輸入或已寫入的成果），或沒指定成果時同一種交付物＋同一個研究（論文不同不算）；使用者最新的話明說「另外一份」除外；同批次、目標階段不算 | siblings 的建立／結束時間、inputs、artifacts、brief.deliverable、study、paper、原話 | 執行中說「改成 8 頁」，助理又開了一個新的簡報工作流程 |
+| `wf.chat_answer_lost` | 問題 | high | 工作流程停在 awaiting_input 時，使用者在對話裡打的訊息要交給它：那則訊息之後（容許 2 秒）要有補充指示或卡片回答；使用者按了「改成一般對話」（page_context.chatOnly）、ask_user 的回答不算 | 狀態快照的 awaiting_input 區間、那段時間的使用者訊息、guidance／卡片回答時間 | e6d552fc：問題只能在卡片上回答，對話裡打的回覆沒有送到工作流程 |
 | `grounding.library_fields` | 依據 | high | 文獻庫有 venue／year 時，不能說「venue 未提供」（說法數超過真的沒有 venue 的篇數才算） | 文獻庫欄位、步驟輸出、topic picks、report、criteria | 0668a3d7：10/10 有 venue，8 處說未提供 |
 | `grounding.library_coverage` | 依據 | medium | 要用文獻庫整理、且有 PDF 的論文 ≤ 12 篇時，讀到的要 ≥ 60% | 原話、文獻庫、state.topic.picks | 0668a3d7：10 篇只讀 4 篇 |
 
@@ -89,12 +92,12 @@ npx tsx scripts/audit/run.ts --staging --since 30d          # staging（hubv3 �
 
 ```bash
 cd backend
-npx tsx scripts/eval/scenarios/matrix.ts                    # 列出 73 個情境與每個維度的覆蓋
+npx tsx scripts/eval/scenarios/matrix.ts                    # 列出 78 個情境與每個維度的覆蓋
 npx tsx scripts/eval/scenarios/run.ts --concurrency 2       # 全部；--only id,id / --match regex / --resume <dir>
 npx tsx scripts/eval/scenarios/run.ts --resume <dir> --sweep # 取消某次執行留下的 run
 ```
 
-維度：進入點（首頁無研究、研究頁、簡報頁）× 對話歷史（無、前一個 run 做了這份簡報、無關的先前問答）× 說法（打字有標點、口語無標點、英文、中英混）× 意圖（新進度／論文報告／主題簡報、只改講稿語言、只改投影片語言、展開方法、加頁、刪頁、翻譯、筆記、文獻回顧、LaTeX 章節）× 各部分語言（投影片英文＋講稿中文、全中文、全英文、未講）× 指代（「剛剛那個」「同一個簡報」「繼續」）× 澄清回答（研究名稱、「你決定」、自由文字）× 啟動方式（交給 Agent、聊天）。產生方式：意圖 × 進入點的完整格子（36）其他維度輪替，加上指代（12）、澄清回答（9）、各部分語言（6）、正式站兩個請求原文（3：run A；run B 含那段無關問答與「ok」；run B 用交給 Agent），以及**使用者提供的資料**（7，301b6e1a）：附件＋「以此做成簡報」（聊天、交給 Agent 從首頁用正式站那句話的形式、英文）、貼上的筆記、「用我上傳的 PDF」（PDF 先上傳到對話、這一輪沒有附加；聊天與口語交給 Agent）、附件整理成筆記。資料是合成的（`scripts/eval/material-fixture.ts`：deep research 風格的 Markdown、一份最小的英文 PDF、貼上的實驗筆記），不含正式站內容。
+維度：進入點（首頁無研究、研究頁、簡報頁）× 對話歷史（無、前一個 run 做了這份簡報、無關的先前問答）× 說法（打字有標點、口語無標點、英文、中英混）× 意圖（新進度／論文報告／主題簡報、只改講稿語言、只改投影片語言、展開方法、加頁、刪頁、翻譯、筆記、文獻回顧、LaTeX 章節）× 各部分語言（投影片英文＋講稿中文、全中文、全英文、未講）× 指代（「剛剛那個」「同一個簡報」「繼續」）× 澄清回答（研究名稱、「你決定」、自由文字）× 啟動方式（交給 Agent、聊天）。產生方式：意圖 × 進入點的完整格子（36）其他維度輪替，加上指代（12）、澄清回答（9）、各部分語言（6）、正式站兩個請求原文（3：run A；run B 含那段無關問答與「ok」；run B 用交給 Agent），以及**工作流程進行中的對話**（5，s 區塊）：研究頁交給 Agent 後在對話裡說「改成 10 頁」、口語聊天啟動後說「投影片要改成用英文的」（都要變成補充指示）、「先停一下」（要暫停）、首頁啟動停在「放在哪個研究」時直接在對話打研究名稱或自由文字（要變成回答）——情境期望 `scenario.steer_routed`／`scenario.chat_answer_routed`／`scenario.steer_no_second_run`，加上 `chat.*`、`wf.chat_answer_lost`；還有**使用者提供的資料**（7，301b6e1a）：附件＋「以此做成簡報」（聊天、交給 Agent 從首頁用正式站那句話的形式、英文）、貼上的筆記、「用我上傳的 PDF」（PDF 先上傳到對話、這一輪沒有附加；聊天與口語交給 Agent）、附件整理成筆記。資料是合成的（`scripts/eval/material-fixture.ts`：deep research 風格的 Markdown、一份最小的英文 PDF、貼上的實驗筆記），不含正式站內容。
 
 執行器：每個情境開新對話（autopilot 關）、建一份固定簡報的副本、準備歷史（「前一個 run 做了這份簡報」是直接在 staging 插入一段完成的交給 Agent 紀錄＋一列 done 的 `workflow_runs`＋英文簡報的 standing 偏好，和真的 run 留下的資料一樣，不必每個情境跑一次完整流程）、照使用者的方式啟動、等到計畫卡或第一個問題（遇到問題用該情境的回答方式答一次，再等）、唯讀讀回 run 檢查全部規則＋情境期望、取消。每個開始的 run 先記在 `started.json`，結束、Ctrl-C 都會取消；staging 中途重新部署時 API 會重試，基礎設施中斷的情境重跑一次。
 

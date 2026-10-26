@@ -11,6 +11,7 @@
  *   LLM outage → awaiting_llm with backoff, auto-resumed by the ticker or when the role comes back.
  */
 import { MATERIAL_REF_RE } from "../workflows/material.js";
+import { conversationWorkflowsBlock } from "../workflows/chat-steer.js";
 import { labelSummary } from "./summary-labels.js";
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -22,7 +23,7 @@ import type { ChatEvent, ContentBlock, ProviderState, TextBlock, ToolResultBlock
 import { transaction, type Queryable } from "../db.js";
 import { CURRENT_USER_COLUMNS, toCurrentUser, type CurrentUser } from "../lib/auth.js";
 import { conflict, HttpError, notFound } from "../lib/http.js";
-import { answersText, askUserInput, validateAnswers, type AnswersInput, type StoredAnswers } from "./ask.js";
+import { answersFromText, answersText, askUserInput, validateAnswers, type AnswersInput, type StoredAnswers } from "./ask.js";
 import { EventWriter, insertEvent } from "./events.js";
 import { memoriesForContext, stripMemoryMarkers, usedMemories } from "./memory.js";
 import { autopilotLimitNotice, decide, DEFERRED_TEXT, grantScope, OUTBOUND_SKIPPED_TEXT } from "./policy.js";
@@ -35,13 +36,22 @@ import { completionReview, failureNote, failureStreak, FAILURE_NOTE_AT, FAILURE_
 import type { Plan } from "./tools/plan.js";
 import { inlineToolImages, storeToolImages, toolResultContent, type StoredToolImage } from "./images.js";
 import "./tools/index.js";
-import { inlineAttachmentImages, prepareAttachments, refOf, type AttachmentRef, type PreparedAttachments, type StoredAttachment } from "./attachments/index.js";
+import { dedupeRefs, describeRef, inlineAttachmentImages, MAX_ATTACHMENTS, prepareAttachments, refOf, type AttachmentRef, type PreparedAttachments, type StoredAttachment } from "./attachments/index.js";
 import { INTERVIEW_INTRO, MATURITY_QUESTION } from "./tools/interview.js";
 import { getAgentTool, listAgentTools, toolJsonSchema, type AgentToolContext, type AgentToolDef } from "./tools/registry.js";
-import { conversationView, messageView, runView, toolCallView, type ConversationRow, type MessageRow, type RunRow, type ToolCallRow } from "./views.js";
+import { conversationView, messageView, runView, toolCallView, type ConversationRow, type MessageRow, type QueuedMessage, type RunRow, type ToolCallRow } from "./views.js";
 
 /** A user turn: free text and/or the answers to an `ask_user` card; page context from the page (or the edited message). */
-export type TurnInput = { text?: string; answers?: AnswersInput; context?: PageContext | null; intent?: TurnIntent; attachments?: AttachmentRef[]; prepared?: PreparedAttachments };
+export type TurnInput = {
+  text?: string; answers?: AnswersInput; context?: PageContext | null; intent?: TurnIntent; attachments?: AttachmentRef[]; prepared?: PreparedAttachments;
+  /** The user confirmed cancelling the pending consent card(s) (「取消它並送出」); without it a pending card is a 409. */
+  supersede?: boolean;
+};
+/** A pending consent card a new message would cancel (409 `pending_decision`). */
+export type PendingDecision = { id: string; tool: string; title: string; summary: string };
+/** Synthetic results of calls cancelled because the user confirmed a new message instead (`supersede: true`). */
+export const SUPERSEDED_DENIED = "使用者確認取消這個操作，改提了其他要求；這個操作沒有執行。";
+export const SUPERSEDED_CANCELLED = "使用者確認取消這一步，改提了其他要求；這個操作沒有執行。";
 /** Attachment fields of a built turn (stored list + taint labels of content the caller did not author). */
 const turnAttachments = (p?: PreparedAttachments) => ({ attachments: p?.stored.length ? p.stored : (null as StoredAttachment[] | null), taint: p?.taint ?? [] });
 /** Quick actions of the chat toolbar: the shown text stays the user's, the model also gets the task instructions. */
@@ -91,6 +101,27 @@ const wrapUpNudge = (kind: "steps" | "time") =>
   `（系統提示：這一輪已達${kind === "steps" ? "步數" : "時間"}上限，現在不能再呼叫工具。請直接用文字簡短回覆：1) 目前已經完成了什麼（只說真的完成的），2) 還有哪些沒做完，3) 告訴使用者可以按「繼續」讓你接著做。不要道歉，也不要重複先前已經寫過的內容。）`;
 
 const ACTIVE = ["running", "awaiting_approval", "awaiting_llm"] as const;
+
+/** Appends the `<conversation_workflows>` block to the newest user turn (a copy of its content; nothing is stored). */
+function withWorkflows(messages: import("../ai/types.js").ChatMessage[], block: string) {
+  if (!block) return;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== "user") continue;
+    const content = Array.isArray(m.content) ? [...m.content] : [{ type: "text" as const, text: String(m.content ?? "") }];
+    messages[i] = { ...m, content: [...content, { type: "text" as const, text: block }] } as typeof m;
+    return;
+  }
+}
+
+/** postMessage: the started turn, the queued message (a reply was still running), or nothing (a stale queue send). */
+export type PostResult = { message: ReturnType<typeof messageView>; run: ReturnType<typeof runView> } | { queued: QueuedMessage } | { skipped: true };
+
+/** 409 for a new message while consent cards wait: names what would be cancelled (the composer confirms first). */
+export function pendingDecisionError(pending: PendingDecision[]) {
+  const names = pending.map((p) => `「${p.summary}」`).join("、");
+  return new HttpError(409, `還有 ${pending.length} 個操作等你確認（${names}）。送出新訊息會取消${pending.length > 1 ? "它們" : "它"}；要取消的話請確認後再送出。`, { code: "pending_decision", pending });
+}
 const UNRESOLVED = ["pending_approval", "approved", "running"];
 
 const stable = (v: unknown): string =>
@@ -174,7 +205,14 @@ export class AgentRuntime {
       });
       await this.emitAll(e.conversation_id, e.run_id, events);
       await this.emitRun(e.run_id);
+      await this.drainQueued(e.conversation_id).catch(() => undefined);
     }
+    // Queued messages nothing is holding (a run that ended in another process, a crash between end and send).
+    const queued = (await this.db.query<{ id: string }>(
+      `SELECT c.id FROM conversations c WHERE c.queued IS NOT NULL AND c.queued->>'hold' IS NULL AND c.updated_at < now() - interval '10 seconds'
+          AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.conversation_id=c.id AND r.status IN ('running','awaiting_llm')) LIMIT 20`,
+    )).rows;
+    for (const c of queued) await this.drainQueued(c.id).catch((e) => this.app.log.warn({ err: e, conversationId: c.id }, "queued agent message drain failed"));
     // Deferred deletions (autopilot) nobody decided within a week are dropped (nothing is deleted).
     const stale = (await this.db.query<{ id: string; conversation_id: string; run_id: string }>(
       "UPDATE tool_calls SET status='expired', finished_at=now() WHERE status='deferred' AND created_at < now() - interval '7 days' RETURNING id, conversation_id, run_id",
@@ -270,11 +308,15 @@ export class AgentRuntime {
         mode === "expire" && c.status === "pending_approval"
           ? ["expired", "操作逾時未確認，已取消。"]
           : mode === "supersede" && c.status === "pending_approval"
-            ? ["denied", "使用者沒有同意，改提了其他要求。"]
+            ? ["denied", SUPERSEDED_DENIED]
             : c.status === "running"
               ? ["failed", "執行被中斷，結果不明；請先確認後再決定是否重試。"]
-              : ["cancelled", mode === "supersede" ? "使用者改提了其他要求，這個操作沒有執行。" : "已被使用者中止，沒有執行。"];
-      await client.query("UPDATE tool_calls SET status=$2, result_text=$3, error=CASE WHEN $2='failed' THEN $3 ELSE error END, finished_at=now() WHERE id=$1", [c.id, status, text]);
+              : ["cancelled", mode === "supersede" ? SUPERSEDED_CANCELLED : "已被使用者中止，沒有執行。"];
+      // Supersede happens only after the user confirmed it (postMessage `supersede: true`): recorded as their reason.
+      await client.query(
+        "UPDATE tool_calls SET status=$2, result_text=$3, error=CASE WHEN $2='failed' THEN $3 ELSE error END, deny_reason=CASE WHEN $2='denied' AND $4 THEN '使用者確認取消，改提其他要求' ELSE deny_reason END, finished_at=now() WHERE id=$1",
+        [c.id, status, text, mode === "supersede"],
+      );
       events.push(await this.toolCallEvent(client, c.id));
     }
     const fresh = (await client.query<ToolCallRow>("SELECT * FROM tool_calls WHERE message_id=$1 ORDER BY position", [step.id])).rows;
@@ -337,7 +379,7 @@ export class AgentRuntime {
       const s = (await this.db.query<{ id: string; slug: string; title: string }>("SELECT id,slug,title FROM studies WHERE id::text=$1 OR slug=$1 LIMIT 1", [ref])).rows[0];
       if (s) Object.assign(out, { studyId: s.id, studySlug: s.slug, studyTitle: s.title });
     }
-    for (const k of ["noteId", "deckId", "meetingId", "paperId", "taskId"] as const) if (ctx[k] && /^[0-9a-f-]{36}$/i.test(ctx[k]!)) out[k] = ctx[k];
+    for (const k of ["noteId", "deckId", "meetingId", "paperId", "taskId", "chatOnly"] as const) if (ctx[k] && /^[0-9a-f-]{36}$/i.test(ctx[k]!)) out[k] = ctx[k];
     if (ctx.page && Number.isInteger(ctx.page) && ctx.page > 0 && ctx.page < 10000) out.page = ctx.page;
     return out;
   }
@@ -384,14 +426,14 @@ export class AgentRuntime {
   }
 
   /** Inserts the user turn, updates the conversation's context and opens a run (inside the lock). */
-  private async insertTurn(client: Queryable, conv: ConversationRow, user: CurrentUser, turn: Awaited<ReturnType<AgentRuntime["buildTurn"]>>, ctx: PageContext | null, versionOf: string | null) {
+  private async insertTurn(client: Queryable, conv: ConversationRow, user: CurrentUser, turn: Awaited<ReturnType<AgentRuntime["buildTurn"]>>, ctx: PageContext | null, versionOf: string | null, clearQueued = false) {
     const msg = (await client.query<MessageRow>(
       "INSERT INTO agent_messages(conversation_id,role,content,text,page_context,answers,version_of,attachments) VALUES($1,'user',$2,$3,$4,$5,$6,$7) RETURNING *",
       [conv.id, JSON.stringify(turn.blocks), turn.text, ctx ? JSON.stringify(ctx) : null, turn.answers ? JSON.stringify(turn.answers) : null, versionOf, turn.attachments ? JSON.stringify(turn.attachments) : null],
     )).rows[0]!;
     const conversation = (await client.query<ConversationRow>(
-      "UPDATE conversations SET updated_at=now(), context=CASE WHEN $2::jsonb IS NULL THEN context ELSE $2::jsonb END, study_id=CASE WHEN $2::jsonb IS NULL THEN study_id ELSE $3::uuid END WHERE id=$1 RETURNING *",
-      [conv.id, ctx ? JSON.stringify(ctx) : null, ctx?.studyId ?? null],
+      "UPDATE conversations SET updated_at=now(), context=CASE WHEN $2::jsonb IS NULL THEN context ELSE $2::jsonb END, study_id=CASE WHEN $2::jsonb IS NULL THEN study_id ELSE $3::uuid END, queued=CASE WHEN $4 THEN NULL ELSE queued END WHERE id=$1 RETURNING *",
+      [conv.id, ctx ? JSON.stringify(ctx) : null, ctx?.studyId ?? null, clearQueued],
     )).rows[0]!;
     const run = (await client.query<RunRow>(
       // Attached content the caller did not author taints the run from the start (like an untrusted tool result).
@@ -402,8 +444,16 @@ export class AgentRuntime {
     return { msg: { ...msg, run_id: run.id }, run, conversation };
   }
 
-  /** Adds a user message (text or `ask_user` answers) and starts a run. A pending step is superseded (its open approvals are denied). */
-  async postMessage(user: CurrentUser, conversationId: string, input: TurnInput | string, pageContext: PageContext | null = null) {
+  /**
+   * Adds a user message (text or `ask_user` answers) and starts a run (docs/architecture.md → Agent → Queued message):
+   * - the assistant is still replying (`running`): the text is QUEUED (`conversations.queued`, appended to a message
+   *   already queued) and sent by `drainQueued` when the run ends → `{queued}`;
+   * - consent cards are pending (`awaiting_approval`): 409 `pending_decision` naming them, unless `supersede: true`
+   *   (the user confirmed 「取消它並送出」) — then the step is superseded (its approvals denied with that reason);
+   * - a queued message is still waiting (held by a card): this turn carries it (queued text first), so order is kept.
+   * `fromQueue` = `drainQueued` sending the queued message with that id (skipped when it was sent / replaced meanwhile).
+   */
+  async postMessage(user: CurrentUser, conversationId: string, input: TurnInput | string, pageContext: PageContext | null = null, opts: { fromQueue?: string } = {}): Promise<PostResult> {
     let turnInput: TurnInput = typeof input === "string" ? { text: input, context: pageContext } : input;
     const ctx = await this.resolveContext(turnInput.context ?? null);
     // 「用我上傳的 PDF」「附件」 with no chip on this turn (scenario m71: the PDF was uploaded into the conversation but
@@ -419,14 +469,47 @@ export class AgentRuntime {
       ).catch(() => ({ rows: [] as { id: string }[] }))).rows[0];
       if (up) turnInput = { ...turnInput, attachments: [{ kind: "upload", id: up.id }] };
     }
+    // A held queued message goes out with this turn (text turns only; an answer turn leaves it queued).
+    const own = { text: turnInput.text?.trim() ?? "", refs: turnInput.attachments ?? [] };
+    const carry = !opts.fromQueue && !turnInput.answers
+      ? ((await this.db.query<{ queued: QueuedMessage | null }>("SELECT queued FROM conversations WHERE id=$1 AND user_id=$2", [conversationId, user.id])).rows[0]?.queued ?? null)
+      : null;
+    if (carry) turnInput = { ...turnInput, text: [carry.text, own.text].filter(Boolean).join("\n\n"), attachments: dedupeRefs([...carry.attachments.map(refOf), ...own.refs]).slice(0, MAX_ATTACHMENTS) };
     // Attachments: access checked and content loaded before the lock (403/404 names the item).
     if (turnInput.attachments?.length && !turnInput.answers) turnInput = { ...turnInput, prepared: await prepareAttachments(this.app, user, conversationId, turnInput.attachments) };
     const result = await transaction(this.db, async (client) => {
       const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, user.id])).rows[0];
       if (!conv) throw notFound("找不到這個對話。");
+      if (opts.fromQueue && conv.queued?.id !== opts.fromQueue) return { kind: "skipped" as const };
       const events: { type: "tool_call" | "message"; data: Record<string, unknown> }[] = [];
       const active = await this.activeRun(client, conv.id, true);
-      if (active?.status === "running") throw conflict("AI 正在回覆中，請先按「停止」或等它完成。");
+      if (active?.status === "running") {
+        if (turnInput.answers || opts.fromQueue) throw conflict("AI 正在回覆中，請先按「停止」或等它完成。");
+        // Queue (never reject): appended to what is already queued; sent when the run ends.
+        const keys = new Set(own.refs.map((r) => `${r.kind}:${r.id}:${r.version ?? ""}`));
+        const ownStored = (turnInput.prepared?.stored ?? []).filter((a) => keys.has(`${a.kind}:${a.id}:${a.version ?? ""}`));
+        const prev = conv.queued;
+        const now = new Date().toISOString();
+        const attachments = [...(prev?.attachments ?? []), ...ownStored].filter((a, i, all) => all.findIndex((b) => b.kind === a.kind && b.id === a.id && b.version === a.version) === i).slice(0, MAX_ATTACHMENTS);
+        const queued: QueuedMessage = {
+          id: prev?.id ?? randomBytes(8).toString("hex"),
+          text: [prev?.text, own.text].filter(Boolean).join("\n\n").slice(0, 20_000),
+          context: (ctx as Record<string, unknown> | null) ?? prev?.context ?? null,
+          attachments,
+          hold: null,
+          error: null,
+          created_at: prev?.created_at ?? now,
+          updated_at: now,
+        };
+        if (!queued.text) throw new HttpError(400, "訊息不能是空的（最多 20 000 字）。");
+        const row = (await client.query<ConversationRow>("UPDATE conversations SET queued=$2, updated_at=now() WHERE id=$1 RETURNING *", [conv.id, JSON.stringify(queued)])).rows[0]!;
+        return { kind: "queued" as const, conversation: row };
+      }
+      if (carry && conv.queued?.id !== carry.id) throw conflict("排隊中的訊息剛剛已經送出或改過了，請再送一次。");
+      if (active?.status === "awaiting_approval" && !turnInput.supersede) {
+        const pending = await this.pendingDecisions(client, conv.id);
+        if (pending.length) throw pendingDecisionError(pending);
+      }
       const turn = await this.buildTurn(client, conv.id, turnInput, ctx, null);
       if (active) {
         events.push(...(await this.closeStep(client, conv.id, active.status === "awaiting_approval" ? "supersede" : "cancel")));
@@ -435,9 +518,14 @@ export class AgentRuntime {
         // A run that stopped mid-step (crash, limit) leaves an open step: close it so the transcript stays valid.
         events.push(...(await this.closeStep(client, conv.id, "cancel")));
       }
-      const out = await this.insertTurn(client, conv, user, turn, ctx, null);
-      return { events, ...out, superseded: active?.id ?? null };
+      const out = await this.insertTurn(client, conv, user, turn, ctx, null, !!opts.fromQueue || !!carry);
+      return { kind: "sent" as const, events, ...out, superseded: active?.id ?? null };
     });
+    if (result.kind === "skipped") return { skipped: true };
+    if (result.kind === "queued") {
+      await insertEvent(this.db, conversationId, null, "conversation", { conversation: conversationView(result.conversation) });
+      return { queued: result.conversation.queued! };
+    }
     if (result.superseded) await this.emitRun(result.superseded);
     await this.emitAll(conversationId, result.superseded, result.events);
     await insertEvent(this.db, conversationId, result.run.id, "message", { message: messageView(result.msg) });
@@ -445,6 +533,130 @@ export class AgentRuntime {
     await insertEvent(this.db, conversationId, result.run.id, "run", { run: runView(result.run) });
     this.kick(result.run.id);
     return { message: messageView(result.msg), run: runView(result.run) };
+  }
+
+  /** The consent cards of the open step (what a new message would cancel). */
+  private async pendingDecisions(db: Queryable, conversationId: string): Promise<PendingDecision[]> {
+    const step = await this.openStep(db, conversationId);
+    if (!step) return [];
+    const rows = (await db.query<ToolCallRow>("SELECT * FROM tool_calls WHERE message_id=$1 AND status='pending_approval' ORDER BY position", [step.id])).rows;
+    return rows.map((c) => ({ id: c.id, tool: c.tool, title: getAgentTool(c.tool)?.title ?? c.tool, summary: (c.summary ?? "").slice(0, 120) || (getAgentTool(c.tool)?.title ?? c.tool) }));
+  }
+
+  /** The `ask_user` card the last turn ended on (not answered yet), if any. */
+  private async openAskCard(db: Queryable, conversationId: string) {
+    const row = (await db.query<ToolCallRow>(
+      `SELECT tc.* FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
+        WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL AND tc.tool='ask_user' AND tc.status='done'
+          AND m.seq > coalesce((SELECT max(seq) FROM agent_messages WHERE conversation_id=$1 AND hidden_by IS NULL AND role='user'), 0)
+        ORDER BY m.seq DESC, tc.position DESC LIMIT 1`,
+      [conversationId],
+    )).rows[0];
+    if (!row) return null;
+    const args = askUserInput.safeParse(row.edited_args ?? row.args);
+    return args.success ? { id: row.id, args: args.data } : null;
+  }
+
+  // ---------------------------------------------------------------- queued message (composer)
+
+  /**
+   * Sends the conversation's queued message once nothing is replying any more: called when a run ends (executor),
+   * after a cancel, by the ticker (safety net), and by 「停止並立即送出」／「取消它並送出」 (`explicit`). The card rules
+   * apply instead of a blind supersede: a consent card → held (`approval`) until the user decides it or confirms
+   * `supersede`; an `ask_user` card with one free-text question → sent as its answer; another card → held
+   * (`question`). An explicit send goes out as a plain message (an `ask_user` card stays answerable). A failure holds
+   * the message with the error — it is never dropped.
+   */
+  async drainQueued(conversationId: string, opts: { explicit?: boolean; supersede?: boolean } = {}): Promise<{ sent: boolean; hold?: QueuedMessage["hold"] }> {
+    const conv = (await this.db.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1", [conversationId])).rows[0];
+    const q = conv?.queued;
+    if (!conv || !q) return { sent: false };
+    const user = await this.loadUser(this.db, conv.user_id);
+    if (!user) return { sent: false };
+    const active = await this.activeRun(this.db, conv.id);
+    if (active && active.status !== "awaiting_approval") return { sent: false };
+    if (active && !opts.supersede && !opts.explicit) return this.holdQueued(conv.id, q.id, "approval");
+    let input: TurnInput = { text: q.text, context: (q.context as PageContext | null) ?? null, attachments: q.attachments.map(refOf), supersede: opts.supersede };
+    if (!active && !opts.explicit) {
+      const card = await this.openAskCard(this.db, conv.id);
+      if (card) {
+        // Rule: a reply typed for a free-text question answers it (attachments cannot ride on an answer turn).
+        const answers = q.attachments.length ? null : answersFromText(card.args.questions, q.text, { single: true });
+        if (!answers) return this.holdQueued(conv.id, q.id, "question");
+        input = { answers: { tool_call_id: card.id, answers }, context: input.context };
+      }
+    }
+    if (!(await this.available())) {
+      if (opts.explicit) throw new HttpError(503, "AI 助理維護中，請稍後再試。", { code: "llm_unavailable" });
+      return this.holdQueued(conv.id, q.id, "error", "AI 助理維護中，排隊的訊息還沒送出；恢復後按「立即送出」。");
+    }
+    try {
+      // Cleared in the same transaction as the new turn (fromQueue); skipped when another path sent it first.
+      await this.postMessage(user, conv.id, input, null, { fromQueue: q.id });
+      return { sent: true };
+    } catch (e) {
+      if (opts.explicit) throw e;
+      if (!(e instanceof HttpError)) this.app.log.warn({ err: e, conversationId }, "queued agent message failed");
+      return this.holdQueued(conv.id, q.id, "error", e instanceof HttpError ? e.message : "排隊的訊息送出失敗，請再試一次。");
+    }
+  }
+
+  private async holdQueued(conversationId: string, queuedId: string, hold: NonNullable<QueuedMessage["hold"]>, error: string | null = null) {
+    const row = (await this.db.query<ConversationRow>(
+      "UPDATE conversations SET queued = queued || jsonb_build_object('hold', $3::text, 'error', $4::text) WHERE id=$1 AND queued->>'id'=$2 AND (queued->>'hold' IS DISTINCT FROM $3 OR queued->>'error' IS DISTINCT FROM $4) RETURNING *",
+      [conversationId, queuedId, hold, error],
+    )).rows[0];
+    if (row) await insertEvent(this.db, conversationId, null, "conversation", { conversation: conversationView(row) });
+    return { sent: false, hold };
+  }
+
+  /** Edits the queued message (text and/or attachments; the hold stays until the next attempt). */
+  async editQueued(user: CurrentUser, conversationId: string, input: { text?: string; attachments?: AttachmentRef[] }) {
+    let stored: StoredAttachment[] | null = null;
+    if (input.attachments) {
+      stored = [];
+      for (const [i, ref] of dedupeRefs(input.attachments).entries()) {
+        try {
+          stored.push(await describeRef(this.app, user, conversationId, ref));
+        } catch (e) {
+          if (e instanceof HttpError) throw new HttpError(e.status, `附件 ${i + 1}：${e.message}`, { code: e.extra.code ?? "attachment_unavailable" });
+          throw e;
+        }
+      }
+    }
+    const row = await transaction(this.db, async (client) => {
+      const conv = (await client.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE", [conversationId, user.id])).rows[0];
+      if (!conv) throw notFound("找不到這個對話。");
+      if (!conv.queued) throw notFound("沒有排隊中的訊息（可能已經送出了）。");
+      const next: QueuedMessage = { ...conv.queued, text: input.text?.trim() || conv.queued.text, attachments: stored ?? conv.queued.attachments, updated_at: new Date().toISOString() };
+      return (await client.query<ConversationRow>("UPDATE conversations SET queued=$2 WHERE id=$1 RETURNING *", [conv.id, JSON.stringify(next)])).rows[0]!;
+    });
+    await insertEvent(this.db, conversationId, null, "conversation", { conversation: conversationView(row) });
+    return { queued: row.queued! };
+  }
+
+  /** Removes the queued message (nothing is sent). */
+  async removeQueued(user: CurrentUser, conversationId: string) {
+    const row = (await this.db.query<ConversationRow>("UPDATE conversations SET queued=NULL WHERE id=$1 AND user_id=$2 RETURNING *", [conversationId, user.id])).rows[0];
+    if (!row) throw notFound("找不到這個對話。");
+    await insertEvent(this.db, conversationId, null, "conversation", { conversation: conversationView(row) });
+    return { ok: true };
+  }
+
+  /**
+   * 「停止並立即送出」 (a reply is running: it is cancelled first) / 「取消它並送出」 (`supersede`: consent cards pending) /
+   * 「當一般訊息送出」 (a held question). 409 `pending_decision` when cards are pending and `supersede` is not set.
+   */
+  async sendQueued(user: CurrentUser, conversationId: string, opts: { supersede?: boolean } = {}) {
+    const conv = (await this.db.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2", [conversationId, user.id])).rows[0];
+    if (!conv) throw notFound("找不到這個對話。");
+    if (!conv.queued) return { sent: true };
+    const active = await this.activeRun(this.db, conversationId);
+    // Stopping the reply also drains the queue (executor / cancel); the explicit drain below then finds it sent.
+    if (active && active.status !== "awaiting_approval") await this.cancel(user, conversationId);
+    await this.drainQueued(conversationId, { explicit: true, supersede: opts.supersede });
+    const left = (await this.db.query<{ queued: QueuedMessage | null }>("SELECT queued FROM conversations WHERE id=$1", [conversationId])).rows[0]?.queued ?? null;
+    return { sent: !left, queued: left };
   }
 
   /**
@@ -589,11 +801,17 @@ export class AgentRuntime {
       const events = local ? [] : await this.closeStep(client, conversationId, "cancel");
       return { run: active, local, events };
     });
-    if (!out) return { run: null };
+    if (!out) {
+      // Nothing was running, but a message may be queued behind a card that is gone now.
+      if (reason !== "superseded") await this.drainQueued(conversationId).catch(() => undefined);
+      return { run: null };
+    }
     out.local?.abort();
     await this.emitAll(conversationId, out.run.id, out.events);
     await this.emitRun(out.run.id);
+    // A local executor drains the queue when it stops; otherwise do it here (a reply stopped by the user still sends it).
     if (out.local) await this.executing.get(out.run.id)?.catch(() => undefined);
+    else if (reason !== "superseded") await this.drainQueued(conversationId).catch((e) => this.app.log.warn({ err: e, conversationId }, "queued agent message drain failed"));
     return { run: runView((await this.getRun(this.db, out.run.id))!) };
   }
 
@@ -759,6 +977,11 @@ export class AgentRuntime {
       this.controllers.delete(runId);
       const run = await this.getRun(this.db, runId).catch(() => null);
       if (run?.status === "cancelled") await this.finalizeCancelled(run);
+      // The reply ended (done / failed / cancelled / waiting on a card): send the queued message, if any. Not after an
+      // edit / version switch (superseded): the new branch's run sends it when it ends.
+      if (run && run.status !== "running" && run.stop_reason !== "superseded" && !this.stopped) {
+        await this.drainQueued(run.conversation_id).catch((e) => this.app.log.warn({ err: e, runId }, "queued agent message drain failed"));
+      }
     }
   }
 
@@ -893,6 +1116,9 @@ export class AgentRuntime {
     const system = systemPrompt({ mode: conv.mode, user, memories });
     const vision = await this.visionNow();
     const messages = await inlineAttachmentImages(this.app.storage, await inlineToolImages(this.app.storage, await this.contextMessages(conv, user, system), { vision }), { vision });
+    // The conversation's active workflows, as they are now (status, step, question), on the newest user turn: the
+    // model routes adjustments / answers to them instead of starting a duplicate (workflows/chat-steer.ts).
+    if (conv.mode === "chat") withWorkflows(messages, await conversationWorkflowsBlock(this.db, conv.id, user.id).catch(() => ""));
     const req: RoleChatRequest = {
       messages: [{ role: "system", content: system }, ...messages],
       tools: tools.map((t) => ({ name: t.name, description: t.description, inputSchema: toolJsonSchema(t) })),

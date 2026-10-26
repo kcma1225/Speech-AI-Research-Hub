@@ -184,3 +184,41 @@ export function answersText(args: AskUserArgs, stored: StoredAnswers): { model: 
     display: lines.join("\n"),
   };
 }
+
+// ---------------------------------------------------------------- a typed reply as the answer (composer → card)
+
+type QuestionLike = Pick<Question, "id" | "type" | "prompt" | "options" | "allow_other" | "required">;
+const acceptsText = (q: QuestionLike) => q.type === "short_text" || q.type === "long_text" || ((q.type === "single_choice" || q.type === "multi_choice") && !!q.allow_other);
+const normLabel = (s: string) => s.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+
+/**
+ * The question a typed chat reply answers (the composer's 「會當成這題的回答」, a queued message, `answer_workflow`):
+ * the first question that takes free text (short/long text, or a choice with 「其他」). `single` (chat `ask_user` cards):
+ * only when the card has exactly that one question. Otherwise the other questions must be optional (they are skipped).
+ * Null = the card can only be answered on the card (choice-only, or another question is required).
+ */
+export function freeTextQuestion<Q extends QuestionLike>(questions: Q[], opts: { single?: boolean } = {}): Q | null {
+  if (opts.single && questions.length !== 1) return null;
+  const target = questions.find(acceptsText);
+  if (!target) return null;
+  if (questions.some((q) => q !== target && q.required)) return null;
+  return target;
+}
+
+/**
+ * Answers for `questions` from a typed reply: the free-text question gets the text (a choice picks the option whose
+ * label / value is the text, else 「其他：text」); every other question is skipped. Null = not answerable by text.
+ * The result goes through the normal validation (`validateAnswers` / workflow `validateCardAnswers`).
+ */
+export function answersFromText<Q extends QuestionLike>(questions: Q[], text: string, opts: { single?: boolean } = {}): AnswersInput["answers"] | null {
+  const t = text.trim();
+  const target = t ? freeTextQuestion(questions, opts) : null;
+  if (!target) return null;
+  return questions.map((q) => {
+    if (q !== target) return { id: q.id, skipped: true };
+    if (q.type === "short_text" || q.type === "long_text") return { id: q.id, value: t.slice(0, q.type === "short_text" ? 500 : 5000) };
+    const hit = q.options?.find((o) => normLabel(o.label) === normLabel(t) || normLabel(o.value) === normLabel(t));
+    if (q.type === "single_choice") return hit ? { id: q.id, value: hit.value } : { id: q.id, value: null, other: t.slice(0, 500) };
+    return hit ? { id: q.id, value: [hit.value] } : { id: q.id, value: [], other: t.slice(0, 500) };
+  });
+}

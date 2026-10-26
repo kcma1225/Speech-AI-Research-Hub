@@ -5,7 +5,7 @@
  * `BEGIN READ ONLY` transaction, so nothing here can write — also when pointed at production.
  */
 import pg from "pg";
-import type { ConversationBundle, LibraryPaper, RunBundle, StoredEvent, StoredMessage, StoredRun, StoredStep } from "../../src/workflows/invariants.js";
+import type { ConversationBundle, LibraryPaper, RunBundle, StoredEvent, StoredMessage, StoredRun, StoredStep, StoredToolCall } from "../../src/workflows/invariants.js";
 
 export type ReadOnlyDb = { query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>; close(): Promise<void>; label: string };
 
@@ -30,7 +30,7 @@ export async function openReadOnly(url: string): Promise<ReadOnlyDb> {
 
 export type Window = { since?: string; until?: string; runIds?: string[]; conversationIds?: string[]; limit?: number; user?: string };
 
-const RUN_COLS = "r.id, r.user_id, r.status, r.playbook, r.title, r.request, r.objective, r.study_id, r.conversation_id, r.inputs, r.context, r.state, r.plan, r.criteria, r.report, r.brief, r.guidance, r.artifacts, r.autopilot, r.stop_reason, r.question, r.goal_id, r.created_at, r.updated_at, r.started_at, r.finished_at";
+const RUN_COLS = "r.id, r.user_id, r.status, r.playbook, r.title, r.request, r.objective, r.study_id, r.conversation_id, r.inputs, r.context, r.state, r.plan, r.criteria, r.report, r.brief, r.guidance, r.artifacts, r.autopilot, r.stop_reason, r.question, r.goal_id, r.batch_id, r.created_at, r.updated_at, r.started_at, r.finished_at";
 type Row = StoredRun & { user_id: string };
 const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : (v as string));
 const fixTimes = <T extends Record<string, unknown>>(r: T, keys: string[]): T => {
@@ -104,7 +104,22 @@ export async function loadBundles(db: ReadOnlyDb, runs: Row[]): Promise<{ bundle
         [convIds],
       )
     : [];
-  const siblings = convIds.length ? await db.query<Row>(`SELECT r.id, r.status, r.study_id, r.conversation_id, r.created_at, r.inputs, r.artifacts FROM workflow_runs r WHERE r.conversation_id = ANY($1::uuid[])`, [convIds]) : [];
+  const siblings = convIds.length
+    ? await db.query<Row>(
+        `SELECT r.id, r.status, r.study_id, r.conversation_id, r.created_at, r.finished_at, r.inputs, r.artifacts, r.playbook, r.goal_id, r.batch_id,
+                jsonb_build_object('deliverable', r.brief->'deliverable') AS brief
+           FROM workflow_runs r WHERE r.conversation_id = ANY($1::uuid[])`,
+        [convIds],
+      )
+    : [];
+  // The assistant's tool calls (chat.no_silent_supersede): status + the result the model saw, never arguments.
+  const toolCalls = convIds.length
+    ? await db.query<StoredToolCall & { conversation_id: string }>(
+        `SELECT tc.conversation_id, tc.id, tc.tool, tc.status, left(tc.summary, 200) AS summary, left(tc.result_text, 300) AS result_text, tc.deny_reason, tc.created_at, tc.finished_at
+           FROM tool_calls tc WHERE tc.conversation_id = ANY($1::uuid[]) AND tc.status IN ('denied', 'cancelled') ORDER BY tc.created_at`,
+        [convIds],
+      )
+    : [];
 
   // Input artifacts → their study.
   const deckIds = new Set<string>();
@@ -142,7 +157,8 @@ export async function loadBundles(db: ReadOnlyDb, runs: Row[]): Promise<{ bundle
   const evBy = by(events.map((e) => fixTimes(e as unknown as Record<string, unknown>, ["created_at"]) as unknown as StoredEvent & { run_id: string }), "run_id");
   const stBy = by(steps, "run_id");
   const msgBy = by(messages.map((m) => fixTimes(m as unknown as Record<string, unknown>, ["created_at"]) as unknown as StoredMessage & { conversation_id: string }), "conversation_id");
-  const sibBy = by(siblings.map((s) => fixTimes(s as unknown as Record<string, unknown>, ["created_at"]) as unknown as Row), "conversation_id");
+  const sibBy = by(siblings.map((s) => fixTimes(s as unknown as Record<string, unknown>, ["created_at", "finished_at"]) as unknown as Row), "conversation_id");
+  const tcBy = by(toolCalls.map((c) => fixTimes(c as unknown as Record<string, unknown>, ["created_at", "finished_at"]) as unknown as StoredToolCall & { conversation_id: string }), "conversation_id");
   const studyBy = by(studies, "user_id");
   const libBy = by(library, "study_id");
   const convMap = new Map(convs.map((c) => [c.id, c]));
@@ -159,6 +175,6 @@ export async function loadBundles(db: ReadOnlyDb, runs: Row[]): Promise<{ bundle
     library: run.study_id ? (libBy.get(run.study_id) ?? []) : [],
     now,
   }));
-  const conversations: ConversationBundle[] = convIds.map((id) => ({ conversation: convMap.get(id) ?? { id }, messages: msgBy.get(id) ?? [], runs: sibBy.get(id) ?? [] }));
+  const conversations: ConversationBundle[] = convIds.map((id) => ({ conversation: convMap.get(id) ?? { id }, messages: msgBy.get(id) ?? [], runs: sibBy.get(id) ?? [], toolCalls: tcBy.get(id) ?? [] }));
   return { bundles, conversations };
 }

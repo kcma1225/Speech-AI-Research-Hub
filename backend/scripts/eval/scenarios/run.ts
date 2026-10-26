@@ -51,10 +51,44 @@ const PLAN_TIMEOUT = Number(opt("plan-timeout") ?? 16) * 60_000;
 const DEPTH = (opt("depth") ?? "route") as "plan" | "route";
 const CUT_MS = Number(opt("cut") ?? 90) * 1000;
 
+type FollowUp = { tools: { tool: string; status: string; args?: unknown }[]; reply: string; runs: number; guidance: string[]; pause: boolean; status: string };
+
+/** Sends the steering follow-up as a chat message (as the composer's 一般對話 would) and records what the assistant did. */
+async function followUp(hub: Hub, db: ReadOnlyDb, s: Scenario, setup: Awaited<ReturnType<typeof setupScenario>>, runId: string): Promise<FollowUp> {
+  const before = (await hub.api<{ toolCalls: { id: string }[] }>("GET", `/agent/conversations/${setup.conversationId}`)).toolCalls.length;
+  await hub.api("POST", `/agent/conversations/${setup.conversationId}/messages`, { text: s.followUp!.text, context: setup.context });
+  const d = await waitChat(hub, setup.conversationId, 5 * 60_000);
+  await sleep(3_000);
+  const [row] = await db.query<{ guidance: { text?: string }[]; pause_requested: boolean; status: string }>("SELECT guidance, pause_requested, status FROM workflow_runs WHERE id = $1", [runId]);
+  const [n] = await db.query<{ n: string }>("SELECT count(*)::text AS n FROM workflow_runs WHERE conversation_id = $1", [setup.conversationId]);
+  // A second run the assistant may have started is recorded so it is cancelled too.
+  const more = await db.query<{ id: string }>("SELECT id FROM workflow_runs WHERE conversation_id = $1 AND id <> $2", [setup.conversationId, runId]);
+  if (more.length) await recordStart(more.map((r) => r.id));
+  return {
+    tools: (d.toolCalls as { tool: string; status: string; args?: unknown }[]).slice(before).map((c) => ({ tool: c.tool, status: c.status, args: c.args })),
+    reply: d.messages.filter((m) => m.role === "assistant").at(-1)?.text ?? "",
+    runs: Number(n?.n ?? 0), guidance: (row?.guidance ?? []).map((g) => g.text ?? ""), pause: !!row?.pause_requested || row?.status === "paused", status: row?.status ?? "?",
+  };
+}
+
+/** Steering oracles: routed to the run (guidance with the user's words / pause / answer), no second run. */
+function steerFindings(s: Scenario, f: FollowUp, runId: string, conversationId: string): Finding[] {
+  const out: Finding[] = [];
+  const mk = (invariant: string, message: string, evidence: Record<string, unknown>): Finding => ({ invariant, severity: "critical", run_id: runId, conversation_id: conversationId, message, evidence: { ...evidence, tools: f.tools.map((t) => `${t.tool}:${t.status}`), reply: f.reply.slice(0, 160) } });
+  if (f.runs > 1) out.push(mk("scenario.steer_no_second_run", `追加訊息「${s.followUp!.text}」後對話裡有 ${f.runs} 個工作流程（應該交給原本那個）`, { runs: f.runs }));
+  const want = s.followUp!.expect;
+  const gotText = f.guidance.some((g) => g.includes(s.followUp!.text.slice(0, 6)) || s.followUp!.text.includes(g.slice(0, 6)));
+  if (want === "pause" && !f.pause) out.push(mk("scenario.steer_routed", "使用者說「停」，工作流程沒有暫停", { status: f.status }));
+  if (want === "guidance" && !gotText) out.push(mk("scenario.steer_routed", "調整的話沒有變成工作流程的補充指示", { guidance: f.guidance.slice(-3) }));
+  if (want === "answer" && (!gotText || f.status === "awaiting_input")) out.push(mk("scenario.chat_answer_routed", "在對話裡打的回答沒有交給在等回答的工作流程", { guidance: f.guidance.slice(-3), status: f.status }));
+  return out;
+}
+
 export type CaseResult = {
   id: string; dims: Pick<Scenario, "entry" | "history" | "style" | "intent" | "lang" | "anaphora" | "answer" | "start">; request: string;
   status: string; reached: "plan" | "question" | "routed" | "answered_plan" | "answered_question" | "answered_routed" | "other"; run_ids: string[]; conversation_id: string | null; deck_id: string | null;
   questions: string[]; answered: string | null; playbook: string | null; route: unknown; findings: Finding[]; error: string | null; attempts: number; build: string; ms: number;
+  followUp?: FollowUp;
 };
 
 type Wf = { id: string; status: string; playbook: string; question?: string | null; asks?: { id: string; title?: string; pending?: boolean; questions?: { id: string; type: string; options?: { label: string; value: string }[]; allow_other?: boolean }[] }[] };
@@ -167,7 +201,15 @@ async function runCase(hub: Hub, db: ReadOnlyDb, fx: Fixtures, s: Scenario, user
   let w = await poll(hub, id, (x) => STOP.has(x.status), PLAN_TIMEOUT, db);
   base.reached = w.status === "awaiting_input" ? "question" : w.status === "awaiting_plan_approval" ? "plan" : w.cut ? "routed" : "other";
   if (w.question) base.questions.push(w.question);
-  if (w.status === "awaiting_input") {
+  // Steering block: the follow-up typed in chat while the run is active (the assistant must route it to the run).
+  if (s.followUp && (s.followUp.when === "planned" || w.status === "awaiting_input")) {
+    base.followUp = await followUp(hub, db, s, setup, id);
+    w = (await hub.api<{ workflow: Wf }>("GET", `/workflows/${id}`)).workflow;
+    base.findings.push(...steerFindings(s, base.followUp, id, setup.conversationId));
+  } else if (s.followUp) {
+    base.findings.push({ invariant: "scenario.followup_state", severity: "low", run_id: id, conversation_id: setup.conversationId, message: `情境要在「${s.followUp.when}」時追加訊息，run 卻是 ${w.status}`, evidence: { status: w.status } });
+  }
+  if (w.status === "awaiting_input" && !(s.followUp?.when === "question")) {
     base.answered = await answer(hub, w, s, fx);
     await sleep(3_000);
     w = await poll(hub, id, (x) => x.status !== "planning" && x.status !== "queued" && STOP.has(x.status) && !(x.status === "awaiting_input" && !x.question), PLAN_TIMEOUT, db);

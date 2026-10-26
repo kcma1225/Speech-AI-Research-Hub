@@ -8,6 +8,11 @@
   import ConfirmDialog from "#lib/components/ui/ConfirmDialog.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import Composer from "./Composer.svelte";
+  import ComposerStatus from "./ComposerStatus.svelte";
+  import QueuedMessageView from "./QueuedMessage.svelte";
+  import { ApiError } from "#lib/api.ts";
+  import { answersFromText, composerMode, freeTextQuestion, pendingNames, queuedState, type ComposerInput, type WaitingWorkflow } from "#lib/agent/composer.ts";
+  import type { Workflow } from "#lib/workflows/types.ts";
   import AssistantTurn from "./AssistantTurn.svelte";
   import MessageItem from "./MessageItem.svelte";
   import QuestionNav from "./QuestionNav.svelte";
@@ -334,18 +339,46 @@
   async function send(value: string, intent?: "make_note") {
     const agentRequest = intent || interview ? null : parseAgentCommand(value);
     if (agentRequest !== null) return handToAgent(agentRequest);
+    if (!intent) {
+      const m = mode;
+      // A send that would cancel consent cards / skip a question card waits for the inline confirmation.
+      if (m.kind === "confirm_pending" || m.kind === "confirm_ask") return void (confirm = m.kind === "confirm_pending" ? "pending" : "ask");
+      if (m.kind === "answer_ask" && openAsk && !attachments.items.length) {
+        const answers = answersFromText(openAsk.questions, value, { single: true });
+        if (answers) {
+          text = "";
+          try {
+            await session.answer(m.callId, answers);
+            atBottom = true;
+            toBottom();
+          } catch (e) {
+            text = value;
+            toasts.show(`${t("agent.sendFailed")}：${(e as Error).message}`, "error");
+          }
+          return;
+        }
+      }
+      if (m.kind === "answer_workflow" && !attachments.items.length) return answerWorkflow(m.workflowId, value);
+    }
+    return deliver(value, intent);
+  }
+
+  /** The plain send (queued by the server while a reply runs); `supersede` after the user confirmed cancelling cards. */
+  async function deliver(value: string, intent?: "make_note", opts: { supersede?: boolean } = {}) {
     const was = session.id;
     if (!intent && attachments.busy) return void toasts.show(t("attach.waitUploads"), "error");
     if (!intent && attachments.items.some((i) => i.error)) return void toasts.show(t("attach.uploadErrors"), "error");
     const refs = intent ? [] : attachments.refs;
     // 「#」 study / task chips travel as page context.
-    const sendCtx = intent ? ctx : contextWithRefs(ctx, attachments.contextRefs);
+    let sendCtx = intent ? ctx : contextWithRefs(ctx, attachments.contextRefs);
+    // A workflow waits for an answer but the user chose a normal chat turn (or its card takes choices only).
+    if (!intent && waiting && (chatOnly || waiting.cardOnly)) sendCtx = { ...(sendCtx ?? {}), chatOnly: waiting.id };
     const chips = !intent && attachments.items.length > 0;
     // The quick action keeps whatever the user is typing.
     if (!intent) text = "";
     try {
       if (!session.id && draftAutopilot) await session.create({ context: sendCtx, autopilot: true });
-      await session.send(value, sendCtx, intent, refs);
+      await session.send(value, sendCtx, intent, refs, opts);
       // The shell's 「N 個 Agent 執行中」 picks the new run up now, not at its next idle poll.
       setTimeout(() => void agentActivity.refresh(), 800);
       if (chips) attachments.clear();
@@ -357,7 +390,115 @@
       }
     } catch (e) {
       if (!intent) text = value;
+      // Consent cards appeared meanwhile (or another tab): ask instead of failing.
+      if (e instanceof ApiError && e.data?.code === "pending_decision") return void (confirm = "pending");
       toasts.show(`${t("agent.sendFailed")}：${(e as Error).message}`, "error");
+    }
+  }
+
+  // ---------------------------------------------------------------- what the next send does (lib/agent/composer.ts)
+  // Workflows of this conversation: one waiting for an answer takes the composer's text (unless 「改成一般對話」).
+  let convWorkflows = $state<Workflow[]>([]);
+  let wfSeq = 0;
+  async function loadWorkflows() {
+    const id = session.id;
+    const mine = ++wfSeq;
+    if (!id || interview) return void (convWorkflows = []);
+    try {
+      const r = await workflowsApi.list({ conversation: id, active: true });
+      if (mine === wfSeq && id === session.id) convWorkflows = r.workflows;
+    } catch {
+      // keep the last list
+    }
+  }
+  $effect(() => {
+    // A new message (workflow notices arrive as messages) or another conversation: reload.
+    void session.id;
+    void session.messages.length;
+    untrack(() => void loadWorkflows());
+  });
+  $effect(() => {
+    const active = convWorkflows.length > 0;
+    if (!session.id || interview) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void loadWorkflows();
+    }, active ? 8000 : 30000);
+    return () => clearInterval(timer);
+  });
+  const waiting = $derived.by<WaitingWorkflow | null>(() => {
+    const w = convWorkflows.find((x) => x.status === "awaiting_input");
+    if (!w) return null;
+    const card = w.asks?.find((a) => a.pending);
+    const question = card?.title || w.question || card?.questions[0]?.prompt || "";
+    return { id: w.id, title: w.title, question, cardOnly: !!card && !freeTextQuestion(card.questions) };
+  });
+  let chatOnlyFor = $state<string | null>(null);
+  const chatOnly = $derived(!!waiting && chatOnlyFor === waiting.id);
+  // The unanswered ask_user card the last turn ended on.
+  const openAsk = $derived.by(() => {
+    if (replying) return null;
+    const c = session.toolCalls.findLast((x) => x.tool === "ask_user" && x.status === "done");
+    if (!c || answered.has(c.id)) return null;
+    const seq = session.messages.find((m) => m.id === c.message_id)?.seq ?? -1;
+    if (seq < lastUserSeq) return null;
+    const args = askArgs(c);
+    return args ? { callId: c.id, questions: args.questions } : null;
+  });
+  const composerInput = $derived<ComposerInput>({
+    replying: running || session.sending,
+    pending: session.pendingApprovals.map((c) => ({ id: c.id, summary: c.summary || c.title })),
+    ask: openAsk,
+    workflow: interview ? null : waiting,
+    chatOnly,
+    queued: session.queued,
+  });
+  const mode = $derived(interview && !running && !session.sending ? ({ kind: "send" } as const) : composerMode(composerInput));
+  const qState = $derived(queuedState(composerInput));
+  /** A send waiting for 取消它並送出 / 略過並送出. */
+  let confirm = $state<"pending" | "ask" | null>(null);
+  $effect(() => {
+    if (mode.kind !== "confirm_pending" && mode.kind !== "confirm_ask") confirm = null;
+  });
+  let confirming = $state(false);
+  async function confirmSend() {
+    const value = text.trim();
+    const kind = confirm;
+    if (!value || !kind) return;
+    confirming = true;
+    try {
+      await deliver(value, undefined, { supersede: kind === "pending" });
+      confirm = null;
+    } finally {
+      confirming = false;
+    }
+  }
+  /** Scrolls to the card the composer refers to (consent card, question card, workflow card) and pulses it. */
+  function goCard() {
+    const key = mode.kind === "confirm_pending" ? `toolcall:${mode.items[0]?.id}` : mode.kind === "confirm_ask" || mode.kind === "answer_ask" ? `toolcall:${mode.callId}`
+      : mode.kind === "answer_workflow" || mode.kind === "workflow_card" ? `workflow:${mode.workflowId}`
+      : session.pendingApprovals[0] ? `toolcall:${session.pendingApprovals[0].id}` : openAsk ? `toolcall:${openAsk.callId}` : null;
+    const el = key ? scroller?.querySelector<HTMLElement>(`[data-focus-key="${key}"]`) : null;
+    if (!el) return void toasts.show(t("agentRuns.focusMissing"));
+    atBottom = false;
+    revealAndPulse(el, scroller, prefersReducedMotion.current);
+  }
+  async function answerWorkflow(id: string, value: string) {
+    text = "";
+    try {
+      await workflowsApi.answerText(id, value);
+      toasts.show(t("agent.compose.answered"));
+      void loadWorkflows();
+      void agentActivity.refresh();
+    } catch (e) {
+      text = value;
+      toasts.show(`${t("agent.compose.answerFailed")}：${(e as Error).message}`, "error");
+    }
+  }
+  async function queuedAction(fn: () => Promise<void>) {
+    try {
+      await fn();
+    } catch (e) {
+      toasts.show(`${t("agent.queued.failed")}：${(e as Error).message}`, "error");
     }
   }
 
@@ -535,6 +676,18 @@
         {/if}
       {/each}
 
+      {#if session.queued && qState}
+        <QueuedMessageView
+          queued={session.queued}
+          status={qState}
+          pendingNames={pendingNames(composerInput.pending)}
+          onEdit={(v) => queuedAction(() => session.editQueued(v))}
+          onRemove={() => queuedAction(async () => { await session.removeQueued(); toasts.show(t("agent.queued.removed")); })}
+          onSend={(o) => queuedAction(() => session.sendQueued(o))}
+          onGoCard={qState === "held_approval" || qState === "held_question" ? goCard : undefined}
+        />
+      {/if}
+
       {#if run && run.status !== "running" && run.autopilot_writes > 0 && !interview}
         <p class="ml-11 text-[12.5px] text-ink-3">{t("agent.autopilotActing", { n: run.autopilot_writes })}</p>
       {/if}
@@ -574,6 +727,16 @@
       <!-- The 「#」 menu is positioned on this box, so it lines up with the composer (not the padded bottom bar). -->
       <div class="relative">
       {#if !interview}<HashMenu textarea={input} bind:value={text} draft={attachments} study={refStudy} disabled={!input} />{/if}
+      <ComposerStatus
+        {mode}
+        chatOnly={chatOnly && waiting ? { title: waiting.title } : null}
+        {confirm}
+        sending={confirming}
+        onToggleChat={(v) => (chatOnlyFor = v && waiting ? waiting.id : null)}
+        onConfirm={() => void confirmSend()}
+        onCancelConfirm={() => (confirm = null)}
+        onGoCard={goCard}
+      />
       <Composer
         bind:value={text}
         bind:ref={input}

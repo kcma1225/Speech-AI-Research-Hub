@@ -10,9 +10,22 @@ export type PageContext = {
   paperId?: string;
   /** A task chosen with 「#任務」 (comes with its study). */
   taskId?: string;
+  /** 「改成一般對話」: this message is not the answer to that workflow's pending question. */
+  chatOnly?: string;
 };
 
 export type ConversationMode = "chat" | "interview";
+
+export type QueuedMessage = {
+  id: string;
+  text: string;
+  attachments: { kind: string; id: string; title: string; url: string | null; project_id?: string; version?: string }[];
+  /** Why it was not sent when the reply ended: a consent card / a question card waits, or sending failed. */
+  hold: "approval" | "question" | "error" | null;
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 export type Conversation = {
   id: string;
@@ -23,6 +36,8 @@ export type Conversation = {
   autopilot: boolean;
   memory_enabled: boolean;
   compacted: boolean;
+  /** The message queued while the assistant was replying (sent by the server when the reply ends). */
+  queued: QueuedMessage | null;
   created_at: string;
   updated_at: string;
 };

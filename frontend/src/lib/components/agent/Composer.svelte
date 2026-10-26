@@ -1,12 +1,14 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { ArrowUp, Brain, NotebookPen, Rocket, Square, Workflow, X } from "@lucide/svelte";
+  import { ArrowUp, Brain, ListPlus, NotebookPen, Rocket, Square, Workflow, X } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
 
   /**
    * Message composer: Enter sends (not while composing with an IME), Shift+Enter is a new line, Esc stops a running
-   * reply. Shows the page-context chip and the autopilot / memory toggles; autopilot draws an accent band on top.
+   * reply. While a reply runs (`busy`) the user can still type and send: the message is queued (lib/agent/composer.ts)
+   * and both 停止 and 排隊送出 are shown. Shows the page-context chip and the autopilot / memory toggles; autopilot
+   * draws an accent band on top.
    */
   let {
     busy = false,
@@ -77,7 +79,7 @@
 
   function submit() {
     const text = value.trim();
-    if (!text || disabled || busy) return;
+    if (!text || disabled) return;
     void onSend(text);
   }
   function oninput(e: Event) {
@@ -177,7 +179,7 @@
     {onkeydown}
     {oninput}
     {onpaste}
-    placeholder={placeholder ?? (busy ? t("agent.placeholderBusy") : t("agent.placeholder"))}
+    placeholder={placeholder ?? (busy ? t("agent.compose.placeholderQueue") : t("agent.placeholder"))}
     disabled={disabled}
     aria-keyshortcuts="Enter Shift+Enter Escape"
     class="block max-h-[220px] min-h-[52px] w-full resize-none bg-transparent px-4 pt-3.5 pb-1 text-[15px] leading-relaxed text-ink outline-none placeholder:text-ink-3 disabled:opacity-60 sm:text-[14.5px]"
@@ -239,9 +241,12 @@
     <span class="hidden flex-1 truncate text-right text-[11.5px] text-ink-3 @min-[760px]:block" aria-hidden="true">{t("agent.keys")}</span>
     <span class="flex-1 @min-[760px]:hidden"></span>
     {#if busy}
-      <button type="button" class="grid size-10 place-items-center rounded-full bg-ink text-primary-ink" aria-label={t("agent.stop")} title={`${t("agent.stop")} (Esc)`} onclick={onStop}><Square class="size-3.5 fill-current" /></button>
+      {#if value.trim()}
+        <button type="button" class="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-line-2 px-3 text-[12.5px] font-medium text-ink hover:bg-surface-3 disabled:opacity-30" aria-label={t("agent.compose.queueSend")} title={t("agent.compose.statusQueue")} disabled={disabled} onclick={submit}><ListPlus class="size-4" /><span class="hidden @min-[420px]:inline">{t("agent.compose.queueSend")}</span></button>
+      {/if}
+      <button type="button" class="grid size-10 shrink-0 place-items-center rounded-full bg-ink text-primary-ink" aria-label={t("agent.stop")} title={`${t("agent.stop")} (Esc)`} onclick={onStop}><Square class="size-3.5 fill-current" /></button>
     {:else}
-      <button type="button" class="grid size-10 place-items-center rounded-full bg-ink text-primary-ink transition-opacity disabled:opacity-30" aria-label={t("agent.send")} disabled={disabled || !value.trim()} onclick={submit}><ArrowUp class="size-4.5" /></button>
+      <button type="button" class="grid size-10 shrink-0 place-items-center rounded-full bg-ink text-primary-ink transition-opacity disabled:opacity-30" aria-label={t("agent.send")} disabled={disabled || !value.trim()} onclick={submit}><ArrowUp class="size-4.5" /></button>
     {/if}
   </div>
 </div>

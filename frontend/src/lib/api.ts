@@ -8,6 +8,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The whole error body (`code`, `pending`, …). */
+    readonly data: Record<string, unknown> | null = null,
   ) {
     super(message);
   }
@@ -36,7 +38,7 @@ async function request<T>(method: string, path: string, body?: Body): Promise<T>
     if (response.ok) throw new ApiError(response.status, t("common.error"));
   }
   if (!response.ok) {
-    if (typeof data?.error === "string") throw new ApiError(response.status, data.error);
+    if (typeof data?.error === "string") throw new ApiError(response.status, data.error, data as Record<string, unknown>);
     throw new ApiError(response.status, t(response.status === 429 ? "common.rateLimited" : response.status >= 500 ? "common.offline" : "common.error"));
   }
   return data as T;

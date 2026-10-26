@@ -249,3 +249,66 @@ describe("assistant.target_grounded (scenario matrix g22: a deck picked by searc
     expect(checkConversation({ conversation: conv, messages: [user(1, "刪掉第 3 頁"), ...search, act], runs: [{ id: "r", status: "done", artifacts: [{ kind: "deck", id: DECK }] } as unknown as StoredRun] }, ["assistant.target_grounded"])).toEqual([]);
   });
 });
+
+describe("chat.no_silent_supersede (a new message cancelled a pending consent card)", () => {
+  const conv = { id: "c-sup", study_id: null };
+  const call = (result_text: string, deny_reason: string | null = null) => ({ id: "tc1", tool: "create_task", status: "denied", summary: "新增待辦：整理數據", result_text, deny_reason });
+  it("catches the old silent supersede (the user never confirmed)", () => {
+    const f = checkConversation({ conversation: conv, messages: [], toolCalls: [call("使用者沒有同意，改提了其他要求。")] }, ["chat.no_silent_supersede"]);
+    expect(f.map((x) => x.invariant)).toEqual(["chat.no_silent_supersede"]);
+    expect(f[0]!.evidence).toMatchObject({ tool_call: "tc1", tool: "create_task" });
+    expect(checkConversation({ conversation: conv, messages: [], toolCalls: [{ ...call("使用者改提了其他要求，這個操作沒有執行。"), status: "cancelled" }] }, ["chat.no_silent_supersede"])).toHaveLength(1);
+  });
+  it("stays silent after an explicit confirmation, a denial or a cancel", () => {
+    const ok = [call("使用者確認取消這個操作，改提了其他要求；這個操作沒有執行。", "使用者確認取消，改提其他要求"), call("使用者拒絕了這個操作。"), { ...call("已被使用者中止，沒有執行。"), status: "cancelled" }];
+    expect(checkConversation({ conversation: conv, messages: [], toolCalls: ok }, ["chat.no_silent_supersede"])).toEqual([]);
+  });
+});
+
+describe("chat.duplicate_workflow (a second run for the same deliverable while the first was active)", () => {
+  const DECK = "f7da00dc-0000-4000-8000-000000000001";
+  const base = (over: Partial<StoredRun> = {}): StoredRun => ({ id: "r2", status: "planning", conversation_id: "c", study_id: "s1", created_at: "2026-10-26T10:10:00Z", inputs: { deck_id: DECK }, brief: { deliverable: { kind: "deck" }, user_words: ["把講稿改成中文"] }, ...over });
+  const first = (over: Partial<StoredRun> = {}): StoredRun => ({ id: "r1", status: "running", conversation_id: "c", study_id: "s1", created_at: "2026-10-26T10:00:00Z", finished_at: null, inputs: {}, artifacts: [{ kind: "deck", id: DECK }], brief: { deliverable: { kind: "deck" } }, ...over });
+  it("catches a run on the deck an active run is writing", () => {
+    const f = checkRun({ run: base(), siblings: [first()] }, ["chat.duplicate_workflow"]);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.evidence).toMatchObject({ earlier: "r1", shared: [DECK] });
+  });
+  it("catches the same deliverable kind in the same study with no target named", () => {
+    const f = checkRun({ run: base({ inputs: {}, brief: { deliverable: { kind: "deck" }, user_words: ["改成 8 頁"] } }), siblings: [first({ artifacts: [] })] }, ["chat.duplicate_workflow"]);
+    expect(f).toHaveLength(1);
+  });
+  it("stays silent when the first had finished, the user asked for another one, or it is a different paper / study / kind", () => {
+    const quiet = (run: StoredRun, sib: StoredRun) => expect(checkRun({ run, siblings: [sib] }, ["chat.duplicate_workflow"])).toEqual([]);
+    quiet(base(), first({ status: "partial", finished_at: "2026-10-26T10:05:00Z" }));
+    quiet(base({ inputs: {}, brief: { deliverable: { kind: "deck" }, user_words: ["另外再做一份英文的簡報"] } }), first({ artifacts: [] }));
+    quiet(base({ inputs: { paper_id: "p2" } }), first({ artifacts: [], inputs: { paper_id: "p1" } }));
+    quiet(base({ inputs: {}, study_id: "s2" }), first({ artifacts: [] }));
+    quiet(base({ inputs: {}, brief: { deliverable: { kind: "note" } } }), first({ artifacts: [] }));
+    quiet(base({ batch_id: "b" }), first({ batch_id: "b" }));
+  });
+});
+
+describe("wf.chat_answer_lost (production e6d552fc shape: a reply typed in chat never reached the waiting workflow)", () => {
+  const typed = (seq: number, at: string, page: Record<string, unknown> | null = null): StoredMessage => ({ seq, role: "user", text: "就剛剛那個研究，同一個簡報繼續做", content: [{ type: "text", text: "就剛剛那個研究，同一個簡報繼續做" }], created_at: at, page_context: page });
+  const withTurn = (m: StoredMessage, patch: (b: RunBundle) => void = () => undefined) => bundle(RUN_B, (b) => {
+    b.messages = [...b.messages!, m];
+    patch(b);
+  });
+  it("catches a chat turn during the awaiting_input window that the workflow never got", () => {
+    const f = checkRun(withTurn(typed(1377, "2026-10-25T04:40:00Z")), ["wf.chat_answer_lost"]);
+    expect(f).toHaveLength(1);
+    expect(f[0]!.evidence).toMatchObject({ message_seq: 1377, status: "awaiting_input" });
+    expect(String(f[0]!.evidence.question)).toContain("要怎麼繼續");
+  });
+  it("stays silent when the reply reached the workflow, the user opted out, or it was outside the window", () => {
+    const answered = withTurn(typed(1377, "2026-10-25T04:40:00Z"), (b) => {
+      b.run.guidance = [...(b.run.guidance ?? []), { at: "2026-10-25T04:40:00.500Z", text: "就剛剛那個研究，同一個簡報繼續做" }];
+    });
+    expect(count(answered, "wf.chat_answer_lost")).toBe(0);
+    expect(count(withTurn(typed(1377, "2026-10-25T04:40:00Z", { chatOnly: RUN_B })), "wf.chat_answer_lost")).toBe(0);
+    expect(count(withTurn(typed(1377, "2026-10-25T04:22:56Z")), "wf.chat_answer_lost")).toBe(0);
+    // The fixture as stored: the answer came through the card, no chat turn inside a window.
+    expect(count(bundle(RUN_B), "wf.chat_answer_lost")).toBe(0);
+  });
+});

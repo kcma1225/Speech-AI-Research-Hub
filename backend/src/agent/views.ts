@@ -13,6 +13,24 @@ export type ConversationRow = {
   memory_enabled: boolean;
   summary: string | null;
   summary_until: string | null;
+  /** The composer's queued message (sent when the run ends; docs/architecture.md → Agent → Queued message). */
+  queued?: QueuedMessage | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * A message the user sent while the assistant was still replying. `hold` = why it was not sent automatically when the
+ * run ended: `approval` (the run waits on a consent card: sending would cancel it), `question` (an `ask_user` card the
+ * text cannot answer), `error` (sending failed: `error`). Null = sent as soon as the run ends.
+ */
+export type QueuedMessage = {
+  id: string;
+  text: string;
+  context: Record<string, unknown> | null;
+  attachments: import("./attachments/types.js").StoredAttachment[];
+  hold: "approval" | "question" | "error" | null;
+  error?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -26,6 +44,7 @@ export const conversationView = (c: ConversationRow) => ({
   autopilot: c.autopilot,
   memory_enabled: c.memory_enabled,
   compacted: !!c.summary,
+  queued: c.queued ?? null,
   created_at: c.created_at,
   updated_at: c.updated_at,
 });

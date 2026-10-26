@@ -20,7 +20,8 @@ import { playbookLabel } from "./playbooks/registry.js";
 import { WorkflowEnv } from "./env.js";
 import { platformPort } from "./llm.js";
 import { aiFor } from "../ai/platform/index.js";
-import { asksOf, cardAnswersText, validateCardAnswers } from "./questions.js";
+import { asksOf, cardAnswersText, pendingAsk, validateCardAnswers } from "./questions.js";
+import { answersFromText } from "../agent/ask.js";
 import { budgetFor, DEFAULT_BUDGET, FINISHED_STATUSES, type Criterion, type RunRow, type StepRow } from "./types.js";
 import { randomUUID } from "node:crypto";
 import { batchPapers, batchRequest, conversationArtifact, conversationContext, conversationStudy, POINTS_AT_RE, studyFromText, studyOfInputs } from "./context.js";
@@ -674,4 +675,25 @@ export async function answerWorkflow(app: FastifyInstance, user: CurrentUser, id
   for (const s of await getSteps(app.db, id)) await insertWorkflowEvent(app.db, id, "step", { step: stepView(s) });
   await insertWorkflowEvent(app.db, id, "log", { level: "info", text: logText });
   return emitRun(app.db, id);
+}
+
+/**
+ * A typed reply as the answer to what the run waits for (`awaiting_input`): the chat composer's 「這個工作流程在等你
+ * 回答」 routing and the assistant's `answer_workflow` (the user's own words). A pending card → its free-text question
+ * gets the text, the other (optional) questions are skipped (`answersFromText`), then the normal answer path; a plan /
+ * blocked question without a card → guidance, which resumes the run. 409 when nothing waits for an answer, or when the
+ * card has no free-text question (choice-only / a required choice: answer on the card).
+ */
+export async function answerWorkflowText(app: FastifyInstance, user: CurrentUser, id: string, text: string) {
+  const r = await ownRun(app.db, user, id);
+  const t = text.trim();
+  if (!t) throw badRequest("回答不能是空的。");
+  if (r.status !== "awaiting_input") throw conflict("這個工作流程目前沒有在等你回答。");
+  const card = pendingAsk(r.state);
+  if (card) {
+    const answers = answersFromText(card.questions, t);
+    if (!answers) throw new HttpError(409, `「${card.title.slice(0, 60)}」只能在問題卡片上選擇作答。`, { code: "card_only" });
+    return answerWorkflow(app, user, id, { card_id: card.id, answers });
+  }
+  return addGuidance(app, user, id, t.slice(0, 2000));
 }

@@ -30,7 +30,7 @@ export type StoredRun = {
   brief?: StoredBrief | null;
   guidance?: { at?: string; text?: string; system?: boolean; setup?: boolean }[] | null;
   artifacts?: { kind?: string; id?: string; title?: string; role?: string }[] | null;
-  autopilot?: boolean; stop_reason?: string | null; question?: string | null; goal_id?: string | null;
+  autopilot?: boolean; stop_reason?: string | null; question?: string | null; goal_id?: string | null; batch_id?: string | null;
   created_at?: string; updated_at?: string; started_at?: string | null; finished_at?: string | null;
 };
 export type StoredEvent = { seq?: number; type: string; data: Record<string, unknown>; created_at: string };
@@ -57,13 +57,15 @@ export type RunBundle = {
   /** ISO time the bundle was read (staleness rules); default: now. */
   now?: string;
 };
-export type ConversationBundle = { conversation: { id: string; study_id?: string | null }; messages: StoredMessage[]; runs?: StoredRun[] };
+/** An assistant tool call as stored (`tool_calls`): status, the result text the model saw, the user's deny reason. */
+export type StoredToolCall = { id: string; tool: string; status: string; summary?: string | null; result_text?: string | null; deny_reason?: string | null; created_at?: string; finished_at?: string | null };
+export type ConversationBundle = { conversation: { id: string; study_id?: string | null }; messages: StoredMessage[]; runs?: StoredRun[]; toolCalls?: StoredToolCall[] };
 
 export type Finding = { invariant: string; severity: Severity; run_id: string | null; conversation_id: string | null; message: string; evidence: Record<string, unknown> };
 type Hit = { message: string; evidence: Record<string, unknown>; severity?: Severity };
 
 export type Invariant = {
-  id: string; category: "route" | "deliverable" | "requirements" | "context" | "input" | "questions" | "repair" | "outcome" | "assistant" | "grounding";
+  id: string; category: "route" | "deliverable" | "requirements" | "context" | "input" | "questions" | "repair" | "outcome" | "assistant" | "chat" | "grounding";
   severity: Severity; title: string;
   /** What the rule reads, for the catalogue. */
   reads: string;
@@ -978,6 +980,97 @@ export const INVARIANTS: Invariant[] = [
       return hits;
     },
   },
+  // ------------------------------------------------------------ chat ↔ pending work (composer)
+  {
+    id: "chat.no_silent_supersede", category: "chat", scope: "conversation", severity: "critical",
+    title: "待確認的操作只有在使用者明確確認後才會因為新訊息被取消",
+    reads: "tool_calls of the conversation: status denied / cancelled with a superseded result, the deny reason / result recording the user's confirmation",
+    check: (b) => {
+      const hits: Hit[] = [];
+      for (const c of b.toolCalls ?? []) {
+        if (c.status !== "denied" && c.status !== "cancelled") continue;
+        const text = `${c.result_text ?? ""}`;
+        if (!SUPERSEDED_RE.test(text)) continue;
+        if (CONFIRMED_SUPERSEDE_RE.test(text) || CONFIRMED_SUPERSEDE_RE.test(c.deny_reason ?? "")) continue;
+        hits.push({ message: `待確認的操作「${clip(c.summary ?? c.tool, 60)}」因為使用者送出新訊息就被取消了，使用者沒有確認要取消它`, evidence: { tool_call: c.id, tool: c.tool, status: c.status, result: clip(text, 120), at: c.finished_at ?? c.created_at ?? null } });
+      }
+      return hits;
+    },
+  },
+  {
+    id: "chat.duplicate_workflow", category: "chat", scope: "run", severity: "high",
+    title: "同一個對話裡，同一份成果的工作流程還在進行時，不會再開第二個",
+    reads: "siblings (same conversation): created_at / finished_at / status, input targets + artifacts, brief deliverable kind, study, paper; the run's newest user words (「另外一份」)",
+    check: (b) => {
+      const r = b.run;
+      if (!r.created_at || r.goal_id || !b.siblings?.length) return [];
+      const words = r.brief?.user_words ?? [];
+      if (SEPARATE_ASK_RE.test(words.at(-1) ?? "")) return [];
+      const at = Date.parse(r.created_at);
+      const mine = runTargets(r);
+      const kind = r.brief?.deliverable?.kind;
+      const hits: Hit[] = [];
+      for (const s of b.siblings) {
+        if (!s.created_at || Date.parse(s.created_at) >= at || s.goal_id) continue;
+        if (r.batch_id && s.batch_id === r.batch_id) continue;
+        // Active when this run started: not finished before it. A finished status without a time (older rows): unknown
+        // when it ended — not judged.
+        const finishedAt = s.finished_at ? Date.parse(s.finished_at) : null;
+        if (finishedAt !== null ? finishedAt <= at : FINISHED.has(s.status)) continue;
+        const theirs = runTargets(s);
+        const shared = [...mine].filter((x) => theirs.has(x));
+        const sameKind = !mine.size && !!kind && kind !== "other" && s.brief?.deliverable?.kind === kind
+          && (!r.study_id || !s.study_id || r.study_id === s.study_id)
+          && !(r.inputs?.paper_id && s.inputs?.paper_id && r.inputs.paper_id !== s.inputs.paper_id);
+        if (!shared.length && !sameKind) continue;
+        hits.push({
+          message: shared.length
+            ? `工作流程 ${s.id.slice(0, 8)} 還在進行（${s.status}）時，又為同一份成果（${shared.map((x) => x.slice(0, 8)).join("、")}）開了這個工作流程；調整應該送給原本那個`
+            : `工作流程 ${s.id.slice(0, 8)} 還在做同一種成果（${kind}，同一個研究）時，又開了這個工作流程；使用者沒有說要另一份`,
+          evidence: { earlier: s.id, earlier_status: s.status, earlier_created: s.created_at, earlier_finished: s.finished_at ?? null, shared, kind, words: clip(words.at(-1), 120) },
+        });
+      }
+      return hits;
+    },
+  },
+  {
+    id: "wf.chat_answer_lost", category: "questions", scope: "run", severity: "high",
+    title: "工作流程在等回答時，使用者在對話裡打的回覆有交給工作流程",
+    reads: "status snapshots (awaiting_input windows), the conversation's user messages in those windows (page_context.chatOnly = opted out), guidance / card answer times",
+    check: (b) => {
+      if (!b.messages?.length) return [];
+      const windows: { from: number; to: number; question: string }[] = [];
+      let open: { from: number; question: string } | null = null;
+      for (const e of b.events ?? []) {
+        if (e.type !== "workflow") continue;
+        const w = e.data.workflow as { status?: string; question?: string | null } | undefined;
+        if (!w?.status) continue;
+        const t = Date.parse(e.created_at);
+        if (w.status === "awaiting_input") open ??= { from: t, question: w.question ?? "" };
+        else if (open) {
+          windows.push({ ...open, to: t });
+          open = null;
+        }
+      }
+      if (open) windows.push({ ...open, to: b.run.status === "awaiting_input" ? Date.parse(b.now ?? new Date().toISOString()) : Date.parse(b.run.finished_at ?? b.run.updated_at ?? b.now ?? new Date().toISOString()) });
+      if (!windows.length) return [];
+      const answers = answersGiven(b.run).map((a) => Date.parse(a.at));
+      const hits: Hit[] = [];
+      for (const m of b.messages) {
+        if (m.role !== "user" || !m.created_at) continue;
+        const t = Date.parse(m.created_at);
+        const w = windows.find((x) => t >= x.from && t < x.to);
+        if (!w) continue;
+        const ctx = m.page_context ?? {};
+        if (ctx.chatOnly) continue; // the user chose 「改成一般對話」
+        if (blocksOf(m).some((x) => x.type === "text" && /^<user_answers/.test(x.text ?? ""))) continue; // an ask_user answer
+        // Answered at the same moment or later (routed by the composer / the assistant, or on the card).
+        if (answers.some((a) => a >= t - 2000)) continue;
+        hits.push({ message: `工作流程在等回答（「${clip(w.question, 60)}」）時，使用者在對話裡打了「${clip(msgText(m), 60)}」，工作流程卻沒有收到任何回答`, evidence: { message_seq: m.seq, at: m.created_at, question: clip(w.question, 160), status: b.run.status } });
+      }
+      return hits;
+    },
+  },
   // ------------------------------------------------------------ grounding
   {
     id: "grounding.library_fields", category: "grounding", scope: "run", severity: "high",
@@ -1078,6 +1171,22 @@ function dedupe<T>(xs: T[], key: (x: T) => string): T[] {
     seen.add(k);
     return true;
   });
+}
+
+// ---------------------------------------------------------------- chat helpers (own parsers; not the runtime's constants)
+
+/** A synthetic result of a call cancelled because the user sent another message (old and new runtime wording). */
+const SUPERSEDED_RE = /改提(?:了)?其他要求/;
+/** The new wording records that the user confirmed it (「使用者確認取消」); the deny reason too. */
+const CONFIRMED_SUPERSEDE_RE = /使用者確認取消/;
+/** 「另外再做一份」 / "another deck": the user explicitly wants a separate deliverable. */
+const SEPARATE_ASK_RE = /另外(?:再)?(?:做|開|建|寫|弄)|另(?:一|開)(?:份|個)|再(?:做|開|建|寫|弄)(?:一|另一)(?:份|個)|(?:再|多)(?:一|兩)份|新的一份|分開(?:做|的)|\b(?:another|a second|a separate|an additional|one more)\b/i;
+const FINISHED = new Set(["done", "partial", "failed", "cancelled"]);
+const isId = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f-]{36}$/i.test(v);
+/** Input deck / note / LaTeX project ids of a run plus every artifact it wrote. */
+function runTargets(r: StoredRun): Set<string> {
+  const i = r.inputs ?? {};
+  return new Set([i.deck_id, i.project_id, ...(Array.isArray(i.note_ids) ? i.note_ids : []), ...(r.artifacts ?? []).map((a) => a.id)].filter(isId));
 }
 
 // ---------------------------------------------------------------- running

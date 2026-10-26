@@ -12,7 +12,7 @@ import { aiFor } from "../ai/platform/index.js";
 import { pageContextSchema } from "./agent.js";
 import { closeWorkflowEventHub, getRun, lastWorkflowSeq, runView, workflowEventHub, workflowEventsAfter } from "../workflows/store.js";
 import {
-  addGuidance, answerWorkflow, approveWorkflow, cancelWorkflow, createWorkflows, deleteWorkflow, patchWorkflow, pauseWorkflow, publishWorkflowDeck, resumeWorkflow, revisePlan, startFromChat, sweepWorkflows, workflowDetail,
+  addGuidance, answerWorkflow, answerWorkflowText, approveWorkflow, cancelWorkflow, createWorkflows, deleteWorkflow, patchWorkflow, pauseWorkflow, publishWorkflowDeck, resumeWorkflow, revisePlan, startFromChat, sweepWorkflows, workflowDetail,
 } from "../workflows/service.js";
 import { answerInput } from "../agent/ask.js";
 import { listWorkflowPlaybooks } from "../workflows/playbooks/index.js";
@@ -23,6 +23,8 @@ import type { RunRow } from "../workflows/types.js";
 
 const idParams = z.object({ id: z.uuid() });
 const answerBody = z.object({ card_id: z.string().min(1).max(80), answers: z.array(answerInput).max(6) });
+/** `{text}`: a typed reply (the chat composer) mapped onto the pending card / question (answerWorkflowText). */
+const answerTextBody = z.object({ text: z.string().trim().min(1).max(2000) });
 const uuid = z.uuid();
 const inputsSchema = z.object({
   study: z.string().max(80).optional(),
@@ -222,6 +224,8 @@ export default async function workflows(app: FastifyInstance) {
   app.post("/workflows/:id/answer", async (request) => {
     const user = await requireUser(request);
     const { id } = parse(idParams, request.params, "找不到這個工作流程。");
+    const body = request.body as { text?: unknown } | null;
+    if (body && typeof body === "object" && "text" in body && !("card_id" in body)) return view(await answerWorkflowText(app, user, id, parse(answerTextBody, body, "回答不能是空的（最多 2000 字）。").text));
     return view(await answerWorkflow(app, user, id, parse(answerBody, request.body)));
   });
   app.patch("/workflows/:id", async (request) => {

@@ -1181,9 +1181,36 @@ saw); the run is not touched. Deferred cards in a discarded branch tail are `can
 grant (write tools only; never destructive/memory) and approves other pending calls of the step covered by it; `deny` →
 result 「使用者拒絕了這個操作…」. When no call of the step is pending, the run flips to `running` and resumes. Approvals do not
 need the LLM: the tool runs, then the run waits in `awaiting_llm` if the model is down. Authorization is re-checked at
-execution time by the tool itself. A new user message while cards are pending denies them (「使用者改提其他要求」); while
-`running` it is a 409. Cancel: status `cancelled` first, then the local executor is aborted (streamed text is kept as an
+execution time by the tool itself. A new user message while consent cards are pending is **never a silent supersede**:
+it is refused with 409 `{error, code: "pending_decision", pending: [{id, tool, title, summary}]}` (older clients get the
+safe behaviour) unless the request carries `supersede: true` (the composer's 「取消它並送出」 after showing 「這會取消待確認
+的『…』」); then the pending calls are `denied` with `deny_reason` 「使用者確認取消，改提其他要求」 and the model result
+「使用者確認取消這個操作，改提了其他要求…」 (approved-but-not-run ones `cancelled`; invariant `chat.no_silent_supersede`).
+While `running` the message is **queued** (below). Cancel: status `cancelled` first, then the local executor is aborted (streamed text is kept as an
 assistant message with `status: cancelled`); unresolved calls get synthetic results (「已被使用者中止」).
+
+**Queued message** (`0122_agent_queue.sql`, `conversations.queued` jsonb, one per conversation; `runtime.ts`
+`postMessage` / `drainQueued`). Decision: the queue lives **on the server**, not in the browser, so it survives a
+background or frozen tab, a reload, a closed tab and a second device (a client-side queue would depend on the tab's SSE
+and timers being alive when the run ends). Shape `QueuedMessage = {id, text, context, attachments: StoredAttachment[],
+hold: approval|question|error|null, error?, created_at, updated_at}`, returned as `conversation.queued` (GET and every
+`conversation` SSE event, which is also how changes are pushed).
+- POST `…/messages` while the run is `running` → 202 `{queued}`: the text (and the turn's attachments, resolved and
+  access-checked like a sent message) is stored, or appended (blank line) to the message already queued; never a 409.
+- **Drain** (`drainQueued`): when a run ends (the executor's `finally`: done / failed / cancelled / stopped on a card;
+  not after an edit or version switch = `superseded`), after a cancel, after an approval expires, and from the 5 s ticker
+  (unheld queues older than 10 s with no running reply — a crash between end and send). Rules instead of a blind
+  supersede: run `awaiting_approval` → `hold: approval` (sent automatically once the card is decided and that run ends,
+  or 「取消它並送出」 = send with `supersede`); the last turn ended on an `ask_user` card → with exactly one question that
+  takes free text (short/long text, or a choice with 「其他」: `ask.ts freeTextQuestion / answersFromText`, mirrored in
+  `frontend/src/lib/agent/composer.ts`) and no attachments it is sent **as that card's answer**, otherwise `hold:
+  question`; the `assistant` role unavailable or the send failing (e.g. an attachment that is gone) → `hold: error` with
+  the message — never dropped. A sent queue is cleared in the same transaction as the new turn (`fromQueue` = its id, so
+  two drains never send it twice).
+- A plain send while a held queue exists carries it: one turn, queued text first, attachments merged (order kept).
+- The UI shows it as a dashed 「排隊中」 bubble under the stream (`QueuedMessage.svelte`) with 編輯 / 移除 and, by state,
+  「停止並立即送出」 (cancels the reply; the cancel drains it), 「取消它並送出」 + 「先處理卡片」, 「當一般訊息送出」 + 「先回答卡片」
+  or 「立即送出」.
 
 Suggestions: `suggest_*` tools call `createSuggestion({source:"ai", conversationId})`; when the call was auto-approved by
 **autopilot** they call `applySuggestionNow` (versions tagged 自動駕駛, restorable). Approved by the user or a grant → a pending
@@ -1207,7 +1234,9 @@ stripped from the text).
 | PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?}` | owner | memory needs the user setting (409); emits `conversation`; `autopilot:true` settles the open step's cards (`applyAutopilot`) |
 | GET `/agent/conversations/:id/activity` | owner | what still runs: `{assistant: bool (an active agent run), workflows: [{id, title, status}] (unfinished runs of the conversation), goals: [{id, title, status}] (unfinished goals)}` — the delete dialog's warning (`frontend/src/lib/agent/delete.ts`) |
 | DELETE `/agent/conversations/:id` `?stop_agents=1` | owner | with an active run or unfinished workflows and no `stop_agents` → 409 `{code:"active_agents"}`; otherwise cancels the active run, stops (`cancelWorkflow`) and **deletes every workflow run of the conversation** (`deleteConversationWorkflows`; drafts they wrote — decks, notes — stay; a still-running job sees the cancel on its heartbeat and a retry finds the run `missing`); memories stay |
-| POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext, intent?: "make_note", attachments?: AttachmentRef[] ≤ 10}` | owner | text and/or `ask_user` answers; `intent` = toolbar quick action (see Paper reading); `attachments` see Attachments (a ref the caller cannot read → 403/404 「附件 N：…」, nothing is sent); 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; 409 while running → 202 `{message, run}` |
+| POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext, intent?: "make_note", attachments?: AttachmentRef[] ≤ 10, supersede?: boolean}` | owner | text and/or `ask_user` answers; `intent` = toolbar quick action (see Paper reading); `attachments` see Attachments (a ref the caller cannot read → 403/404 「附件 N：…」, nothing is sent); 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; while a reply runs → 202 `{queued}` (Queued message; answers → 409); consent cards pending and no `supersede: true` → 409 `{code:"pending_decision", pending:[{id,tool,title,summary}]}`; otherwise → 202 `{message, run}` |
+| PUT `/agent/conversations/:id/queued` `{text?, attachments?}` · DELETE `…/queued` | owner | edit (hold kept) / remove the queued message → `{queued}` / `{ok}`; 404 when nothing is queued |
+| POST `/agent/conversations/:id/queued/send` `{supersede?}` | owner | send it now: a running reply is cancelled first (「停止並立即送出」); consent cards → 409 `pending_decision` unless `supersede`; a held question → sent as a plain message (the card stays answerable) → `{sent, queued}` |
 | POST `/agent/conversations/:id/messages/:messageId/edit` `{text?, answers?, context?, attachments?}` | owner | current-branch user message → new version (cancels the active run first; empty body = resubmit unchanged; the message's attachments are kept and re-resolved unless `attachments` is given); an answer message takes only `answers` (400) → 202 `{message, run}` |
 | POST `/agent/conversations/:id/regenerate` | owner | 「重新產生」: resubmits the last user message → 202 `{message, run}`; 409 when there is none |
 | POST `/agent/conversations/:id/messages/:messageId/activate` | owner | ‹ 1/2 ›: make that version current (cancels the active run) → `{ok, changed}`; 409 when it cannot be switched |
@@ -1226,7 +1255,7 @@ SSE event types (data = JSON): `run {run}`, `conversation {conversation}`, `mess
 `branch {messageId}` (the current branch changed: reload).
 
 ```ts
-type PageContext = { path?, studyId?, studySlug?, noteId?, deckId?, page?, meetingId?, paperId?, taskId? }; // server resolves studyTitle; taskId from a 「#任務」 chip
+type PageContext = { path?, studyId?, studySlug?, noteId?, deckId?, page?, meetingId?, paperId?, taskId?, chatOnly? }; // server resolves studyTitle; taskId from a 「#任務」 chip; chatOnly = workflow id the user chose 「改成一般對話」 for (not its answer)
 type ToolCallView = { id, run_id, message_id, step, position, tool, title, title_en, risk, always_ask, grantable, open_world, status,
   approved_via, approval_reason, decided_at, deny_reason, summary, target, args /* edited if edited */, edited,
   result: {data, links: {label,url,kind?}[], source} | null, error, undo: "available" | "done" | null, undone_at,
@@ -1421,7 +1450,10 @@ the active conversation's group and searches stay open); a slim header row; the 
 chat), the global slide-over (`AskAiButton` in the topbar from
 `sm`, a floating button above the tab bar on phones; full-screen sheet on phones; page context from the URL via
 `lib/agent/context.ts`, the paper reader `/library/<id>[?study=<slug>]` gives `paperId` + the study), `ChatView` (shared by page, panel and interview), `ConsentCard`, `ToolTimeline`/`ToolRow`,
-`Composer`, `MemorySettings` + `McpTokens` (settings tab 「AI 助理」), `StudyInterview` (`/studies/new` 「AI 訪談」:
+`Composer` (+ `ComposerStatus`: one line above it saying what the next send does — 排隊 / 「會當成這題的回答」 /
+「這個工作流程在等你回答」 / cards waiting — and the inline 「這會取消待確認的『…』」 取消它並送出 / 先處理卡片 confirmation;
+`QueuedMessage`; pure rules in `lib/agent/composer.ts`, unit-tested; i18n `i18n/agent-composer.ts`; while a reply runs the
+composer stays usable: Enter / 「排隊送出」 queue, Esc / 停止 stop), `MemorySettings` + `McpTokens` (settings tab 「AI 助理」), `StudyInterview` (`/studies/new` 「AI 訪談」:
 `interview` conversation (seeded maturity card) → question cards → `propose_study_plan` → editable draft (maturity, stages,
 optional tasks from first steps / 「與教授討論：…」 open questions) → `POST /studies` + stage/task(/milestone) API calls), `AskCard`
 (question card: one question per step with progress bar, option cards, 其他, Back/Skip/Next, review step, sticky footer;
@@ -2362,7 +2394,25 @@ picked an unrelated deck and proposed deleting its page): the assistant may act 
 (a page it was on, a workflow of this conversation wrote or was given it, a create_* tool of this conversation made it) or
 one whose exact title the user said; otherwise the tool refuses with 「先用 ask_user 問使用者要改哪一份」 (CHAT_RULES say the
 same; invariant `assistant.target_grounded`). Partial reports and notices use plain words (`plainLabels`: P<n> → the
-paper's short title, approved_outline → 確認的大綱, no `req_*` ids). `get_deck {deck_id, pages?}`
+paper's short title, approved_outline → 確認的大綱, no `req_*` ids). **Steering** (`src/workflows/chat-steer.ts`, tools in `agent-tools.ts`; scenario matrix block s): every model call of a
+chat appends `<conversation_workflows>` to the newest user turn (built fresh, never stored): each steerable run of the
+conversation (not finished, not a goal stage or batch member: id, title, deliverable, status in 繁中, progress + the
+running step, the artifact it works on, the question it waits on) and the routing rule; the system prompt says the same.
+`steer_workflow {workflow_id?, action: guidance|pause|resume, text?}` (read, chat, not on MCP): `guidance` → `addGuidance`
+(before approval a re-plan, while running the next steps follow it, paused → resumes with it), `pause` → `pauseWorkflow`,
+`resume` → `resumeWorkflow`; only runs of this conversation; `text` must be the user's own words (≥ 60 % of its n-grams
+in their last 3 turns, else a tool error) — guidance lines are the user's words for the Brief. `answer_workflow
+{workflow_id?, text}` (read, chat): the user's reply to an `awaiting_input` run → `answerWorkflowText` (same own-words
+check). **Duplicate guard**: `start_workflow` (from the agent) refuses when an active run of the conversation already
+targets the same deck / note / LaTeX project (input or artifact) or — no target named — makes the same deliverable kind
+in the same study (and paper), unless `separate: true` or the user's newest turn asks for 「另外一份」/another
+(`SEPARATE_RE`): result `{status:"duplicate", existing_workflow_id, reason: same_target|same_kind}` + a message pointing to
+steer_workflow (no second card; invariant `chat.duplicate_workflow`). **Composer**: while a run of the conversation is
+`awaiting_input` the composer shows 「這個工作流程在等你回答：<question>」 and sends the text to `POST /workflows/:id/answer
+{text}` (not a chat turn), with 「改成一般對話」 to opt out (the message then carries `context.chatOnly = <run id>`, which
+the model is told and invariant `wf.chat_answer_lost` respects); a choice-only card is answered on the card (the hint
+says so; text sent there is a chat turn with `chatOnly`).
+`get_deck {deck_id, pages?}`
 lists every slide (title + short preview of body and notes) and returns the asked pages in full. `ask_user` refuses a card whose question refers to
 「以下／下列／上述／這個架構…」 unless `intro` contains the referenced content (≥ 3 list lines or ≥ 120 chars).
 The composer has 「交給 Agent」 and the slash command `/agent <request>` → `POST /workflows {conversation_id, request}`,
@@ -2381,7 +2431,7 @@ planning. The tool row of `start_workflow` renders the live **WorkflowCard**.
 | POST `/workflows/:id/revise` `{feedback ≤ 2000}` | owner | 「修改」 at plan approval (or 「修改計畫」 on an autopilot-approved run: running → stops between calls then re-plans; paused → re-plans; or 「重新規劃」 on a finished partial / done / failed run: final rounds, repairs and the final ledger reset, a little more budget, draft reused) → `planning`; the new plan waits for the user |
 | POST `/workflows/:id/pause` · `/resume {more?}` · `/cancel` | owner | pause while running; resume a paused / `needs_pdf` (re-plan) / partial (`more`: 繼續改) / failed run; cancel any active run (frees a slot → queued runs start) → `{workflow}` |
 | POST `/workflows/:id/guidance` `{text ≤ 2000}` | owner | 補充指示; on a finished `partial`/`done` run it starts 繼續改 with that guidance |
-| POST `/workflows/:id/answer` `{card_id, answers: [{id, value?, other?, skipped?}]}` | owner | answers a question card (400 invalid answer, 404 unknown card, 409 while working when editing) → `{workflow}`; resumes / re-runs from the asking step |
+| POST `/workflows/:id/answer` `{card_id, answers: [{id, value?, other?, skipped?}]}` \| `{text ≤ 2000}` | owner | answers a question card (400 invalid answer, 404 unknown card, 409 while working when editing) → `{workflow}`; resumes / re-runs from the asking step. `{text}` (the chat composer, `answerWorkflowText`): only while `awaiting_input` (409); a pending card → its first free-text question gets the text, the other optional questions are skipped (409 `code:"card_only"` for a choice-only card / a required choice); a plan or blocked question without a card → guidance (resumes) |
 | PATCH `/workflows/:id` `{objective?, criteria?}` | owner | 修改目標: allowed while `awaiting_plan_approval`, `paused` or finished; a changed objective on a paused/finished run re-plans |
 | POST `/workflows/:id/publish` | owner (study editor) | slides only, after the run ended: publish the draft deck as a new version (`lib/slides` publish) → 202 `{versionId, jobId}` |
 | DELETE `/workflows/:id` | owner | finished, waiting (`awaiting_*`, `needs_pdf`) or `queued` runs; drafts stay |
