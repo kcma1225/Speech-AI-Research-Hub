@@ -30,13 +30,17 @@ export function pageAt(manifest: PageManifest | null, h: number, v = 0): SlidePa
  * and only keep plain formatting (no images, forms, styles or event handlers).
  */
 export function notesHtml(page: SlidePage | null | undefined): string | null {
-  const html = page?.notes?.html;
-  if (!html) return null;
-  return DOMPurify.sanitize(html, {
+  return sanitizeNotes(page?.notes?.html);
+}
+/** The same sanitising for notes HTML reported by a live deck (Reveal `getSlideNotes`); null when empty. */
+export function sanitizeNotes(html: unknown): string | null {
+  if (typeof html !== "string" || !html.trim() || html.length > 200_000) return null;
+  const clean = DOMPurify.sanitize(html, {
     ALLOWED_TAGS: ["p", "br", "strong", "b", "em", "i", "u", "s", "code", "pre", "ul", "ol", "li", "blockquote", "a", "span", "sub", "sup", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "table", "thead", "tbody", "tr", "th", "td"],
     ALLOWED_ATTR: ["href", "title"],
     ALLOW_DATA_ATTR: false,
   });
+  return clean.replace(/<[^>]*>|&nbsp;|\s/g, "") ? clean : null;
 }
 
 // Last viewed page per deck version (per browser). Storage may be unavailable (private mode, sandbox).

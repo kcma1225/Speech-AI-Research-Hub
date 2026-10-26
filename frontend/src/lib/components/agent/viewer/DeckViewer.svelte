@@ -183,7 +183,7 @@
       {/if}
 
       {#if (mode ?? "draft") === "draft" && source}
-        <PreviewPane {preview} slide={Math.max(0, page - 1)} {stale} canRefresh={canEdit} onRefresh={() => void ensurePreview(true)} />
+        <PreviewPane {preview} slide={Math.max(0, page - 1)} {stale} canRefresh={canEdit} notes onRefresh={() => void ensurePreview(true)} />
       {:else if version}
         <SlidePlayer {version} deck={detail.project.slug} title={detail.project.title} bind:page startPage={entry.focus.page ?? null} speaker={false} />
       {:else}

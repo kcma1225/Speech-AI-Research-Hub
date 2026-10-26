@@ -1,23 +1,27 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { CircleAlert, Expand, LoaderCircle, LocateFixed, Presentation, RefreshCw } from "@lucide/svelte";
+  import { CircleAlert, Expand, LoaderCircle, LocateFixed, NotebookText, Presentation, RefreshCw } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
   import type { PreviewInfo } from "#lib/slides/types.ts";
+  import { sanitizeNotes } from "#lib/slides/pages.ts";
   import { renderLog } from "#lib/slides/util.ts";
 
   /**
    * Live preview of the source tree: the newest ready quick render in the sandboxed deck iframe (opaque origin, path
    * capability URL), with the status of the render in progress. `slide` (the slide under the editor cursor) is shown
-   * after every reload and, with 「跟隨游標」 on, whenever it changes.
+   * after every reload and, with 「跟隨游標」 on, whenever it changes. `notes`: a toggleable panel under the preview with
+   * the speaker notes of the slide shown (asked from the deck with Reveal's `getSlideNotes`, sanitised like the player's).
    */
-  let { preview, slide = 0, stale = false, canRefresh = false, onRefresh }: {
+  let { preview, slide = 0, stale = false, canRefresh = false, notes: withNotes = false, onRefresh }: {
     preview: PreviewInfo | null;
     slide?: number;
     /** The editor has changes newer than the shown render. */
     stale?: boolean;
     canRefresh?: boolean;
+    /** Offer the speaker-notes panel. */
+    notes?: boolean;
     onRefresh?: () => void;
   } = $props();
 
@@ -25,13 +29,25 @@
   let wrap = $state<HTMLElement | null>(null);
   let follow = $state(readFollow());
   let showLog = $state(false);
-  function readFollow() {
+  let showNotes = $state(readFlag("hub-preview-notes", true));
+  /** Notes of the slide shown: undefined until the deck answered. */
+  let slideNotes = $state<string | null | undefined>(undefined);
+  function readFlag(key: string, fallback: boolean) {
     try {
-      return localStorage.getItem("hub-quarto-follow") !== "0";
+      const v = localStorage.getItem(key);
+      return v === null ? fallback : v !== "0";
     } catch {
-      return true;
+      return fallback;
     }
   }
+  function readFollow() {
+    return readFlag("hub-quarto-follow", true);
+  }
+  $effect(() => {
+    try {
+      localStorage.setItem("hub-preview-notes", showNotes ? "1" : "0");
+    } catch {}
+  });
   $effect(() => {
     try {
       localStorage.setItem("hub-quarto-follow", follow ? "1" : "0");
@@ -39,6 +55,10 @@
   });
 
   const ready = $derived(preview?.ready ?? null);
+  $effect(() => {
+    void ready?.id;
+    slideNotes = undefined;
+  });
   const latest = $derived(preview?.latest ?? null);
   const busy = $derived(latest?.status === "queued" || latest?.status === "rendering");
   const failed = $derived(latest?.status === "failed" ? latest : null);
@@ -48,17 +68,22 @@
   function go(index: number) {
     frame?.contentWindow?.postMessage(JSON.stringify({ method: "slide", args: [index, 0] }), "*");
   }
+  const askNotes = () => frame?.contentWindow?.postMessage(JSON.stringify({ method: "getSlideNotes", args: [] }), "*");
   // Reveal posts its events as JSON strings; only messages from our iframe count (its origin is opaque).
   $effect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (!frame || event.source !== frame.contentWindow || typeof event.data !== "string") return;
-      let data: { namespace?: string; eventName?: string } | null = null;
+      if (!frame || event.source !== frame.contentWindow || typeof event.data !== "string" || event.data.length > 250_000) return;
+      let data: { namespace?: string; eventName?: string; method?: string; result?: unknown } | null = null;
       try {
         data = JSON.parse(event.data);
       } catch {
         return;
       }
-      if (data?.namespace === "reveal" && data.eventName === "ready") untrack(() => go(slide));
+      if (data?.namespace !== "reveal") return;
+      if (data.eventName === "ready") untrack(() => go(slide));
+      // The deck is user-authored: its notes are sanitised before they are shown.
+      if (data.eventName === "callback" && data.method === "getSlideNotes") slideNotes = sanitizeNotes(data.result);
+      else if (withNotes && (data.eventName === "ready" || data.eventName === "slidechanged")) askNotes();
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -93,6 +118,9 @@
         <span class="size-2 shrink-0 rounded-full bg-success"></span><span class="truncate">{t("slides.editor.preview.upToDate")}</span>
       {/if}
     </div>
+    {#if withNotes}
+      <Button size="icon-sm" variant={showNotes ? "secondary" : "ghost"} aria-pressed={showNotes} title={t("slides.player.notes")} aria-label={t("slides.player.notes")} onclick={() => (showNotes = !showNotes)}><NotebookText /></Button>
+    {/if}
     <Button size="icon-sm" variant={follow ? "secondary" : "ghost"} aria-pressed={follow} title={t("slides.editor.preview.follow")} aria-label={t("slides.editor.preview.follow")} onclick={() => ((follow = !follow), follow && go(slide))}><LocateFixed /></Button>
     {#if canRefresh}
       <Button size="icon-sm" variant="ghost" title={t("slides.editor.preview.refresh")} aria-label={t("slides.editor.preview.refresh")} disabled={busy} onclick={onRefresh}><RefreshCw /></Button>
@@ -132,6 +160,19 @@
       </div>
     {/if}
   </div>
+
+  {#if withNotes && showNotes && ready}
+    <section class="max-h-[40dvh] overflow-y-auto rounded-2xl border border-line bg-surface px-4 py-3 text-[13.5px] leading-relaxed text-ink-2" aria-label={t("slides.player.notes")} aria-live="polite">
+      <p class="mb-1.5 text-[12px] font-medium text-ink-3">{t("slides.player.notes")}</p>
+      {#if slideNotes}
+        <div class="speaker-notes">{@html slideNotes}</div>
+      {:else if slideNotes === null}
+        <p class="text-ink-3">{t("slides.player.noNotes")}</p>
+      {:else}
+        <LoaderCircle class="size-4 animate-spin text-ink-3 motion-reduce:animate-none" />
+      {/if}
+    </section>
+  {/if}
 
   {#if showFailure && failed?.error}
     <div class="rounded-2xl border border-danger/30 bg-danger-soft/60 p-3">
