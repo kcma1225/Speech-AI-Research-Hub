@@ -27,6 +27,7 @@ import { HUB, Hub, deployedBuild, sleep } from "../client.js";
 import { ensureFixtures, type Fixtures } from "../fixtures.js";
 import { ANSWERS, ENTRIES, HISTORIES, INTENTS, STYLES, buildMatrix, type Scenario } from "./matrix.js";
 import { scenarioFindings } from "./oracles.js";
+import { DEEP_RESEARCH_MD, MATERIAL_FILE, minimalPdf, PDF_NOTES } from "../material-fixture.js";
 import { setupScenario, waitChat } from "./seed.js";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
@@ -129,11 +130,14 @@ async function answer(hub: Hub, w: Wf, s: Scenario, fx: Fixtures): Promise<strin
 }
 
 async function startRun(hub: Hub, s: Scenario, setup: Awaited<ReturnType<typeof setupScenario>>): Promise<{ ids: string[]; note?: string }> {
+  // The user's own material: a file attached to this turn, or a PDF uploaded into the conversation earlier (pasted notes are the request itself).
+  const attachments = s.material === "attach" ? [{ kind: "upload", id: await hub.upload(setup.conversationId, MATERIAL_FILE, DEEP_RESEARCH_MD) }] : [];
+  if (s.material === "earlier_pdf") await hub.upload(setup.conversationId, "lab_notes_week3.pdf", minimalPdf(PDF_NOTES));
   if (s.start === "delegate") {
-    const r = await hub.api<{ workflows: { id: string }[] }>("POST", "/workflows", { request: s.request, conversation_id: setup.conversationId, context: s.entry === "home" ? null : setup.context, autopilot: false });
+    const r = await hub.api<{ workflows: { id: string }[] }>("POST", "/workflows", { request: s.request, conversation_id: setup.conversationId, context: s.entry === "home" ? null : setup.context, autopilot: false, ...(attachments.length ? { attachments } : {}) });
     return { ids: r.workflows.map((w) => w.id) };
   }
-  await hub.api("POST", `/agent/conversations/${setup.conversationId}/messages`, { text: s.request, context: setup.context });
+  await hub.api("POST", `/agent/conversations/${setup.conversationId}/messages`, { text: s.request, context: setup.context, ...(attachments.length ? { attachments } : {}) });
   const d = await waitChat(hub, setup.conversationId, 5 * 60_000);
   const raw = JSON.stringify(d.toolCalls.filter((t) => t.tool === "start_workflow" || t.tool === "start_goal").map((t) => t.result));
   const ids = [...new Set([...raw.matchAll(/workflow_id\\?":\\?"([0-9a-f-]{36})/g)].map((m) => m[1]!))];

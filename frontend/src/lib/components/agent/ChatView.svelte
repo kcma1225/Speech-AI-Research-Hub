@@ -310,11 +310,16 @@
   // 「交給 Agent」 / `/agent <task>`: a workflow (plan card → sub-agents → verification) instead of a one-shot reply.
   async function handToAgent(request: string) {
     if (!request.trim()) return void toasts.show(t("wf.handOffEmpty"), "error");
+    if (attachments.busy) return void toasts.show(t("attach.waitUploads"), "error");
+    if (attachments.items.some((i) => i.error)) return void toasts.show(t("attach.uploadErrors"), "error");
     const was = session.id;
     const sendCtx = contextWithRefs(ctx, attachments.contextRefs);
+    // Attached files / notes go with the hand-off: the workflow uses them as its material.
+    const refs = attachments.refs;
     try {
       if (!session.id) await session.create({ context: sendCtx, ...(draftAutopilot ? { autopilot: true } : {}) });
-      await workflowsApi.create({ request: request.trim(), conversation_id: session.id!, ...(sendCtx ? { context: sendCtx } : {}) });
+      await workflowsApi.create({ request: request.trim(), conversation_id: session.id!, ...(sendCtx ? { context: sendCtx } : {}), ...(refs.length ? { attachments: refs } : {}) });
+      if (attachments.items.length) attachments.clear();
       void agentActivity.refresh();
       text = "";
       await session.reload();

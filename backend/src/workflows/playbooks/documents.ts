@@ -23,6 +23,7 @@ import { localizeHeadings, runLabels, targetLanguage } from "../requirements.js"
 import { ensurePaperPdf } from "../paper-pdf.js";
 import { buildContentRefs, contentRefsOf } from "../content-refs.js";
 import { generateUnit, stitch, unitContext, unitTokens, type Unit, type UnitBudget } from "../units.js";
+import { loadMaterial, materialText } from "../material.js";
 import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from "./registry.js";
 
 type Fix = { previous: StepOutput; issues: string[] } | null;
@@ -394,7 +395,9 @@ const experimentReport: WorkflowPlaybook = {
     const access = await studyOrQuestion(env);
     if ("question" in access) return { kind: "question", question: access.question, setup: true };
     const notes = await noteSources(env);
-    const source = [env.run.request, notes.text].filter(Boolean).join("\n\n");
+    // The user's own material (an attached results file, pasted numbers): a source like the notes (material.ts).
+    const mats = await loadMaterial(env);
+    const source = [env.run.request, notes.text, materialText(mats, 24_000)].filter(Boolean).join("\n\n");
     if (!/\d/.test(source) || source.length < 40) return { kind: "question", question: "找不到實驗數據。請把結果貼在補充指示，或附加實驗筆記後按「繼續」。" };
     await env.setState({ note_title: `實驗報告：${clipText(notes.titles[0] ?? env.run.request.split("\n")[0]!, 80)}`, source: source.slice(0, 40_000), sections: EXP_SECTIONS });
     await env.setState({ units: [{ key: "results", title: "實驗目的、設定與結果", budget: { chars: 1800 } }, { key: "analysis", title: "分析與結論", budget: { chars: 1200 } }] });
@@ -507,10 +510,13 @@ const generic: WorkflowPlaybook = {
     const access = await studyOrQuestion(env);
     if ("question" in access) return { kind: "question", question: access.question, setup: true };
     const context = await env.tool("get_study", { study: access.study.id });
+    // The user's own material (material.ts): the researchers get it in full; the plan is built around it.
+    const mats = await loadMaterial(env);
     const user = [
       requestLine(env),
       env.guidanceText(),
       dataBlock("study", context.ok ? context.text.slice(0, 8000) : `研究〈${access.study.title}〉`),
+      mats.length ? `使用者提供的資料是這個任務的主要材料（researcher 步驟會拿到全文）：${mats.map((m) => `〈${m.title}〉（${m.text.length} 字）`).join("、")}。依它的內容規劃章節，不要改成線上調研。\n${dataBlock("user_material_excerpt", materialText(mats, 6000))}` : "",
       "把這個要求拆成 2–8 個步驟：先 researcher（用唯讀工具讀研究資料、筆記、論文），再 writer。成果文件的大綱就是 writer 步驟：每個 writer 只寫文件的「一個 ## 章節」（section 寫章節標題），附這一節的長度預算 chars（300–3000 字）；不要 integrator 或「整合全文」的步驟，章節會由系統依序拼接。role 只能是 researcher、writer、coder。",
       "criteria 寫 2–5 條可以檢查的驗收標準（具體，不要空泛）。不要加入使用者沒要求的時程或下一步。",
       '只輸出 JSON：{"title":"簡短標題","objective":"一句目標","criteria":["…"],"steps":[{"key":"s1","title":"…","role":"researcher","instructions":"…","depends_on":[],"expected":"…"},{"key":"s2","title":"…","role":"writer","section":"章節標題","chars":1200,"instructions":"…","depends_on":["s1"],"expected":"…"}]}',

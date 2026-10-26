@@ -50,6 +50,8 @@ export type Requirement = {
     pages?: number[]; item_kind?: string; items?: string[]; fields?: RequirementTerm[]; allow?: string[];
     /** Which part of a deck a language / tone requirement is about (absent = the whole artifact): slides = cover, titles, slide text; notes = speaker notes. */
     part?: "slides" | "notes";
+    /** include_topics: the topics are the parts the user listed (「呈現 A、B、C」): each gets its own page / section. */
+    sections?: boolean;
   };
   source: "request" | "guidance" | "conversation" | "standing" | "user";
   /** The user's own words this requirement rests on (verbatim, from `brief.user_words` / guidance); standing ones have none. */

@@ -56,6 +56,7 @@ npx tsx scripts/eval/run.ts                                # 全部 20 個（便
 | `deck_spoken_survey` | 正式站 79ab0678 的原話（語音輸入、沒有標點的長句）：統計文獻庫的熱詞方法，每個方法優缺點、架構圖、論文與會議／期刊，英文 | 交給 Agent | 全英文、提到論文的頁都寫了會議／期刊（≥ 80%）、提到固定文獻庫 ≥ 6 篇、標題沒有使用者沒說的主題（efficiency／評估集）、≥ 3 頁有 pros 與 cons、≥ 3 張架構圖 |
 | `deck_notes_zh_home` | 79ab0678：首頁聊天（沒有研究）對英文簡報說「講稿要是中文的…一比一的念出來」 | 交給 Agent（`home`：對話、頁面、inputs 都沒有研究，只有 deck_id） | 投影片（含封面）英文、每頁講稿以中文為主、頁數與標題不變、沒有問問題、Brief 有「講稿用繁體中文」 |
 | `deck_study_answer_topic` | 79ab0678：首頁聊天沒有研究 → 研究選擇卡，Runner 以「其他」回答研究名稱 | 交給 Agent（`home` + `answer`） | 有問研究卡、研究名稱沒有進原話或要求、標題沒有研究名稱的詞、繁中、8 頁 |
+| `deck_material_report` | 301b6e1a 類：附件是 deep research 結果（合成的 `material-fixture.ts`），「幫我以此做成能像教授報告的簡報：清楚區分已知事實、合理推論與待驗證構想，呈現研究背景、…與需要教授決策的問題」 | 交給 Agent（`upload`：先上傳到對話再帶 chip） | 用到資料特有的詞 ≥ 4/8、六個部分各有自己的頁面、第 1 頁不重複封面、沒有重複頁、看得出事實／推論／待驗證、文獻庫沒有多匯入論文、Brief 有「要呈現的部分」要求、繁中 |
 
 每個任務都在自動駕駛下跑；Runner 只核准計畫卡、**不回答問題卡**（例外：任務有 `answer`，例如 `deck_study_answer_topic` 回答研究選擇卡；`home` 任務從沒有研究的首頁對話開始）（停下來問就記為 `awaiting_input` 後取消）；時間上限從 run 真正開始執行（`started_at`）起算（預設 60 分，主題／論文 90–120，目標 240），排隊時間另記為 `queued_s`。
 
@@ -221,3 +222,19 @@ P5 之後 20/20 通過，但 4 個任務的 run 狀態是 `partial`。根因與�
 | `deck_topic_paper_title` | PASS done | PASS partial | 104 分（槽位爭用）；系統驗收 18/19 |
 | `note_reading` | PASS done | PASS partial | grounded：「我的想法」AI 代填用了週會筆記的內容，評審的來源沒有研究資料（既有缺口） |
 | `kind_conflict` | PASS done | PASS partial | 重跑 33 分 |
+
+## 使用者提供的資料（301b6e1a，2026-10-26，`runs/p7-material` + `runs/p7-material-b`，對照 `p6b-final`）
+
+正式站 301b6e1a：使用者附了一份 deep research 的 Markdown 檔，說「幫我以此做成能像教授報告的簡報」；start_workflow 沒有辦法帶附件，inputs 只有 study，簡報走主題路線（線上搜尋、匯入兩篇論文），附件從沒被讀；列出的六個部分都沒出現；第 1、2 頁同標題；自動駕駛下助理卻說「計畫卡片準備好後請確認」。修正見 `docs/architecture.md`「Material」「Listed parts」「No repeated cover」與 `startMessage`；新不變量 `input.material_used`、`deck.cover_repeated`、`assistant.no_confirm_under_autopilot`。
+
+| 任務 | 結果 | 狀態 | 程式檢查 | 系統驗收 (req) | 分鐘 | 呼叫 | 評審 |
+|---|---|---|---|---|---|---|---|
+| `deck_material_report`（新） | PASS | done | 8/8 | 18/18 (4/4) | 36.4 | 30 | 5 |
+| `deck_notes_zh_home` | PASS | done | 5/5 | 19/19 (3/3) | 24.1 | 22 | 5 |
+| `deck_add_page` | PASS | done | 5/5 | 20/20 (4/4) | 39.2 | 33 | – |
+| `kind_conflict` | PASS | done | 1/1 | 14/14 | 39.1 | 51 | – |
+| `deck_spoken_survey` | PASS | done | 6/6 | 18/18 (4/4) | 102.9 | 108 | 4 |
+
+- `deck_material_report` 第一次（p7-material）也是 PASS done 8/8，但 Brief 多了一條模型重述的「簡報必須涵蓋…」：模型的 include_topics 若引用確定性要求已引用的原話，現在也去掉（第二次 4/4）。
+- `deck_spoken_survey` 跑了三次：第 1 次 partial——「我要這份報告簡報是用英文的」的「這份報告」被當成「使用者提供的資料」，多了一條「以你提供的資料為主要材料」要求並在驗收失敗（已修：`MATERIAL_REF_RE` 不再把「這份報告／筆記」當資料，單元測試）；另外圖太大、評分程式把標題的 "Parameter-Efficient" 當成 efficiency 漂移。第 2 次 done 但 `per_item_fields` 評分 5/6（優缺點只寫在講稿）、第 3 次在 120 分鐘內 PASS done 6/6。圖放不下的修正輪是這個任務的老問題（便宜模型的架構圖節點太多），和這次的修改無關。
+- 情境矩陣新增 7 個 `m*` 情境（`runs/p7-material-scenarios`、`-b`）：全部 clean。過程中抓到兩個問題並修好：m70（貼上的筆記）—— `req.clause_coverage` 把貼上的每個數字都當成漏掉的要求（偵測器現在只讀貼上那則訊息的提問行）；m71（「用我上傳的 PDF 做成簡報」，PDF 上傳到對話但沒有附加）—— 助理看不到檔案、改問問題（聊天訊息提到資料卻沒有 chip 時，現在會把對話中最新、還沒被任何訊息附加的文件附到這則訊息）。

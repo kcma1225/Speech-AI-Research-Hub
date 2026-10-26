@@ -13,6 +13,7 @@ const SPOKEN_SURVEY = "我要你幫我做一個簡報這個簡報裡面詳細描
 const NOTES_ZH = "有個東西我想要你幫我改這個簡報裡面的講稿要是中文的當然你應該要多用一點英文的專用名詞這個講稿要我能夠一比一的念出來不會有違和";
 const HOME_TOPIC = "幫我做一份簡報，介紹串流 ASR 的 contextual biasing 有哪些做法，用我們的文獻庫，8 頁";
 import type { Hub } from "./client.js";
+import { DEEP_RESEARCH_MD, MATERIAL_FILE, MATERIAL_REQUEST, MATERIAL_SECTIONS, MATERIAL_TOKENS } from "./material-fixture.js";
 
 export type Kind = "deck" | "note" | "latex";
 /** What was collected after the task's run(s) ended (see run.ts `collect`). */
@@ -52,6 +53,8 @@ export type Task = {
   timeoutMin?: number;
   /** Started from a home-page chat: no study in the conversation, the page context or the inputs (the run must find it). */
   home?: boolean;
+  /** A file uploaded into the task's conversation and attached to the start (「交給 Agent」 with the chip). */
+  upload?: { name: string; content: string | Buffer };
   /** Answers a question card (the runner otherwise never answers): null leaves it unanswered. */
   answer?: (card: { id: string; title?: string }) => { id: string; value?: unknown; other?: string }[] | null;
 };
@@ -226,6 +229,22 @@ export const TASKS: Task[] = [
       G.grade("brief_notes_zh", (o.brief?.requirements ?? []).some((r) => r.type === "language" && /講稿用繁體中文/.test(r.text ?? "")), (o.brief?.requirements ?? []).map((r) => r.text).join("；") || "沒有要求"),
     ],
     judge: "speaker notes in natural spoken Traditional Chinese with English technical terms, readable aloud verbatim; slide text unchanged and English",
+  },
+  {
+    id: "deck_material_report", title: "附件的 deep research 結果做成給教授的報告簡報：以附件為主要材料、列出的部分各一頁、區分事實／推論／待驗證（301b6e1a）", tags: ["deck", "create", "material", "301b", "core"], mode: "api", study: "main",
+    request: MATERIAL_REQUEST, upload: { name: MATERIAL_FILE, content: DEEP_RESEARCH_MD }, expect: { kind: "deck" }, timeoutMin: 120,
+    grade: (o, c) => [
+      G.materialUsed(o.deck?.qmd ?? "", MATERIAL_TOKENS, 4),
+      G.sectionPages(deckOf(o), MATERIAL_SECTIONS),
+      G.coverNotRepeated(deckOf(o)),
+      G.noDuplicatePages(deckOf(o)),
+      G.grade("labels", /已知事實|【?事實】?/.test(o.deck?.qmd ?? "") && /推論/.test(o.deck?.qmd ?? "") && /待驗證/.test(o.deck?.qmd ?? ""), "看得出事實／推論／待驗證的區分"),
+      // Material first: nothing imported into the study's library (no online survey instead of the attachment).
+      G.grade("no_imports", (o.studyKeys ?? []).every((k) => keys(c).includes(k)), `研究文獻庫多了：${(o.studyKeys ?? []).filter((k) => !keys(c).includes(k)).join("、") || "無"}`),
+      G.grade("brief_sections", (o.brief?.requirements ?? []).some((r) => r.type === "include_topics" && /研究背景/.test(r.text ?? "")), (o.brief?.requirements ?? []).map((r) => r.text).join("；") || "沒有要求"),
+      lang(o, "zh"),
+    ],
+    judge: "a report to the professor built from the attached deep-research file: background, existing resources and limits, candidate directions, priorities, the MVP design and the open decisions each on their own page; facts, inferences and ideas to verify clearly labelled; names and numbers from the file",
   },
   {
     id: "deck_study_answer_topic", title: "首頁聊天、沒有研究：回答「放在哪個研究」不會變成主題（79ab0678）", tags: ["deck", "create", "topic", "brief", "79ab"], mode: "api", study: "main", home: true,

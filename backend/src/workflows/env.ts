@@ -10,7 +10,11 @@ import type { ChatMessage, ChatResult, ContentBlock, ImageBlock, TextBlock, Tool
 import { capResult, envelope } from "../agent/prompt.js";
 import { getAgentTool, toolJsonSchema, type AgentToolContext } from "../agent/tools/registry.js";
 import { addUsage, getRun, insertWorkflowEvent, markTainted } from "./store.js";
-import { llm, llmJson, type LlmRequest } from "./llm.js";
+import { dataBlock, llm, llmJson, type LlmRequest } from "./llm.js";
+import { loadMaterial, materialsOf, materialText } from "./material.js";
+
+/** Researcher purposes that gather a run's own context (they get the user's material); per-paper readers do not. */
+const MATERIAL_PURPOSES = new Set(["generic_research", "latex_research", "paper_research", "research", "experiment_research", "meeting_research", "outline_research"]);
 import type { ChatRole } from "../ai/platform/roles.js";
 import { WorkflowStop, type ModelPort, type Requirement, type RunRow, type StepRole } from "./types.js";
 import { notesLanguage, requirementsBlock, targetLanguage } from "./requirements.js";
@@ -289,7 +293,13 @@ export class WorkflowEnv {
     const defs = opts.tools.map((n) => getAgentTool(n)).filter((d): d is NonNullable<typeof d> => !!d && d.risk === "read");
     const vision = await this.vision("assistant");
     const tools = defs.filter((d) => vision || d.name !== "view_paper_pages").map((d) => ({ name: d.name, description: d.description, inputSchema: toolJsonSchema(d) }));
-    const messages: ChatMessage[] = [{ role: "system", content: opts.system }, { role: "user", content: opts.user }];
+    // The user's own material (material.ts) reaches the researchers that gather a run's context (not per-paper readers).
+    let user = opts.user;
+    if (materialsOf(this.run.inputs).length && MATERIAL_PURPOSES.has(opts.purpose ?? "")) {
+      const mats = await loadMaterial(this);
+      if (mats.length) user = `${user}\n\n使用者提供的資料是這個任務的主要材料：先讀它，結構、名稱與數字以它為準，其他來源只補充。\n${dataBlock("user_material", materialText(mats, 24_000))}`;
+    }
+    const messages: ChatMessage[] = [{ role: "system", content: opts.system }, { role: "user", content: user }];
     let calls = 0;
     const max = opts.maxToolSteps ?? 60;
     const seen = new Map<string, number>();

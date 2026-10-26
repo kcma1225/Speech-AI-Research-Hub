@@ -9,7 +9,7 @@ import { registerAgentTool } from "../agent/tools/registry.js";
 import { badRequest, notFound } from "../lib/http.js";
 import { artifactGrounded, UNGROUNDED_TARGET } from "./context.js";
 import { getRun, getSteps } from "./store.js";
-import { announceRuns, insertWorkflows, startResult } from "./service.js";
+import { announceRuns, insertWorkflows, startMessage, startResult } from "./service.js";
 import { listWorkflowPlaybooks } from "./playbooks/index.js";
 import { routeWorkflowRequest } from "./goals/agent-tools.js";
 import { collectUserWords } from "./brief.js";
@@ -29,7 +29,8 @@ registerAgentTool({
     "then sub-agents do the parts, every part is verified and fixed, and the result is checked against the objective. Use it when the user asks you to create such a thing " +
     "(only use create_deck with generate:true when the user explicitly wants a quick one-shot draft). " +
     "The user's own chat messages are passed to the workflow verbatim and are the ONLY source of its requirements; `request` is your short summary of the task (what to make, about what, which material) — do not add requirements: no language, page count, length, structure or format the user did not say (pass `pages` only when the user gave a number). Things the user did not specify stay 「未指定」 on the plan card. " +
-    "After calling it, end your turn with one short sentence; do not describe results — the card shows progress and the workflow reports back. " +
+    "Material the user provides (an attached / uploaded file such as a Deep Research result, pasted notes, an attached note) is the task's material: pass the files' attachment_id in `attachment_ids` and say in `request` that it is the main material (the workflow also picks up the turn's own attachments and pasted text; it never searches online or imports papers instead of using it). " +
+    "After calling it, end your turn with one short sentence that follows the result's `message` (with autopilot on the plan is approved automatically — never ask the user to confirm it); do not describe results — the card shows progress and the workflow reports back. " +
     "One deck / reading note per paper (「把每一篇文獻都做成簡報」): call it ONCE — pass the study (or all paper_ids) and the request; it creates one run per paper as a batch " +
     "(runs over the limit of 3 working runs queue and start automatically). Papers without a PDF are handled by the workflow (open-access lookup, the record's URL, then it asks or skips) — do not drop them yourself. " +
     "The study and paper default to the conversation's page context. " +
@@ -51,6 +52,7 @@ registerAgentTool({
     note_ids: z.array(z.string().max(64)).max(6).optional(),
     paper_ids: z.array(z.string().max(64)).max(10).optional().describe("Several papers: lit_review reads them together; slides / reading_note make one run per paper (a batch)"),
     pages: z.number().int().min(3).max(40).optional().describe("Deck page count when the user gave one"),
+    attachment_ids: z.array(z.string().max(64)).max(6).optional().describe("Files the user uploaded into this conversation that the task should use (attachment_id from the <attachments> list) — pass them whenever the user refers to an attachment / their file / pasted research result. The workflow reads them as the material"),
   }),
   summarize: (a) => `交給 Agent：${a.request.replace(/\s+/g, " ").slice(0, 50)}`,
   async execute(a, ctx) {
@@ -75,17 +77,12 @@ registerAgentTool({
         context: conv?.context ?? null,
         autopilot: conv?.autopilot ?? false,
         userWords,
-        inputs: { study: a.study, paper_id: uuid(a.paper_id), deck_id: uuid(a.deck_id), project_id: uuid(a.project_id), note_ids: a.note_ids?.map(uuid).filter((x): x is string => !!x), paper_ids: a.paper_ids?.map(uuid).filter((x): x is string => !!x), pages: a.pages },
+        inputs: { study: a.study, paper_id: uuid(a.paper_id), deck_id: uuid(a.deck_id), project_id: uuid(a.project_id), note_ids: a.note_ids?.map(uuid).filter((x): x is string => !!x), paper_ids: a.paper_ids?.map(uuid).filter((x): x is string => !!x), pages: a.pages, attachment_ids: a.attachment_ids?.map(uuid).filter((x): x is string => !!x) },
       }),
     );
     await announceRuns(ctx.db, out.runs);
     const data = startResult(out);
-    const autopilot = conv?.autopilot ?? false;
-    const message = out.batchId
-      ? `已拆成 ${out.runs.length} 個工作流程（每篇一個，${out.runs.filter((r) => r.status === "queued").length} 個排隊中，會自動接著開始）。${autopilot ? "自動駕駛開啟：只寫草稿的計畫會自動核准並執行，不用等使用者確認。" : "每份的計畫準備好後請使用者確認。"}用一句話告訴使用者批次卡片會顯示每一篇的進度，不要描述或預告結果。`
-      : autopilot
-        ? "工作流程已開始規劃；自動駕駛下只寫草稿的計畫會自動核准並執行（卡片可暫停或修改計畫）。用一句話說明，不要描述或預告結果。"
-        : "工作流程已開始規劃；計畫卡片會顯示給使用者，確認後才會執行與寫入。現在用一句話告訴使用者計畫準備好時請他確認，不要描述或預告結果。";
+    const message = startMessage(out.runs, out.batchId);
     return { data, text: JSON.stringify({ ...data, message }) };
   },
 });

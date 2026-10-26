@@ -253,6 +253,20 @@ describe.skipIf(!hasTestDb || !hasTestS3)("attachments (routes + runtime)", () =
     await expect(tool.execute({ attachment_id: up.id }, { app: t.app, db: t.db, user, source: "agent", conversationId: crypto.randomUUID(), runId: null, autopilot: false })).rejects.toMatchObject({ status: 404 });
   });
 
+  it("「用我上傳的檔案」 with no chip: the conversation's newest unattached document is attached to the turn (scenario m71)", async () => {
+    const conv = await newConversation();
+    const up = json(await upload(alice, conv, { filename: "報告.docx", data: fixture("sample.docx") })).attachment;
+    const r = await send(conv, { text: "用我上傳的檔案做成簡報" });
+    expect(r.statusCode, r.body).toBe(202);
+    expect(json(r).message.attachments.map((a: any) => [a.kind, a.id])).toEqual([["upload", up.id]]);
+    expect(JSON.stringify(lastUser(requests.at(-1)!))).toContain(`attachment_id=${up.id}`);
+    // Already attached once → not attached again; words that point at nothing attach nothing.
+    const again = await send(conv, { text: "用我上傳的檔案再做一次" });
+    expect(json(again).message.attachments ?? []).toEqual([]);
+    const plain = await send(await newConversation(), { text: "下一步做什麼？" });
+    expect(json(plain).message.attachments ?? []).toEqual([]);
+  });
+
   it("own note only → the run is not tainted; a note of another study is still readable (labs read everything)", async () => {
     const conv = await newConversation();
     expect((await send(conv, { text: "摘要", attachments: [{ kind: "note", id: noteId }] })).statusCode).toBe(202);

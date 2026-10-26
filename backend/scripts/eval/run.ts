@@ -326,7 +326,9 @@ async function runTask(task: Task): Promise<TaskResult> {
     } else {
       // A home-page start (task.home): no study in the conversation, the page context or the inputs.
       conv ??= await newConversation(task.home ? null : studyId);
-      const r = await hub.api<{ workflows: { id: string }[] }>("POST", "/workflows", { request: task.request, ...(task.playbook ? { playbook: task.playbook } : {}), conversation_id: conv, ...(task.home ? {} : { context: { studyId } }), inputs: { ...(task.home ? {} : { study: studyId }), ...(prep.inputs ?? {}) }, autopilot: true });
+      // A file attached to the start (the composer's chip): uploaded into the conversation first.
+      const attachments = task.upload ? [{ kind: "upload", id: await hub.upload(conv, task.upload.name, task.upload.content) }] : [];
+      const r = await hub.api<{ workflows: { id: string }[] }>("POST", "/workflows", { request: task.request, ...(task.playbook ? { playbook: task.playbook } : {}), conversation_id: conv, ...(task.home ? {} : { context: { studyId } }), inputs: { ...(task.home ? {} : { study: studyId }), ...(prep.inputs ?? {}) }, ...(attachments.length ? { attachments } : {}), autopilot: true });
       runIds = r.workflows.map((w) => w.id);
     }
     log(task.id, `started ${goalId ? `goal ${goalId.slice(0, 8)} ` : ""}${runIds.map((x) => x.slice(0, 8)).join(",") || "(no run)"}`);

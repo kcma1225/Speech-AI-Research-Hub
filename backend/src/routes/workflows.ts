@@ -6,7 +6,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireUser } from "../lib/auth.js";
-import { HttpError, notFound, parse } from "../lib/http.js";
+import { badRequest, HttpError, notFound, parse } from "../lib/http.js";
+import { attachmentsInput } from "../agent/attachments/index.js";
 import { aiFor } from "../ai/platform/index.js";
 import { pageContextSchema } from "./agent.js";
 import { closeWorkflowEventHub, getRun, lastWorkflowSeq, runView, workflowEventHub, workflowEventsAfter } from "../workflows/store.js";
@@ -32,6 +33,7 @@ const inputsSchema = z.object({
   paper_ids: z.array(uuid).max(10).optional(),
   pages: z.number().int().min(3).max(40).optional(),
   mode: z.enum(["progress", "paper_report"]).optional(),
+  attachment_ids: z.array(uuid).max(6).optional(),
 }).optional();
 const createInput = z.object({
   request: z.string().trim().min(2).max(4000),
@@ -40,6 +42,8 @@ const createInput = z.object({
   context: pageContextSchema,
   inputs: inputsSchema,
   autopilot: z.boolean().optional(),
+  // Chips of 「交給 Agent」 (with conversation_id): stored on the user message; uploads / notes become the run's material.
+  attachments: attachmentsInput.optional(),
 });
 const listQuery = z.object({ active: z.enum(["0", "1"]).optional(), study: z.string().max(80).optional(), status: z.string().max(40).optional(), conversation: uuid.optional(), batch: uuid.optional(), limit: z.coerce.number().int().min(1).max(100).optional() });
 const approveInput = z.object({
@@ -83,7 +87,8 @@ export default async function workflows(app: FastifyInstance) {
     const user = await requireUser(request);
     const input = parse(createInput, request.body);
     if (!(await assistantUp())) throw new HttpError(503, "AI 助理維護中，暫時無法啟動工作流程。", { code: "llm_unavailable", hint: "請稍後再試，或請管理員檢查模型設定。" });
-    const base = { request: input.request, playbook: input.playbook, context: (input.context ?? null) as Record<string, unknown> | null, inputs: input.inputs, autopilot: input.autopilot };
+    if (input.attachments?.length && !input.conversation_id) throw badRequest("附件需要搭配對話（conversation_id）。");
+    const base = { request: input.request, playbook: input.playbook, context: (input.context ?? null) as Record<string, unknown> | null, inputs: input.inputs, autopilot: input.autopilot, ...(input.attachments?.length ? { attachments: input.attachments } : {}) };
     const run = input.conversation_id ? await startFromChat(app, user, { ...base, conversationId: input.conversation_id }) : (await createWorkflows(app, user, base)).runs[0]!;
     const batch = run.batch_id ? (await app.db.query<RunRow>("SELECT * FROM workflow_runs WHERE batch_id=$1 ORDER BY batch_index", [run.batch_id])).rows : [run];
     reply.code(201);

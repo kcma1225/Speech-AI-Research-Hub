@@ -4,6 +4,7 @@
  * repair rounds) → commit + report. Every transition is persisted before the next model call, so a restarted job
  * continues from the rows. Runs inside the ai-worker job `ai_workflow` (or directly in tests).
  */
+import { loadMaterial, materialsOf } from "./material.js";
 import { isLlmUnavailable } from "../ai/platform/index.js";
 import { HttpError } from "../lib/http.js";
 import { CURRENT_USER_COLUMNS, toCurrentUser } from "../lib/auth.js";
@@ -238,6 +239,9 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workfl
   const routed = await routePhase(env, pb);
   if (!routed) return pb;
   pb = routed;
+  // The user's own material (material.ts: an attached file, pasted notes) is read before any playbook plans with it —
+  // with the owner's permissions; an upload taints the run like read_attachment (`state.material` records it).
+  if (materialsOf(env.run.inputs).length) await loadMaterial(env);
   let res = await pb.plan(env);
   // The playbook hands over to a better-fitting one (a literature review with too few papers → topic research, the user's
   // choice): switch once and plan with it — only when it delivers the same kind, else the user decides.

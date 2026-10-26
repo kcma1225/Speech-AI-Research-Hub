@@ -10,6 +10,7 @@
  *   Decisions (approve / approve_conversation / deny) resume the run once every call of the step is decided.
  *   LLM outage → awaiting_llm with backoff, auto-resumed by the ticker or when the role comes back.
  */
+import { MATERIAL_REF_RE } from "../workflows/material.js";
 import { labelSummary } from "./summary-labels.js";
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -405,6 +406,19 @@ export class AgentRuntime {
   async postMessage(user: CurrentUser, conversationId: string, input: TurnInput | string, pageContext: PageContext | null = null) {
     let turnInput: TurnInput = typeof input === "string" ? { text: input, context: pageContext } : input;
     const ctx = await this.resolveContext(turnInput.context ?? null);
+    // 「用我上傳的 PDF」「附件」 with no chip on this turn (scenario m71: the PDF was uploaded into the conversation but
+    // not attached, so the model never saw it): the conversation's newest uploaded document no message carries yet is
+    // attached to the turn (workflows/material.ts MATERIAL_REF_RE).
+    if (!turnInput.attachments?.length && !turnInput.answers && turnInput.text && MATERIAL_REF_RE.test(turnInput.text)) {
+      const up = (await this.db.query<{ id: string }>(
+        `SELECT u.id FROM agent_uploads u JOIN conversations c ON c.id=u.conversation_id
+          WHERE u.conversation_id=$1 AND c.user_id=$2 AND u.kind='document'
+            AND NOT EXISTS (SELECT 1 FROM agent_messages m WHERE m.conversation_id=u.conversation_id AND m.attachments @> jsonb_build_array(jsonb_build_object('kind','upload','id',u.id::text)))
+          ORDER BY u.created_at DESC LIMIT 1`,
+        [conversationId, user.id],
+      ).catch(() => ({ rows: [] as { id: string }[] }))).rows[0];
+      if (up) turnInput = { ...turnInput, attachments: [{ kind: "upload", id: up.id }] };
+    }
     // Attachments: access checked and content loaded before the lock (403/404 names the item).
     if (turnInput.attachments?.length && !turnInput.answers) turnInput = { ...turnInput, prepared: await prepareAttachments(this.app, user, conversationId, turnInput.attachments) };
     const result = await transaction(this.db, async (client) => {

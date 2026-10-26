@@ -182,7 +182,8 @@ integration("workflow units", () => {
       return [...block.matchAll(/^\d+\. (.+?)(?:（[^）]*）)*$/gm)].map((x) => x[1]!);
     };
     const OUTLINE = { pages: [
-      { title: "熱詞偏置簡介", purpose: "題目", points: ["主題"], layout: "F", kind: "title" },
+      // (No title page: the cover is the front matter; a planned one is dropped — production 301b6e1a.)
+      { title: "動機與問題定義", purpose: "動機", points: ["為什麼要偏置"], layout: "F", kind: "motivation", sources: ["P1", "P2"] },
       { title: "做法分類", purpose: "兩類做法", points: ["淺層融合與深層偏置"], layout: "T", kind: "taxonomy", sources: ["P1", "P2"] },
       { title: "Deep biasing", purpose: "方法", points: ["注入位置 encoder"], layout: "A", kind: "method", sources: ["P1"], item: "Deep biasing" },
       { title: "Shallow fusion", purpose: "方法", points: ["只在推論"], layout: "A", kind: "method", sources: ["P2"], item: "Shallow fusion" },
@@ -222,7 +223,7 @@ integration("workflow units", () => {
       const steps = await getSteps(t.db, run.id);
       expect(steps.map((s) => s.key)).toEqual(["research", "outline", "paper_1", "paper_2", "write_1", "write_2", "write_3", "write_4", "write_5", "write_6", "assemble", "notes", "constraints", "visual_qa", "final"]);
       const dep = (k: string) => steps.find((s) => s.key === k)!.depends_on;
-      expect(dep("write_1")).toEqual(["outline"]);
+      expect(dep("write_1")).toEqual(["outline", "paper_1", "paper_2"]);
       expect(dep("write_3")).toEqual(["outline", "paper_1"]);
       expect(dep("write_4")).toEqual(["outline", "paper_2"]);
       expect(dep("write_5")).toEqual(["outline", "paper_1", "paper_2"]);
@@ -242,7 +243,7 @@ integration("workflow units", () => {
       expect(deepPage).not.toContain("SHALLOWMARK");
       expect(deepPage).toContain("第 3 頁用版型 A");
       expect(deepPage).toContain("上一個單元「做法分類」");
-      expect(writerOf(1)).toContain("這頁沒有指定來源論文");
+      expect(writerOf(1)).not.toContain("這頁沒有指定來源論文");
       const cmp = writerOf(5);
       expect(cmp).toContain("4.1");
       expect(cmp).toContain("4.6");
@@ -309,7 +310,7 @@ integration("workflow units", () => {
         outline: (req) => {
           const n = Number(/P1–P(\d+)/.exec(userText(req))?.[1] ?? 2);
           return JSON.stringify({ pages: [
-            { title: "Hotword Mechanisms", purpose: "題目", points: ["主題"], layout: "F", kind: "title" },
+            { title: "Problem and motivation", purpose: "動機", points: ["為什麼要偏置"], layout: "F", kind: "motivation", sources: ["P1"] },
             { title: "Taxonomy", purpose: "分類", points: ["所有做法"], layout: "T", kind: "taxonomy", sources: ["P1"] },
             ...Array.from({ length: n }, (_, i) => ({ title: `Method ${i + 1}`, purpose: "方法", points: ["架構"], layout: "A", kind: "method", sources: [`P${i + 1}`], item: `Method ${i + 1}` })),
           ].slice(0, 8) });

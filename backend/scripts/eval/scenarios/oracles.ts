@@ -47,6 +47,13 @@ export function scenarioFindings(s: Scenario, b: RunBundle, ctx: { studyId: stri
     if (asked.length) out.push(f(b, "scenario.study_resolved", "critical", "研究推得出來，卻問了「放在哪個研究」", { questions: asked.map((q) => q.text.slice(0, 120)), entry: s.entry, history: s.history }));
     else if (planned && run.study_id !== ctx.studyId) out.push(f(b, "scenario.study_resolved", "critical", `研究應為固定資料的研究，得到 ${run.study_id ?? "（沒有）"}`, { expected: ctx.studyId, got: run.study_id ?? null }));
   }
+  // The user's own material (301b6e1a): carried as a reference and used — a deck built from it, a note not an online survey.
+  if (s.material) {
+    const mats = Array.isArray(run.inputs?.materials) ? (run.inputs!.materials as unknown[]) : [];
+    if (!mats.length) out.push(f(b, "scenario.material_input", "critical", `使用者提供的資料（${s.material}）沒有交給工作流程（inputs.materials 是空的）`, { material: s.material, inputs: Object.keys(run.inputs ?? {}) }));
+    if (s.expect.kind === "deck" && rt?.deck && rt.deck !== "material") out.push(f(b, "scenario.material_route", "critical", `用使用者的資料做簡報，路由卻是 ${rt.deck}`, { route: rt }));
+    if (s.expect.kind === "note" && rt?.playbook === "topic_research") out.push(f(b, "scenario.material_route", "critical", "用使用者的資料寫筆記，卻改成線上主題調研", { route: rt }));
+  }
   // Per-part language as stated (checked once requirements exist: the plan card or later).
   const p = s.expect.parts;
   if ((planned || requirementsOf(run).length) && (p.all || p.slides || p.notes)) {

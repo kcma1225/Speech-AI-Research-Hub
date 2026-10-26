@@ -35,7 +35,7 @@ export type StoredRun = {
 };
 export type StoredEvent = { seq?: number; type: string; data: Record<string, unknown>; created_at: string };
 export type StoredStep = { key: string; kind?: string; role?: string; status?: string; round?: number; title?: string; conv?: { rounds?: { round: number; failures?: string[] }[]; stop?: string } | null; output_text?: string | null };
-export type StoredMessage = { seq: number; role: string; text?: string | null; content?: unknown; created_at?: string; page_context?: Record<string, unknown> | null };
+export type StoredMessage = { seq: number; role: string; text?: string | null; content?: unknown; created_at?: string; page_context?: Record<string, unknown> | null; attachments?: { kind?: string; id?: string; title?: string; upload_kind?: string }[] | null };
 export type LibraryPaper = { title: string; year?: number | null; venue?: string | null; cite_key?: string | null; arxiv_id?: string | null; has_pdf?: boolean | null };
 
 /** Everything one run's invariants read. Only `run` is required; a rule whose input is missing is skipped (never guessed). */
@@ -63,7 +63,7 @@ export type Finding = { invariant: string; severity: Severity; run_id: string | 
 type Hit = { message: string; evidence: Record<string, unknown>; severity?: Severity };
 
 export type Invariant = {
-  id: string; category: "route" | "deliverable" | "requirements" | "context" | "questions" | "repair" | "outcome" | "assistant" | "grounding";
+  id: string; category: "route" | "deliverable" | "requirements" | "context" | "input" | "questions" | "repair" | "outcome" | "assistant" | "grounding";
   severity: Severity; title: string;
   /** What the rule reads, for the catalogue. */
   reads: string;
@@ -323,13 +323,27 @@ export const answerLine = (w: string) => {
   return m ? { question: m[1]!, answer: m[2]!.trim(), setup: SETUP_Q_RE.test(m[1]!) } : null;
 };
 
+const ASK_LINE = /幫我|請|做成|整理成|寫成|改成|make|create|please|turn (?:it|this)|write/i;
+/** A turn that carries pasted material (≥ 400 chars, ≥ 3 lines, a long line that asks for nothing). */
+export function pastedText(t: string): boolean {
+  const lines = t.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  return t.length >= 400 && lines.length >= 3 && lines.some((l) => l.length >= 120 && !ASK_LINE.test(l));
+}
+/** The asking lines of a pasted turn (the rest is material, not the user's requirements). */
+const askingPart = (t: string) => {
+  if (!pastedText(t)) return t;
+  const lines = t.split(/\n/).map((l) => l.trim()).filter(Boolean);
+  const asks = lines.filter((l) => l.length <= 200 && ASK_LINE.test(l));
+  return (asks.length ? asks : lines.slice(0, 1)).join("\n");
+};
+
 /** The user's words for this task: in-scope start turns (or the brief's base words) + their own guidance, minus setup answers and 「修」 lists. */
 export function taskWords(b: RunBundle): string[] {
   const brief = b.run.brief;
   const setup = new Set(setupAnswers(b).map(norm));
   let base = brief ? (brief.user_words ?? []).slice(0, brief.base ?? brief.user_words?.length ?? 0) : [b.run.request ?? ""];
   const scope = b.messages ? taskTurns(b.messages, b.run.id) : null;
-  if (scope?.turns.length) base = scope.turns.map(msgText);
+  if (scope?.turns.length) base = scope.turns.map(msgText).map(askingPart);
   const guidance = userGuidance(b.run).map((g) => g.text!).filter((t) => !setup.has(norm(t)) && !FIX_GUIDANCE_RE.test(t));
   const answers = (brief?.user_words ?? []).map(answerLine).filter((a): a is NonNullable<ReturnType<typeof answerLine>> => !!a && !a.setup).map((a) => a.answer);
   return [...base.map((w) => (answerLine(w) ? (answerLine(w)!.setup ? "" : answerLine(w)!.answer) : w)), ...guidance.map((w) => answerLine(w)?.answer ?? w), ...answers]
@@ -361,6 +375,32 @@ const CONTENT_QUESTION = /偏向|涵蓋|有沒有|有哪些|內容|講了|提到
 const CONTENT_CLAIM = /涵蓋|包括|包含|內容|提到|列出|整體|偏向|covers?|includes?|contains?|mentions?/i;
 const TOPIC_CLAUSE = /描述|關於|有關|主題|介紹|探討|講(?:解)?(?:一下)?(?:目前|現在)|about|on the topic|covering|overview of/i;
 const LIBRARY_ASK = /文獻庫|我們的文獻|研究的文獻|library|our papers|study papers/i;
+
+/** The words point at material the user provided (independent of material.ts). */
+const MATERIAL_WORDS = /附件|附檔|附加|上傳|這份(?:檔案|文件|資料|結果)|deep\s*research|深度研究|以此|根據(?:這|上面|上述|以上|我的)|上面的(?:資料|內容)|以下(?:資料|內容)|我的(?:筆記|研究結果|調研結果)|attached|uploaded|pasted/i;
+const SEARCH_WORDS = /線上|上網|網路上|搜尋|搜索|找(?:一些|更多|相關|新的)?(?:論文|文獻)|\b(?:search|online)\b/i;
+/** A user turn carrying pasted material: long, several lines. */
+const pastedTurn = (m: StoredMessage) => pastedText(m.text ?? "");
+/** What material the task's turns provide (attachments, pasted text, or words pointing at an earlier upload). */
+export function providedMaterial(b: RunBundle): { kind: string; what: string; id?: string }[] {
+  const ms = b.messages ?? [];
+  const scope = taskTurns(ms, b.run.id);
+  if (!scope) return [];
+  const out: { kind: string; what: string; id?: string }[] = [];
+  for (const t of scope.turns) {
+    for (const a of t.attachments ?? []) {
+      if (a.kind === "upload" && a.upload_kind !== "image") out.push({ kind: "upload", what: `附件〈${a.title ?? "?"}〉`, ...(a.id ? { id: a.id } : {}) });
+      if (a.kind === "note") out.push({ kind: "note", what: `附加的筆記〈${a.title ?? "?"}〉`, ...(a.id ? { id: a.id } : {}) });
+    }
+    if (pastedTurn(t)) out.push({ kind: "message", what: `貼上的內容（${(t.text ?? "").length} 字）` });
+  }
+  if (!out.length && scope.turns.some((t) => MATERIAL_WORDS.test(msgText(t)))) {
+    const earlier = ms.filter((m) => m.role === "user" && (m.attachments ?? []).some((a) => a.kind === "upload" && a.upload_kind !== "image"));
+    const last = earlier.at(-1)?.attachments?.filter((a) => a.kind === "upload").at(-1);
+    if (last) out.push({ kind: "upload", what: `先前上傳的〈${last.title ?? "?"}〉（你的話提到它）`, ...(last.id ? { id: last.id } : {}) });
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------- the invariants
 
@@ -792,7 +832,47 @@ export const INVARIANTS: Invariant[] = [
         .filter((c) => c.status === "fail" && UNLOCATED_REASON.test(c.reason ?? "") && !/\d/.test((c.reason ?? "").replace(/P\d+/g, "")) && !/第\s*\d+\s*頁|page\s*\d+/i.test(c.reason ?? ""))
         .map((c) => ({ message: `「${c.id}」的失敗理由沒有指出是哪個數字、哪一頁`, evidence: { id: c.id, reason: clip(c.reason, 160), evidence: clip(c.evidence, 160) } })),
   },
+  // ------------------------------------------------------------ input
+  {
+    id: "input.material_used", category: "input", scope: "run", severity: "critical",
+    title: "使用者附加、上傳或貼上的資料會交給工作流程並被讀取（不會被線上搜尋或文獻庫取代）",
+    reads: "task turns (attachments, pasted text, material words), inputs.materials / note_ids, state.material, state.route.deck",
+    check: (b) => {
+      const given = providedMaterial(b);
+      if (!given.length) return [];
+      const inputs = (b.run.inputs ?? {}) as { materials?: { kind?: string; id?: string }[]; note_ids?: string[] };
+      const refs = Array.isArray(inputs.materials) ? inputs.materials : [];
+      const noteIds = Array.isArray(inputs.note_ids) ? inputs.note_ids : [];
+      const inInputs = refs.length > 0 || given.every((g) => g.kind === "note" && g.id && noteIds.includes(g.id));
+      const read = !!(b.run.state?.material as { read_at?: string } | undefined)?.read_at;
+      const evidence = { provided: given.map((g) => g.what), inputs_materials: refs.length, read, route: routeOf(b.run)?.deck ?? null };
+      const hits: Hit[] = [];
+      if (!inInputs && !read) hits.push({ message: `使用者提供了資料（${given.map((g) => g.what).join("、")}），工作流程卻沒有拿到也沒有讀`, evidence });
+      else if (inInputs && !read && !["queued", "planning"].includes(b.run.status)) hits.push({ message: "工作流程拿到了使用者提供的資料，規劃時卻沒有讀", evidence, severity: "high" });
+      // A deck from the user's material must not become an online / library survey (production 301b6e1a).
+      const words = taskWords(b).join("\n");
+      if (routeOf(b.run)?.deck === "topic" && !SEARCH_WORDS.test(words)) hits.push({ message: "有使用者提供的資料，簡報卻走了主題調研路線（文獻庫／線上搜尋取代了資料）", evidence, severity: "high" });
+      return hits;
+    },
+  },
   // ------------------------------------------------------------ outcome
+  {
+    id: "deck.cover_repeated", category: "deliverable", scope: "run", severity: "high",
+    title: "新簡報的第 1 頁不會重複封面標題，相鄰兩頁標題也不會一樣",
+    reads: "state.deck.body, state.front_title / plan.front_title / state.cover_title, plan.outline (new decks only)",
+    check: (b) => {
+      if (isEditRun(b.run) || b.run.playbook !== "slides") return [];
+      const st = (b.run.state ?? {}) as { deck?: { body?: string; deck_title?: string }; front_title?: string; cover_title?: string };
+      const cover = st.front_title ?? b.run.plan?.front_title ?? st.cover_title ?? st.deck?.deck_title ?? "";
+      const body = st.deck?.body ?? "";
+      const titles = body ? [...body.matchAll(/^## (.+)$/gm)].map((m) => m[1]!.replace(/\{[^}]*\}\s*$/, "").trim()) : (b.run.plan?.outline ?? []).map((o) => o.title ?? "");
+      const where = body ? "簡報" : "大綱";
+      const hits: Hit[] = [];
+      if (cover && titles[0] && norm(titles[0]) === norm(cover)) hits.push({ message: `${where}第 1 頁「${clip(titles[0], 60)}」和封面標題一樣（封面重複）`, evidence: { cover, first: titles[0] } });
+      for (let i = 1; i < titles.length; i++) if (norm(titles[i]) && norm(titles[i]) === norm(titles[i - 1])) hits.push({ message: `${where}第 ${i} 頁和第 ${i + 1} 頁標題相同「${clip(titles[i], 60)}」`, evidence: { titles: titles.slice(Math.max(0, i - 1), i + 1) } });
+      return hits;
+    },
+  },
   {
     id: "outcome.partial_explained", category: "outcome", scope: "run", severity: "high",
     title: "部分完成用使用者聽得懂的話說明原因",
@@ -823,6 +903,22 @@ export const INVARIANTS: Invariant[] = [
       const progressed = (b.events ?? []).some((e) => e.type === "workflow" && Date.parse(e.created_at) > Date.parse(last.at) && ["awaiting_plan_approval", "running", "verifying"].includes(String((e.data.workflow as { status?: string } | undefined)?.status)));
       if (progressed) return [];
       return [{ message: `使用者 ${Math.round(mins)} 分鐘前回答了，流程仍在等待回答`, evidence: { answered_at: last.at, answer: clip(last.text, 80), question: clip(b.run.question, 100), now } }];
+    },
+  },
+  {
+    id: "assistant.no_confirm_under_autopilot", category: "assistant", scope: "run", severity: "high",
+    title: "自動駕駛會自動核准計畫時，助理不會叫使用者去確認計畫",
+    reads: "run.autopilot, the assistant's text after the start call in the same turn",
+    check: (b) => {
+      if (!b.run.autopilot || !b.messages) return [];
+      const i = startIndex(b.messages, b.run.id);
+      if (i < 0) return [];
+      const after: string[] = [];
+      for (let j = i; j < b.messages.length && (j === i || b.messages[j]!.role !== "user"); j++) if (b.messages[j]!.role === "assistant") after.push(msgText(b.messages[j]!));
+      const text = after.join("\n");
+      const m = /[^。！？\n]{0,30}(?:請(?:你|您)?(?:先)?確認|確認(?:後|一下|計畫)|待你確認|等你確認|準備好(?:時|後)?(?:再)?請)[^。！？\n]{0,30}/.exec(text);
+      if (!m || !/計畫|卡片|plan/i.test(m[0])) return [];
+      return [{ message: `自動駕駛開啟（計畫會自動核准），助理卻請使用者確認計畫：「${clip(m[0], 80)}」`, evidence: { text: clip(text, 200) } }];
     },
   },
   // ------------------------------------------------------------ assistant (conversation scope)

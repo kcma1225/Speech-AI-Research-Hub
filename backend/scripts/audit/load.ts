@@ -96,7 +96,7 @@ export async function loadBundles(db: ReadOnlyDb, runs: Row[]): Promise<{ bundle
   const convs = convIds.length ? await db.query<{ id: string; study_id: string | null; context: Record<string, unknown> | null }>("SELECT id, study_id, context FROM conversations WHERE id = ANY($1::uuid[])", [convIds]) : [];
   const messages = convIds.length
     ? await db.query<StoredMessage & { conversation_id: string }>(
-        `SELECT conversation_id, seq, role, left(text, 4000) AS text, page_context, created_at,
+        `SELECT conversation_id, seq, role, left(text, 4000) AS text, page_context, created_at, attachments,
                 CASE WHEN role = 'tool' THEN (SELECT jsonb_agg(jsonb_build_object('type', 'tool_result', 'tool_use_id', b->>'tool_use_id', 'content', left(b->>'content', 600)))
                                               FROM jsonb_array_elements(CASE WHEN jsonb_typeof(content) = 'array' THEN content ELSE '[]'::jsonb END) b)
                      ELSE content END AS content

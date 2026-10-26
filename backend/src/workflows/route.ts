@@ -23,6 +23,7 @@ import { EACH_PAPER_RE, PER_PAPER_PLAYBOOKS } from "./context.js";
 import { detectExclude, detectLanguage, detectPageCount, detectPerItemFields } from "./requirements.js";
 import type { EditKind, Requirement } from "./types.js";
 import type { WorkflowEnv } from "./env.js";
+import { ASKS_SEARCH_RE } from "./material.js";
 
 // ---------------------------------------------------------------- which deck (pure; slides.ts re-exports them)
 
@@ -34,16 +35,21 @@ export const TOPIC_DECK_RE = /literature|related work|state[- ]of[- ]the[- ]art|
 export const PROGRESS_RE = /進度|週報|週會|組會|group meeting|progress|weekly|this week'?s? (?:work|results)/i;
 
 export type DeckMode = "progress" | "paper_report";
-export type DeckRoute = DeckMode | "topic" | "edit";
+/** `material`: a new deck built from the user's own material (an attached file, pasted notes; material.ts). */
+export type DeckRoute = DeckMode | "topic" | "material" | "edit";
 
 /**
  * Which new deck: an explicit progress report → progress; a report on one paper (asked for, or a paper given / named while
  * the words are not about a topic) → paper_report; a topic / literature deck → topic; else progress. A word like "paper
  * title" never forces a paper report (production 50b49d80), and the study's only paper is not a reason for one.
  */
-export function deckModeOf(words: string, opts: { inputMode?: string; explicitPaper: boolean; progressAsked: boolean }): DeckMode | "topic" {
-  if (opts.inputMode === "topic" || opts.inputMode === "progress" || opts.inputMode === "paper_report") return opts.inputMode as DeckMode | "topic";
+export function deckModeOf(words: string, opts: { inputMode?: string; explicitPaper: boolean; progressAsked: boolean; material?: boolean }): DeckMode | "topic" | "material" {
+  if (opts.inputMode === "topic" || opts.inputMode === "progress" || opts.inputMode === "paper_report" || opts.inputMode === "material") return opts.inputMode as DeckMode | "topic" | "material";
   if (opts.progressAsked) return "progress";
+  // The user handed over material (production 301b6e1a: 「以此做成…簡報」 with an attached Deep-Research file went the
+  // topic route — online search, imported papers — and never used the file): the deck is built from it, unless the words
+  // ask for a report on one paper.
+  if (opts.material && !PAPER_REPORT_RE.test(words)) return "material";
   const topic = isTopicRequest(words) || TOPIC_DECK_RE.test(words);
   if (PAPER_REPORT_RE.test(words) || (opts.explicitPaper && !topic)) return "paper_report";
   return topic ? "topic" : "progress";
@@ -131,7 +137,7 @@ export type RouteInput = {
   hint?: string | null;
   /** A playbook the user chose (a redirect they accepted, a choice card): kept while it delivers the Brief's kind. */
   pinned?: string | null;
-  inputs?: { paper_id?: unknown; paper_ids?: unknown; deck_id?: unknown; project_id?: unknown; note_ids?: unknown; mode?: unknown };
+  inputs?: { paper_id?: unknown; paper_ids?: unknown; deck_id?: unknown; project_id?: unknown; note_ids?: unknown; mode?: unknown; materials?: unknown };
   /** A paper given with the run (inputs / page context at creation), not a fallback pick. */
   explicitPaper?: boolean;
   /** The Brief's requirements (planning). */
@@ -162,6 +168,8 @@ export type Route = {
 };
 
 const joined = (words: string[]) => words.join("\n");
+/** The run carries the user's own material (`inputs.materials`, material.ts). */
+const hasMaterial = (inp: { materials?: unknown }) => Array.isArray(inp.materials) && inp.materials.length > 0;
 const ids = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x) : []);
 const has = (id: string) => !!getWorkflowPlaybook(id);
 const label = (id: string) => getWorkflowPlaybook(id)?.title ?? id;
@@ -184,6 +192,9 @@ function misfit(playbook: string, text: string, d: DeliverableKind | null, inp: 
       return d || (ready && !ready.experiment_notes) ? "你的話不是要整理實驗結果（只提到指標名稱不算）" : null;
     case "latex_section":
       return typeof inp.project_id !== "string" && ready && !ready.latex_projects ? "研究還沒有 LaTeX 專案" : null;
+    case "topic_research":
+      // An online survey instead of the material the user handed over (production 301b6e1a).
+      return hasMaterial(inp) && !paper && !ASKS_SEARCH_RE.test(text) ? "你提供了資料，要整理的是它，不是線上調研" : null;
     default:
       return null;
   }
@@ -192,6 +203,9 @@ function misfit(playbook: string, text: string, d: DeliverableKind | null, inp: 
 /** The note-family producer the words call for (no hint, or a hint that does not fit). */
 function notePlaybook(d: DeliverableKind | null, text: string, inp: NonNullable<RouteInput["inputs"]>, named: boolean): { id: string; why: string } {
   const paper = typeof inp.paper_id === "string" || named;
+  // The user's own material (an attached file, pasted notes) is the source: written up from it, never an online survey
+  // instead — unless the words ask for a search too.
+  if (hasMaterial(inp) && !paper && d !== "lit_review" && d !== "reading_note" && !ASKS_SEARCH_RE.test(text) && !EXPERIMENT_RE.test(text) && !OUTLINE_WORDS_RE.test(text) && !MEETING_WORDS_RE.test(text)) return { id: "generic", why: "整理你提供的資料" };
   const topic = !paper && isTopicRequest(text, inp as Record<string, unknown>);
   const research = { id: has("topic_research") ? "topic_research" : "generic", why: "主題調研的問法（有哪些做法、調研、survey…），沒有指定單篇論文" };
   if (d === "reading_note") return topic ? research : { id: "reading_note", why: "一篇論文的閱讀筆記" };
@@ -289,8 +303,8 @@ export function route(input: RouteInput): Route {
       reasons.push(`修改這份簡報（${out.edit === "expand" ? "擴充：重新規劃大綱" : "修訂：頁數與順序照舊"}）`);
     } else {
       const explicit = !!input.explicitPaper || paperNamed || /\b\d{4}\.\d{4,5}\b|\b10\.\d{4,9}\//.test(text);
-      out.deck = deckModeOf(text, { inputMode: typeof inp.mode === "string" ? inp.mode : undefined, explicitPaper: explicit, progressAsked: PROGRESS_RE.test(text) });
-      reasons.push(out.deck === "paper_report" ? "單篇論文報告" : out.deck === "topic" ? "主題簡報（用文獻庫）" : "進度報告");
+      out.deck = deckModeOf(text, { inputMode: typeof inp.mode === "string" ? inp.mode : undefined, explicitPaper: explicit, progressAsked: PROGRESS_RE.test(text), material: hasMaterial(inp) });
+      reasons.push(out.deck === "paper_report" ? "單篇論文報告" : out.deck === "topic" ? "主題簡報（用文獻庫）" : out.deck === "material" ? "用你提供的資料做簡報" : "進度報告");
     }
   }
   // 4. One run per paper only on the user's own words; 「這幾篇」 with several papers and no 「一份／每篇」 → ask.

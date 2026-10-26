@@ -150,6 +150,22 @@ export function findByTitle<T>(items: T[], title: string, titleOf: (x: T) => str
 }
 
 /** Pages that appear twice: the same title more often than the outline has it, or the same slide body (≥ 120 chars). */
+/** The deck's cover title (front matter `title:`) of a full source. */
+export function coverTitleOf(full: unknown): string | null {
+  if (typeof full !== "string") return null;
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(full.trimStart());
+  const t = fm ? /^title:\s*(.+)$/m.exec(fm[1]!)?.[1] : undefined;
+  return t ? t.trim().replace(/^["']|["']$/g, "") : null;
+}
+/** 「第 1 頁和封面同一個標題」: the first page repeats the cover (front matter title), or two neighbouring pages share a title. */
+export function coverRepeat(slides: Slide[], full: unknown): string | null {
+  const cover = coverTitleOf(full);
+  const first = slides[0];
+  if (cover && first && norm(first.title) && norm(first.title) === norm(cover)) return `第 1 頁「${first.title}」和封面的標題一樣（封面由系統產生，不要再做一頁題目頁）。`;
+  for (let i = 1; i < slides.length; i++) if (norm(slides[i]!.title) && norm(slides[i]!.title) === norm(slides[i - 1]!.title)) return `第 ${i} 頁和第 ${i + 1} 頁的標題都是「${slides[i]!.title}」。`;
+  return null;
+}
+
 export function duplicatePages(slides: Slide[], want: string[] = []): string[] {
   const out: string[] = [];
   const count = (xs: string[], t: string) => xs.filter((x) => norm(x) === t).length;
@@ -286,11 +302,14 @@ export const CHECKS: Record<string, CheckFn> = {
     return n >= min ? { ok: true, detail: `標註了 ${n} 處出處` } : { ok: false, detail: `出處標註不足：只有 ${n} 處，至少需要 ${min} 處（例如（§3.2，p. 4）、表 2、〈筆記名稱〉）。` };
   },
   /** Page count; with `titles` (the outline) also every outline page there once, in order, and no page twice. */
-  slide_count(text, { params }) {
+  slide_count(text, { params, data }) {
     const want = num(params.expected, 0);
     const slides = parseSlides(text);
     const got = slides.length;
     if (got !== want) return { ok: false, detail: `頁數不符：應為 ${want} 頁，實際 ${got} 頁（每頁以「## 標題」開頭）。` };
+    // A new deck: the cover is the front matter; a first page with the same title repeats it (production 301b6e1a).
+    const cover = params.no_cover_repeat ? coverRepeat(slides, (data as { full?: unknown } | null)?.full) : null;
+    if (cover) return { ok: false, detail: cover };
     const titles = strs(params.titles);
     const issues = titles.length ? outlineIssues(titles, slides) : [];
     return issues.length ? { ok: false, detail: `頁數對，但頁面和大綱不一致：${issues.join("；")}。` } : { ok: true, detail: `共 ${got} 頁${titles.length ? "，與大綱一致" : ""}` };

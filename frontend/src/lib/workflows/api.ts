@@ -24,7 +24,7 @@ export const workflowsApi = {
     return api.get<{ workflows: Workflow[] }>(`/workflows${s ? `?${s}` : ""}`);
   },
   get: (id: string) => api.get<WorkflowDetail>(`/workflows/${id}`),
-  create: (body: { request: string; playbook?: string; conversation_id?: string; context?: unknown; inputs?: Record<string, unknown>; autopilot?: boolean }) =>
+  create: (body: { request: string; playbook?: string; conversation_id?: string; context?: unknown; inputs?: Record<string, unknown>; autopilot?: boolean; attachments?: unknown[] }) =>
     api.post<{ workflow: Workflow; workflows: Workflow[]; batch_id: string | null; conversation_id: string | null }>("/workflows", body),
   approve: (id: string, edits: ApproveEdits) => api.post<W>(`/workflows/${id}/approve`, edits),
   revise: (id: string, feedback: string) => api.post<W>(`/workflows/${id}/revise`, { feedback }),

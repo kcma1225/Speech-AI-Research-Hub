@@ -12,6 +12,7 @@ import { CHECKS, parseSlides, runChecks } from "./checks.js";
 import { dataBlock, parseJson } from "./llm.js";
 import type { WorkflowEnv } from "./env.js";
 import { baseWords, userGuidance, type Brief } from "./brief.js";
+import { MATERIAL_REF_RE } from "./material.js";
 import type { Criterion, Requirement, RequirementTerm, RequirementType, StepRow } from "./types.js";
 
 export type ArtifactKind = "deck" | "doc" | "latex";
@@ -357,6 +358,63 @@ export function detectExclude(text: string): Requirement["params"] | null {
   return { scope: "page", ...(pages.length ? { pages } : {}), terms: titles.map((t) => ({ name: t })) };
 }
 
+// ---------------------------------------------------------------- listed parts, distinctions, material
+
+/** A list item that only names a part of the deck (「包含封面和講稿」 extends a language requirement, not a section list). */
+const PART_ITEM_RE = /^(?:封面|講稿|標題|圖表|頁碼|cover|notes|speaker notes|titles?)$/i;
+const SECTION_VERB_RE = /(?<![每各])(?:呈現|包含|包括|涵蓋|需要有|必須有|應該有|要有|分成|分為|列出|整理出)\s*(?:出|了)?(?:以下|下列)?(?:的)?(?:幾|[一二三四五六七八九十兩\d]+)?個?(?:部分|部份|面向|段落|主題)?\s*[:：]?\s*/g;
+const cleanItem = (x: string) => x.replace(/^[「『"“\s]+|[」』"”\s]+$/g, "").replace(/(?:等等|等|…+|\.\.\.)$/, "").replace(/(?:這|那)?(?:幾|些|[二三四五六七八九十兩]+)個?(?:部分|部份|面向|段落|主題)$/, "").replace(/的(?:部分|部份|內容)$/, "").trim();
+/**
+ * 「呈現研究背景、既有資源與限制、候選研究方向…與需要教授決策的問題」「包含 A、B」「要有 A 和 B」: the parts the user listed
+ * (≥ 2), each of which must get its own page / section (production 301b6e1a: none of six listed parts appeared). Items are
+ * split at 、／，; the last one also at 與／和／及／以及 when both sides are ≥ 4 characters (「既有資源與限制」 stays one).
+ * Per-item asks (「每個方法都要有…」) and language extensions (「包含封面和講稿」) are not part lists. Pure.
+ */
+export function detectSections(text: string): { items: string[]; quote: string }[] {
+  const out: { items: string[]; quote: string }[] = [];
+  for (const sentence of text.replace(/\r\n/g, "\n").split(/[。！？!?；;\n]+/)) {
+    for (const m of sentence.matchAll(SECTION_VERB_RE)) {
+      // 「每個方法都要有架構、優點、缺點」 is a per-item ask (detectPerItemFields), not a list of parts.
+      if (/(?:[每各](?:一)?(?:個|種|篇|項)?|each|every)[^，,。]{0,12}$/i.test(sentence.slice(0, m.index))) continue;
+      const rest = sentence.slice(m.index! + m[0].length);
+      // The list: 、-separated up to the next comma (「要有一個比較表，整份用英文」 is two asks, not a list), or two parts
+      // joined by 與／和 (split below).
+      const list = rest.split(/[，,]/)[0]!;
+      let items = list.split(/、/).map((x) => x.trim()).filter(Boolean);
+      if (items.length) {
+        const last = items.pop()!;
+        const parts = last.split(/以及|與|和|及|跟|還有/);
+        if (parts.length === 2 && parts.every((x) => cleanItem(x).replace(/[\s\p{P}]/gu, "").length >= 4)) items.push(...parts);
+        else items.push(last);
+      }
+      items = items.map(cleanItem).filter((x) => x.replace(/[\s\p{P}]/gu, "").length >= 2 && x.length <= 40);
+      if (items.length < 2 || items.every((x) => PART_ITEM_RE.test(x)) || items.some((x) => /^(?:英文|中文|english|chinese)$/i.test(x))) continue;
+      // Latin-only lists (「包含 shallow fusion、CLAS」) are the topics rule's (compare / cover).
+      if (items.every((x) => /^[A-Za-z0-9 .+\-/]+$/.test(x))) continue;
+      const quote = `${m[0]}${list}`.trim().slice(0, 200);
+      out.push({ items: items.slice(0, 10), quote });
+      break;
+    }
+  }
+  return out;
+}
+
+/** 「清楚區分已知事實、合理推論與待驗證構想」「分清楚事實和推測」: a distinction the content must keep (judged). */
+const DISTINGUISH_RE = /(?:清楚)?(?:區分|區別|分清楚?|分開|標明|標示|標出)(?:出)?\s*[:：]?\s*([^。！？!?；;\n，,]{4,80})|distinguish (?:between )?([^.;\n]{4,80})/i;
+export function detectDistinction(text: string): { items: string[]; quote: string } | null {
+  const m = DISTINGUISH_RE.exec(text);
+  if (!m) return null;
+  const list = (m[1] ?? m[2] ?? "").split(/[，,]/)[0]!;
+  const items = list.split(/、|與|和|及|以及|跟|還有|\band\b|,/).map((x) => cleanItem(x).replace(/^(?:哪些是|什麼是)/, "")).filter((x) => x.length >= 2 && x.length <= 20);
+  if (items.length < 2) return null;
+  return { items, quote: clauseOf(text, DISTINGUISH_RE) ?? m[0] };
+}
+
+/** 「像教授報告的簡報」「要給教授看」「report to my advisor」: the audience is the professor. */
+const PROFESSOR_RE = /(?:向|給|跟|對|像)?(?:指導)?教授(?:報告|看|簡報|討論|決策)|(?:report|present|presenting)(?: it)? to (?:my |the )?(?:advisor|professor|supervisor)|for (?:my |the )?(?:advisor|professor|supervisor)/i;
+/** A clause that only names the subject: 〈title〉 (a # chip) or 「關於這個部分」. */
+const SUBJECT_CLAUSE_RE = /^(?:(?:關於|有關|針對)\s*)?(?:〈[^〉]{2,80}〉|「[^」]{2,80}」)\s*(?:(?:關於|有關|針對)?\s*的?(?:這個|這|那個)?(?:部分|部份|主題|研究))?$|^(?:關於|有關|針對)?\s*(?:這|那)(?:個|一)?(?:部分|部份|主題|題目|研究)$/;
+
 /** Deterministic requirements of one text (the request, a guidance line, or an edited requirement). */
 export function detectRequirements(text: string, opts: { pages?: unknown; kind?: ArtifactKind } = {}): Omit<Requirement, "id" | "source">[] {
   const out: Omit<Requirement, "id" | "source">[] = [];
@@ -418,6 +476,22 @@ export function detectRequirements(text: string, opts: { pages?: unknown; kind?:
     const own = cl.filter((c, i) => detectPerItemFields(c) || (i > 0 && /^(?:還有|以及|和|跟)/.test(c) && !!detectPerItemFields(`${cl[i - 1]}${c}`)));
     out.push({ type: "per_item_fields", text: `每個${fields.item_kind}都要有：${fields.fields!.map((f) => f.name).join("、")}`, params: fields, ...(own.length ? { quote: own.join(" ").slice(0, 300) } : q(/每|各|each|every/i)) });
   }
+  // The parts the user listed (「呈現 A、B、C」): each gets its own page / section (checked page by page).
+  for (const sec of detectSections(text)) {
+    if (out.some((r) => r.type === "include_topics" && (r.quote ?? "").includes(sec.quote.slice(0, 20)))) continue;
+    out.push({ type: "include_topics", text: `要呈現這些部分（每個部分有自己的${opts.kind === "deck" || !opts.kind ? "頁面" : "段落"}）：${sec.items.join("、")}`, params: { topics: sec.items.map((name) => ({ name })), sections: true }, quote: sec.quote });
+  }
+  // 「清楚區分已知事實、合理推論與待驗證構想」: judged on the whole artifact.
+  const dist = detectDistinction(text);
+  if (dist) out.push({ type: "other", text: `清楚區分${dist.items.map((x) => `「${x}」`).join("、")}：每個重點都看得出屬於哪一類（例如用標籤或分欄標明），不把推論或構想寫成已知事實`, quote: dist.quote });
+  // 「我已經有一個 deep research 的結果，幫我以此做成…」: the user's own material is the main source (material.ts).
+  const mat = cl.filter((c) => MATERIAL_REF_RE.test(c));
+  if (mat.length) out.push({ type: "other", text: "以你提供的資料為主要材料：結構、重點、名稱與數字都來自它（不改成線上搜尋或其他論文）", quote: mat.join(" ").slice(0, 200) });
+  // 「〈台灣中文與台語語音語料蒐集〉 關於這個部分」: the subject the user named (judged: the artifact is about it).
+  const subj = cl.filter((c) => SUBJECT_CLAUSE_RE.test(c.trim()));
+  const named = subj.map((c) => /〈([^〉]+)〉|「([^」]+)」/.exec(c)).find((m) => m)?.slice(1).find(Boolean);
+  if (subj.length && named) out.push({ type: "other", text: `主題是〈${named}〉`, quote: subj.join(" ").slice(0, 200) });
+  if (PROFESSOR_RE.test(text) && !out.some((r) => r.type === "audience")) out.push({ type: "audience", text: "對象是教授：像向教授報告一樣，重點與證據清楚，能拿來討論與做決定", quote: clauseOf(text, PROFESSOR_RE) });
   const ex = detectExclude(text);
   if (ex) out.push({ type: "exclude", text: `刪掉：${[...(ex.pages ?? []).map((p) => `第 ${p} 頁`), ...(ex.terms ?? []).map((t) => `「${t.name}」`)].join("、")}`, params: ex, ...q(/刪掉|刪除|拿掉|去掉|移除|不要|remove|delete|drop/i) });
   return out;
@@ -455,6 +529,7 @@ export function cleanRequirement(raw: unknown, source: Requirement["source"], ki
     if (kind !== "deck") type = "length";
   } else if (type === "include_topics") {
     params.topics = terms(p.topics);
+    if (p.sections === true) params.sections = true;
     if (!params.topics.length) return text ? { type: "other", text, source } : null;
   } else if (type === "exclude") {
     params.terms = terms(p.terms);
@@ -538,10 +613,32 @@ export function requirementCriteria(reqs: Requirement[], kind: ArtifactKind, all
     const p = r.params ?? {};
     if (r.type === "language" && p.language) return { id, kind: "check", text, check: { id: "req_language", params: { language: p.language, allow: [...(p.allow ?? []), ...allow], ...(p.part && kind === "deck" ? { part: p.part } : {}), ...doc } } };
     if (r.type === "page_count" && kind === "deck") return { id, kind: "check", text, check: { id: "req_pages", params: { exact: p.exact, min: p.min, max: p.max } } };
+    if (r.type === "include_topics" && p.topics?.length && p.sections) return { id, kind: "check", text, check: { id: "req_sections", params: { topics: p.topics, judge_fallback: true, ...doc } } };
     if (r.type === "include_topics" && p.topics?.length) return { id, kind: "check", text, check: { id: "req_include", params: { topics: p.topics, judge_fallback: true, ...doc } } };
     if (r.type === "exclude" && p.terms?.length) return { id, kind: "check", text, check: { id: "req_exclude", params: { terms: p.terms, scope: kind === "deck" ? p.scope ?? "page" : "content", ...doc } } };
     if (r.type === "per_item_fields" && p.fields?.length && p.items?.length) return { id, kind: "check", text, check: { id: "req_fields", params: { items: p.items, fields: p.fields, judge_fallback: true, ...doc } } };
     return { id, kind: "judge", text };
+  });
+}
+
+const bigrams = (s: string) => {
+  const t = normTerm(s);
+  const out = new Set<string>();
+  for (let i = 0; i + 1 < t.length; i++) out.add(t.slice(i, i + 2));
+  return out;
+};
+/** A page / section title that names a listed part: contains it (or an alias), or ≥ 60 % of the part's bigrams. */
+export function sectionTitleHit(title: string, t: RequirementTerm): boolean {
+  const hay = normTerm(title);
+  if (!hay) return false;
+  if (termHit(hay, t)) return true;
+  return [t.name, ...(t.aliases ?? [])].some((a) => {
+    const g = bigrams(a);
+    if (g.size < 2) return false;
+    const h = bigrams(title);
+    let n = 0;
+    for (const x of g) if (h.has(x)) n++;
+    return n / g.size >= 0.6;
   });
 }
 
@@ -583,6 +680,14 @@ const REQUIREMENT_CHECKS: typeof CHECKS = {
     const hay = normTerm(units.map((u) => `${u.title}\n${visibleText(u.body)}\n${u.notes}`).join("\n"));
     const missing = tlist(params.topics).filter((t) => !termHit(hay, t));
     return missing.length ? { ok: false, detail: `沒有找到這些要求涵蓋的主題：${missing.map((t) => `「${t.name}」`).join("、")}。` } : { ok: true, detail: "要求的主題都有涵蓋" };
+  },
+  /** Every listed part has its own page / section: a unit whose title names it (or ≥ 60 % of its character bigrams). */
+  req_sections(text, { params, data }) {
+    const { units, slides } = unitsOf(fullOf(text, data), !!params.doc);
+    const missing = tlist(params.topics).filter((t) => !units.some((u) => sectionTitleHit(u.title, t)));
+    return missing.length
+      ? { ok: false, detail: `這些部分沒有自己的${slides ? "頁面" : "段落"}（標題要包含它的名稱）：${missing.map((t) => `「${t.name}」`).join("、")}。` }
+      : { ok: true, detail: `每個要呈現的部分都有自己的${slides ? "頁面" : "段落"}` };
   },
   req_exclude(text, { params, data }) {
     const { units, slides } = unitsOf(fullOf(text, data), !!params.doc);
@@ -644,6 +749,7 @@ export function requirementsBlock(reqs: Requirement[], audience: "producer" | "v
     if (r.type === "language" && p.language === "en") return "- 成果語言：English。讀者看得到的所有文字（封面與文件標題、副標題、頁面／段落標題、條列、表格、圖表與流程圖的標籤、圖說、講稿、標註）一律用英文；專有名詞與〈論文原標題〉照原文。不要輸出任何中文字或全形標點。Write every visible word of the output in English.";
     if (r.type === "language") return "- 成果語言：繁體中文（台灣用語），專有名詞保留英文。";
     if (r.type === "page_count") return `- 頁數：${pageText(p)}。`;
+    if (r.type === "include_topics" && p.sections) return `- 要呈現這幾個部分，每個部分至少一${(r.text.includes("段落") ? "個段落" : "頁")}，標題包含該部分的名稱：${(p.topics ?? []).map((t) => `「${t.name}」`).join("、")}。`;
     if (r.type === "include_topics") return `- 一定要涵蓋：${(p.topics ?? []).map((t) => t.name).join("、")}（${r.text}）。`;
     if (r.type === "exclude") return `- 要刪掉／不要出現：${[...(p.pages ?? []).map((n) => `原本第 ${n} 頁`), ...(p.terms ?? []).map((t) => `「${t.name}」`)].join("、") || r.text}。`;
     if (r.type === "per_item_fields") return `- 每個${p.item_kind ?? "項目"}${p.items?.length ? `（${p.items.join("、")}）` : ""}都要有，而且用清楚的小標或欄位標出：${(p.fields ?? []).map((f) => f.name).join("、")}。`;
@@ -850,7 +956,7 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string, br
   const extracted = await extractWithModel(env, ctx).catch(() => ({ list: [] as Omit<Requirement, "id">[], mapped: new Set<number>(), dropped: [] as { clause: string; reason: string }[] }));
   // A judged item the model restated from words a deterministic requirement already quotes (「講稿要能一字一句照念」 next to
   // the read-aloud tone) is a duplicate on the card and in the verdict: dropped.
-  const llm = extracted.list.filter((r) => !(["other", "tone", "format", "audience"].includes(r.type) && r.quote && det.some((d) => d.quote && normClause(d.quote).includes(normClause(r.quote!)))));
+  const llm = extracted.list.filter((r) => !(["other", "tone", "format", "audience", "include_topics"].includes(r.type) && r.quote && det.some((d) => d.quote && normClause(d.quote).includes(normClause(r.quote!)))));
   // Coverage: a content clause no requirement accounts for (and the model did not drop with a reason) becomes a judged
   // requirement in the user's words — a cheap model's miss can no longer lose an ask.
   const droppedIdx = new Set(extracted.dropped.map((d) => clauses.indexOf(d.clause)).filter((i) => i >= 0));

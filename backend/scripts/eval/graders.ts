@@ -411,3 +411,36 @@ export function briefWithout(brief: BriefLike, text: string): Grade {
   const inReqs = (brief?.requirements ?? []).some((r) => `${r.text ?? ""}${r.quote ?? ""}`.includes(text));
   return grade("answer_not_words", !inWords && !inReqs, inWords ? "研究名稱進了使用者的原話" : inReqs ? "有要求引用了研究名稱" : "研究名稱只當作設定，沒有進原話或要求");
 }
+
+/** The cover (front matter title) is not repeated by the first page (production 301b6e1a: pages 1 and 2 had the same title). */
+export function coverNotRepeated(deck: Deck): Grade {
+  const first = deck.slides[0];
+  const dup = !!first && !!norm(deck.title) && norm(first.title) === norm(deck.title);
+  return grade("cover_not_repeated", !dup, dup ? `第 1 頁「${first!.title}」和封面同標題` : `封面「${deck.title}」，第 1 頁「${first?.title ?? "（無）"}」`);
+}
+
+const bigramSet = (s: string) => {
+  const t = norm(s);
+  const out = new Set<string>();
+  for (let i = 0; i + 1 < t.length; i++) out.add(t.slice(i, i + 2));
+  return out;
+};
+/** Every listed part has a page whose title names it (contains it, or ≥ 60 % of its character bigrams). */
+export function sectionPages(deck: Deck, parts: string[]): Grade {
+  const hit = (title: string, part: string) => {
+    if (norm(title).includes(norm(part))) return true;
+    const g = bigramSet(part);
+    const h = bigramSet(title);
+    let n = 0;
+    for (const x of g) if (h.has(x)) n++;
+    return g.size > 0 && n / g.size >= 0.6;
+  };
+  const missing = parts.filter((p) => !deck.slides.some((s) => hit(s.title, p)));
+  return grade("section_pages", !missing.length, missing.length ? `沒有自己頁面的部分：${missing.join("、")}` : `${parts.length} 個部分都有自己的頁面`);
+}
+
+/** The deck uses the attached material: at least `min` of its unique tokens (each a list of spellings) appear. */
+export function materialUsed(text: string, tokens: string[][], min: number): Grade {
+  const found = tokens.filter((alts) => alts.some((t) => text.includes(t)));
+  return grade("material_used", found.length >= min, `資料特有的詞出現 ${found.length}/${tokens.length}（≥ ${min}）：${found.map((a) => a[0]).join("、") || "無"}`);
+}

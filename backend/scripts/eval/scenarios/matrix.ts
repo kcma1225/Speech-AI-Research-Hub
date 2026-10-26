@@ -10,10 +10,20 @@
  * language and the two production requests verbatim.
  */
 
+import { PASTED_NOTES } from "../material-fixture.js";
+
+/** The pasted-notes case's whole turn (notes + the request at the end). */
+const PASTED_NOTES_REQUEST = PASTED_NOTES;
+
 export const ENTRIES = ["home", "study", "deck"] as const;
 export const HISTORIES = ["none", "artifact", "unrelated"] as const;
 export const STYLES = ["typed", "spoken", "english", "mixed"] as const;
-export const INTENTS = ["new_progress", "new_paper_report", "new_topic", "revise_notes_lang", "revise_slides_lang", "expand_method", "add_page", "remove_page", "translate", "note_topic", "lit_review", "latex_section"] as const;
+export const INTENTS = ["new_progress", "new_paper_report", "new_topic", "revise_notes_lang", "revise_slides_lang", "expand_method", "add_page", "remove_page", "translate", "note_topic", "lit_review", "latex_section", "material_deck", "material_note"] as const;
+/** Intents of the material block only (not in the base grid): the user hands over their own material (301b6e1a). */
+export const MATERIAL_INTENTS = new Set<string>(["material_deck", "material_note"]);
+/** How the material reaches the chat: a file attached to the turn, notes pasted into it, or a PDF uploaded earlier. */
+export const MATERIALS = ["attach", "paste", "earlier_pdf"] as const;
+export type Material = (typeof MATERIALS)[number];
 export const LANGS = ["slides_en_notes_zh", "all_zh", "all_en", "unstated"] as const;
 export const ANAPHORA = ["none", "剛剛那個", "同一個簡報", "繼續"] as const;
 export const ANSWERS = ["study_name", "delegate", "free_text"] as const;
@@ -35,7 +45,7 @@ export const DECK_FOR: Partial<Record<Intent, "zh" | "en">> = {
 export const EDIT_INTENTS = new Set<Intent>(Object.keys(DECK_FOR) as Intent[]);
 export const KIND_FOR: Record<Intent, "deck" | "note" | "latex"> = {
   new_progress: "deck", new_paper_report: "deck", new_topic: "deck", revise_notes_lang: "deck", revise_slides_lang: "deck", expand_method: "deck", add_page: "deck",
-  remove_page: "deck", translate: "deck", note_topic: "note", lit_review: "note", latex_section: "latex",
+  remove_page: "deck", translate: "deck", note_topic: "note", lit_review: "note", latex_section: "latex", material_deck: "deck", material_note: "note",
 };
 /** Per-part language each edit intent states by itself (the `lang` dimension applies to creation intents). */
 const EDIT_LANG: Partial<Record<Intent, Lang>> = { revise_notes_lang: "slides_en_notes_zh", revise_slides_lang: "slides_en_notes_zh", translate: "all_en" };
@@ -59,6 +69,8 @@ export type Scenario = {
   production?: string;
   /** Chat turns sent (and answered by the assistant) before the case's turn, after the seeded history. */
   extraTurns?: string[];
+  /** The user's own material (material block): how it reaches the chat; the run must carry and read it. */
+  material?: Material;
 };
 
 // ---------------------------------------------------------------- wording
@@ -86,6 +98,8 @@ const BASE: Record<Intent, Clauses> = {
   note_topic: { zh: ["幫我整理一份筆記", "說明串流 ASR 熱詞偏置有哪些做法", "用我們文獻庫的論文"], en: ["Write me a note", "on which hotword-biasing approaches exist for streaming ASR", "using the papers in our library"], mixed: ["幫我寫一份 note", "整理 streaming ASR 的 hotword biasing 有哪些 approaches", "用我們 library 的 papers"] },
   lit_review: { zh: ["幫我寫一份文獻回顧筆記", "比較文獻庫裡的 contextual biasing 論文", "要有一個比較表"], en: ["Write a literature review note", "comparing the contextual biasing papers in our library", "with a comparison table"], mixed: ["幫我寫 literature review 的筆記", "比較 library 裡 contextual biasing 的 papers", "要有 comparison table"] },
   latex_section: { zh: ["幫我寫論文的 Related Work 章節（LaTeX）", "整理文獻庫裡的熱詞偏置方法"], en: ["Write the Related Work section of my paper in LaTeX", "covering the hotword-biasing methods in our library"], mixed: ["幫我寫 paper 的 Related Work section（LaTeX）", "整理 library 裡的 hotword biasing methods"] },
+  material_deck: { zh: ["我已經有一個 deep research 的結果（附件）", "幫我以此做成能像教授報告的簡報"], en: ["I already have a deep research result (attached)", "turn it into a deck I can present to my professor"], mixed: ["我有一份 deep research 的結果（attached）", "幫我以此做成給教授看的 slides"] },
+  material_note: { zh: ["以附件的 deep research 結果為主要材料", "幫我整理成一份筆記"], en: ["Use the attached deep research result as the main material", "and write it up as a note"], mixed: ["用附件的 deep research 結果", "幫我整理成一份 note"] },
 };
 const LANG_CLAUSE: Record<Exclude<Lang, "unstated">, { zh: string; en: string; spoken: string; mixed: string }> = {
   slides_en_notes_zh: { zh: "投影片用英文，講稿用中文", en: "slides in English and speaker notes in Chinese", spoken: "投影片要用英文的講稿要用中文的", mixed: "slides 用英文、speaker notes 用中文" },
@@ -123,7 +137,7 @@ const partsOf = (intent: Intent, lang: Lang): Scenario["expect"]["parts"] => {
   return {};
 };
 
-function scenario(id: string, d: Omit<Scenario, "id" | "request" | "expect" | "production" | "extraTurns">, production?: string, extraTurns?: string[]): Scenario {
+function scenario(id: string, d: Omit<Scenario, "id" | "request" | "expect" | "production" | "extraTurns" | "material">, production?: string, extraTurns?: string[], material?: Material): Scenario {
   const deckKnown = EDIT_INTENTS.has(d.intent) && (d.entry === "deck" || d.history === "artifact");
   return {
     id, ...d,
@@ -137,8 +151,14 @@ function scenario(id: string, d: Omit<Scenario, "id" | "request" | "expect" | "p
     },
     ...(production ? { production } : {}),
     ...(extraTurns ? { extraTurns } : {}),
+    ...(material ? { material } : {}),
   };
 }
+
+/** The production request of 301b6e1a with the eval study's name in place of the production study's (the only production text used). */
+const MATERIAL_PROD = "〈Agent 評估集：串流 ASR 熱詞偏置〉 關於這個部分 我已經有一個deep research的結果 幫我以此做成能像教授報告的簡報 #簡報";
+/** 「用我上傳的 PDF」: the PDF was uploaded into the conversation earlier, not attached to this turn. */
+const UPLOADED_PDF = { zh: "用我上傳的 PDF 做成簡報", spoken: "我要你用我剛剛上傳的那個PDF幫我做成一份簡報" };
 
 const RUN_A_WORDS = "我要你幫我做一個簡報這個簡報裡面詳細描述了目前時數界是怎麼在Zipformer和RNNT的架構下做熱詞機制的 我要你參考我們的文獻庫 那請你詳細統計一下有哪幾種方法並且詳細敘述每一種方法的好處跟壞處 我要這份報告簡報是用英文的 並且在講解方法的時候要搭配模型的架構圖來更好的演示 並且在提到方法的時候要講到這一篇論文是哪一篇還有他們的會議或是期刊是哪一個";
 const RUN_B_WORDS = "有個東西我想要你幫我改這個簡報裡面的講稿要是中文的當然你應該要多用一點英文的專用名詞這個講稿要我能夠一比一的念出來不會有違和";
@@ -148,7 +168,7 @@ export function buildMatrix(): Scenario[] {
   const out: Scenario[] = [];
   let k = 0;
   // 1. Base grid: every intent × every entry; style / history / lang / start / answer rotated (Latin-square style).
-  for (const [ii, intent] of INTENTS.entries()) {
+  for (const [ii, intent] of INTENTS.filter((i) => !MATERIAL_INTENTS.has(i)).entries()) {
     for (const [ei, entry] of ENTRIES.entries()) {
       const style = STYLES[(ii + ei) % STYLES.length]!;
       const history = HISTORIES[(ii * 2 + ei) % HISTORIES.length]!;
@@ -182,6 +202,14 @@ export function buildMatrix(): Scenario[] {
   // Run B exactly as it happened: the earlier run's deck, then an unrelated question about it and 「ok」, then the request in chat.
   out.push(scenario(`p${String(++k).padStart(2, "0")}_prod_run_b`, { entry: "home", history: "artifact", style: "spoken", intent: "revise_notes_lang", lang: "unstated", anaphora: "none", answer: "free_text", start: "chat" }, RUN_B_WORDS, ["我想要知道我們目前這個簡報它是偏向Hot Word還是Contextual Biasing", "ok"]));
   out.push(scenario(`p${String(++k).padStart(2, "0")}_prod_run_b_delegate`, { entry: "home", history: "artifact", style: "spoken", intent: "revise_notes_lang", lang: "unstated", anaphora: "none", answer: "free_text", start: "delegate" }, RUN_B_WORDS));
+  // 6. The user's own material (301b6e1a): an attachment, pasted notes, a PDF uploaded earlier; deck and note; both starts.
+  out.push(scenario(`m${String(++k).padStart(2, "0")}_material_attach_chat`, { entry: "study", history: "none", style: "typed", intent: "material_deck", lang: "unstated", anaphora: "none", answer: "study_name", start: "chat" }, undefined, undefined, "attach"));
+  out.push(scenario(`m${String(++k).padStart(2, "0")}_material_attach_delegate_home`, { entry: "home", history: "none", style: "spoken", intent: "material_deck", lang: "unstated", anaphora: "none", answer: "study_name", start: "delegate" }, MATERIAL_PROD, undefined, "attach"));
+  out.push(scenario(`m${String(++k).padStart(2, "0")}_material_attach_english`, { entry: "study", history: "unrelated", style: "english", intent: "material_deck", lang: "unstated", anaphora: "none", answer: "study_name", start: "delegate" }, undefined, undefined, "attach"));
+  out.push(scenario(`m${String(++k).padStart(2, "0")}_material_paste_chat`, { entry: "study", history: "none", style: "typed", intent: "material_deck", lang: "unstated", anaphora: "none", answer: "study_name", start: "chat" }, PASTED_NOTES_REQUEST, undefined, "paste"));
+  out.push(scenario(`m${String(++k).padStart(2, "0")}_material_pdf_chat`, { entry: "study", history: "none", style: "typed", intent: "material_deck", lang: "unstated", anaphora: "none", answer: "study_name", start: "chat" }, UPLOADED_PDF.zh, undefined, "earlier_pdf"));
+  out.push(scenario(`m${String(++k).padStart(2, "0")}_material_pdf_spoken_delegate`, { entry: "study", history: "none", style: "spoken", intent: "material_deck", lang: "unstated", anaphora: "none", answer: "study_name", start: "delegate" }, UPLOADED_PDF.spoken, undefined, "earlier_pdf"));
+  out.push(scenario(`m${String(++k).padStart(2, "0")}_material_note_chat`, { entry: "study", history: "none", style: "mixed", intent: "material_note", lang: "unstated", anaphora: "none", answer: "study_name", start: "chat" }, undefined, undefined, "attach"));
   return out;
 }
 

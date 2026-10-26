@@ -6,7 +6,7 @@
 
 1. **單元測試**：用正式站對話 79ab0678 的兩個 run（0668a3d7、e6d552fc）當 fixture，每條規則都要抓到它的失敗，並且在修好的同一份資料上**不誤報**。
 2. **正式站稽核**（唯讀）：跑最近的 run 與對話，依規則分組列出 run id 與證據。
-3. **情境矩陣**（staging，只跑到計畫卡或第一個問題）：交叉各種進入點、對話歷史、說法、意圖、語言、指代與澄清回答，產生 66 個情境，每個都檢查全部規則再取消。
+3. **情境矩陣**（staging，只跑到計畫卡或第一個問題）：交叉各種進入點、對話歷史、說法、意圖、語言、指代與澄清回答，產生 73 個情境，每個都檢查全部規則再取消。
 
 程式：
 
@@ -35,6 +35,9 @@
 | `req.standing_not_override` | 要求 | high | 沿用的設定（source standing）在使用者這次有講的維度上，不能是唯一生效的那條 | standing 要求、原話的語言／頁數 | e6d552fc：只有「沿用這份簡報的英文設定」 |
 | `req.setup_not_content` | 要求 | high（進入原話 = medium） | 設定問題（哪個研究、哪篇論文）的回答不能變成要求、原話或主題（state.topic_title、topic.topic、標題、封面）；進度簡報用研究名稱當標題可以 | 設定問題、guidance（含 `setup`）、「（回答「…」）」行、要求、主題欄位 | 0668a3d7：研究名稱「…動態熱詞效率研究」變成主題與標題 |
 | `req.user_words_scope` | 要求 | high | Brief 的原話只能是這個任務的話：啟動前連續的使用者訊息（中間是助理的澄清問題也算），加上 guidance；之前另一段問答、「ok」不算 | brief.user_words、啟動 start_workflow 前後的訊息 | e6d552fc：原話含「偏向 Hot Word 還是 Contextual Biasing」與「ok」 |
+| `input.material_used` | 輸入 | critical（拿到卻沒讀、或簡報走了主題調研 = high） | 使用者在這個任務的訊息附加了檔案／筆記、貼了長篇內容，或說「附件／我上傳的／deep research 結果」而對話有上傳過檔案：run 的 `inputs.materials`（或附加筆記的 note_ids）要有它、規劃時要讀過（`state.material.read_at`）；有資料時簡報不能走主題調研（route.deck = topic），除非使用者要搜尋 | 任務訊息的 attachments／長度、原話、inputs.materials、state.material、state.route.deck | 301b6e1a：附了 deep research 檔、說「以此做成簡報」，inputs 只有 study，主題路線線上搜尋並匯入兩篇論文，檔案從沒被讀 |
+| `deck.cover_repeated` | 交付物 | high | 新簡報第 1 頁的標題不能和封面（front matter）一樣，相鄰兩頁標題也不能一樣；修改既有簡報不檢查 | state.deck.body（沒有就看 plan.outline）、state.front_title／plan.front_title／state.cover_title | 301b6e1a：第 1、2 頁同標題（主題簡報的「題目」頁＋系統封面） |
+| `assistant.no_confirm_under_autopilot` | 助理 | high | 自動駕駛開啟（計畫自動核准）時，助理在啟動那一輪不能叫使用者確認計畫 | run.autopilot、start 那則之後到下一則使用者訊息之間的助理文字 | 301b6e1a：「計畫卡片準備好後請確認」 |
 | `ctx.input_artifact_study` | 脈絡 | critical | 有輸入成果（deck_id、note_id(s)、project_id）就在那個成果的研究裡 | inputs → 成果的 study_id、run.study_id | e6d552fc：簡報在 654c8823，run 的研究是空的 |
 | `ctx.no_derivable_study_question` | 脈絡 | critical | 研究推得出來（輸入成果、對話的研究、頁面、訊息的 page_context、同對話較早的 run）就不能問「放在哪個研究」 | 問過的問題、以上來源 | e6d552fc |
 | `q.not_repeated` | 問題 | high | 回答過後不能再問同一個問題（文字 bigram 涵蓋 ≥ 60%；卡片的 intro 也算） | 狀態快照的 question、plan_question、asks、guidance／卡片回答時間 | e6d552fc：回答「就剛剛的那個研究…」後又問一次 |
@@ -50,7 +53,7 @@
 | `grounding.library_fields` | 依據 | high | 文獻庫有 venue／year 時，不能說「venue 未提供」（說法數超過真的沒有 venue 的篇數才算） | 文獻庫欄位、步驟輸出、topic picks、report、criteria | 0668a3d7：10/10 有 venue，8 處說未提供 |
 | `grounding.library_coverage` | 依據 | medium | 要用文獻庫整理、且有 PDF 的論文 ≤ 12 篇時，讀到的要 ≥ 60% | 原話、文獻庫、state.topic.picks | 0668a3d7：10 篇只讀 4 篇 |
 
-情境矩陣另有**情境專屬期望**（`scripts/eval/scenarios/oracles.ts`，id `scenario.*`）：`scenario.kind`（交付物種類）、`scenario.deck_resolved`（從頁面／前一個 run／指代找到要改的那份簡報）、`scenario.edit_route`、`scenario.edit_kind`、`scenario.new_not_edit`（在簡報頁要「新」簡報不能變成修改那份）、`scenario.study_resolved`、`scenario.part_language`（投影片／講稿的語言照使用者講的）、`scenario.started`（聊天要交給工作流程）、`scenario.reached_plan`。
+情境矩陣另有**情境專屬期望**（`scripts/eval/scenarios/oracles.ts`，id `scenario.*`）：`scenario.kind`（交付物種類）、`scenario.deck_resolved`（從頁面／前一個 run／指代找到要改的那份簡報）、`scenario.edit_route`、`scenario.edit_kind`、`scenario.new_not_edit`（在簡報頁要「新」簡報不能變成修改那份）、`scenario.study_resolved`、`scenario.part_language`（投影片／講稿的語言照使用者講的）、`scenario.started`（聊天要交給工作流程）、`scenario.reached_plan`、`scenario.material_input`（使用者提供的資料要進 inputs.materials）、`scenario.material_route`（用資料做簡報要走 material 路線；用資料寫筆記不能變成線上主題調研）。
 
 ### 關鍵的判讀工具（`invariants.ts`）
 
@@ -86,12 +89,12 @@ npx tsx scripts/audit/run.ts --staging --since 30d          # staging（hubv3 �
 
 ```bash
 cd backend
-npx tsx scripts/eval/scenarios/matrix.ts                    # 列出 66 個情境與每個維度的覆蓋
+npx tsx scripts/eval/scenarios/matrix.ts                    # 列出 73 個情境與每個維度的覆蓋
 npx tsx scripts/eval/scenarios/run.ts --concurrency 2       # 全部；--only id,id / --match regex / --resume <dir>
 npx tsx scripts/eval/scenarios/run.ts --resume <dir> --sweep # 取消某次執行留下的 run
 ```
 
-維度：進入點（首頁無研究、研究頁、簡報頁）× 對話歷史（無、前一個 run 做了這份簡報、無關的先前問答）× 說法（打字有標點、口語無標點、英文、中英混）× 意圖（新進度／論文報告／主題簡報、只改講稿語言、只改投影片語言、展開方法、加頁、刪頁、翻譯、筆記、文獻回顧、LaTeX 章節）× 各部分語言（投影片英文＋講稿中文、全中文、全英文、未講）× 指代（「剛剛那個」「同一個簡報」「繼續」）× 澄清回答（研究名稱、「你決定」、自由文字）× 啟動方式（交給 Agent、聊天）。產生方式：意圖 × 進入點的完整格子（36）其他維度輪替，加上指代（12）、澄清回答（9）、各部分語言（6）、正式站兩個請求原文（3：run A；run B 含那段無關問答與「ok」；run B 用交給 Agent）。
+維度：進入點（首頁無研究、研究頁、簡報頁）× 對話歷史（無、前一個 run 做了這份簡報、無關的先前問答）× 說法（打字有標點、口語無標點、英文、中英混）× 意圖（新進度／論文報告／主題簡報、只改講稿語言、只改投影片語言、展開方法、加頁、刪頁、翻譯、筆記、文獻回顧、LaTeX 章節）× 各部分語言（投影片英文＋講稿中文、全中文、全英文、未講）× 指代（「剛剛那個」「同一個簡報」「繼續」）× 澄清回答（研究名稱、「你決定」、自由文字）× 啟動方式（交給 Agent、聊天）。產生方式：意圖 × 進入點的完整格子（36）其他維度輪替，加上指代（12）、澄清回答（9）、各部分語言（6）、正式站兩個請求原文（3：run A；run B 含那段無關問答與「ok」；run B 用交給 Agent），以及**使用者提供的資料**（7，301b6e1a）：附件＋「以此做成簡報」（聊天、交給 Agent 從首頁用正式站那句話的形式、英文）、貼上的筆記、「用我上傳的 PDF」（PDF 先上傳到對話、這一輪沒有附加；聊天與口語交給 Agent）、附件整理成筆記。資料是合成的（`scripts/eval/material-fixture.ts`：deep research 風格的 Markdown、一份最小的英文 PDF、貼上的實驗筆記），不含正式站內容。
 
 執行器：每個情境開新對話（autopilot 關）、建一份固定簡報的副本、準備歷史（「前一個 run 做了這份簡報」是直接在 staging 插入一段完成的交給 Agent 紀錄＋一列 done 的 `workflow_runs`＋英文簡報的 standing 偏好，和真的 run 留下的資料一樣，不必每個情境跑一次完整流程）、照使用者的方式啟動、等到計畫卡或第一個問題（遇到問題用該情境的回答方式答一次，再等）、唯讀讀回 run 檢查全部規則＋情境期望、取消。每個開始的 run 先記在 `started.json`，結束、Ctrl-C 都會取消；staging 中途重新部署時 API 會重試，基礎設施中斷的情境重跑一次。
 

@@ -36,6 +36,22 @@ export class Hub {
     return res.text();
   }
 
+  /** Uploads a file into a conversation (POST …/uploads, multipart) → the attachment id. */
+  async upload(conversationId: string, filename: string, content: string | Buffer): Promise<string> {
+    for (let i = 0; ; i++) {
+      const form = new FormData();
+      form.append("file", new Blob([typeof content === "string" ? Buffer.from(content, "utf8") : content]), filename);
+      const res = await fetch(`${HUB}/api/agent/conversations/${conversationId}/uploads`, { method: "POST", headers: { origin: this.origin, cookie: this.cookie }, body: form });
+      if ([502, 503, 504].includes(res.status) && i < 30) {
+        await sleep(10_000);
+        continue;
+      }
+      const data = (await res.json().catch(() => ({}))) as { attachment?: { id: string }; error?: string; code?: string };
+      if (!res.ok || !data.attachment) throw new HttpFail(res.status, data as Record<string, unknown>, `upload ${filename} → ${res.status} ${data.code ?? ""} ${data.error ?? ""}`);
+      return data.attachment.id;
+    }
+  }
+
   /** JSON API call; connection errors and 502/503/504 (a redeploy) are retried for ~5 minutes. */
   async api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
     for (let i = 0; ; i++) {

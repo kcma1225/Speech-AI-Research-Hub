@@ -23,6 +23,7 @@ import { capabilityOf, DELIVERABLE_LABEL, deliverableOf, type DeliverableKind } 
 import { getWorkflowPlaybook } from "./playbooks/registry.js";
 import type { WorkflowEnv } from "./env.js";
 import type { CheckSpec, Criterion, Requirement, RunRow, StepRow } from "./types.js";
+import { instructionOf } from "./material.js";
 
 export type BriefKind = "deck" | "note" | "latex" | "lit_review" | "reading_note" | "other";
 export const BRIEF_KINDS: BriefKind[] = ["deck", "note", "latex", "lit_review", "reading_note", "other"];
@@ -160,7 +161,9 @@ export async function collectUserWords(db: Queryable, conversationId: string | n
   ).catch(() => ({ rows: [] as { role: string; text: string | null; content: unknown }[] }))).rows.reverse();
   // Only what came up to the newest user turn (the assistant's start_workflow reply is after it).
   const lastUser = rows.map((r) => r.role).lastIndexOf("user");
-  const turns = rows.slice(0, lastUser + 1).map((r) => ({ role: r.role, text: (r.text ?? "").replace(/^（交給 Agent）/, ""), content: r.content }));
+  // A turn that carries pasted material keeps only its request part (material.ts `instructionOf`): the material reaches the
+  // run as a `message` material ref, never as dozens of 「requirements」.
+  const turns = rows.slice(0, lastUser + 1).map((r) => ({ role: r.role, text: r.role === "user" ? instructionOf((r.text ?? "").replace(/^（交給 Agent）/, "")) : (r.text ?? ""), content: r.content }));
   return clipWords(taskTurns(turns));
 }
 

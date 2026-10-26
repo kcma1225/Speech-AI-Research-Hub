@@ -31,16 +31,23 @@ import { clipWords, collectUserWords, deliverableFor, editedBrief, saveBrief, se
 import { editAsked, newDeckAsked, route, routeContext, routeNote, routeState, type RouteState } from "./route.js";
 import { DELIVERABLE_LABEL } from "./goals/capabilities.js";
 import type { Requirement } from "./types.js";
+import { describeRef, type AttachmentRef, type StoredAttachment } from "../agent/attachments/index.js";
+import { MAX_MATERIALS, materialsOf, resolveMaterials, type MaterialRef } from "./material.js";
 
 export { MAX_ACTIVE_PER_USER } from "./queue.js";
 
-export type WorkflowInputs = { study?: string; paper_id?: string; deck_id?: string; project_id?: string; note_ids?: string[]; paper_ids?: string[]; pages?: number; mode?: "progress" | "paper_report" };
+/**
+ * `attachment_ids`: files uploaded into one of the owner's conversations that the caller hands over (start_workflow, the
+ * composer's 「交給 Agent」); creation resolves them — with the task turns' own attachments / pasted text — into
+ * `materials` (references only, material.ts) and drops the ids.
+ */
+export type WorkflowInputs = { study?: string; paper_id?: string; deck_id?: string; project_id?: string; note_ids?: string[]; paper_ids?: string[]; pages?: number; mode?: "progress" | "paper_report"; attachment_ids?: string[]; materials?: MaterialRef[] };
 /**
  * `userWords`: the user's own words when `request` was written by the assistant (start_workflow / start_goal: the chat
  * turns that asked, verbatim) — the Brief's source of requirements; `request` is then kept as the paraphrase. Absent =
  * the request is the user's (composer, API). `briefDeliverable`: fixed by the caller (a goal stage), else from the words.
  */
-export type CreateInput = { request: string; playbook?: string; conversationId?: string | null; toolCallId?: string | null; context?: Record<string, unknown> | null; inputs?: WorkflowInputs; autopilot?: boolean; userWords?: string[] | null; briefDeliverable?: { kind: BriefKind; label: string } | null };
+export type CreateInput = { /** 「交給 Agent」 with chips: stored on the user message like a chat turn's (their uploads / notes become material). */ attachments?: AttachmentRef[]; request: string; playbook?: string; conversationId?: string | null; toolCallId?: string | null; context?: Record<string, unknown> | null; inputs?: WorkflowInputs; autopilot?: boolean; userWords?: string[] | null; briefDeliverable?: { kind: BriefKind; label: string } | null };
 
 async function ownRun(db: Queryable, user: CurrentUser, id: string, forUpdate = false) {
   const r = await getRun(db, id, forUpdate);
@@ -84,6 +91,16 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
     const n = (typeof ctx.noteId === "string" ? ctx.noteId : null) ?? (await conversationArtifact(client, input.conversationId, user.id, "note"));
     if (n) inputs.note_ids = [n];
   }
+  // User-provided material (material.ts; production 301b6e1a: an attached Deep-Research file never reached the run):
+  // references to the files the caller handed over, the task turns' own attachments / pasted text, or — when the words
+  // point at material — the conversation's newest uploaded document.
+  // (Material an internal caller carries over — a batch split, a goal stage — is kept.)
+  const carried = materialsOf(inputs as Record<string, unknown>);
+  const found = await resolveMaterials(client, user.id, input.conversationId, { explicit: inputs.attachment_ids, words });
+  const materials = [...carried, ...found.filter((m) => !carried.some((c) => c.kind === m.kind && c.id === m.id))].slice(0, MAX_MATERIALS);
+  delete inputs.attachment_ids;
+  if (materials.length) inputs.materials = materials;
+  else delete inputs.materials;
   // The study: the inputs, the work object's own study (a deck / note / project / paper belongs to one), the current page,
   // the conversation's last workflow (「同一個簡報繼續做」), the conversation's page context, a study the request names.
   const page = (input.context ?? {}) as Record<string, unknown>;
@@ -158,6 +175,24 @@ export async function createWorkflows(app: FastifyInstance, user: CurrentUser, i
   return out;
 }
 
+/**
+ * What the assistant tells the user after a start (`start_workflow` result `message`, the 「交給 Agent」 transcript).
+ * Production 301b6e1a: under autopilot the assistant said 「計畫卡片準備好後請確認」 although autopilot approves the plan by
+ * itself — the message now follows the run's autopilot (invariant `assistant.no_confirm_under_autopilot`).
+ */
+export function startMessage(runs: RunRow[], batchId: string | null): string {
+  const autopilot = runs.some((r) => r.autopilot);
+  const mats = runs[0] ? materialsOf(runs[0].inputs) : [];
+  const material = mats.length ? `已帶入使用者提供的資料：${mats.map((m) => `〈${m.title ?? m.kind}〉`).join("、")}（工作流程會以它為來源）。` : "";
+  if (batchId) {
+    const queued = runs.filter((r) => r.status === "queued").length;
+    return `已拆成 ${runs.length} 個工作流程（每篇一個，${queued} 個排隊中，會自動接著開始）。${material}${autopilot ? "自動駕駛開啟：計畫會自動核准並直接執行，不需要使用者確認；不要請使用者確認計畫。" : "每份的計畫準備好後請使用者確認。"}用一句話告訴使用者批次卡片會顯示每一篇的進度，不要描述或預告結果。`;
+  }
+  return autopilot
+    ? `工作流程已開始規劃。${material}自動駕駛開啟：計畫會自動核准並直接執行（卡片上可以暫停或修改計畫），不需要使用者確認。用一句話告訴使用者 Agent 已經開始、進度會顯示在卡片上；不要請使用者確認計畫，也不要描述或預告結果。`
+    : `工作流程已開始規劃。${material}計畫卡片會顯示給使用者，確認後才會執行與寫入。現在用一句話告訴使用者計畫準備好時請他確認，不要描述或預告結果。`;
+}
+
 /** The `start_workflow` tool result (one run or a batch). */
 export function startResult(out: { runs: RunRow[]; batchId: string | null }) {
   const first = out.runs[0]!;
@@ -212,15 +247,20 @@ export async function startFromChat(app: FastifyInstance, user: CurrentUser, inp
     const busy = (await client.query("SELECT 1 FROM agent_runs WHERE conversation_id=$1 AND status IN ('running','awaiting_approval','awaiting_llm')", [conv.id])).rowCount;
     if (busy) throw conflict("AI 正在回覆中，請先按「停止」或等它完成。");
     const ctx = input.context ?? (conv.context as Record<string, unknown>) ?? {};
+    // Chips sent with 「交給 Agent」: checked like a chat turn's (the caller must read each; uploads of this conversation only).
+    const stored: StoredAttachment[] = [];
+    for (const ref of input.attachments ?? []) stored.push(await describeRef(app, user, conv.id, ref));
     const msg = (await client.query<MessageRow>(
-      "INSERT INTO agent_messages(conversation_id,role,content,text,page_context) VALUES($1,'user',$2,$3,$4) RETURNING *",
-      [conv.id, JSON.stringify([{ type: "text", text: `（交給 Agent）${input.request}` }]), input.request, Object.keys(ctx).length ? JSON.stringify(ctx) : null],
+      "INSERT INTO agent_messages(conversation_id,role,content,text,page_context,attachments) VALUES($1,'user',$2,$3,$4,$5) RETURNING *",
+      [conv.id, JSON.stringify([{ type: "text", text: `（交給 Agent）${input.request}` }]), input.request, Object.keys(ctx).length ? JSON.stringify(ctx) : null, stored.length ? JSON.stringify(stored) : null],
     )).rows[0]!;
     const agentRun = (await client.query<AgentRunRow>("INSERT INTO agent_runs(conversation_id,user_id,status,max_steps,stop_reason,finished_at) VALUES($1,$2,'done',250,'workflow',now()) RETURNING *", [conv.id, user.id])).rows[0]!;
     await client.query("UPDATE agent_messages SET run_id=$2 WHERE id=$1", [msg.id, agentRun.id]);
     const callId = `wf_${agentRun.id.slice(0, 8)}`;
     const args = { request: input.request, ...(input.playbook ? { playbook: input.playbook } : {}) };
-    const intro = "好的，我把這件事交給工作流程：先擬出目標、驗收標準與計畫給你確認，確認後才開始寫入草稿。";
+    const intro = (input.autopilot ?? conv.autopilot)
+      ? "好的，我把這件事交給工作流程：先擬出目標、驗收標準與計畫；自動駕駛開啟，計畫會自動核准並開始執行（卡片上可以暫停或修改計畫）。"
+      : "好的，我把這件事交給工作流程：先擬出目標、驗收標準與計畫給你確認，確認後才開始寫入草稿。";
     const am = (await client.query<MessageRow>(
       "INSERT INTO agent_messages(conversation_id,run_id,role,content,text) VALUES($1,$2,'assistant',$3,$4) RETURNING *",
       [conv.id, agentRun.id, JSON.stringify([{ type: "text", text: intro }, { type: "tool_use", id: callId, name: "start_workflow", input: args }]), intro],
@@ -235,7 +275,7 @@ export async function startFromChat(app: FastifyInstance, user: CurrentUser, inp
     const created = await insertWorkflows(client, user, { ...input, context: ctx, toolCallId: tc.id, autopilot: input.autopilot ?? conv.autopilot, userWords });
     const run = created.runs[0]!;
     const data = startResult(created);
-    const text = envelope("start_workflow", JSON.stringify({ ...data, message: created.batchId ? `已拆成 ${created.runs.length} 個工作流程（每篇一個），超過同時上限的會排隊自動開始。不要描述結果，等工作流程回報。` : "工作流程已開始規劃；計畫卡片已顯示給使用者，確認後才會執行。不要描述結果，等工作流程回報。" }), { untrusted: false });
+    const text = envelope("start_workflow", JSON.stringify({ ...data, message: startMessage(created.runs, created.batchId) }), { untrusted: false });
     await client.query("UPDATE tool_calls SET status='done', result=$2, result_text=$3, finished_at=now() WHERE id=$1", [tc.id, JSON.stringify({ data, links: [], source: null, untrusted: false }), text]);
     await client.query("INSERT INTO agent_messages(conversation_id,run_id,role,content) VALUES($1,$2,'tool',$3)", [conv.id, agentRun.id, JSON.stringify([{ type: "tool_result", tool_use_id: callId, content: text }])]);
     const conversation = (await client.query<ConversationRow>("UPDATE conversations SET updated_at=now(), title=CASE WHEN title='' THEN $2 ELSE title END WHERE id=$1 RETURNING *", [conv.id, titleFrom(input.request).slice(0, 40)])).rows[0]!;
