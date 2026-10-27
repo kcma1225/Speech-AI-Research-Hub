@@ -5,6 +5,7 @@
 import { z } from "zod";
 import { askUserInput } from "../ask.js";
 import { registerAgentTool } from "./registry.js";
+import { prepareConceptCheck } from "./tutor.js";
 
 registerAgentTool({
   name: "ask_user",
@@ -19,7 +20,14 @@ registerAgentTool({
     "(with short descriptions when helpful) and an 「還不確定」 option where it applies; questions are optional unless truly required. " +
     "After calling it, stop: do not answer for the user. The answers arrive as the next user message.",
   input: askUserInput,
-  summarize: (a) => `詢問 ${a.questions.length} 個問題`,
+  summarize: (a) => (a.questions.some((q) => q.type === "concept_check") ? "確認先備知識" : `詢問 ${a.questions.length} 個問題`),
+  // A concept_check question lists the rows code chose (tutor.ts), never the model's own list.
+  async prepare(a, ctx) {
+    if (!a.questions.some((q) => q.type === "concept_check")) return a;
+    const questions = [];
+    for (const q of a.questions) questions.push(q.type === "concept_check" ? { ...q, concepts: await prepareConceptCheck(q, ctx) } : q);
+    return { ...a, questions };
+  },
   async execute(a) {
     return {
       data: { questions: a.questions.length, status: "shown_to_user" },

@@ -74,13 +74,16 @@
   let dropContext = $state(false);
   let settings = $state<AgentSettings | null>(null);
   let draftAutopilot = $state<boolean | null>(null);
+  // 「先確認先備知識」 chosen before the conversation exists (sent on create).
+  let draftPrereq = $state(false);
+  const draftCreate = () => ({ ...(draftAutopilot ? { autopilot: true } : {}), ...(draftPrereq ? { prereq_check: true } : {}) });
   let explainOpen = $state(false);
 
   // Attachments of the next message (「附加」 / @). Uploads need a conversation: created on demand, announced on send.
   let createdForUpload = false;
   const attachments = new AttachDraft(async () => {
     if (!session.id) {
-      await session.create({ context: ctx, ...(draftAutopilot ? { autopilot: true } : {}) });
+      await session.create({ context: ctx, ...draftCreate() });
       createdForUpload = true;
     }
     return session.id!;
@@ -111,6 +114,7 @@
   const autopilot = $derived(interview ? null : (session.conversation?.autopilot ?? draftAutopilot ?? false));
   const memoryAvailable = $derived(!!settings?.memory_enabled);
   const memoryOn = $derived(session.conversation ? session.conversation.memory_enabled : memoryAvailable);
+  const prereqOn = $derived(session.conversation ? !!session.conversation.prereq_check : draftPrereq);
   const run = $derived(session.run);
   const running = $derived(run?.status === "running");
   const acting = $derived(session.toolCalls.some((c) => c.status === "running" && c.approved_via === "autopilot"));
@@ -322,7 +326,7 @@
     // Attached files / notes go with the hand-off: the workflow uses them as its material.
     const refs = attachments.refs;
     try {
-      if (!session.id) await session.create({ context: sendCtx, ...(draftAutopilot ? { autopilot: true } : {}) });
+      if (!session.id) await session.create({ context: sendCtx, ...draftCreate() });
       await workflowsApi.create({ request: request.trim(), conversation_id: session.id!, ...(sendCtx ? { context: sendCtx } : {}), ...(refs.length ? { attachments: refs } : {}) });
       if (attachments.items.length) attachments.clear();
       void agentActivity.refresh();
@@ -377,7 +381,7 @@
     // The quick action keeps whatever the user is typing.
     if (!intent) text = "";
     try {
-      if (!session.id && draftAutopilot) await session.create({ context: sendCtx, autopilot: true });
+      if (!session.id && (draftAutopilot || draftPrereq)) await session.create({ context: sendCtx, ...draftCreate() });
       await session.send(value, sendCtx, intent, refs, opts);
       // The shell's 「N 個 Agent 執行中」 picks the new run up now, not at its next idle poll.
       setTimeout(() => void agentActivity.refresh(), 800);
@@ -600,6 +604,14 @@
       toasts.show((e as Error).message, "error");
     }
   }
+  async function setPrereq(v: boolean) {
+    try {
+      if (session.conversation) await session.update({ prereq_check: v });
+      else draftPrereq = v;
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    }
+  }
   async function retry() {
     try {
       await session.continue();
@@ -751,6 +763,8 @@
         onStop={() => void session.cancel()}
         onAutopilot={(v) => void setAutopilot(v)}
         onMemory={(v) => void setMemory(v)}
+        prereq={interview ? null : prereqOn}
+        onPrereq={(v) => void setPrereq(v)}
         onClearContext={() => (dropContext = true)}
         onMakeNote={interview ? undefined : makeNote}
         onAgent={interview ? undefined : (v) => void handToAgent(v)}

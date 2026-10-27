@@ -15,6 +15,7 @@
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import McpTokens from "./McpTokens.svelte";
+  import ConceptSettings from "./ConceptSettings.svelte";
   import type { AgentSettings, Memory } from "#lib/agent/types.ts";
 
   /** Settings → AI 助理: memory on/off (default off), default autopilot, the memory list, MCP tokens. */
@@ -204,6 +205,8 @@
       {/if}
     </div>
   </Card>
+
+  <ConceptSettings />
 
   <McpTokens />
 </div>

@@ -83,8 +83,8 @@ export class ChatSession {
     this.error = null;
   }
 
-  async create(opts: { context?: PageContext | null; autopilot?: boolean; title?: string } = {}) {
-    const r = await api.post<{ conversation: Conversation }>("/agent/conversations", { mode: this.mode, ...(opts.context ? { context: opts.context } : {}), ...(opts.autopilot !== undefined ? { autopilot: opts.autopilot } : {}), ...(opts.title ? { title: opts.title } : {}) });
+  async create(opts: { context?: PageContext | null; autopilot?: boolean; title?: string; prereq_check?: boolean } = {}) {
+    const r = await api.post<{ conversation: Conversation }>("/agent/conversations", { mode: this.mode, ...(opts.context ? { context: opts.context } : {}), ...(opts.autopilot !== undefined ? { autopilot: opts.autopilot } : {}), ...(opts.title ? { title: opts.title } : {}), ...(opts.prereq_check ? { prereq_check: true } : {}) });
     this.createdId = r.conversation.id;
     await this.open(r.conversation.id);
     return r.conversation;
@@ -203,7 +203,7 @@ export class ChatSession {
     this.setRun(r.run);
   }
 
-  async update(patch: { title?: string; autopilot?: boolean; memory_enabled?: boolean }) {
+  async update(patch: { title?: string; autopilot?: boolean; memory_enabled?: boolean; prereq_check?: boolean }) {
     if (!this.id) return;
     const r = await api.patch<{ conversation: Conversation }>(`/agent/conversations/${this.id}`, patch);
     this.conversation = r.conversation;

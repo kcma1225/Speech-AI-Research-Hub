@@ -33,6 +33,7 @@ import {
   type PageContext, type StoredMessage,
 } from "./prompt.js";
 import { getAgentSettings } from "./settings.js";
+import { applyConceptCheckAnswer, parseCardValue } from "./tutor.js";
 import { completionReview, failureNote, failureStreak, FAILURE_NOTE_AT, FAILURE_STOP, planReminder, REPEAT_NOTE, type RunCall } from "./guards.js";
 import type { Plan } from "./tools/plan.js";
 import { inlineToolImages, storeToolImages, toolResultContent, type StoredToolImage } from "./images.js";
@@ -340,12 +341,12 @@ export class AgentRuntime {
 
   // ---------------------------------------------------------------- public API (routes)
 
-  async createConversation(user: CurrentUser, input: { mode?: "chat" | "interview"; context?: PageContext | null; autopilot?: boolean; title?: string }) {
+  async createConversation(user: CurrentUser, input: { mode?: "chat" | "interview"; context?: PageContext | null; autopilot?: boolean; title?: string; prereq_check?: boolean }) {
     const settings = await getAgentSettings(this.db, user.id);
     const ctx = await this.resolveContext(input.context ?? null);
     const row = (await this.db.query<ConversationRow>(
-      `INSERT INTO conversations(user_id,mode,context,study_id,autopilot,memory_enabled,title,title_source) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [user.id, input.mode ?? "chat", JSON.stringify(ctx ?? {}), ctx?.studyId ?? null, input.mode === "interview" ? false : (input.autopilot ?? settings.autopilot_default), input.mode === "interview" ? false : settings.memory_enabled, input.title?.slice(0, 120) ?? "", input.title ? "user" : "auto"],
+      `INSERT INTO conversations(user_id,mode,context,study_id,autopilot,memory_enabled,title,title_source,prereq_check) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [user.id, input.mode ?? "chat", JSON.stringify(ctx ?? {}), ctx?.studyId ?? null, input.mode === "interview" ? false : (input.autopilot ?? settings.autopilot_default), input.mode === "interview" ? false : settings.memory_enabled, input.title?.slice(0, 120) ?? "", input.title ? "user" : "auto", input.mode !== "interview" && !!input.prereq_check],
     )).rows[0]!;
     if (row.mode === "interview") await this.seedInterview(row.id, user.id);
     return conversationView(row);
@@ -426,7 +427,17 @@ export class AgentRuntime {
     if (answered) throw conflict("這些問題已經回答過了；要改的話請按「修改答案」。");
     const stored = validateAnswers(args.data, input.answers);
     const out = answersText(args.data, stored);
-    const model = extra ? `${out.model}\n\n補充：${extra}` : out.model;
+    // A concept_check card (「先確認先備知識」): the session records the answer and the self-reports are remembered.
+    const notes: string[] = [];
+    for (const q of args.data.questions) {
+      if (q.type !== "concept_check" || !q.paper_id || !q.concepts) continue;
+      const a = stored.answers.find((x) => x.id === q.id);
+      const parsed = a && !a.skipped && Array.isArray(a.value) ? parseCardValue(q.concepts, a.value) : null;
+      const note = await applyConceptCheckAnswer(client, conversationId, q.paper_id, parsed);
+      if (note) notes.push(note);
+    }
+    const modelOut = notes.length ? `${out.model}\n<tutor_note trust="system">${notes.join("\n")}</tutor_note>` : out.model;
+    const model = extra ? `${modelOut}\n\n補充：${extra}` : modelOut;
     const display = extra ? `${out.display}\n\n${extra}` : out.display;
     return { blocks: [...head, { type: "text" as const, text: model }], text: display, answers: stored, ...turnAttachments() };
   }
@@ -1131,7 +1142,7 @@ export class AgentRuntime {
   }
 
   private toolsFor(conv: ConversationRow, memoryOn: boolean) {
-    return listAgentTools({ mode: conv.mode }).filter((t) => t.name !== "remember" || memoryOn);
+    return listAgentTools({ mode: conv.mode }).filter((t) => (t.name !== "remember" || memoryOn) && (!t.conversationFlag || !!conv[t.conversationFlag]));
   }
 
   private async modelStep(run: RunRow, conv: ConversationRow, user: CurrentUser, writer: EventWriter, signal: AbortSignal, opts: { wrapUp?: "steps" | "time" } = {}):
@@ -1140,7 +1151,7 @@ export class AgentRuntime {
     const memoryOn = conv.mode === "chat" && settings.memory_enabled && conv.memory_enabled;
     const memories = memoryOn ? await memoriesForContext(this.db, user.id, conv.study_id) : null;
     const tools = this.toolsFor(conv, memoryOn);
-    const system = systemPrompt({ mode: conv.mode, user, memories });
+    const system = systemPrompt({ mode: conv.mode, user, memories, prereqCheck: conv.mode === "chat" && !!conv.prereq_check });
     const vision = await this.visionNow();
     const messages = await inlineAttachmentImages(this.app.storage, await inlineToolImages(this.app.storage, await this.contextMessages(conv, user, system), { vision }), { vision });
     // The conversation's active workflows, as they are now (status, step, question), on the newest user turn: the
@@ -1400,7 +1411,7 @@ export class AgentRuntime {
     type Planned = { pos: number; use: ToolUseBlock; def: AgentToolDef | null; args: Record<string, unknown> | null; error: string | null; status?: string };
     const planned: Planned[] = calls.map((use, pos) => {
       const def = getAgentTool(use.name);
-      if (!def || !(def.modes ?? ["chat"]).includes(conv.mode) || (def.name === "remember" && !memoryOn))
+      if (!def || !(def.modes ?? ["chat"]).includes(conv.mode) || (def.name === "remember" && !memoryOn) || (def.conversationFlag && !conv[def.conversationFlag]))
         return { pos, use, def: null, args: null, error: `沒有名為 ${use.name} 的工具。` };
       if (use.input && typeof use.input === "object" && "__invalid_json" in (use.input as object)) return { pos, use, def, args: null, error: "工具參數不是有效的 JSON，請重新呼叫。" };
       const parsed = def.input.safeParse(use.input ?? {});
@@ -1428,6 +1439,14 @@ export class AgentRuntime {
       if (!p.def || !p.args) {
         await fail(p, p.error ?? "工具呼叫不正確。");
         continue;
+      }
+      if (p.def.prepare) {
+        try {
+          p.args = (await p.def.prepare(p.args as never, this.toolCtx(conv, user, run, signal, false))) as Record<string, unknown>;
+        } catch (e) {
+          await fail(p, errorText(e));
+          continue;
+        }
       }
       const key = `${p.def.name}:${stable(p.args)}`;
       const same = prior.filter((x) => x.key === key);

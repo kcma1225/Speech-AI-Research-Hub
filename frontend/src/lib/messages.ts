@@ -19,6 +19,7 @@ import * as workflows from "./i18n/workflows.ts";
 import * as drafts from "./i18n/drafts.ts";
 import * as viewer from "./i18n/viewer.ts";
 import * as agentPlan from "./i18n/agent-plan.ts";
+import * as agentTutor from "./i18n/agent-tutor.ts";
 import * as agentComposer from "./i18n/agent-composer.ts";
 import * as agentActivity from "./i18n/agent-activity.ts";
 import * as crud from "./i18n/crud.ts";
@@ -45,6 +46,7 @@ const zh = {
   ...drafts.zh,
   ...viewer.zh,
   ...agentPlan.zh,
+  ...agentTutor.zh,
   ...agentComposer.zh,
   ...agentActivity.zh,
   ...crud.zh,
@@ -73,6 +75,7 @@ const en: Record<MessageKey, string> = {
   ...drafts.en,
   ...viewer.en,
   ...agentPlan.en,
+  ...agentTutor.en,
   ...agentComposer.en,
   ...agentActivity.en,
   ...crud.en,

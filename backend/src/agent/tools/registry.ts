@@ -102,6 +102,13 @@ export interface AgentToolDef<I extends z.ZodType = z.ZodType> {
   mcp?: boolean;
   /** Conversation modes that offer this tool. Default ["chat"]. */
   modes?: ConversationMode[];
+  /** Offered only while this per-conversation switch is on (「先確認先備知識」 = `prereq_check`). */
+  conversationFlag?: "prereq_check";
+  /**
+   * Runs on the validated arguments before the call is stored (agent loop only): returns the arguments to store and
+   * execute (e.g. `ask_user` fills a concept_check card's rows from code). Throw an HttpError to fail the call.
+   */
+  prepare?(args: z.infer<I>, ctx: AgentToolContext): Promise<z.infer<I>>;
   /** Resolve the target (study) — also used to authorize grants. Return null when there is none. */
   target?(args: z.infer<I>, ctx: AgentToolContext): Promise<AgentTarget | null>;
   /**

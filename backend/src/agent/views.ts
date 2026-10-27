@@ -11,6 +11,8 @@ export type ConversationRow = {
   study_id: string | null;
   autopilot: boolean;
   memory_enabled: boolean;
+  /** 「先確認先備知識」 paper tutoring (src/agent/tutor.ts). */
+  prereq_check: boolean;
   summary: string | null;
   summary_until: string | null;
   /** The composer's queued message (sent when the run ends; docs/architecture.md → Agent → Queued message). */
@@ -43,6 +45,7 @@ export const conversationView = (c: ConversationRow) => ({
   study_id: c.study_id,
   autopilot: c.autopilot,
   memory_enabled: c.memory_enabled,
+  prereq_check: !!c.prereq_check,
   compacted: !!c.summary,
   queued: c.queued ?? null,
   created_at: c.created_at,

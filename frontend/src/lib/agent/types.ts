@@ -35,6 +35,8 @@ export type Conversation = {
   study_id: string | null;
   autopilot: boolean;
   memory_enabled: boolean;
+  /** 「先確認先備知識」 for this conversation. */
+  prereq_check: boolean;
   compacted: boolean;
   /** The message queued while the assistant was replying (sent by the server when the reply ends). */
   queued: QueuedMessage | null;
@@ -90,7 +92,12 @@ export type Message = {
   created_at: string;
 };
 
-export type QuestionType = "single_choice" | "multi_choice" | "short_text" | "long_text" | "number" | "date" | "scale" | "yes_no";
+export type QuestionType = "single_choice" | "multi_choice" | "short_text" | "long_text" | "number" | "date" | "scale" | "yes_no" | "concept_check";
+export type ConceptLevel = "known" | "heard" | "unknown";
+/** A row of a concept_check card (「先確認先備知識」; filled by the server). */
+export type ConceptRow = { key: string; term_zh?: string; term_en: string; gloss: string; section?: string; centrality?: "core" | "supporting"; prefill?: ConceptLevel; remembered?: boolean };
+/** A concept in 設定 → 懂的概念 (`GET /api/concepts`). */
+export type UserConcept = { key: string; term_zh: string; term_en: string; level: ConceptLevel; level_label: string; source: "self_report" | "checked"; source_label: string; paper: { id: string; title: string } | null; updated_at: string };
 export type AskQuestion = {
   id: string;
   prompt: string;
@@ -100,6 +107,9 @@ export type AskQuestion = {
   required?: boolean;
   placeholder?: string;
   scale_labels?: string[];
+  /** concept_check only. */
+  paper_id?: string;
+  concepts?: ConceptRow[];
 };
 export type AskArgs = { intro?: string; questions: AskQuestion[] };
 export type AnswerValue = string | number | boolean | string[] | null;

@@ -5,8 +5,14 @@
  */
 import { z } from "zod";
 import { HttpError } from "../lib/http.js";
+import { CONCEPT_LEVELS, DIRECT, LEVEL_LABEL, parseCardValue, termLabel } from "./tutor.js";
 
-export const QUESTION_TYPES = ["single_choice", "multi_choice", "short_text", "long_text", "number", "date", "scale", "yes_no"] as const;
+/**
+ * `concept_check` (「先確認先備知識」, src/agent/tutor.ts): one row per prerequisite concept, each answered 懂 / 有聽過 /
+ * 不懂, plus 「全部都懂，直接講」. The model only names the paper; the rows are filled by code (`ask_user` prepare).
+ * The answer value is `["<key>=known|heard|unknown", …]` (+ `"__direct__"` for the shortcut).
+ */
+export const QUESTION_TYPES = ["single_choice", "multi_choice", "short_text", "long_text", "number", "date", "scale", "yes_no", "concept_check"] as const;
 export type QuestionType = (typeof QUESTION_TYPES)[number];
 
 const option = z.object({
@@ -45,6 +51,18 @@ function normaliseQuestion(raw: unknown): unknown {
   return q;
 }
 
+const conceptRow = z.object({
+  key: z.string().min(1).max(60),
+  term_zh: z.string().max(80).optional(),
+  term_en: z.string().min(1).max(120),
+  gloss: z.string().max(200),
+  section: z.string().max(40).optional(),
+  centrality: z.enum(["core", "supporting"]).optional(),
+  prefill: z.enum(CONCEPT_LEVELS).optional(),
+  remembered: z.boolean().optional(),
+});
+export type ConceptRow = z.infer<typeof conceptRow>;
+
 const questionObject = z.object({
   id: z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9_-]+$/).describe("Short unique id, e.g. q1 or data_type"),
   prompt: z.string().trim().min(1).max(300).describe("The question (user's language)"),
@@ -54,6 +72,8 @@ const questionObject = z.object({
   required: z.boolean().optional().describe("Default false. Prefer optional questions with an explicit 「還不確定」 option"),
   placeholder: z.string().trim().max(120).optional(),
   scale_labels: z.array(z.string().trim().min(1).max(40)).min(2).max(10).optional().describe("Scale: custom point labels (low → high)"),
+  paper_id: z.string().trim().max(64).optional().describe("concept_check only: the paper whose prerequisites (from extract_prerequisites) the card asks about"),
+  concepts: z.array(conceptRow).max(10).optional().describe("concept_check only: filled by the system from extract_prerequisites — omit"),
 });
 export const questionSchema = z.preprocess(normaliseQuestion, questionObject);
 export type Question = z.infer<typeof questionObject>;
@@ -76,6 +96,11 @@ export const askUserInput = z
     v.questions.forEach((q, i) => {
       if (seen.has(q.id)) ctx.addIssue({ code: "custom", path: ["questions", i, "id"], message: "duplicate id" });
       seen.add(q.id);
+      if (q.type === "concept_check") {
+        if (!q.paper_id) ctx.addIssue({ code: "custom", path: ["questions", i, "paper_id"], message: "concept_check needs paper_id" });
+        if (v.questions.length > 1) ctx.addIssue({ code: "custom", path: ["questions"], message: "a concept_check card has only that one question" });
+        if (q.concepts && new Set(q.concepts.map((c) => c.key)).size !== q.concepts.length) ctx.addIssue({ code: "custom", path: ["questions", i, "concepts"], message: "duplicate concept key" });
+      }
       if ((q.type === "single_choice" || q.type === "multi_choice") && !q.options?.length) ctx.addIssue({ code: "custom", path: ["questions", i, "options"], message: "choice questions need 2–12 options" });
       if (q.options && new Set(q.options.map((o) => o.value)).size !== q.options.length) ctx.addIssue({ code: "custom", path: ["questions", i, "options"], message: "duplicate option value" });
     });
@@ -149,6 +174,24 @@ export function validateAnswers(args: AskUserArgs, input: AnswersInput): StoredA
         if (typeof v !== "boolean") throw bad(q, "請選「是」或「否」。");
         out.push({ id: q.id, value: v });
         break;
+      case "concept_check": {
+        if (!q.concepts?.length) throw bad(q, "的格式不正確。");
+        if (!Array.isArray(v)) throw bad(q, "需要逐項選擇。");
+        let parsed: ReturnType<typeof parseCardValue>;
+        try {
+          parsed = parseCardValue(q.concepts, v);
+        } catch (e) {
+          throw bad(q, (e as Error).message);
+        }
+        if (!parsed.levels.size) {
+          if (q.required) throw bad(q, "是必答題。");
+          out.push({ id: q.id, value: null, skipped: true });
+          break;
+        }
+        const list = q.concepts.filter((c) => parsed.levels.has(c.key)).map((c) => `${c.key}=${parsed.levels.get(c.key)}`);
+        out.push({ id: q.id, value: parsed.direct ? [...list, DIRECT] : list });
+        break;
+      }
     }
   }
   return { toolCallId: input.tool_call_id, answers: out };
@@ -166,6 +209,15 @@ export function answerLabel(q: Question, a: StoredAnswers["answers"][number] | u
       return [...(Array.isArray(a.value) ? a.value.map(label) : []), other].filter(Boolean).join("、") || "（未選）";
     case "yes_no":
       return a.value ? "是" : "否";
+    case "concept_check": {
+      const list = Array.isArray(a.value) ? a.value : [];
+      if (list.includes(DIRECT)) return "全部都懂，直接講";
+      const levels = conceptLevels(list);
+      return CONCEPT_LEVELS.map((lv) => [lv, (q.concepts ?? []).filter((c) => levels.get(c.key) === lv).map(termLabel)] as const)
+        .filter(([, names]) => names.length)
+        .map(([lv, names]) => `${LEVEL_LABEL[lv]}：${names.join("、")}`)
+        .join("；") || "（略過）";
+    }
     case "scale": {
       const n = Number(a.value);
       return q.scale_labels ? `${q.scale_labels[n - 1] ?? n}（${n}/${q.scale_labels.length}）` : `${n}/5`;
@@ -175,10 +227,30 @@ export function answerLabel(q: Question, a: StoredAnswers["answers"][number] | u
   }
 }
 
+/** `key=level` entries of a concept_check answer (without the 直接講 marker). */
+export const conceptLevels = (list: string[]) =>
+  new Map(list.filter((x) => x !== DIRECT && x.includes("=")).map((x) => [x.slice(0, x.lastIndexOf("=")), x.slice(x.lastIndexOf("=") + 1)]));
+
+/** concept_check, for the model: one line per row with its key (the tutoring tools take keys). */
+function conceptLinesForModel(q: Question, a: StoredAnswers["answers"][number] | undefined): string {
+  const list = a && !a.skipped && Array.isArray(a.value) ? a.value : [];
+  if (!list.length) return "   → （略過）";
+  const levels = conceptLevels(list);
+  const label = (k: string) => LEVEL_LABEL[levels.get(k) as keyof typeof LEVEL_LABEL] ?? "（沒選）";
+  return (q.concepts ?? []).map((c) => `   - [${c.key}] ${termLabel({ term_zh: c.term_zh ?? "", term_en: c.term_en })}：${label(c.key)}`).join("\n") + (list.includes(DIRECT) ? "\n   （使用者按了「全部都懂，直接講」）" : "");
+}
+
 /** The clean list the model receives as the user's turn, and the plain text kept in `agent_messages.text`. */
 export function answersText(args: AskUserArgs, stored: StoredAnswers): { model: string; display: string } {
   const byId = new Map(stored.answers.map((a) => [a.id, a]));
   const lines = args.questions.map((q, i) => `${i + 1}. ${q.prompt}\n   → ${answerLabel(q, byId.get(q.id))}`);
+  if (args.questions.some((q) => q.type === "concept_check")) {
+    const model = args.questions.map((q, i) => `${i + 1}. ${q.prompt}\n${q.type === "concept_check" ? conceptLinesForModel(q, byId.get(q.id)) : `   → ${answerLabel(q, byId.get(q.id))}`}`);
+    return {
+      model: `<user_answers to="ask_user" note="使用者在概念確認卡片上的回答；（略過）表示使用者選擇不回答，請不要追問">\n${model.join("\n")}\n</user_answers>`,
+      display: lines.join("\n"),
+    };
+  }
   return {
     model: `<user_answers to="ask_user" note="使用者在問題卡片上的回答；（略過）表示使用者選擇不回答，請不要追問">\n${lines.join("\n")}\n</user_answers>`,
     display: lines.join("\n"),

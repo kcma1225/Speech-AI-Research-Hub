@@ -1079,7 +1079,8 @@ Spec §5/§9, research `docs/research/agent-harness.md`. The loop runs **in the 
 Tables (`0070_agent.sql`):
 - `agent_settings` (per user: `memory_enabled` default **false**, `autopilot_default` default false, `autopilot_explained`).
 - `conversations` (`user_id`, `title` + `title_source auto|user`, `mode chat|interview`, `context` = latest page context,
-  `study_id` (scope for study memories), `autopilot`, `memory_enabled`, `summary` + `summary_until` = compaction).
+  `study_id` (scope for study memories), `autopilot`, `memory_enabled`, `summary` + `summary_until` = compaction,
+  `prereq_check` = 「先確認先備知識」 (`0123_paper_tutor.sql`; see Prerequisite check)).
 - `agent_messages` (`seq` global order; `role user|assistant|tool|notice|compaction`; `content` = unified `ChatMessage`
   blocks the model sees, `text` = what the UI shows; `provider_state` replayed to the vendor; `status complete|cancelled`;
   branches `0104_agent_branches.sql`: `version_of` (first message of a user message's version group), `hidden_by`
@@ -1099,6 +1100,9 @@ Tables (`0070_agent.sql`):
   `source agent|user`, `source_conversation_id` kept after the chat is deleted), `memory_uses (message_id, memory_id)`,
   `agent_events` (SSE replay log, `seq` = event id, pruned a day after the conversation has no active run),
   `mcp_tokens` (sha256 `token_hash`, `prefix`, `scopes read|suggest`, `expires_at`, `revoked_at`).
+- `0123_paper_tutor.sql`: `paper_concept_sessions (conversation_id, paper_id)` (tutoring state: `concepts` = SessionConcept[]
+  in teaching order, `answered`, `checks_off`) and `user_concepts (user_id, concept_key)` (`term_zh`, `term_en`, `level
+  known|heard|unknown`, `source self_report|checked`, `paper_id`, `updated_at`; private to the user).
 
 **Loop** (`execute(runId)`, claimed with a lease renewed every ≈10 s; the 5 s ticker resumes orphaned `running` runs, due
 `awaiting_llm` runs, expires 24 h-old approvals (`expired`, run `done`) and 7-day-old deferred deletions (`expired`, nothing
@@ -1163,12 +1167,46 @@ conversation (GET + SSE from the new `resumeFrom`), so replay never shows events
 **`ask_user`** (`src/agent/ask.ts`, `tools/ask.ts`; risk read, never asks for consent, chat + interview, not on MCP):
 `{intro?, questions: 1–6 × {id, prompt, type single_choice|multi_choice|short_text|long_text|number|date|scale|yes_no,
 options?: [{value,label,description?}] (2–12, required for choices; a missing `value` defaults to the label or `o<n>`, and `question`/`text` are accepted for `prompt`), allow_other?, required? (default false), placeholder?,
-scale_labels?}}`. The call only shows the card; after its step the run ends (`done`, `stop_reason awaiting_input`) without
+scale_labels?}}`; type `concept_check` (+ `paper_id`, `concepts` filled by code — see Prerequisite check) is alone on its card. The call only shows the card; after its step the run ends (`done`, `stop_reason awaiting_input`) without
 another model call. The answers are a **user turn**: `POST …/messages {answers: {tool_call_id, answers}}` (validated against
 the questions: required, option values, number/date/scale ranges → 400; card must be on the current branch and not already
 answered → 404/409); the model gets a clean `<user_answers>` list (question → answer labels, 「（略過）」 for skipped). A normal
 message instead of answering leaves the card answerable (「繼續回答」). 「修改答案」 = editing that answer message (a branch).
 `list_lab_members {role?}` (read) lists active student/professor accounts for advisor/member choices.
+
+**Prerequisite check** (「先確認先備知識」; `src/agent/tutor.ts` rules, `tools/tutor.ts`, `routes/concepts.ts`): a per-conversation
+switch (`conversations.prereq_check`, composer toggle, `POST`/`PATCH` conversation `prereq_check`; interview: always off).
+Only while it is on, the system prompt adds `PREREQ_RULES` (prompt.ts) and four tools are offered (registry
+`conversationFlag: "prereq_check"`; all risk read, chat only, not on MCP, no consent card — they change only the
+conversation's tutoring state and the user's own concept memory, whose source is the user). Off = unchanged behaviour.
+- `extract_prerequisites {paper_id, concepts: 1–30 × {key?, term_en, term_zh?, gloss (one line, the paper's wording when it
+  defines it), kind prerequisite|paper_defined|symbol, depends_on?, section?, centrality? core|supporting}}`: refused (409)
+  until a `read_paper` of that paper is `done` in the conversation. Code normalises keys (NFKC, lower case, `[a-z0-9+#.-]`,
+  ≤ 60), merges duplicates, caps prerequisites at 10 (core first) and paper-defined + symbols at 12 (never asked), keeps only
+  dependencies between kept prerequisites, orders them topologically (leaves first, ties by input order; a cycle is broken at
+  the remaining item with the fewest open dependencies) and replaces the (conversation, paper) session. Concepts the user's
+  memory has as `checked` + `known` are done at once and never asked. The result tells the model the exact `ask_user` call.
+- The card: `ask_user {questions:[{id, type: "concept_check", prompt, paper_id}]}`; the tool's **`prepare`** hook (registry:
+  runs on validated args before the call is stored) replaces `concepts` with the code's rows `{key, term_zh?, term_en, gloss,
+  section?, centrality, prefill?, remembered?}` (≤ 10, teaching order, pre-filled from earlier self-reports → 「上次標記懂」);
+  refused without the switch, without a session, or when every row is already verified. Answer value = `["<key>=known|heard|
+  unknown", …]` (+ `"__direct__"` for 「全部都懂，直接講」); empty / skipped = skipped. Inside the answer turn's transaction the
+  session records it (known → done; heard / unknown → gaps; unanswered rows and a skipped card → done untaught; 直接講 or a
+  skipped card turns explain-backs off) and the levels are written to `user_concepts` as `self_report`; the model gets the
+  answers with keys plus a `<tutor_note>` (「已記下你懂：CTC、MFCC」 to relay, what to call next).
+- `next_concept {paper_id, section?}`: the code picks the first open gap in teaching order (dependencies first; with `section`
+  only the gaps that section needs + their open dependencies) and marks it `teaching`; `mode recap` (有聽過) / `explain`
+  (不懂); `verify: true` at most once per **core** card concept while checks are on (the optional 「用一句話說：…」); 409 before
+  the card is answered.
+- `add_subconcepts {paper_id, parent, concepts ≤ 3}` (lazy recursion): depth ≤ 3 below a card concept, ≤ 3 per parent, ≤ 8 per
+  paper; new ones go right before the parent (parent pending again); an existing concept only gains the edge unless it would
+  make a cycle; ones the memory has as known are added as done.
+- `mark_concepts {paper_id, updates ≤ 12 × {key, outcome understood|unclear|explain_back_passed|explain_back_failed|skipped},
+  stop_checks?}`: understood → known/self_report; explain_back_passed → known/**checked** (only for the offered check, otherwise it
+  counts as understood); explain_back_failed → heard (no second check); unclear → unknown (still a gap); skipped → done, no
+  memory (a skipped check turns checks off). Memory merge: a `checked` + `known` row is not demoted by a `known` self-report;
+  any other write replaces the row. The result carries 「已記下…」 and a 「管理懂的概念」 link (`/settings?tab=assistant#concepts`).
+- 設定 → AI 助理 → 懂的概念 (`ConceptSettings.svelte`): list, change the level (becomes `self_report`), delete one / all.
 
 **Interview** (`mode interview`): creating the conversation seeds a finished run with one assistant message holding a fixed
 `ask_user` card (`MATURITY_QUESTION`, `tools/interview.ts`: 「這個研究目前進行到哪個程度？」 exploring / problem_defined /
@@ -1238,9 +1276,9 @@ stripped from the text).
 | GET `/agent/tools` | user | `{tools:[{name,title,titleEn,risk,alwaysAsk,grantable,openWorld,suggests}]}` |
 | GET `/agent/pending` | user | pending approvals + deferred deletions across my conversations → `{count, conversations:[{id,title,mode,n}]}` (badges) |
 | GET `/agent/conversations?mode=chat\|interview&q=&limit=` | user (own) | `{conversations: (Conversation & {last_text, run_status, pending})[]}` newest first |
-| POST `/agent/conversations` `{mode?, context?, autopilot?, title?}` | user | autopilot / memory default from settings (interview: both off) → 201 `{conversation}` |
+| POST `/agent/conversations` `{mode?, context?, autopilot?, title?, prereq_check?}` | user | autopilot / memory default from settings (interview: both off; `prereq_check` default off, always off in interviews) → 201 `{conversation}` |
 | GET `/agent/conversations/:id` | owner | current branch only: `{conversation, messages (user/assistant/notice/compaction, each with memories, answers, versions: ids \| null), toolCalls, run (latest of the branch), grants, settings, resumeFrom}` |
-| PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?}` | owner | memory needs the user setting (409); emits `conversation`; `autopilot:true` settles the open step's cards (`applyAutopilot`) |
+| PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?, prereq_check?}` | owner | memory needs the user setting (409); emits `conversation`; `autopilot:true` settles the open step's cards (`applyAutopilot`) |
 | GET `/agent/conversations/:id/activity` | owner | what still runs: `{assistant: bool (an active agent run), workflows: [{id, title, status}] (unfinished runs of the conversation), goals: [{id, title, status}] (unfinished goals)}` — the delete dialog's warning (`frontend/src/lib/agent/delete.ts`) |
 | DELETE `/agent/conversations/:id` `?stop_agents=1` | owner | with an active run or unfinished workflows and no `stop_agents` → 409 `{code:"active_agents"}`; otherwise cancels the active run, stops (`cancelWorkflow`) and **deletes every workflow run of the conversation** (`deleteConversationWorkflows`; drafts they wrote — decks, notes — stay; a still-running job sees the cancel on its heartbeat and a retry finds the run `missing`); memories stay |
 | POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext, intent?: "make_note", attachments?: AttachmentRef[] ≤ 10, supersede?: boolean}` | owner | text and/or `ask_user` answers; `intent` = toolbar quick action (see Paper reading); `attachments` see Attachments (a ref the caller cannot read → 403/404 「附件 N：…」, nothing is sent); 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; while a reply runs → 202 `{queued}` (Queued message; answers → 409); consent cards pending and no `supersede: true` → 409 `{code:"pending_decision", pending:[{id,tool,title,summary}]}`; otherwise → 202 `{message, run}` |
@@ -1255,6 +1293,8 @@ stripped from the text).
 | GET `/agent/conversations/:id/events` | owner | **SSE**; replays rows after `Last-Event-ID` (or `?after=`), then live (`LISTEN agent_events`, 5 s poll fallback, `: ping` 15 s); `?once=1` replays and closes |
 | GET `/memories?scope=&study=&q=` · GET `/memories/export` | user (own) | `{memories: Memory[], enabled}` · JSON attachment |
 | POST `/memories` `{content, scope?, study?, conversation_id?}` · PATCH `/memories/:id` · DELETE `/memories/:id` · DELETE `/memories` | user (own) | a user action is consent (no card); secrets refused (400); ≤ 500 per user |
+| GET `/concepts` | user (own) | 懂的概念 (Prerequisite check): `{concepts: [{key, term_zh, term_en, level, level_label, source, source_label, paper: {id,title} \| null, updated_at}]}` newest first, ≤ 1000; `no-store` |
+| PATCH `/concepts/:key` `{level: known\|heard\|unknown}` · DELETE `/concepts/:key` · DELETE `/concepts` | user (own) | `:key` = the normalised key, URL-encoded (anything else → 404); PATCH sets `source self_report` → `{concept}`; 400 bad level; 404 not mine / missing; DELETE all → `{ok, deleted}` |
 | GET / POST `/agent/mcp-tokens` `{name, scopes?: ["read","suggest"], expires_in_days?: 1–365 \| null}` · DELETE `/agent/mcp-tokens/:id` | user (own) | POST returns the raw `secret` (`hubmcp_…`) **once** + `endpoint`; ≤ 10 active; audited |
 | POST `/mcp` (JSON-RPC 2.0, single or batch) · GET/DELETE `/mcp` → 405 | Bearer MCP token | see MCP below |
 
@@ -1310,7 +1350,8 @@ Core tools: read `list_studies`, `get_study`, `get_study_progress`, `list_notes`
 the identifier online, reuses a same/likely lab copy, then fetches the open-access PDF — result `paper.has_pdf`,
 `pdf.status`), `fetch_paper_pdf` (open-world; paper editors only), `create_deck`, `add_paper_to_study`, `remember` (memory); destructive `delete_task`,
 `delete_note`, `remove_paper_from_study`; `ask_user` + `list_lab_members` (chat and interview); interview-only
-`propose_study_plan` (read, no side effects).
+`propose_study_plan` (read, no side effects); with 「先確認先備知識」 on: `extract_prerequisites`, `next_concept`,
+`add_subconcepts`, `mark_concepts` (see Prerequisite check).
 
 **Audit tools** (`tools/more-writes.ts`; admins refused in every tool, `403 管理員帳號只能…`; none on MCP):
 - `update_milestone {study, milestone_id, title?, due_on?, done?, stage_id?}` (write, study editors; `lib/studies/milestones.ts`

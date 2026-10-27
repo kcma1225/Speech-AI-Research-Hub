@@ -1,0 +1,178 @@
+/**
+ * 「先確認先備知識」 end to end through the agent runtime with a scripted mock model: the per-conversation switch, tool
+ * gating, extract → concept_check card (rows filled by code, memory pre-fill) → answer → next_concept /
+ * mark_concepts → user_concepts, and the /concepts routes.
+ */
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { LightMyRequestResponse } from "fastify";
+import type { ChatEvent } from "../src/ai/types.js";
+import type { RoleChatRequest } from "../src/ai/platform/index.js";
+import { agentFor, type ModelCall } from "../src/agent/runtime.js";
+import { createTestContext, hasTestDb, ORIGIN, type TestContext } from "./helpers.js";
+
+let ids = 0;
+const calls = (...list: [string, unknown][]): ChatEvent[] => [
+  ...list.flatMap(([name, input]) => {
+    const id = `call_${++ids}`;
+    return [{ type: "tool_call_start", index: 0, id, name } as ChatEvent, { type: "tool_call_end", index: 0, id, name, input, argsJson: JSON.stringify(input) } as ChatEvent];
+  }),
+  { type: "done", stopReason: "tool_use" },
+];
+const say = (text: string): ChatEvent[] => [{ type: "text_delta", text }, { type: "done", stopReason: "end_turn" }];
+const lastUserText = (req: RoleChatRequest) => JSON.stringify(req.messages.filter((m) => m.role === "user").at(-1));
+const toolNames = (req: RoleChatRequest) => (req.tools ?? []).map((t) => t.name);
+
+describe.skipIf(!hasTestDb)("paper tutoring (prereq_check)", () => {
+  let t: TestContext;
+  let alice: { id: string; cookie: string };
+  let bob: { id: string; cookie: string };
+  let paperId: string;
+  let script: ChatEvent[][] = [];
+  const requests: RoleChatRequest[] = [];
+  const json = (r: LightMyRequestResponse) => r.json() as Record<string, any>;
+  const req = (who: { cookie: string }, method: "POST" | "PATCH" | "DELETE" | "GET", url: string, payload?: object) =>
+    t.app.inject({ method, url, headers: { origin: ORIGIN, cookie: who.cookie }, ...(payload ? { payload } : {}) });
+  const runtime = () => agentFor(t.app);
+  const model: ModelCall = async function* (r) {
+    requests.push(r);
+    for (const e of script.shift() ?? say("（沒有更多腳本）")) yield e;
+  };
+  const newConversation = async (body: object = {}) => json(await req(alice, "POST", "/api/agent/conversations", body)).conversation;
+  async function send(conv: string, body: object) {
+    const r = await req(alice, "POST", `/api/agent/conversations/${conv}/messages`, body);
+    expect(r.statusCode, r.body).toBe(202);
+    await runtime().settle();
+  }
+  const state = async (conv: string) => json(await req(alice, "GET", `/api/agent/conversations/${conv}`));
+
+  beforeAll(async () => {
+    t = await createTestContext();
+    alice = await t.login("student", "Alice");
+    bob = await t.login("student", "Bob");
+    paperId = (await t.db.query<{ id: string }>(
+      "INSERT INTO papers(record,type,title,title_norm,abstract,year,added_by) VALUES($1,'article-journal','CTC for Speech','ctc for speech','We use CTC on MFCC features.',2020,$2) RETURNING id",
+      [JSON.stringify({ title: "CTC for Speech", type: "article-journal", authors: [] }), alice.id],
+    )).rows[0]!.id;
+    const rt = runtime();
+    rt.options.model = model;
+    rt.options.fast = async () => "標題";
+  });
+  afterAll(async () => {
+    await runtime().settle();
+    await t?.close();
+  });
+  beforeEach(() => {
+    script = [];
+    requests.length = 0;
+  });
+
+  it("the switch: off by default, set on create / patch; tools and rules only when on", async () => {
+    const off = await newConversation();
+    expect(off.prereq_check).toBe(false);
+    script = [say("好")];
+    await send(off.id, { text: "嗨" });
+    expect(toolNames(requests[0]!)).not.toContain("extract_prerequisites");
+    expect(JSON.stringify(requests[0]!.messages[0])).not.toContain("先確認先備知識");
+    // concept_check cards are refused without the switch
+    script = [calls(["ask_user", { questions: [{ id: "concepts", type: "concept_check", prompt: "?", paper_id: paperId }] }]), say("好")];
+    await send(off.id, { text: "問我" });
+    expect((await state(off.id)).toolCalls.at(-1)).toMatchObject({ tool: "ask_user", status: "failed" });
+
+    const patched = json(await req(alice, "PATCH", `/api/agent/conversations/${off.id}`, { prereq_check: true })).conversation;
+    expect(patched.prereq_check).toBe(true);
+    script = [say("好")];
+    requests.length = 0;
+    await send(off.id, { text: "再一次" });
+    expect(toolNames(requests[0]!)).toEqual(expect.arrayContaining(["extract_prerequisites", "next_concept", "add_subconcepts", "mark_concepts"]));
+    expect(JSON.stringify(requests[0]!.messages[0])).toContain("先確認先備知識");
+    expect((await newConversation({ prereq_check: true })).prereq_check).toBe(true);
+    expect((await newConversation({ mode: "interview", prereq_check: true })).prereq_check).toBe(false);
+  });
+
+  it("extract → card (code rows, memory) → answer remembered → next_concept / mark_concepts", async () => {
+    await t.db.query("INSERT INTO user_concepts(user_id,concept_key,term_en,level,source) VALUES($1,'mel-frequency cepstral coefficients','MFCC','known','checked'),($1,'hidden markov model','HMM','known','self_report')", [alice.id]);
+    const conv = (await newConversation({ prereq_check: true })).id;
+    const concepts = [
+      { key: "connectionist temporal classification", term_en: "Connectionist Temporal Classification (CTC)", term_zh: "連結時序分類", gloss: "對齊未知時的序列損失", kind: "prerequisite", depends_on: ["hidden markov model"], centrality: "core", section: "3" },
+      { key: "hidden markov model", term_en: "Hidden Markov Model (HMM)", gloss: "隱藏狀態的序列模型", kind: "prerequisite", section: "2" },
+      { key: "mel-frequency cepstral coefficients", term_en: "MFCC", gloss: "語音特徵", kind: "prerequisite" },
+      { term_en: "Blank label", gloss: "CTC 的空白符號", kind: "paper_defined" },
+    ];
+    script = [
+      calls(["extract_prerequisites", { paper_id: paperId, concepts }]), // before reading: refused
+      calls(["read_paper", { paper_id: paperId }]),
+      calls(["extract_prerequisites", { paper_id: paperId, concepts }]),
+      calls(["ask_user", { questions: [{ id: "concepts", type: "concept_check", prompt: "熟悉哪些？", paper_id: paperId, concepts: [{ key: "fake", term_en: "Fake", gloss: "x" }] }] }]),
+    ];
+    await send(conv, { text: "幫我講解這篇論文" });
+    let s = await state(conv);
+    expect(s.toolCalls.map((c: any) => [c.tool, c.status])).toEqual([["extract_prerequisites", "failed"], ["read_paper", "done"], ["extract_prerequisites", "done"], ["ask_user", "done"]]);
+    expect(s.run).toMatchObject({ stop_reason: "awaiting_input" });
+    const card = s.toolCalls.at(-1);
+    // rows from code: leaves first, the verified MFCC is not asked, the HMM self-report pre-fills, the model's list is ignored
+    expect(card.args.questions[0].concepts.map((c: any) => c.key)).toEqual(["hidden markov model", "connectionist temporal classification"]);
+    expect(card.args.questions[0].concepts[0]).toMatchObject({ prefill: "known", remembered: true });
+    expect(s.toolCalls[2].result.data.already_verified).toEqual(["mel-frequency cepstral coefficients"]);
+
+    // invalid answer → 400
+    expect((await req(alice, "POST", `/api/agent/conversations/${conv}/messages`, { answers: { tool_call_id: card.id, answers: [{ id: "concepts", value: ["fake=known"] }] } })).statusCode).toBe(400);
+
+    script = [
+      calls(["next_concept", { paper_id: paperId }]),
+      calls(["mark_concepts", { paper_id: paperId, updates: [{ key: "hidden markov model", outcome: "understood" }] }]),
+      calls(["next_concept", { paper_id: paperId, section: "3" }]),
+      say("用一句話說：CTC 在解決什麼問題？（想跳過也可以）"),
+    ];
+    requests.length = 0;
+    await send(conv, { answers: { tool_call_id: card.id, answers: [{ id: "concepts", value: ["hidden markov model=unknown", "connectionist temporal classification=heard"] }] } });
+    expect(lastUserText(requests[0]!)).toContain("[hidden markov model]");
+    expect(lastUserText(requests[0]!)).toContain("已記下");
+    s = await state(conv);
+    const tail = s.toolCalls.slice(-3);
+    expect(tail.map((c: any) => [c.tool, c.status])).toEqual([["next_concept", "done"], ["mark_concepts", "done"], ["next_concept", "done"]]);
+    expect(tail[0].result.data.next.key).toBe("hidden markov model");
+    expect(tail[0].result.data.verify).toBe(false);
+    expect(tail[2].result.data).toMatchObject({ next: { key: "connectionist temporal classification" }, mode: "recap", verify: true });
+    let mem = (await t.db.query("SELECT concept_key,level,source FROM user_concepts WHERE user_id=$1 ORDER BY concept_key", [alice.id])).rows;
+    expect(mem).toEqual([
+      { concept_key: "connectionist temporal classification", level: "heard", source: "self_report" },
+      { concept_key: "hidden markov model", level: "known", source: "self_report" },
+      { concept_key: "mel-frequency cepstral coefficients", level: "known", source: "checked" },
+    ]);
+
+    script = [calls(["mark_concepts", { paper_id: paperId, updates: [{ key: "connectionist temporal classification", outcome: "explain_back_passed" }] }]), calls(["next_concept", { paper_id: paperId }]), say("好，接著講 §3")];
+    await send(conv, { text: "它讓模型不用事先對齊就能訓練" });
+    s = await state(conv);
+    expect(s.toolCalls.at(-2).result.data.saved).toEqual([expect.objectContaining({ key: "connectionist temporal classification", level: "known", source: "checked" })]);
+    expect(s.toolCalls.at(-1).result.data.next).toBeNull();
+    mem = (await t.db.query("SELECT level,source,paper_id FROM user_concepts WHERE user_id=$1 AND concept_key='connectionist temporal classification'", [alice.id])).rows;
+    expect(mem[0]).toEqual({ level: "known", source: "checked", paper_id: paperId });
+
+    // A second extraction in another conversation: CTC is verified now and is not asked again.
+    const conv2 = (await newConversation({ prereq_check: true })).id;
+    script = [calls(["read_paper", { paper_id: paperId }]), calls(["extract_prerequisites", { paper_id: paperId, concepts }]), say("都懂了")];
+    await send(conv2, { text: "再講一次" });
+    s = await state(conv2);
+    expect(s.toolCalls.at(-1).result.data.already_verified).toEqual(expect.arrayContaining(["connectionist temporal classification", "mel-frequency cepstral coefficients"]));
+    expect(s.toolCalls.at(-1).result.data.card_rows).toBe(1);
+  });
+
+  it("/concepts: own list, change level, delete; private", async () => {
+    const list = json(await req(alice, "GET", "/api/concepts")).concepts;
+    expect(list.length).toBeGreaterThanOrEqual(3);
+    const ctc = list.find((c: any) => c.key === "connectionist temporal classification");
+    expect(ctc).toMatchObject({ level: "known", source: "checked", source_label: "已確認", paper: { id: paperId, title: "CTC for Speech" } });
+    expect(json(await req(bob, "GET", "/api/concepts")).concepts).toEqual([]);
+    const key = encodeURIComponent("connectionist temporal classification");
+    expect((await req(alice, "PATCH", `/api/concepts/${key}`, { level: "maybe" })).statusCode).toBe(400);
+    const patched = json(await req(alice, "PATCH", `/api/concepts/${key}`, { level: "heard" })).concept;
+    expect(patched).toMatchObject({ level: "heard", source: "self_report", level_label: "有聽過" });
+    expect((await req(bob, "PATCH", `/api/concepts/${key}`, { level: "known" })).statusCode).toBe(404);
+    expect((await req(bob, "DELETE", `/api/concepts/${key}`)).statusCode).toBe(404);
+    expect((await req(alice, "DELETE", `/api/concepts/${key}`)).statusCode).toBe(200);
+    expect((await req(alice, "DELETE", `/api/concepts/${key}`)).statusCode).toBe(404);
+    expect(json(await req(alice, "DELETE", "/api/concepts")).deleted).toBeGreaterThanOrEqual(2);
+    expect(json(await req(alice, "GET", "/api/concepts")).concepts).toEqual([]);
+    expect((await t.app.inject({ method: "GET", url: "/api/concepts" })).statusCode).toBe(401);
+  });
+});

@@ -15,6 +15,7 @@ import { getAgentSettings, saveAgentSettings } from "../agent/settings.js";
 import { toolCatalogue } from "../agent/tools/registry.js";
 import { conversationView, messageView, runView, toolCallView, type ConversationRow, type MessageRow, type RunRow, type ToolCallRow } from "../agent/views.js";
 import memories from "./memories.js";
+import concepts from "./concepts.js";
 import mcp from "./mcp.js";
 import { agentImagePrefix } from "../agent/images.js";
 import { attachmentsInput } from "../agent/attachments/index.js";
@@ -37,8 +38,8 @@ export const pageContextSchema = z
   })
   .nullable()
   .optional();
-const createInput = z.object({ mode: z.enum(["chat", "interview"]).optional(), context: pageContextSchema, autopilot: z.boolean().optional(), title: z.string().trim().min(1).max(120).optional() });
-const patchInput = z.object({ title: z.string().trim().min(1).max(120).optional(), autopilot: z.boolean().optional(), memory_enabled: z.boolean().optional() });
+const createInput = z.object({ mode: z.enum(["chat", "interview"]).optional(), context: pageContextSchema, autopilot: z.boolean().optional(), title: z.string().trim().min(1).max(120).optional(), prereq_check: z.boolean().optional() });
+const patchInput = z.object({ title: z.string().trim().min(1).max(120).optional(), autopilot: z.boolean().optional(), memory_enabled: z.boolean().optional(), prereq_check: z.boolean().optional() });
 const messageInput = z
   .object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema, intent: z.enum(["make_note"]).optional(), attachments: attachmentsInput.optional(), supersede: z.boolean().optional() })
   .refine((v) => !!v.answers || !!v.text, { message: "empty" });
@@ -68,6 +69,7 @@ export default async function agent(app: FastifyInstance) {
   });
 
   await app.register(memories);
+  await app.register(concepts);
   await app.register(mcp);
 
   // ---------------------------------------------------------------- settings + catalogue
@@ -127,7 +129,7 @@ export default async function agent(app: FastifyInstance) {
     const user = await requireUser(request);
     const input = parse(createInput, request.body ?? {});
     reply.code(201);
-    return { conversation: await runtime.createConversation(user, { mode: input.mode, context: input.context ?? null, autopilot: input.autopilot, title: input.title }) };
+    return { conversation: await runtime.createConversation(user, { mode: input.mode, context: input.context ?? null, autopilot: input.autopilot, title: input.title, prereq_check: input.prereq_check }) };
   });
 
   app.get("/agent/conversations/:id", async (request, reply) => {
@@ -190,9 +192,10 @@ export default async function agent(app: FastifyInstance) {
     const row = (await app.db.query<ConversationRow>(
       `UPDATE conversations SET title=COALESCE($2,title), title_source=CASE WHEN $2::text IS NULL THEN title_source ELSE 'user' END,
               autopilot=CASE WHEN mode='interview' THEN false ELSE COALESCE($3,autopilot) END,
-              memory_enabled=CASE WHEN mode='interview' THEN false ELSE COALESCE($4,memory_enabled) END, updated_at=now()
+              memory_enabled=CASE WHEN mode='interview' THEN false ELSE COALESCE($4,memory_enabled) END,
+              prereq_check=CASE WHEN mode='interview' THEN false ELSE COALESCE($5,prereq_check) END, updated_at=now()
         WHERE id=$1 RETURNING *`,
-      [id, input.title ?? null, input.autopilot ?? null, input.memory_enabled ?? null],
+      [id, input.title ?? null, input.autopilot ?? null, input.memory_enabled ?? null, input.prereq_check ?? null],
     )).rows[0]!;
     const view = conversationView(row);
     await insertEvent(app.db, id, null, "conversation", { conversation: view });

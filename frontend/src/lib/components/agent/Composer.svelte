@@ -1,13 +1,13 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { ArrowUp, Brain, ListPlus, NotebookPen, Rocket, Square, Workflow, X } from "@lucide/svelte";
+  import { ArrowUp, Brain, GraduationCap, ListPlus, NotebookPen, Rocket, Square, Workflow, X } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import type { MessageKey } from "#lib/messages.ts";
 
   /**
    * Message composer: Enter sends (not while composing with an IME), Shift+Enter is a new line, Esc stops a running
    * reply. While a reply runs (`busy`) the user can still type and send: the message is queued (lib/agent/composer.ts)
-   * and both 停止 and 排隊送出 are shown. Shows the page-context chip and the autopilot / memory toggles; autopilot
+   * and both 停止 and 排隊送出 are shown. Shows the page-context chip and the autopilot / memory / 先確認先備知識 toggles; autopilot
    * draws an accent band on top.
    */
   let {
@@ -23,6 +23,8 @@
     onStop,
     onAutopilot,
     onMemory,
+    prereq = null,
+    onPrereq,
     onClearContext,
     onMakeNote,
     makeNoteDisabled = false,
@@ -49,6 +51,9 @@
     onStop: () => void;
     onAutopilot?: (v: boolean) => void;
     onMemory?: (v: boolean) => void;
+    /** 「先確認先備知識」 (paper tutoring) for this conversation; null = no toggle (interview mode). */
+    prereq?: boolean | null;
+    onPrereq?: (v: boolean) => void;
     onClearContext?: () => void;
     /** 「整理成筆記」 quick action (chat mode). */
     onMakeNote?: () => void;
@@ -212,6 +217,19 @@
         class="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[12.5px] font-medium transition-colors disabled:opacity-50 {memory.on ? 'bg-[var(--pill-lilac)] text-[var(--pill-lilac-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
       >
         <Brain class="size-4" /><span class="hidden @min-[600px]:inline">{t("agent.memory")}</span>
+      </button>
+    {/if}
+    {#if prereq !== null && onPrereq}
+      <button
+        type="button"
+        role="switch"
+        aria-checked={prereq}
+        aria-label={t("agent.tutor.toggle")}
+        title={prereq ? t("agent.tutor.on") : t("agent.tutor.off")}
+        onclick={() => onPrereq(!prereq)}
+        class="inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[12.5px] font-medium transition-colors {prereq ? 'bg-[var(--pill-sky)] text-[var(--pill-sky-ink)]' : 'text-ink-3 hover:bg-surface-3 hover:text-ink'}"
+      >
+        <GraduationCap class="size-4" /><span class="hidden @min-[720px]:inline">{t("agent.tutor.toggleShort")}</span>
       </button>
     {/if}
     {#if onAgent}

@@ -10,6 +10,7 @@ import "./vision-tools.js";
 import "./memory.js";
 import "./interview.js";
 import "./ask.js";
+import "./tutor.js";
 import "./context-reads.js";
 import "./more-writes.js";
 import "./plan.js";

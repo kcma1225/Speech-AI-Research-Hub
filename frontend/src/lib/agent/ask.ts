@@ -1,11 +1,24 @@
 /** `ask_user` question cards: draft state, validation and answer labels (mirrors backend/src/agent/ask.ts). */
 import { t } from "#lib/i18n.svelte.ts";
-import type { Answer, AskArgs, AskQuestion, Message, ToolCall } from "./types.ts";
+import type { Answer, AskArgs, AskQuestion, ConceptLevel, ConceptRow, Message, ToolCall } from "./types.ts";
 
 export type Draft = { value: string | number | boolean | string[] | null; other: string; otherOn: boolean; skipped: boolean };
 
 export const isChoice = (q: AskQuestion) => q.type === "single_choice" || q.type === "multi_choice" || q.type === "yes_no";
 export const scaleSize = (q: AskQuestion) => q.scale_labels?.length ?? 5;
+
+/** concept_check answers (backend `agent/tutor.ts`): `key=level` entries; the 「全部都懂，直接講」 marker. */
+export const CONCEPT_DIRECT = "__direct__";
+export function conceptLevels(list: string[]): Map<string, ConceptLevel> {
+  const out = new Map<string, ConceptLevel>();
+  for (const x of list) {
+    const at = x.lastIndexOf("=");
+    if (x === CONCEPT_DIRECT || at <= 0) continue;
+    out.set(x.slice(0, at), x.slice(at + 1) as ConceptLevel);
+  }
+  return out;
+}
+export const conceptTerm = (c: Pick<ConceptRow, "term_zh" | "term_en">) => (c.term_zh ? `${c.term_zh}（${c.term_en}）` : c.term_en);
 
 export function askArgs(call: Pick<ToolCall, "args">): AskArgs | null {
   const a = call.args as Partial<AskArgs>;
@@ -53,6 +66,16 @@ export function answerLabel(q: AskQuestion, a: Answer | undefined): string {
       return [...(Array.isArray(a.value) ? a.value.map(label) : []), other].filter(Boolean).join("、");
     case "yes_no":
       return a.value ? t("agent.ask.yes") : t("agent.ask.no");
+    case "concept_check": {
+      const list = Array.isArray(a.value) ? a.value : [];
+      if (list.includes(CONCEPT_DIRECT)) return t("agent.tutor.allKnown");
+      const levels = conceptLevels(list);
+      return (["known", "heard", "unknown"] as const)
+        .map((lv) => [lv, (q.concepts ?? []).filter((c) => levels.get(c.key) === lv).map(conceptTerm)] as const)
+        .filter(([, names]) => names.length)
+        .map(([lv, names]) => `${t(`agent.tutor.${lv}`)}：${names.join("、")}`)
+        .join("；") || t("agent.ask.skipped");
+    }
     case "scale": {
       const n = Number(a.value);
       return q.scale_labels ? `${q.scale_labels[n - 1] ?? n}（${n}/${q.scale_labels.length}）` : `${n} / 5`;
