@@ -663,7 +663,7 @@
         class="min-w-0 rounded-[22px] border border-line/70 bg-surface p-3 shadow-card lg:sticky lg:top-4 lg:flex-1 {mobileTab === 'preview' ? '' : 'max-lg:hidden'} {previewHidden ? 'lg:hidden' : ''} {splitting ? 'pointer-events-none' : ''}"
         aria-label={t("slides.editor.tab.preview")}
       >
-        <PreviewPane {preview} slide={cursorSlide} stale={previewStale} canRefresh={canEdit} onRefresh={() => void flushAll().then(requestPreview)} />
+        <PreviewPane {preview} slide={cursorSlide} stale={previewStale} canRefresh={canEdit} notes onRefresh={() => void flushAll().then(requestPreview)} />
         <p class="mt-2.5 px-1 text-[12px] leading-relaxed text-ink-3">{t("slides.editor.preview.hint")}</p>
       </section>
       </div>

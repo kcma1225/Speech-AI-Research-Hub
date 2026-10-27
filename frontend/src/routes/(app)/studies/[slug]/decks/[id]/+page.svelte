@@ -14,6 +14,7 @@
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import Pill, { toneFor } from "#lib/components/ui/Pill.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
+  import Segmented from "#lib/components/ui/Segmented.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
@@ -64,6 +65,7 @@
       detail = null;
       previewId = null;
       reindexing = {};
+      view = "published";
       void load().then(() => {
         // A converted PPTX waits for its uploader: open it for checking right away.
         const latest = detail?.versions[0];
@@ -120,6 +122,22 @@
 
   // Review version shown in the player: publish or discard it from here too.
   let publishing = $state(false);
+  /** A deck with a published version and newer source edits: the published player or the draft preview (with notes). */
+  let view = $state<"published" | "draft">("published");
+  let publishingSource = $state(false);
+  async function publishSource() {
+    publishingSource = true;
+    try {
+      const r = await api.post<{ version: number }>(`/slides/${id}/source/publish`);
+      toasts.show(t("slides.draft.published", { n: r.version }), "success");
+      view = "published";
+      await load();
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    } finally {
+      publishingSource = false;
+    }
+  }
   let discardOpen = $state(false);
   let deleteOpen = $state(false);
   async function showInfo() {
@@ -288,9 +306,28 @@
 
   <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_400px] 2xl:grid-cols-[minmax(0,1fr)_440px]">
     <div class="flex min-w-0 flex-col gap-3 lg:sticky lg:top-6">
-      {#if d.project.source && !d.activeVersion && !(latest && (isBusy(latest.status) || latest.status === "review"))}
-        <!-- In-app source without a playable version (e.g. a finished AI draft): show the draft, not just 「還沒有發布的版本」. -->
-        <DraftState deckId={d.project.id} editUrl={deckUrl(studySlug, d.project.id, "edit")} canManage={d.permissions.manage} hasVersions={d.versions.length > 0} onPublished={() => void load()} />
+      {#if unpublished && d.activeVersion && d.project.source}
+        <!-- Source edits (editor, chat, AI) newer than the published version: look at them, and publish them, from here. -->
+        <div class="flex flex-wrap items-center gap-2">
+          <Segmented guardIgnore bind:value={view} label={t("viewer.deck.view")} options={[{ value: "published", label: t("slides.view.published", { n: d.activeVersion.version }) }, { value: "draft", label: t("slides.view.draft") }]} />
+          {#if d.permissions.manage}
+            <span class="flex-1"></span>
+            <Button size="sm" variant="secondary" href={deckUrl(studySlug, d.project.id, "edit")}><FileCode2 />{t("slides.draft.edit")}</Button>
+            <Button size="sm" variant="primary" loading={publishingSource} disabled={Boolean(latest && isBusy(latest.status))} onclick={publishSource}><Send />{t("slides.draft.publishNext")}</Button>
+          {/if}
+        </div>
+      {/if}
+      {#if d.project.source && ((!d.activeVersion && !(latest && (isBusy(latest.status) || latest.status === "review"))) || (unpublished && d.activeVersion && view === "draft"))}
+        <!-- In-app source without a playable version (e.g. a finished AI draft), or its unpublished edits: show the draft. -->
+        <DraftState
+          deckId={d.project.id}
+          editUrl={deckUrl(studySlug, d.project.id, "edit")}
+          canManage={d.permissions.manage}
+          hasVersions={d.versions.length > 0}
+          revision={d.project.source.revision}
+          banner={!d.activeVersion}
+          onPublished={() => void load()}
+        />
       {:else}
       <SlidePlayer
         bind:this={player}

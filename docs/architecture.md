@@ -2567,7 +2567,10 @@ typing with `baseVersion`, preview ~2 s after a save in the sandboxed iframe fol
 AI / upload → `UploadSheet`). The v2 app route `/slides/<id>` (still used by notifications, activity and the jobs tray) redirects
 to the study deck page; `/slides` stays as the lab-wide list. A deck with an in-app source and no playable version shows `DraftState` instead of the
 player: the running AI draft (stage/progress), then 「AI 草稿已完成，尚未發布」 with page count, partial warning, the live preview
-(newest ready `slide_preview`) and 「編輯」/「發布為第 1 版」 (POST `/source/publish`).
+(newest ready `slide_preview`, with the speaker notes of the shown slide) and 「編輯」/「發布為第 1 版」 (POST `/source/publish`).
+A deck with a published version and newer source edits (`revision ≠ published_revision`, e.g. edits made in the chat) gets
+a 「已發布（第 N 版）／未發布的修改」 switch with 「編輯」/「發布新版本」 for editors: the second view is `DraftState` without its
+banner. `DraftState` queues a preview (POST `/source/preview`, editors) when the source moved past the newest one.
 
 Frontend player (`frontend/src/lib/components/slides/SlidePlayer.svelte`): pdf/pptx versions are drawn from the manifest's
 page images, quarto decks in the iframe above; both get the same counter, thumbnails (review counts per page), keyboard,

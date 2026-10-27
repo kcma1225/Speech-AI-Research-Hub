@@ -14,14 +14,20 @@
   /**
    * Deck page for a deck with an in-app source but no version yet: instead of only 「還沒有發布的版本」 it shows the AI
    * draft job while it runs, then the draft's live preview (newest ready `slide_preview`), its page count and
-   * 「編輯」/「發布為第 1 版」. Polls while the draft or the preview is in progress.
+   * 「編輯」/「發布為第 1 版」 with the speaker notes of the shown slide. Also the 「未發布的修改」 view of a deck that has a
+   * published version (`banner` off: the page's own bar offers 發布新版本). Polls while the draft or the preview is in
+   * progress; editors queue a preview when the source moved past the newest one (edits made in chat or elsewhere).
    */
-  let { deckId, editUrl, canManage, hasVersions = false, onPublished }: {
+  let { deckId, editUrl, canManage, hasVersions = false, revision = null, banner = true, onPublished }: {
     deckId: string;
     editUrl: string;
     canManage: boolean;
     /** Other versions exist (failed ones): the button then says 「發布新版本」. */
     hasVersions?: boolean;
+    /** Current source revision: a preview older than it is shown as stale and re-rendered. */
+    revision?: number | null;
+    /** The status bar with 編輯／發布 (a failed or running AI draft is always shown). */
+    banner?: boolean;
     onPublished?: () => void;
   } = $props();
 
@@ -47,15 +53,33 @@
       // keep the last state; the next tick retries
     }
     loaded = true;
+    await ensurePreview();
     const busy = draftRunning(job) || preview?.latest?.status === "queued" || preview?.latest?.status === "rendering";
     if (busy) timer = setTimeout(poll, document.hidden ? 6000 : 2000);
   }
+  // A new source revision (an edit saved anywhere) re-reads the preview and queues a fresh one.
   $effect(() => {
     void deckId;
+    void revision;
     untrack(() => void poll());
     return () => clearTimeout(timer);
   });
 
+  // The source moved past the newest preview: editors queue one (the editor and the chat viewer do the same).
+  let requested = 0;
+  async function ensurePreview() {
+    const rev = revision;
+    if (!canManage || !rev || draftRunning(job) || requested >= rev) return;
+    const latest = preview?.latest;
+    if (latest && (latest.revision >= rev || latest.status === "queued" || latest.status === "rendering")) return;
+    requested = rev;
+    try {
+      preview = (await api.post<{ preview: PreviewInfo }>(`/slides/${deckId}/source/preview`)).preview;
+    } catch {
+      // the editor offers a manual refresh; nothing to do here
+    }
+  }
+  const stale = $derived(!!revision && !!preview?.ready && preview.ready.revision < revision);
   const running = $derived(draftRunning(job));
   const aiDone = $derived(job?.status === "succeeded" ? job.result : null);
   const failed = $derived(job?.status === "failed" ? job : null);
@@ -88,7 +112,7 @@
         </div>
       </div>
     </div>
-  {:else if loaded}
+  {:else if loaded && (banner || failed)}
     <div class="flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center" style="border-color:var(--pill-butter-ink);background:var(--pill-butter)">
       <span class="hidden size-10 shrink-0 place-items-center rounded-xl bg-surface/70 sm:grid" style="color:var(--pill-butter-ink)">
         {#if failed}<CircleAlert class="size-5" />{:else if aiDone}<Sparkles class="size-5" />{:else}<FilePen class="size-5" />{/if}
@@ -119,7 +143,7 @@
   {/if}
   {#if loaded && (preview?.ready || preview?.latest)}
     <div class="rounded-[22px] border border-line/70 bg-surface p-3 shadow-card">
-      <PreviewPane {preview} />
+      <PreviewPane {preview} {stale} notes />
     </div>
   {:else if loaded && !running}
     <p class="px-1 text-[12.5px] text-ink-3">{t("slides.draft.noPreview")}</p>
