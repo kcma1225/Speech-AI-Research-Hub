@@ -17,7 +17,8 @@ import { replaceText } from "../collab/text.js";
 import { transaction, type Queryable } from "../db.js";
 import { requireUser, type CurrentUser } from "../lib/auth.js";
 import { badRequest, forbidden, HttpError, notFound, parse } from "../lib/http.js";
-import { cleanOutput, continueMessages, draftMessages, rewriteMessages } from "../lib/notes/ai.js";
+import { cleanOutput, continueMessages, DRAFT_SHOWN, draftMessages, partMessages, rewriteMessages } from "../lib/notes/ai.js";
+import { mergeRefs, noteOutline, noteRefs, wholeNoteAsk } from "../lib/notes/outline.js";
 import { noteDraftContext } from "../lib/notes/ai-context.js";
 import {
   addVersion, createNote, disconnectNotes, findNote, forgetNoteDocs, listNotes, NOTE_KINDS, noteDocName, noteUrl, type NoteKind, type NoteRow,
@@ -127,13 +128,14 @@ async function streamAction(reply: FastifyReply, run: (send: SseSend, signal: Ab
   }
 }
 
-async function streamChat(app: FastifyInstance, messages: ChatMessage[], maxTokens: number, userId: string, send: SseSend, signal: AbortSignal) {
+async function streamChat(app: FastifyInstance, messages: ChatMessage[], maxTokens: number, userId: string, send: SseSend, signal: AbortSignal, meta?: { cut?: boolean }) {
   let text = "";
   for await (const ev of aiFor(app).chatStream("writing", { messages, maxTokens, temperature: 0.4, reasoning: { effort: "low" } }, { userId, signal })) {
     if (ev.type === "text_delta") {
       text += ev.text;
       send("delta", { text: ev.text });
-    } else if (ev.type === "error") throw ev.error;
+    } else if (ev.type === "done" && meta) meta.cut = ev.stopReason === "max_tokens";
+    else if (ev.type === "error") throw ev.error;
   }
   const out = cleanOutput(text);
   if (!out) throw new HttpError(502, "AI 沒有產生任何內容，請再試一次。");
@@ -337,9 +339,45 @@ async function notesRoutes(app: FastifyInstance) {
     const template = note.template_id
       ? (await app.db.query<{ name: string; body_md: string; ai_prompt: string }>("SELECT name,body_md,ai_prompt FROM note_templates WHERE id=$1", [note.template_id])).rows[0] ?? null
       : null;
-    const [s, content, related] = [await study(note.study_id), await liveText(app, note), await noteDraftContext(app.db, note.study_id, note.id)];
+    const content = await liveText(app, note);
+    // An instruction that names a part of the note (「把結論那段改成…」「第二節精簡一點」): only that part is rewritten,
+    // everything else stays byte for byte.
+    const instr = input.instruction ?? "";
+    const parts = instr && content.trim() && !wholeNoteAsk(instr) ? mergeRefs(noteRefs(instr, noteOutline(content), content)) : [];
+    if (parts.length) {
+      if (parts.length > 6) throw badRequest("一次最多修改 6 個段落或章節，請縮小範圍。");
+      await streamAction(reply, async (send, signal) => {
+        const hunks: { from: number; to: number; before: string; after: string }[] = [];
+        for (const part of parts) {
+          const before = content.slice(part.from, part.to);
+          const meta: { cut?: boolean } = {};
+          const budget = Math.min(16000, Math.max(2400, Math.ceil(before.length * 1.6) + 1200));
+          let out = await streamChat(app, partMessages({ part: before, label: part.label, instruction: instr, noteTitle: note.title, before: content.slice(0, part.from), after: content.slice(part.to) }), budget, user.id, send, signal, meta);
+          if (meta.cut) throw new HttpError(502, `AI 修改${part.label}時輸出被截斷，為避免刪掉內容，這次沒有產生建議；請縮小範圍再試。`);
+          if (/^（刪除）$/.test(out.trim())) out = "";
+          else {
+            const tail = /\s*$/.exec(before)![0];
+            out = `${out.replace(/\s+$/, "")}${tail || ""}`;
+          }
+          hunks.push({ from: part.from, to: part.to, before, after: out });
+        }
+        const suggestion = await createSuggestion({ db: app.db, collab: app.collab }, {
+          targetType: "note", targetId: note.id, hunks, title: `AI 修改：${parts.map((p) => p.label).join("、")}`.slice(0, 80), source: "ai", actorId: user.id, user,
+        });
+        send("suggestion", { suggestion });
+      });
+      return;
+    }
+    // The whole note is regenerated only when the model sees all of it (no tail proposed as deleted).
+    if (content.length > DRAFT_SHOWN) {
+      throw badRequest(`這篇筆記有 ${content.length} 字，AI 草擬無法一次重寫整篇。請在指示中指明要改的部分（例如「第二節」「『結論』那段」），或選取文字後使用 AI 改寫。`);
+    }
+    const [s, related] = [await study(note.study_id), await noteDraftContext(app.db, note.study_id, note.id)];
     await streamAction(reply, async (send, signal) => {
-      const out = await streamChat(app, draftMessages({ study: s, note: { title: note.title, content, event_date: note.event_date }, template, instruction: input.instruction, related }), 4000, user.id, send, signal);
+      const meta: { cut?: boolean } = {};
+      const budget = Math.min(16000, Math.max(4000, Math.ceil(content.length * 1.6) + 2000));
+      const out = await streamChat(app, draftMessages({ study: s, note: { title: note.title, content, event_date: note.event_date }, template, instruction: input.instruction, related }), budget, user.id, send, signal, meta);
+      if (meta.cut && content.trim()) throw new HttpError(502, "AI 的輸出被截斷，為避免刪掉筆記後半部，這次沒有產生建議；請指明要改的部分再試。");
       const suggestion = await createSuggestion({ db: app.db, collab: app.collab }, {
         targetType: "note", targetId: note.id, proposedText: out.endsWith("\n") ? out : `${out}\n`, title: "AI 草擬", source: "ai", actorId: user.id, user,
       });

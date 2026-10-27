@@ -32,6 +32,7 @@
 | `route.deck_part_edit` | 路由 | critical | 指定了簡報（inputs.deck_id）、使用者的話指的是它的一部分（講稿、某一頁、標題、圖表…）而且沒有要新簡報：路由必須是修改這份簡報（不論用了什麼動詞） | inputs.deck_id、原話、route.deck | 79ab 200851b8：「從講稿中拿掉引用論文的部分」被當成新的進度報告，覆寫了簡報 |
 | `deck.notes_only_bodies` | 交付物 | critical | 只改講稿的修改（state.notes_only）：每一頁的投影片本體和原本一字不差，頁數也一樣 | state.notes_only、state.original_slides、state.deck.body | 79ab 012599ad：講稿改中文，第 2 頁文字、第 8 頁的圖被改 |
 | `deck.page_scope_kept` | 交付物 | critical | 只改指定頁面的修改（state.kept_pages / removed_pages）：沒指定的頁面一字不差，要刪的頁面不在成果裡 | state.kept_pages、state.removed_pages、state.deck.body | 12e713d3：「把第九頁刪掉」重寫並重新截圖全部 10 頁，那一頁還在 |
+| `note.continue_scoped` | 交付物 | critical | 筆記「繼續改」的修改建議只含重跑後內容真的改變的章節（state.continue_sections 對照 continue_prev_doc 與 doc） | state.continue_prev_doc、state.doc、state.continue_sections | 稽核：繼續改把整份組好的筆記拿去和線上筆記比對，還原了使用者後來的修改、把英文標題改回中文、拿掉橫幅 |
 | `deliverable.consistent` | 交付物 | critical | Brief 的交付物 = 路由的種類 = 計畫寫入 = 實際成果（目標的階段 run 不比成果） | brief.deliverable、route.kind、plan.writes、artifacts | 50b49d80 類（簡報變筆記） |
 | `req.clause_coverage` | 要求 | high（主題句 = medium） | 使用者這次每一句有內容的話，都對應到一條要求（引用它、或型別參數在講它），或被明確列為不採用（`state.requirements_dropped`）；只說「幫我做一個簡報／幫我改」的核心句不算；新建成果的主題句由主題帶著 | 這個任務的原話、要求的 quote、dropped、主題欄位 | 0668a3d7：6 句要求只抓到語言 1 句 |
 | `req.contradicts_newest` | 要求 | critical | 要求不能違反使用者最新的話：語言分「投影片／講稿／整份」，越新的話越優先；頁數 | 原話（新到舊）、language 要求的 part、page_count | e6d552fc：講稿要中文，要求是整份英文 |

@@ -5,7 +5,9 @@ import { badRequest, conflict, forbidden, notFound } from "../../lib/http.js";
 import { createNote, disconnectNotes, findNote, forgetNoteDocs, listNotes, NOTE_KINDS, noteDocName, noteUrl, type NoteKind } from "../../lib/notes/store.js";
 import { loadStudyAccess } from "../../lib/studies/access.js";
 import { applySuggestionNow, createSuggestion } from "../../lib/suggestions/service.js";
-import { locate } from "../../lib/suggestions/diff.js";
+import { computeHunks, locate } from "../../lib/suggestions/diff.js";
+import { findSection, noteOutline, outlineView } from "../../lib/notes/outline.js";
+import { fullTextRefusal, NOTE_READ_CHUNK, scopeRefusal } from "../../lib/notes/edit-scope.js";
 import { registerAgentTool, type AgentToolContext } from "./registry.js";
 import { clip, dateArg, editStudy, isUuid, readStudy, scrub, studyRef, studyTarget, taipeiToday, uuidArg } from "./util.js";
 
@@ -59,23 +61,43 @@ registerAgentTool({
   title: "讀取筆記",
   titleEn: "Read note",
   risk: "read",
-  description: "Read a note's live Markdown text (≤ 12 000 characters per call; use `offset` to continue). Includes its study and whether the user can edit it.",
-  input: z.object({ note_id: uuidArg("Note"), offset: z.number().int().min(0).optional() }),
-  summarize: () => "讀取筆記",
+  description:
+    "Read a note's live Markdown text (≤ 12 000 characters per call; use `offset` to continue). Includes its study, whether the user can edit it, and `outline`: the numbered sections (the `# ` title is not a section; `##` → 1, 2…, `###` → 2.1…) with their length and paragraph numbers (paragraphs = blocks separated by blank lines, headings excluded, counted through the whole note). When the user names a part (「第三節」「第二段」「『結論』那段」), read just that part with `section` (number like \"2\" / \"2.1\" or heading text); `offset` is then inside the section.",
+  input: z.object({
+    note_id: uuidArg("Note"),
+    offset: z.number().int().min(0).optional(),
+    section: z.string().trim().min(1).max(200).optional().describe("Section number (\"2\", \"2.1\") or heading text"),
+  }),
+  summarize: (a) => (a.section ? `讀取筆記的「${a.section}」` : "讀取筆記"),
   async execute(a, ctx) {
     const { note, access } = await noteWithAccess(ctx, a.note_id);
     const text = scrub(await liveText(ctx, note.id, note.content_md));
+    const outline = noteOutline(text);
+    let base = 0;
+    let end = text.length;
+    let section: { n: string; title: string } | undefined;
+    if (a.section) {
+      const s = findSection(outline, a.section);
+      if (!s) throw notFound(`筆記裡沒有「${clip(a.section, 40)}」這一節。可用的章節：${outline.sections.slice(0, 20).map((x) => `${x.n} ${x.title}`).join("、") || "（沒有標題）"}`);
+      base = s.from;
+      end = s.to;
+      section = { n: s.n, title: s.title };
+    }
     const offset = a.offset ?? 0;
-    const chunk = text.slice(offset, offset + 12000);
+    const chunk = text.slice(base + offset, Math.min(end, base + offset + NOTE_READ_CHUNK));
+    const left = end - base - offset - chunk.length;
     return {
       data: {
         note: { id: note.id, title: note.title, date: note.event_date, kind: note.kind, author: note.creator_name, url: noteUrl(access.study.slug, note.id) },
         study: { id: access.study.id, slug: access.study.slug, title: access.study.title },
         can_edit: access.canEdit,
         length: text.length,
+        outline: outlineView(outline),
+        paragraph_count: outline.paragraphs.length,
+        ...(section ? { section: { ...section, length: end - base } } : {}),
         offset,
         content_md: chunk,
-        ...(offset + chunk.length < text.length ? { more: `還有 ${text.length - offset - chunk.length} 字，請用 offset=${offset + chunk.length} 繼續讀取` } : {}),
+        ...(left > 0 ? { more: `還有 ${left} 字，請用 offset=${offset + chunk.length}${section ? `、section="${section.n}"` : ""} 繼續讀取` } : {}),
       },
       untrusted: await othersWrote(ctx, note.id, note.created_by),
       source: `${note.creator_name ?? "成員"}的筆記〈${note.title}〉`,
@@ -83,6 +105,39 @@ registerAgentTool({
     };
   },
 });
+
+/** The user's words of the current turn (the latest user message of the conversation); null outside a conversation. */
+async function userWords(ctx: AgentToolContext): Promise<string | null> {
+  if (!ctx.conversationId) return null;
+  const r = await ctx.db.query<{ text: string | null }>(
+    "SELECT text FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq DESC LIMIT 1",
+    [ctx.conversationId],
+  );
+  return r.rows[0]?.text?.trim() || null;
+}
+
+/** Whether get_note calls of this conversation covered the whole current text (offset chunks and section reads). */
+async function readWholeNote(ctx: AgentToolContext, noteId: string, text: string): Promise<boolean> {
+  if (text.length <= NOTE_READ_CHUNK) return true;
+  if (!ctx.conversationId) return false;
+  const rows = (await ctx.db.query<{ args: { offset?: number; section?: string } }>(
+    "SELECT coalesce(edited_args,args) AS args FROM tool_calls WHERE conversation_id=$1 AND tool='get_note' AND status='done' AND coalesce(edited_args,args)->>'note_id'=$2",
+    [ctx.conversationId, noteId],
+  )).rows;
+  const outline = noteOutline(text);
+  const spans = rows.map(({ args }) => {
+    const s = args.section ? findSection(outline, args.section) : null;
+    const base = s?.from ?? 0;
+    const from = base + (args.offset ?? 0);
+    return [from, Math.min(s?.to ?? text.length, from + NOTE_READ_CHUNK)] as const;
+  }).sort((x, y) => x[0] - y[0]);
+  let reached = 0;
+  for (const [from, to] of spans) {
+    if (from > reached) return false;
+    reached = Math.max(reached, to);
+  }
+  return reached >= text.length;
+}
 
 async function findTemplate(ctx: AgentToolContext, ref: string | undefined) {
   if (!ref) return null;
@@ -136,7 +191,7 @@ registerAgentTool({
   risk: "write",
   suggests: true,
   description:
-    "Propose changes to an existing note. Give either `content_md` (the full new text; it is diffed paragraph by paragraph) or `edits` (exact `before` passages from the current text and their replacement). Creates a suggestion the user reviews in the note editor; nothing is changed directly.",
+    "Propose changes to an existing note. Use `edits` (exact `before` passages from the current text and their replacement) for every local change: one paragraph or section, a few sentences, deleting a part (「把第二段刪掉」「第三節改短」 → only that part; read it with get_note `section`). `content_md` (the full new text, diffed paragraph by paragraph) is only for a short note or when the user asks for a whole-note rewrite (「整篇重寫」「翻成英文」), and only after reading the whole note; it is refused otherwise, and any change outside the parts the user named is refused. Creates a suggestion the user reviews in the note editor; nothing is changed directly.",
   input: z.object({
     note_id: uuidArg("Note"),
     content_md: z.string().max(200000).optional(),
@@ -152,9 +207,14 @@ registerAgentTool({
   async execute(a, ctx) {
     const { note, access } = await noteWithAccess(ctx, a.note_id);
     if (a.content_md === undefined && !a.edits?.length) throw badRequest("請提供 content_md 或 edits。");
+    if (a.content_md !== undefined && a.edits?.length) throw badRequest("content_md 與 edits 只能擇一。");
     let hunks: { from: number; to: number; after: string; before: string }[] | undefined;
-    if (a.content_md === undefined) {
-      const text = await liveText(ctx, note.id, note.content_md);
+    const text = await liveText(ctx, note.id, note.content_md);
+    const words = await userWords(ctx);
+    if (a.content_md !== undefined) {
+      const refusal = fullTextRefusal({ text, proposed: a.content_md, words, readAll: await readWholeNote(ctx, note.id, text) }) ?? scopeRefusal(text, computeHunks(text, a.content_md), words);
+      if (refusal) throw badRequest(refusal);
+    } else {
       hunks = a.edits!.map((e) => {
         const first = text.indexOf(e.before);
         if (first < 0) throw conflict(`筆記中找不到這段文字：「${clip(e.before, 40)}」，請先用 get_note 讀取目前內容。`);
@@ -162,6 +222,8 @@ registerAgentTool({
         const at = locate(text, { from: first, to: first + e.before.length, before: e.before, after: e.after }) ?? { from: first, to: first + e.before.length };
         return { from: at.from, to: at.to, before: e.before, after: e.after };
       });
+      const refusal = scopeRefusal(text, hunks, words);
+      if (refusal) throw badRequest(refusal);
     }
     const input = {
       targetType: "note", targetId: note.id, proposedText: a.content_md, hunks, title: a.title || "AI 建議",

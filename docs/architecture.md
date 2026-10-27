@@ -456,7 +456,7 @@ messages `{type:"suggestions"|"meta"}` tell clients to refetch.
 | POST `/notes/:id/versions/:versionId/restore` | study editor | applies the old text as a line diff to the live document, then version `restore` (「還原至第 N 版」) → `{version, note}` |
 | GET `/notes/:id/export` | user | `text/markdown` attachment `<title>.md` (`# title` + live text) |
 | POST `/notes/:id/transcribe` (multipart: `durationSec`, `language?`, file ≤ 30 MB, ≤ 10 min) | study editor | `ai.transcribe` (role `asr`, default `zh-TW`, route's script conversion) → `{text, language, durationSec}`; AI errors carry `code`/`hint` |
-| POST `/notes/:id/ai/draft` `{instruction?}` · `/ai/rewrite` `{from, to, before, mode: rewrite\|bullets\|shorten\|expand\|fix, instruction?}` · `/ai/continue` `{at, instruction?}` | study editor | role `writing`, answered as **SSE**: `delta {text}`…, then `suggestion {suggestion}` or `error {error, code?, hint?}`, then `done`. Draft = full proposed text from template + study summary + current text + study context (`lib/notes/ai-context.ts`: 6 newest other notes with ≤ 280-char excerpts, ≤ 15 open tasks, feedback of the 2 latest held meetings (direct + draft, ≤ 1200 chars each), ≤ 12 study papers with cite key/status/notes excerpt; block ≤ 9000 chars, fenced `study_context`); the prompt writes 「待補」 only where the context has nothing and adds no sections (下一步/建議) the template or user did not ask for; rewrite = one hunk replacing the selection (`before` must equal the live text → 409); continue = insertion at `at`. Never writes directly |
+| POST `/notes/:id/ai/draft` `{instruction?}` · `/ai/rewrite` `{from, to, before, mode: rewrite\|bullets\|shorten\|expand\|fix, instruction?}` · `/ai/continue` `{at, instruction?}` | study editor | role `writing`, answered as **SSE**: `delta {text}`…, then `suggestion {suggestion}` or `error {error, code?, hint?}`, then `done`. Output language is decided in code (`languageLine`): what the instruction asks for, else the language of the note / selection (an English note stays English; empty → 繁體中文). Draft with an instruction that names parts of the note (`lib/notes/outline.ts noteRefs`: 「第三節」「第二段」「『結論』那段」「section 2」; not a whole-note ask) rewrites **only those parts**, one call each (≤ 6, `partMessages`), as hunks — the rest of the note byte for byte (title 「AI 修改：…」; a reply cut at the token limit → SSE error, no suggestion). Otherwise a note longer than 12 000 chars (what the model is shown) is never regenerated whole → 400 「…AI 草擬無法一次重寫整篇…」; the budget grows with the note's length and a cut reply on a non-empty note → SSE error. Draft = full proposed text from template + study summary + current text + study context (`lib/notes/ai-context.ts`: 6 newest other notes with ≤ 280-char excerpts, ≤ 15 open tasks, feedback of the 2 latest held meetings (direct + draft, ≤ 1200 chars each), ≤ 12 study papers with cite key/status/notes excerpt; block ≤ 9000 chars, fenced `study_context`); the prompt writes 「待補」 only where the context has nothing and adds no sections (下一步/建議) the template or user did not ask for; rewrite = one hunk replacing the selection (`before` must equal the live text → 409); continue = insertion at `at`. Never writes directly |
 | GET `/note-templates` | user | `{templates (system + mine, with note_count), permissions: {manageSystem}}` |
 | POST `/note-templates` `{name, kind?, description?, body_md?, ai_prompt?, scope?: user\|system, position?}` | user; `system`: admin | → 201 `{template}` |
 | PATCH / DELETE `/note-templates/:id` | own user template, or admin | notes keep content and kind |
@@ -1297,7 +1297,7 @@ suggestion, also under autopilot, because deck sources keep no version history; 
 only, not on MCP; ≤ 1 `in_progress`): the whole plan per call; the SPA renders ONE live checklist per assistant turn (the newest `update_plan` state, `PlanChecklist`; see Compact transcript), earlier versions only as 「更新計畫（n/m）」 rows in the expanded timeline (i18n `i18n/agent-plan.ts`, `i18n/agent-activity.ts`).
 Core tools: read `list_studies`, `get_study`, `get_study_progress`, `list_notes`, `get_note`, `list_tasks`, `list_papers`,
 `get_paper`, `search_papers_online` (open-world; query stripped of URLs/opaque tokens, ≤ 300 chars, 20/min/user), `search`,
-`list_decks`, `get_deck`, `get_deck_pages`, `review_deck_layout`, `review_latex_layout`, `read_paper`, `view_paper_pages`, and (`tools/context-reads.ts`) `get_deck_reviews {deck_id? | study?, limit?}` (review comments with page, version, author role, replies), `get_study_bibtex {study, paper_ids?}` (the export route's BibTeX with study cite keys + download link `/api/studies/:slug/papers/export?format=bibtex`), `get_recent_activity {study?, since? (default 7 days), actor? me|anyone, limit?}` (`study_activity` of one study or of the caller's studies). `list_studies.member` takes `me`, `all` or a user id; `get_study_progress` also returns each recent meeting's feedback (direct feedback + the study's draft `feedback_md`) and the latest deck reviews; `search.types` also takes `meeting`, `deck`, `milestone` (meeting hits are always untrusted; results carry `date`/`author`); write `create_note`, `suggest_note_edit` (full text or exact `before`/`after` edits),
+`list_decks`, `get_deck`, `get_deck_pages`, `review_deck_layout`, `review_latex_layout`, `read_paper`, `view_paper_pages`, and (`tools/context-reads.ts`) `get_deck_reviews {deck_id? | study?, limit?}` (review comments with page, version, author role, replies), `get_study_bibtex {study, paper_ids?}` (the export route's BibTeX with study cite keys + download link `/api/studies/:slug/papers/export?format=bibtex`), `get_recent_activity {study?, since? (default 7 days), actor? me|anyone, limit?}` (`study_activity` of one study or of the caller's studies). `list_studies.member` takes `me`, `all` or a user id; `get_study_progress` also returns each recent meeting's feedback (direct feedback + the study's draft `feedback_md`) and the latest deck reviews; `search.types` also takes `meeting`, `deck`, `milestone` (meeting hits are always untrusted; results carry `date`/`author`); write `create_note`, `suggest_note_edit` (exact `before`/`after` edits, or full text; see *Part-scoped note edits* below),
 `suggest_study_summary`, `create_task`, `update_task`, `add_milestone`, `set_stage`, `import_paper` (open-world: resolves
 the identifier online, reuses a same/likely lab copy, then fetches the open-access PDF — result `paper.has_pdf`,
 `pdf.status`), `fetch_paper_pdf` (open-world; paper editors only), `create_deck`, `add_paper_to_study`, `remember` (memory); destructive `delete_task`,
@@ -1315,11 +1315,26 @@ the identifier online, reuses a same/likely lab copy, then fetches the open-acce
 - `latex_add_section {project_id, title, name?, after? (file id or path)}` (write; `addSectionFile`, collab path) ·
   `latex_update_project {project_id, compiler?, title?, bib_mode?}` (write; as PATCH `/latex/:id`: bib editors reconnect,
   `latex_meta` broadcast). Study editors only.
-- `suggest_meeting_draft_edit {meeting_id, study, summary_md?, feedback_md?, proposed_tasks? [{title, detail?, assignee? me|uuid,
-  due?}] (replaces the list)}` (write; `patchDraft`, pending only) · `confirm_meeting_draft {meeting_id, study, note_title?}`
+- `suggest_meeting_draft_edit {meeting_id, study, summary_md? | summary_edits? [{before, after}], feedback_md? | feedback_edits?,
+  proposed_tasks? [{title, detail?, assignee? me|uuid, due?}] (the whole list) + remove_tasks? [title] | task_edits?
+  [{op add|update|remove, index? (1-based) | match? (title), task?}]}` (write; `patchDraft`, pending only). `task_edits`
+  touch only the named tasks (`applyTaskEdits`; the rest keep their ids and fields); a full `proposed_tasks` list that
+  leaves out current tasks (by title) is refused 400 naming them unless they are listed in `remove_tasks`; the result
+  carries `changes {summary?, feedback?: "+N 行／−M 行", tasks?: {before, after, removed[]}}` and the tasks with `index` · `confirm_meeting_draft {meeting_id, study, note_title?}`
   (write, `requireCard` always + not grantable; `confirmDraft` = the page's 「確認」: note + tasks + activity + notifications;
   target label 「研究 · 會議 · N 項待辦」). Both: owner/member of THAT study only (advisors/professors 403). ·
   `add_meeting_feedback {meeting_id, text}` (write; anyone in the workspace incl. professors, as POST `…/feedback`).
+- *Part-scoped note edits* (`lib/notes/outline.ts`, `lib/notes/edit-scope.ts`): `get_note {note_id, offset?, section?}`
+  returns `outline [{n, level, title, chars, paragraphs}]` + `paragraph_count` — the `# ` title is not a section, the
+  shallowest heading level is numbered 1, 2…, the next 2.1…; paragraphs are blank-line blocks (a code fence is one),
+  numbered through the note — and `section` (number or heading) reads one section (offset inside it). `suggest_note_edit`
+  takes the user's words of the turn (latest user message of the conversation) and refuses with a 400 telling the model
+  to use `edits`: a full-text `content_md` on a note > 1 500 chars without a whole-note ask (`wholeNoteAsk`: 整篇, 每一段,
+  翻成…, rewrite the whole note…), on a note > 12 000 chars whose `get_note` calls in this conversation (`tool_calls`
+  offsets / sections) did not cover the whole text (MCP: always), or one that drops > half the note without a removal
+  word; and any hunk (full text or edits) outside the parts the words name (`noteRefs`: 「第N節/章」「第N段」 = paragraph N
+  and section N, 「最後一段」, 2.1, quoted headings or body text, 「結論那段」「把結論…」, section / paragraph N, ordinals,
+  the conclusion section; Chinese numerals and verb-after order). Autopilot applies only what passed these guards.
 - `get_note_history {note_id, since?, version?, compare_to? number|"current", limit?}` (read): versions newest first
   (Taipei time, author, kind 繁中, size); with `version` a line-diff summary vs the previous version (or `compare_to`), ≤ 8
   changed passages. Untrusted when anyone else wrote a listed version.
@@ -1649,6 +1664,12 @@ the budget):
 4. *Integration* (playbook): writes the artifact — always a **draft or suggestion**, never a direct overwrite of user
    content: a new deck (or the run's own draft deck; a deck the user edited during the run is never overwritten —
    optimistic `baseVersion`, conflict → `partial`), a new note, a new LaTeX section file or a `latex_file` suggestion.
+   A note playbook's 繼續改 after its note exists proposes **only the sections that changed** between the committed
+   assembled text (`state.committed_doc`; `committed_body` = what was written: localized headings, banner) and the new
+   one (`continuePatch`): each changed `##` section replaces the live section with the same written heading, a new one is
+   inserted after its predecessor, unchanged sections never produce hunks (the user's later edits, localized headings and
+   the banner stay); a changed section the user deleted/renamed is reported (`state.continue_unmapped`), not re-added.
+   `state.continue_prev_doc` / `continue_sections` feed invariant `note.continue_scoped`.
    Each write emits an `artifact` event.
 5. *Final verification* against the objective (`verify.ts verifyCriteria`, `purpose verify_final`): every criterion
    (the Brief's checklist, `brief.ts checklistOf` — the criteria share its ids) is evaluated — deterministic ones by their

@@ -324,22 +324,100 @@ async function draftFor(ctx: AgentToolContext, meetingId: string, studyRefArg: s
 const assigneeArg = z.string().max(64).nullable().optional().describe("'me', a study member's user id (uuid), or null");
 const proposedTask = z.object({ title: z.string().trim().min(1).max(300), detail: z.string().max(4000).optional(), assignee: assigneeArg, due: dateArg.nullable().optional() });
 
+const textEdits = z.array(z.object({ before: z.string().min(1).max(20000).describe("Exact current text (must appear once)"), after: z.string().max(20000) })).max(30);
+const taskEdit = z.object({
+  op: z.enum(["add", "update", "remove"]),
+  index: z.number().int().min(1).max(50).optional().describe("1-based position in the current proposed_tasks"),
+  match: z.string().trim().min(1).max(300).optional().describe("Current task title (or a unique part of it)"),
+  task: proposedTask.partial().optional().describe("add: the new task (title required); update: only the fields to change"),
+});
+
+type DraftTask = { id?: string; title: string; detail: string; assignee_id: string | null; due: string | null };
+const squashTitle = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+
+/** The task an edit points at (by 1-based index or by title); 400 when it is missing or ambiguous. */
+function taskIndex(tasks: DraftTask[], e: { index?: number; match?: string }): number {
+  if (e.index !== undefined) {
+    if (!tasks[e.index - 1]) throw badRequest(`草稿沒有第 ${e.index} 項待辦（目前共 ${tasks.length} 項）。`);
+    if (e.match && !squashTitle(tasks[e.index - 1]!.title).includes(squashTitle(e.match))) throw conflict(`第 ${e.index} 項待辦是「${tasks[e.index - 1]!.title}」，不是「${e.match}」；請先用 get_meeting 讀取最新草稿。`);
+    return e.index - 1;
+  }
+  if (!e.match) throw badRequest("請用 index 或 match 指定要修改的待辦。");
+  const k = squashTitle(e.match);
+  const exact = tasks.findIndex((t) => squashTitle(t.title) === k);
+  if (exact >= 0) return exact;
+  const hits = tasks.map((t, i) => ({ t, i })).filter((x) => squashTitle(x.t.title).includes(k));
+  if (hits.length === 1) return hits[0]!.i;
+  throw badRequest(hits.length ? `「${e.match}」符合多項待辦，請改用 index。` : `草稿裡沒有「${e.match}」這項待辦。`);
+}
+
+/** Applies targeted task edits; every task the edits do not name is kept exactly as it was. */
+export function applyTaskEdits(tasks: DraftTask[], edits: z.infer<typeof taskEdit>[], assignee: (v: string | null | undefined) => string | null): { tasks: DraftTask[]; removed: string[] } {
+  const out = tasks.map((t) => ({ ...t }));
+  const drop = new Set<number>();
+  const added: DraftTask[] = [];
+  for (const e of edits) {
+    if (e.op === "add") {
+      if (!e.task?.title) throw badRequest("新增待辦需要 title。");
+      added.push({ title: e.task.title, detail: e.task.detail ?? "", due: e.task.due ?? null, assignee_id: assignee(e.task.assignee) });
+      continue;
+    }
+    const i = taskIndex(tasks, e);
+    if (e.op === "remove") drop.add(i);
+    else {
+      if (!e.task) throw badRequest("修改待辦需要 task（要改的欄位）。");
+      const t = out[i]!;
+      if (e.task.title !== undefined) t.title = e.task.title;
+      if (e.task.detail !== undefined) t.detail = e.task.detail;
+      if (e.task.due !== undefined) t.due = e.task.due;
+      if (e.task.assignee !== undefined) t.assignee_id = assignee(e.task.assignee);
+    }
+  }
+  return { tasks: [...out.filter((_, i) => !drop.has(i)), ...added], removed: [...drop].map((i) => tasks[i]!.title) };
+}
+
+/** Current tasks a full replacement list leaves out (matched by title). */
+export function droppedTasks(current: { title: string }[], next: { title: string }[]): string[] {
+  const keep = new Set(next.map((t) => squashTitle(t.title)));
+  return current.filter((t) => !keep.has(squashTitle(t.title))).map((t) => t.title);
+}
+
+function applyTextEdits(current: string, edits: { before: string; after: string }[], label: string): string {
+  let text = current;
+  for (const e of edits) {
+    const first = text.indexOf(e.before);
+    if (first === -1) throw conflict(`草稿的${label}裡找不到要修改的原文：「${clip(e.before, 40)}」，請先用 get_meeting 讀取最新草稿。`);
+    if (text.indexOf(e.before, first + 1) !== -1) throw conflict(`要修改的原文在草稿的${label}中出現不只一次，請多帶一點前後文。`);
+    text = text.slice(0, first) + e.after + text.slice(first + e.before.length);
+  }
+  return text;
+}
+
 registerAgentTool({
   name: "suggest_meeting_draft_edit",
   title: "修改會議草稿",
   titleEn: "Edit meeting draft",
   risk: "write",
   description:
-    "Edit the pending AI draft of one study in a meeting (members of that study only; advisors cannot): summary_md, feedback_md, and/or proposed_tasks (replaces the whole proposed list — include the tasks to keep). Nothing is written to the study until the user confirms the draft (confirm_meeting_draft or the meeting page). Use this instead of creating tasks from meeting content by hand.",
+    "Edit the pending AI draft of one study in a meeting (members of that study only; advisors cannot). Targeted forms (use these for any change to part of the draft): `summary_edits` / `feedback_edits` (exact `before` passages and their replacement) and `task_edits` (add a task, update or remove one by its 1-based `index` in the current list or by `match` = its title); every task not named is kept as it is. Whole-field forms: summary_md / feedback_md (full new text) and proposed_tasks (the whole new list): a list that leaves out current tasks is refused — remove tasks with task_edits op=remove, or list them in `remove_tasks` when the user asked to drop them. Nothing is written to the study until the user confirms the draft (confirm_meeting_draft or the meeting page). Use this instead of creating tasks from meeting content by hand.",
   input: z.object({
     meeting_id: meetingArg,
     study: studyRef,
     summary_md: z.string().max(30000).optional(),
     feedback_md: z.string().max(30000).optional(),
+    summary_edits: textEdits.optional(),
+    feedback_edits: textEdits.optional(),
     proposed_tasks: z.array(proposedTask).max(50).optional(),
+    task_edits: z.array(taskEdit).max(30).optional(),
+    remove_tasks: z.array(z.string().trim().min(1).max(300)).max(50).optional().describe("With proposed_tasks: titles of current tasks the user asked to remove"),
   }),
   summarize: (a) => {
-    const parts = [a.summary_md !== undefined ? "摘要" : "", a.feedback_md !== undefined ? "回饋" : "", a.proposed_tasks ? `待辦（${a.proposed_tasks.length} 項）` : ""].filter(Boolean);
+    const parts = [
+      a.summary_md !== undefined || a.summary_edits?.length ? "摘要" : "",
+      a.feedback_md !== undefined || a.feedback_edits?.length ? "回饋" : "",
+      a.proposed_tasks ? `待辦（${a.proposed_tasks.length} 項）` : "",
+      a.task_edits?.length ? `待辦（${a.task_edits.length} 處修改）` : "",
+    ].filter(Boolean);
     return `修改會議草稿${parts.length ? `的${parts.join("、")}` : ""}`;
   },
   async target(a, ctx) {
@@ -349,15 +427,39 @@ registerAgentTool({
   },
   async execute(a, ctx) {
     const { meeting, draft } = await draftFor(ctx, a.meeting_id, a.study);
-    if (a.summary_md === undefined && a.feedback_md === undefined && !a.proposed_tasks) throw badRequest("沒有要修改的內容。");
-    const tasks = a.proposed_tasks?.map((t) => ({
-      title: t.title, detail: t.detail ?? "", due: t.due ?? null,
-      assignee_id: t.assignee === "me" ? ctx.user.id : t.assignee && isUuid(t.assignee) ? t.assignee : t.assignee ? (() => { throw badRequest("負責人必須是研究成員的帳號 id。"); })() : null,
-    }));
-    await transaction(ctx.db, (client) => patchDraft(client, meeting.id, draft.id, ctx.user, { summary_md: a.summary_md, feedback_md: a.feedback_md, proposed_tasks: tasks }));
+    if (a.summary_md === undefined && a.feedback_md === undefined && !a.summary_edits?.length && !a.feedback_edits?.length && !a.proposed_tasks && !a.task_edits?.length) throw badRequest("沒有要修改的內容。");
+    if (a.summary_md !== undefined && a.summary_edits?.length) throw badRequest("summary_md 與 summary_edits 只能擇一。");
+    if (a.feedback_md !== undefined && a.feedback_edits?.length) throw badRequest("feedback_md 與 feedback_edits 只能擇一。");
+    if (a.proposed_tasks && a.task_edits?.length) throw badRequest("proposed_tasks 與 task_edits 只能擇一。");
+    const assignee = (v: string | null | undefined) => (v === "me" ? ctx.user.id : v && isUuid(v) ? v : v ? (() => { throw badRequest("負責人必須是研究成員的帳號 id。"); })() : null);
+    const current = draft.proposed_tasks as DraftTask[];
+    let tasks: DraftTask[] | undefined;
+    let removed: string[] = [];
+    if (a.proposed_tasks) {
+      tasks = a.proposed_tasks.map((t) => ({ title: t.title, detail: t.detail ?? "", due: t.due ?? null, assignee_id: assignee(t.assignee) }));
+      const asked = new Set((a.remove_tasks ?? []).map(squashTitle));
+      const dropped = droppedTasks(current, tasks);
+      const silent = dropped.filter((t) => !asked.has(squashTitle(t)));
+      if (silent.length) {
+        throw badRequest(`這份待辦清單少了草稿原有的 ${silent.length} 項：${silent.map((t) => `「${clip(t, 40)}」`).join("、")}。只改部分待辦請用 task_edits；使用者要求刪除時，用 task_edits 的 remove 或把標題列在 remove_tasks。`);
+      }
+      removed = dropped;
+    } else if (a.task_edits?.length) {
+      const r = applyTaskEdits(current, a.task_edits, assignee);
+      tasks = r.tasks;
+      removed = r.removed;
+    }
+    const summary = a.summary_edits?.length ? applyTextEdits(draft.summary_md, a.summary_edits, "摘要") : a.summary_md;
+    const feedback = a.feedback_edits?.length ? applyTextEdits(draft.feedback_md, a.feedback_edits, "回饋") : a.feedback_md;
+    await transaction(ctx.db, (client) => patchDraft(client, meeting.id, draft.id, ctx.user, { summary_md: summary, feedback_md: feedback, proposed_tasks: tasks }));
     const fresh = (await ctx.db.query<DraftRow>("SELECT * FROM meeting_study_drafts WHERE id=$1", [draft.id])).rows[0]!;
+    const changes = {
+      ...(summary !== undefined ? { summary: lineDiffSummary(draft.summary_md, summary).label } : {}),
+      ...(feedback !== undefined ? { feedback: lineDiffSummary(draft.feedback_md, feedback).label } : {}),
+      ...(tasks ? { tasks: { before: current.length, after: tasks.length, removed } } : {}),
+    };
     return {
-      data: { draft: { id: fresh.id, status: fresh.status, summary_md: clip(fresh.summary_md, 1500), feedback_md: clip(fresh.feedback_md, 1500), proposed_tasks: fresh.proposed_tasks.map((t) => ({ title: t.title, due: t.due, assignee_id: t.assignee_id })) }, next: "草稿已更新，尚未寫入研究；使用者確認後才會建立會議筆記與待辦。" },
+      data: { draft: { id: fresh.id, status: fresh.status, summary_md: clip(fresh.summary_md, 1500), feedback_md: clip(fresh.feedback_md, 1500), proposed_tasks: fresh.proposed_tasks.map((t, i) => ({ index: i + 1, title: t.title, due: t.due, assignee_id: t.assignee_id })) }, changes, next: "草稿已更新，尚未寫入研究；使用者確認後才會建立會議筆記與待辦。" },
       links: [{ label: meeting.title, url: meetingUrl(meeting.id), kind: "meeting" }],
     };
   },

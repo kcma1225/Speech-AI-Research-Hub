@@ -5,7 +5,9 @@
  */
 import { transaction } from "../../db.js";
 import { paperFullText, type PaperSection } from "../../lib/library/fulltext.js";
-import { createNote, noteUrl, type NoteKind } from "../../lib/notes/store.js";
+import { createNote, noteDocName, noteUrl, type NoteKind } from "../../lib/notes/store.js";
+import { continuePatch } from "../../lib/notes/edit-scope.js";
+import { readStoredDoc } from "../../collab/server.js";
 import { createSuggestion } from "../../lib/suggestions/service.js";
 import { loadStudyAccess, type StudyAccess } from "../../lib/studies/access.js";
 import { taipeiToday } from "../../lib/slides/templates.js";
@@ -87,16 +89,24 @@ export async function commitNote(env: WorkflowEnv, outcome: "done" | "partial", 
   const access = await requireEditor(env, env.run.study_id);
   const existing = env.state<string>("note_id");
   if (existing) {
-    // 繼續改 after the note was created: the improved text is a suggestion on that note (the user may have edited it).
-    if (env.state<string>("committed_doc") === doc) return null;
-    const s = await createSuggestion({ db: env.db, collab: null }, { targetType: "note", targetId: existing, proposedText: doc, title: "Agent：繼續改", source: "ai", actorId: env.user.id, conversationId: env.run.conversation_id, user: env.user }).catch((e: Error) => {
+    // 繼續改 after the note was created: only the sections the re-run changed become a suggestion, each mapped onto the
+    // live note by its heading — the user's later edits, localized headings and the banner elsewhere stay as they are.
+    const prevDoc = env.state<string>("committed_doc");
+    if (prevDoc === doc) return null;
+    const live = await liveNoteText(env, existing);
+    if (live === null) return null;
+    const prevBody = env.state<string>("committed_body") ?? (prevDoc ? await localizeHeadings(env, prevDoc) : "");
+    const body = await localizeHeadings(env, doc);
+    const patch = continuePatch({ prevDoc: prevDoc ?? "", doc, prevBody, body, live });
+    await env.setState({ committed_doc: doc, committed_body: body, continue_prev_doc: prevDoc ?? "", continue_sections: patch.sections, continue_unmapped: patch.unmapped });
+    if (!patch.hunks.length) return patch.unmapped.length ? `修改的章節（${patch.unmapped.join("、")}）在筆記裡已經找不到（可能被刪除或改了標題），沒有產生修改建議。` : null;
+    const s = await createSuggestion({ db: env.db, collab: null }, { targetType: "note", targetId: existing, hunks: patch.hunks, title: "Agent：繼續改", source: "ai", actorId: env.user.id, conversationId: env.run.conversation_id, user: env.user }).catch((e: Error) => {
       if (/相同/.test(e.message)) return null;
       throw e;
     });
-    await env.setState({ committed_doc: doc });
     if (!s) return null;
     await addArtifact(env.db, env.run.id, { kind: "note", id: existing, url: `${noteUrl(access.study.slug, existing)}?suggestion=${s.id}`, title: env.state<string>("note_title") ?? "筆記", role: "suggestion" });
-    return "修正後的內容已做成筆記的修改建議，請在筆記中逐段接受。";
+    return `修正後的章節（${patch.sections.join("、")}）已做成筆記的修改建議，請在筆記中逐段接受；其他段落沒有更動。${patch.unmapped.length ? `（${patch.unmapped.join("、")} 在筆記裡找不到，沒有修改。）` : ""}`;
   }
   const title = clipText(env.state<string>("note_title") ?? env.run.title, 190);
   const unmet = env.run.criteria.filter((c) => c.status !== "pass");
@@ -108,9 +118,16 @@ export async function commitNote(env: WorkflowEnv, outcome: "done" | "partial", 
     if (!locked.canEdit) throw new WorkflowInputError("你已經不是這個研究的成員。");
     return createNote(client, { studyId: locked.study.id, studySlug: locked.study.slug, title, templateId: null, kind, contentMd: body, eventDate: taipeiToday(), actorId: env.user.id, author: "ai" });
   });
-  await env.setState({ note_id: id, committed_doc: doc });
+  await env.setState({ note_id: id, committed_doc: doc, committed_body: body });
   await addArtifact(env.db, env.run.id, { kind: "note", id, url: noteUrl(access.study.slug, id), title, role: "draft" });
   return `已建立新筆記〈${title}〉。`;
+}
+
+/** The note's text as stored (the persisted collaborative document, else the materialized column). */
+async function liveNoteText(env: WorkflowEnv, id: string): Promise<string | null> {
+  const stored = await readStoredDoc(env.db, noteDocName(id), (d) => d.getText("content").toString());
+  if (stored !== null) return stored;
+  return (await env.db.query<{ content_md: string }>("SELECT content_md FROM notes WHERE id=$1", [id])).rows[0]?.content_md ?? null;
 }
 
 export const outlineFrom = (sections: { title: string; points?: string[] }[]): OutlineItem[] => sections.map((s, i) => ({ n: i + 1, title: s.title, points: s.points ?? [] }));
