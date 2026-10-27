@@ -1049,8 +1049,11 @@ Suggestion target `latex_file` (id = file id, Yjs doc): readers everyone, decide
 into `latex_files.content`; url `/studies/<slug>/latex/<projectId>?file=<fileId>`. AI never writes directly.
 Agent tools (`lib/latex-projects/agent-tools.ts`): read `latex_list_projects` (study → projects; project → files with roles,
 section order, headings, latest compile), `latex_read_file` (live text, paged, optional line numbers), `latex_get_compile_log`
-(parsed errors/warnings); write `latex_suggest_edit` (one file per suggestion; full text or exact `before`/`after` edits; the auto
-bib is refused; autopilot → `applySuggestionNow`), `latex_compile`. Study cleanup hook `latex` (docs, suggestions, S3 prefixes).
+(parsed errors/warnings); write `latex_suggest_edit` (one file per suggestion; exact `before`/`after` edits, or a full text
+only for an empty / short file (< 400 chars), a real rewrite (under half of the file's lines kept, `keptLineShare`) or when
+the user's last turns ask for the whole file (`WHOLE_REWRITE_RE`) — otherwise 400 「請用 edits…」, because under autopilot a
+re-typed file was applied as is; the auto bib is refused; autopilot → `applySuggestionNow`), `latex_compile`. The system
+prompt tells the assistant to change a part of a LaTeX file with `edits`. Study cleanup hook `latex` (docs, suggestions, S3 prefixes).
 
 Frontend: study tab 論文 (`components/latex/LatexTab.svelte`: cards with a pdf.js first-page thumbnail and the compile status,
 `CreateProjectSheet` template | ZIP), editor `/studies/<slug>/latex/<id>[?file=<fileId>]` (`LatexEditor` → `SectionTabs` (pointer
@@ -1778,17 +1781,34 @@ words name none, never a mode):
   `edit = revise | expand` (`editKindOf` on the words against the deck's pages) and `scope = notes` when only the speaker
   notes are named (`notesOnlyAsked`: 講稿／備註／notes and nothing about the slides themselves); else `deckModeOf` (below) with `explicitPaper` = a paper given at
   creation or a study paper named in the words (`matchPaperTitle` over the study's titles) or an arXiv id / DOI.
+- *LaTeX part edits* (`latexEditRoute`, checked before the deliverable): a project is given (`inputs.project_id`; at
+  creation also the LaTeX page's `projectId` or the project the conversation's last workflow wrote, when the words edit a
+  part) — or the words point at the study's existing paper (`EXISTING_PAPER_RE` 「論文裡的」「這篇論文」 + a part + an edit
+  verb, with ≥ 1 project) — and the words name a part of the paper (`LATEX_PART_RE`: 第N節／章／段、這段、Section 4、§3、
+  Table 2／表二、Figure 3／圖 3、附錄 A、摘要／abstract、「Related Work 那節」) or change it (`LATEX_EDIT_VERB_RE`, removal
+  verbs included), and ask for no new paper / section / deck (`NEW_PAPER_RE`, `NEW_SECTION_RE`) → `kind = latex`,
+  `playbook = latex_section`, `latex = edit`, whatever a keyword said (production: 「把 Related Work 第二段刪掉」 → LIT_RE →
+  a literature-review note; 「把 latex 論文裡的 Table 2 拿掉」 → a NEW paper project) and whatever the hint was (recorded as
+  not accepted). A fixed non-LaTeX Brief kind (a goal stage) is kept. `routeWorkflowRequest` never turns such an edit into
+  a goal (`editsExisting`). Invariant `route.latex_part_edit` (critical).
+- *Note part edits* (`noteEditRedirect`): a note given (or named: 「調研筆記裡」「這份筆記的」) and words about a part of it or
+  a narrow change (「RNN-T 那節」「第二段」「再補一篇」, edit / removal verbs) and no new note asked → `redirect = note_edit`:
+  there is no note-edit workflow, so `insertWorkflows` starts no run (422 `code: note_edit`; `start_workflow` returns
+  `status: not_started` with `NOTE_EDIT_MESSAGE`: read the note, `suggest_note_edit` only that part, import at most the one
+  paper asked for); a run that learns it only at planning ends `skipped` with that reason. At creation a follow-up like
+  「再補一篇 Conformer 的論文」 (`noteFollowUpAsked`) resolves the page's / the conversation's note. Never a `topic_research`
+  re-run importing 8–12 papers (production; invariant `route.note_part_not_research`, high).
 - *Batch*: per-paper playbooks only when the user's words ask for each paper (`EACH_PAPER_RE`) and there are ≥ 2 papers;
   「這三篇做成簡報」 with ≥ 2 `paper_ids` and no 「一份／每篇」 → `ask = batch`.
 - *Ask* (engine `routePhase`, one card via `clarifyOnce`): `batch` → 「合成一份…／每一篇論文各做一份…」 (the answer joins
   the words, route again; autopilot / skipped → one artifact); `producer` (no playbook delivers the kind) → the kinds that
   exist (the choice is a new Brief version), never a silent `generic`.
 - *When*: at creation (`insertWorkflows`, decides the run's playbook and batch; the decision is stored in
-  `workflow_runs.state.route` = `RouteState {kind, deliverable, playbook, deck?, edit?, batch, ask?, reason, informed, hint?,
+  `workflow_runs.state.route` = `RouteState {kind, deliverable, playbook, deck?, edit?, scope?, latex?, redirect?, batch, ask?, reason, informed, hint?,
   brief_version, explicit_paper, hint_playbook, pinned?, at}` and logged: 「路由：要交付的是簡報，由「簡報」執行（…）。」), and
   again at every planning (`routePhase`, after `prepareBrief` / `clarifyDeliverable`, with the Brief's requirements and the
   study's readiness `routeContext`). User-facing names follow the route (`playbookLabel`): a deck edit is 「修改簡報」 /
-  「擴充簡報」 in the route log, cards, notices and the run view's `playbook_title`, never 「從 0 到 1 建立簡報」. A changed decision switches the playbook (always within the Brief's deliverable) and is
+  「擴充簡報」, a LaTeX part edit 「修改論文」 in the route log, cards, notices and the run view's `playbook_title`, never 「從 0 到 1 建立簡報」. A changed decision switches the playbook (always within the Brief's deliverable) and is
   logged; a batch whose study was only known now is split and the run ends (`cancelled` / `skipped`, 「已拆成 n 個工作流程…」).
   A decision made before the study was known (`informed = false`) is refreshed by the playbook once it resolved the study
   (`currentRoute`). Playbooks read `env.route()` and never detect a mode from the request text.
@@ -1901,6 +1921,33 @@ requirement is now a typed constraint that every step must keep and that is chec
   kept pages (never scored or failing). Removals only: no planner call, no screenshot pass; removed titles join the
   exclude requirement (`requireRemoval`, `state.removed_pages`). Slide-design criteria are dropped (the screenshot QA
   stays when some page is rewritten). Invariant `deck.page_scope_kept`.
+- *LaTeX part edits* (`latex_section` with `route.latex = edit`; `playbooks/latex-edit.ts`, `lib/latex/structure.ts`).
+  `projectStructure(files, root, aux?)` reads every `.tex` file from the root's `\begin{document}` in `\input` / `\include`
+  order (comments masked; disabled / preamble inputs ignored) into blocks: headings (`\part`…`\subsubsection`, starred
+  unnumbered, `\frontmatter` / `\backmatter` unnumbered, `\appendix` letters A, B… at the top level, per-chapter
+  numbering `3.2` when the document has `\chapter`), tables / figures (numbered at their `\caption`, per chapter in
+  theses), the abstract — each with its file and exact range (a heading runs to the next heading of the same or a higher
+  level, or to the `\input` line in its own file that leads to one, the bibliography, `\appendix`, `\end{document}`).
+  The last successful compile's `<outputPrefix>output.aux` `\newlabel` numbers win when stored (the runner does not
+  upload it yet → computed). `resolveParts(words, …)` maps the user's words: 第三節 / 第 3 節 / 3.2 節 / 第二章第三節 /
+  Section 4 / §3 / Chapter 2 (章 = top-level section in an article), 附錄 A / Appendix B, 表二 / Table 2, 圖 3 / Fig. 3,
+  摘要 / abstract, a heading's title (longest match), 第N段 / 最後一段 / second paragraph (of the part named in the same
+  clause; blank-line paragraphs, headings / labels / floats excluded), a cite key next to 引用 / cite (each `\cite` loses
+  that key, the command goes when it was the only one). Chinese numerals and verb-after order (「把第三節刪掉」) are
+  read per clause (`REMOVE_RE` → remove, else rewrite). Whole-paper words (整篇, 全部章節, 翻譯整份…) or no part named →
+  a question listing the chapters; a part not in the source → 「論文裡找不到…」; a ref matching several parts (「第二節」
+  in a thesis) → a `requirePick` card of those parts (`state.latex_part_choices`); a clarifying answer that resolves alone
+  is used with the earlier words' removal verb (`resolveWords`). Plan: removals need no model call (a paragraph takes
+  its trailing blank lines; a block that is a whole section file removes the root's `\input` line instead); each rewrite
+  is one writer step `edit_i` (purpose `latex_edit`) given only that part's current text + the user's words + cite keys;
+  a citation swap (「換成 lee2021」) is done by code. `assemble`: `spliceFiles` = the planning-time text + splices; the
+  write guard checks the ranges still hold the planned text (else 「規劃後被修改過」), the kept segments are in the
+  result byte for byte, a rewritten heading keeps its command / star / label / title (unless the words rename it) and
+  every `\label` the part had; then a verification compile. Criteria: `scope` (`latex_scope_kept`), `compile`, a judge
+  only for rewrites (no min-length / citation checks: a deletion passes). Commit: one suggestion per changed file whose
+  hunks are only those ranges (re-located by their exact text if the file moved meanwhile). `state.latex_edit` (targets),
+  `state.latex_edit_result` (per file: kept segments, splices, result) for invariant `latex.part_scope_kept` (critical:
+  the result is exactly kept + replacements, removed text gone).
 - *Original pages preserved* (revise and expand; eval `deck_expand_fields_zh`, where an expansion merged / retitled two
   pages nobody mentioned and verification still passed): `keepRule` (slides.ts) reads the user's words — every original
   page stays except the ones removed (`exclude`) and, in an expansion, the ones the words name (「把『動態熱詞的做法』展開」:
@@ -2158,7 +2205,7 @@ venue — writers cite papers this way), the extraction parts its `kind` needs f
 | id | Title | Plan (roles) | Writes | Key checks |
 |---|---|---|---|---|
 | `slides` | 從 0 到 1 建立簡報 (paper report from a library paper's full text, or progress report from study data; budget `budgetFor`: 1000 calls / 20 M tokens / 360 min) | researcher reads the paper (TOC → sections, page citations, **figure list** with page + vertical position, **numbers table**; the brief always gets the deterministic figure list `listFigures` (captions located on the PDF layout, with crop fractions) and a results-weighted excerpt of the full text, so numbers never depend on how far a cheap model read) / study progress / topic papers (Topic decks above) → planner outline of exactly N pages (shown on the card; each page a unit with `purpose`, points and a **layout id** from the finite library `LAYOUTS` A–F + T — the model picks layouts, never positions) → **one writer per page** (parallel, `VISUAL_RULES` + the chosen layout, per-page budget, neighbouring pages' summaries; a page cut at the output limit is continued alone) → `student_input` (student-owned pages) → integrate into the deck's Quarto entry + preview render (a render error sends only the pages it points at to the syntax fix, `suspectPages`) → speaker-notes pass → `constraints` (the user's requirements, see Requirements) → **`visual_qa` (mandatory)** → final | new deck (`origin ai`) or the run's draft deck; auto preview after each round; optional 「發布為新版本」 | `slide_count` = outline, `slide_titles`, `pages_kept` (deck edits: original pages kept, in order), `speaker_notes`, `no_placeholder` (with `on_slide`: 「資料未提供」/N/A on the slide body fails, notes may say it; placeholders still left after the writers' rounds are removed by code before every deck write, `scrubPlaceholders`: the slide line / `｜` segment / table row, the note sentence; student-owned pages and code fences untouched, logged), `not_truncated`, `slide_density` (≤ 75 words / 6 bullets, CJK char = ½ word), `diagram_syntax`, content checks on `data.refs` (`grounded_names`, `figure_refs`, `diagram_semantics`, `chart_semantics`; see **Content checks** below), `visual_ratio` (≥ 60 % of content pages), `visual_qa`, render ok, judge: content vs. outline + paper |
-| `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys) → outline of subsections → writers per subsection (units with budgets; replies and compile repairs stripped of root-file content by `stripPreamble`) → integrate → compile-verify (new file); a compile error repairs only the subsection units it points at (`unitsForErrors`: `file:line` → the unit, else open environments; `state.fixed_units`) | a new section file (`latex_add_section`) compiled, or a suggestion on an existing section file (static checks only) | `citations` ⊂ study keys, `not_truncated`, compile errors = 0 |
+| `latex_section` | 論文章節撰寫 | researcher (notes, papers, BibTeX keys; the project's real headings from `projectStructure`) → outline of subsections → writers per subsection (units with budgets; replies and compile repairs stripped of root-file content by `stripPreamble`) → integrate → compile-verify (new file); a compile error repairs only the subsection units it points at (`unitsForErrors`: `file:line` → the unit, else open environments; `state.fixed_units`). A new file is written at the project's top level (`assembleTex(…, command)`: a thesis gets `\chapter` + `chap:` label and its units move up one level). The planned title matching an existing top-level heading in **any** file, the root included (`existingSection`), rewrites that block in place (`state.target_file` = file + range; heading command, star and `\label` kept by `keepHeading`); several matches → a question, never a duplicate file. **Edit mode** (`route.latex = edit`, `playbooks/latex-edit.ts`): see *LaTeX part edits* below | a new section file + root `\input` suggestion, or a suggestion whose hunk covers only the existing section's range; edit mode: one suggestion per changed file, hunks = only the named ranges | `citations` ⊂ study keys, `not_truncated`, compile errors = 0; edit mode: `latex_scope_kept`, `compile_ok`, judge only for rewrites |
 | `lit_review` | 文獻回顧 / related work | researcher per paper (read_paper, parallel ≤ 6 papers) → comparison table (+ background) → `synthesis` → `gaps` ∥ `relation` (one section unit each, with budgets) → stitched; a study with < 2 papers gets card `lit_too_few` (改做主題調研 → `redirect` to `topic_research` / 我先加入論文 → the old question), autopilot redirects directly | new note | `table_rows` ≥ papers, `citations`, judge |
 | `reading_note` | 閱讀筆記 | researcher per section group (parallel) → writer per part → integrate; a topic-like request without a paper never gets here (the router sends it to `topic_research`) | new note | `sections_present` covers the TOC, `equations` when the paper has formulas, judge |
 | `topic_research` | 主題調研 (nothing importable online while the study's library has papers → the library's most related ≤ 8 papers by keyword overlap, `libraryFallback`, log 「線上沒有找到可以匯入的論文，改用研究文獻庫…」, instead of stopping on a question; detect 0.9: `TOPIC_RE` — 有哪些…做法/方法, 調研, 研究現況, survey, state of the art, related approaches, 找…論文 — and no `paper_id` / arXiv id / DOI) | planning: sub-questions (outline, editable) with expanded keyword queries → **one search batch** + citation snowballing, then tainted → planner picks 8–12 papers (seminal + recent) incl. relevant study papers (step `research`, passed); per paper `paper_i` (parallel): import + structured full-text extraction (數字表), 「僅依摘要」 without a PDF → `taxonomy` → `approaches` ∥ `results` ∥ `practice` (stack named) ∥ `discussion` (section units with budgets) → assemble: stitched by code + `scrubNote` (+ 參考文獻, 搜尋紀錄) | new note; `paper` write 「匯入 N 篇論文到實驗室文獻庫…」 (no draft effect → waits for the user unless autopilot) | `sections_present`, `topic_taxonomy`, `topic_approaches`, `topic_cites`, `topic_numbers`, `topic_results_coverage`, `topic_consistency`, `topic_concise`, `topic_reading`, judge |

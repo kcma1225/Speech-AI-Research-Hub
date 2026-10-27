@@ -11,7 +11,7 @@
 import { z } from "zod";
 import { transaction } from "../db.js";
 import { registerAgentTool } from "../agent/tools/registry.js";
-import { badRequest, notFound } from "../lib/http.js";
+import { badRequest, HttpError, notFound } from "../lib/http.js";
 import { artifactGrounded, UNGROUNDED_TARGET } from "./context.js";
 import { getRun, getSteps } from "./store.js";
 import { addGuidance, announceRuns, answerWorkflowText, insertWorkflows, pauseWorkflow, resumeWorkflow, startMessage, startResult } from "./service.js";
@@ -94,7 +94,15 @@ registerAgentTool({
         userWords,
         inputs: { study: a.study, paper_id: uuid(a.paper_id), deck_id: uuid(a.deck_id), project_id: uuid(a.project_id), note_ids: a.note_ids?.map(uuid).filter((x): x is string => !!x), paper_ids: a.paper_ids?.map(uuid).filter((x): x is string => !!x), pages: a.pages, attachment_ids: a.attachment_ids?.map(uuid).filter((x): x is string => !!x) },
       }),
-    );
+    ).catch((e: unknown) => {
+      // A narrow edit of an existing note (route.ts noteEditRedirect): no run; the result tells the assistant what to do.
+      if (e instanceof HttpError && e.extra.code === "note_edit") return { redirect: e.message } as const;
+      throw e;
+    });
+    if ("redirect" in out) {
+      const data = { status: "not_started", reason: "note_edit" };
+      return { data, text: JSON.stringify({ ...data, message: out.redirect }) };
+    }
     await announceRuns(ctx.db, out.runs);
     const data = startResult(out);
     const message = startMessage(out.runs, out.batchId);

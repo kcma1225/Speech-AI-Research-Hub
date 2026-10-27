@@ -87,7 +87,8 @@ export function detectPlaybook(request: string, inputs: Record<string, unknown>)
  * The user-facing name of a playbook for this run's route: an edit of an existing deck is 「修改簡報」, never 「從 0 到 1
  * 建立簡報」 (production e6d552fc: a notes-language revise was labelled 0→1 on its card, route log and notices).
  */
-export function playbookLabel(id: string, route?: { deck?: string; edit?: string } | null, en = false): string {
+export function playbookLabel(id: string, route?: { deck?: string; edit?: string; latex?: string } | null, en = false): string {
+  if (id === "latex_section" && route?.latex === "edit") return en ? "Edit the paper" : "修改論文";
   if (id === "slides" && route?.deck === "edit") return en ? (route.edit === "expand" ? "Expand this deck" : "Revise this deck") : route.edit === "expand" ? "擴充簡報" : "修改簡報";
   const pb = getWorkflowPlaybook(id);
   return (en ? pb?.titleEn : pb?.title) ?? id;

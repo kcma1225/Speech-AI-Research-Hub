@@ -121,6 +121,87 @@ export function editAsked(words: string, reqs: Pick<Requirement, "type" | "sourc
   return reqs.some((r) => r.source !== "standing" && EDIT_REQS.has(r.type));
 }
 
+// ---------------------------------------------------------------- editing an existing LaTeX project (latex_section edit)
+
+/**
+ * Words that name a part of a paper as its reader sees it (「第三節」「Table 2」「圖 3」「附錄 A」「摘要」「第二段」「Related
+ * Work 那節」). A citation (「chen2020 的引用」) is a part only with an edit verb (「幫我寫…，引用文獻庫」 writes). With a LaTeX project given they make the request an edit of that project, whatever the
+ * verb (production: 「把 Related Work 第二段刪掉」 became a literature-review note, 「把 latex 論文裡的 Table 2 拿掉」 a new
+ * paper project). Bare 章節／段落 are not parts (「幫我寫 Related Work 章節」 writes a section).
+ */
+export const LATEX_PART_RE = /第\s*[0-9０-９一二三四五六七八九十兩]+(?:\.\d+)*\s*(?:節|章|段|小節)|(?:這|那|該|此)一?(?:節|章|段|小節)|最後一段|\d+(?:\.\d+)+\s*節|\b(?:sub)*sections?\s*\d|\bsec\.\s*\d|§\s*\d|\b(?:chapter|ch\.)\s*\d|(?<![代發列簡報])表\s*[0-9０-９一二三四五六七八九十]|(?<![地試企意構藍])圖\s*[0-9０-９一二三四五六七八九十]|\b(?:tables?|tab\.|figures?|fig\.)\s*\d|附錄|\bappendix\b|\babstract\b|摘要|\b(?:first|second|third|last) paragraph\b|[A-Za-z][A-Za-z \-]{2,40}?\s*(?:那|這)一?(?:節|章|段)|(?:裡|中)的?\s*(?:這|那)?一?段/i;
+/** Verbs that change what is there (removals included): an edit, not new writing. */
+export const LATEX_EDIT_VERB_RE = /改成|改為|改寫|重寫|修改|修正|精簡|潤飾|潤稿|調整|換成|替換|補充|補上|再補|多補|加一句|加上一段|更新|縮短|改短|改長|擴寫|寫得更|改得更|更清楚|更簡潔|太長|太短|刪掉|刪除|刪去|拿掉|拿走|去掉|移除|砍掉|不要了|不需要了|\brewrite\b|\brevise\b|\bedit\b|\bpolish\b|\bshorten\b|\bcondense\b|\breplace\b|\bfix\b|\bupdate\b|\bremove\b|\bdelete\b|\bdrop\b|get rid of|\btake\b[^.\n]{0,60}\bout\b/i;
+/** A NEW paper / project (「寫一篇新的論文」「開一個新的 LaTeX 專案」「write a new paper」): never an edit. */
+export const NEW_PAPER_RE = /(?:寫|撰寫|起草|產出|生成|開|建立|做)\s*(?:一篇|一份|一個|個|篇|份)?\s*新的?\s*(?:latex\s*)?(?:論文|paper|專案|project)|新(?:的)?\s*(?:latex\s*)?(?:論文|專案)|另(?:外)?(?:一篇|一份|一個)\s*(?:latex\s*)?(?:論文|專案)|從零|從 ?0 ?開始|從頭(?:開始)?寫|\b(?:write|draft|create|start) (?:a |another )?new (?:latex )?(?:paper|project|thesis)\b/i;
+/** A NEW section (「新增一節 Related Work」「寫一個新的章節」「add a section on…」): latex_section writes it. */
+export const NEW_SECTION_RE = /(?:新增|增加|加上?|多加|補上?|寫|撰寫|起草)\s*(?:一|1|個)\s*(?:個)?\s*(?:新的?)?\s*(?:節|章|章節|小節)|新(?:的)?(?:章節|一節|一章)|\b(?:write|add|draft) (?:a|an|one|another|new) [^.\n]{0,30}\b(?:section|chapter)\b/i;
+/** The words point at an existing paper (「論文裡的」「這篇論文」「in my paper」), not one to write. */
+export const EXISTING_PAPER_RE = /(?:論文|paper|latex|thesis|專案)\s*(?:裡|中|內|裡面)|(?:這|那|我的|我們的)(?:篇|份|個)?\s*(?:latex\s*)?(?:論文|paper)|\bin (?:the|my|our) (?:paper|thesis|latex)\b/i;
+const DECK_WORDS_RE = /簡報|投影片|\bslides?\b|\bdeck\b|講稿|speaker notes?/i;
+
+/**
+ * The words ask to change part of an existing paper: they name a part or use an edit verb, and ask for neither a new
+ * paper nor a new section nor a deck. (The project itself: `latexEditRoute`.)
+ */
+export function latexEditAsked(text: string): boolean {
+  if (!text.trim() || NEW_PAPER_RE.test(text) || NEW_SECTION_RE.test(text) || DECK_WORDS_RE.test(text)) return false;
+  return LATEX_PART_RE.test(text) || LATEX_EDIT_VERB_RE.test(text) || !!detectExclude(text);
+}
+
+/**
+ * A LaTeX project is given (inputs.project_id), or the words point at an existing paper while the study has one, and the
+ * words ask to change a part of it: an EDIT of that project (`latex_section` in edit mode: only the parts the words name
+ * change; everything else stays byte for byte). Wins over a keyword deliverable (LIT_RE 「Related Work」 → lit_review,
+ * 「latex 論文」 → a new paper) and over the assistant's hint. Null when it does not apply.
+ */
+export function latexEditRoute(input: RouteInput, text: string): Route | null {
+  const inp = input.inputs ?? {};
+  if (!has("latex_section") || (input.kind && input.kind !== "latex")) return null;
+  if (input.pinned && input.pinned !== "latex_section") return null;
+  if (typeof inp.deck_id === "string" && DECK_PART_RE.test(text)) return null;
+  const given = typeof inp.project_id === "string";
+  const ready = input.ready ?? null;
+  const pointed = !given && EXISTING_PAPER_RE.test(text) && LATEX_PART_RE.test(text) && LATEX_EDIT_VERB_RE.test(text) && (!ready || ready.latex_projects > 0);
+  if ((!given && !pointed) || !latexEditAsked(text)) return null;
+  const hint = input.hint && has(input.hint) ? input.hint : null;
+  return {
+    kind: "latex", deliverable: "paper_section", playbook: "latex_section", latex: "edit", batch: false, informed: !!ready,
+    reason: `修改既有的 LaTeX 論文：只改你指出的部分（${given ? "指定的專案" : "研究裡的論文"}），其他內容一字不動${hint && hint !== "latex_section" ? `；助理建議「${label(hint)}」不採用：你要改的是論文本身` : ""}`,
+    ...(hint ? { hint: { playbook: hint, accepted: hint === "latex_section" } } : {}),
+  };
+}
+
+// ---------------------------------------------------------------- a part of an existing note (no new research)
+
+/** A note named as the thing to change (「調研筆記裡」「這份筆記的」「in the note」). */
+const NOTE_TARGET_RE = /筆記\s*(?:裡|中|內|裡面|的)|(?:這|那)(?:份|篇)\s*(?:調研|研究|閱讀|文獻)?筆記|\b(?:in|from|of) (?:the|this|that|my) (?:research |topic |reading )?note\b/i;
+/** A part of a note or a narrow change (a section, a paragraph, one more paper): not a new survey. */
+const NOTE_PART_RE = /(?:這|那)一?(?:節|段|部分)|第\s*[0-9一二三四五六七八九十]+\s*(?:節|段)|[A-Za-z0-9][A-Za-z0-9 \-]{1,40}?\s*(?:那|這)一?(?:節|段|部分)|再(?:補|加)一(?:篇|段|節)|多(?:補|加)一(?:篇|段)|\b(?:section|paragraph)\b/i;
+const NEW_NOTE_RE = /(?:新的|另一份|另外一份|再做一份|再寫一份|重新(?:做|寫|調研))\s*[^。！？\n]{0,10}筆記|\b(?:a new|another) (?:note|survey)\b|重新調研|重做調研/i;
+
+/**
+ * 「把調研筆記裡 RNN-T 那節刪掉」「再補一篇 Conformer 的論文」 on an existing note: a narrow edit of that note, never a new
+ * topic survey (production: TOPIC_RE matched 「調研」 and re-ran topic_research, importing 8–12 papers). There is no
+ * note-edit workflow: the run is not started and the assistant edits the note with suggest_note_edit. Returns the reason
+ * (繁中) or null.
+ */
+export function noteEditRedirect(input: RouteInput, text: string): string | null {
+  const inp = input.inputs ?? {};
+  if (input.kind && input.kind !== "note" && input.kind !== "lit_review" && input.kind !== "reading_note") return null;
+  if (typeof inp.deck_id === "string" || typeof inp.project_id === "string" || DECK_WORDS_RE.test(text) || NEW_NOTE_RE.test(text)) return null;
+  const noteGiven = Array.isArray(inp.note_ids) && inp.note_ids.length > 0;
+  if (!noteGiven && !NOTE_TARGET_RE.test(text)) return null;
+  if (!(NOTE_PART_RE.test(text) || LATEX_EDIT_VERB_RE.test(text) || !!detectExclude(text))) return null;
+  return "這是對既有筆記的局部修改（指出了其中一節／一段，或只補一篇），不重新做主題調研、也不匯入一批論文";
+}
+
+/** 「再補一篇 Conformer 的論文」「那節刪掉」: a follow-up on the note the conversation made (service.ts resolves the note). */
+export const noteFollowUpAsked = (text: string) => NOTE_PART_RE.test(text) && !NEW_NOTE_RE.test(text) && !DECK_WORDS_RE.test(text) && !NEW_PAPER_RE.test(text);
+
+/** What the assistant does instead of a run for a note edit (start_workflow result). */
+export const NOTE_EDIT_MESSAGE = "沒有開工作流程：使用者要的是修改既有筆記的一部分，不是新的調研。先用 get_note 讀那份筆記（不知道是哪一份就用 ask_user 問），再用 suggest_note_edit 只改他指出的那一節／那一段，其他內容不動；要補一篇論文時先用文獻工具找到那一篇、經使用者同意後只匯入那一篇，再把它補進筆記。不要呼叫 start_workflow 或 topic_research 重做調研。";
+
 // ---------------------------------------------------------------- per paper
 
 /** 「這幾篇」「these papers」 without 「每一篇」 or 「一份」: one deck about them, or one each? (asked once). */
@@ -169,6 +250,10 @@ export type Route = {
   edit?: EditKind;
   /** Slides `edit`: what may change — `notes` = only the speaker notes (the slide bodies stay byte for byte). */
   scope?: "notes";
+  /** LaTeX: `edit` = change only the parts of the given project the words name (latex_section edit mode). */
+  latex?: "edit";
+  /** Not a run: the words ask for a narrow edit of an existing note (the assistant uses suggest_note_edit). */
+  redirect?: "note_edit";
   /** One run per paper (the user's own words asked for it). */
   batch: boolean;
   /** The router could not decide alone: ask ONE card (engine planPhase). */
@@ -262,6 +347,11 @@ export function route(input: RouteInput): Route {
   const named = namedWords ?? (input.paraphrase ? deliverableFromWords([input.paraphrase]) : null);
   const paperNamed = !!ready?.paperTitles?.length && !!matchPaperTitle(text, ready.paperTitles);
   const reasons: string[] = [];
+  // 0. Edits of an existing paper / note that keyword deliverables would turn into new artifacts (separate rules below).
+  const latexEdit = latexEditRoute(input, text);
+  if (latexEdit) return latexEdit;
+  const noteEdit = noteEditRedirect(input, text);
+  if (noteEdit) return { kind: input.kind ?? "note", deliverable: null, playbook: input.hint && has(input.hint) ? input.hint : "generic", batch: false, redirect: "note_edit", reason: noteEdit, informed: !!ready };
   // 1. The deliverable (hard): fixed by the Brief, else named by the user, else the assistant, else the hint's product.
   let kind: BriefKind;
   if (input.kind) kind = input.kind;
@@ -376,6 +466,15 @@ export function routeStage(proposed: string, request: string, ready: RouteReadin
 /** A request's deliverable as the goal layer names it (the user's words first). */
 export const wantedDeliverable = (words: string[] | null | undefined, request: string): DeliverableKind | null =>
   (words?.length ? deliverableFromWords(words) : null) ?? deliverableOf(request);
+
+/**
+ * The user's words edit a part of an existing paper or note (latexEditRoute / noteEditRedirect): never a goal — a goal
+ * would plan a whole new deliverable (production: 「把 latex 論文裡的 Table 2 拿掉」 started a goal for a new paper).
+ */
+export function editsExisting(words: string[] | null | undefined, request: string, inputs: RouteInput["inputs"] = {}): boolean {
+  const text = (words?.length ? words : [request]).join("\n");
+  return !!latexEditRoute({ words: [text], inputs }, text) || !!noteEditRedirect({ words: [text], inputs }, text);
+}
 
 /** Readiness → the router's view. */
 export function routeReadiness(r: Readiness, extra: Partial<RouteReadiness> = {}): RouteReadiness | null {

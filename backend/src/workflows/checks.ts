@@ -511,6 +511,12 @@ export const CHECKS: Record<string, CheckFn> = {
     if (!d) return { ok: true, detail: "（沒有編譯）" };
     return d.status === "success" || (d.status === "partial" && !d.errors.length) ? { ok: true, detail: "LaTeX 編譯成功" } : { ok: false, detail: `LaTeX 編譯有錯誤：${d.errors.slice(0, 5).join("；") || d.status}` };
   },
+  /** A part-scoped LaTeX edit (playbooks/latex-edit.ts): only the named ranges changed; the write guard's verdict. */
+  latex_scope_kept(_text, { data }) {
+    const d = (data as { scope?: { ok: boolean; issues: string[] } } | null)?.scope;
+    if (!d) return { ok: true, detail: "（沒有限定範圍）" };
+    return d.ok ? { ok: true, detail: "只改了指定的部分，其他內容一字不差" } : { ok: false, detail: d.issues.slice(0, 4).join("；") };
+  },
 };
 
 /** Visible words of a slide body: code/diagram/chart blocks, HTML tags, images and Markdown syntax removed. */

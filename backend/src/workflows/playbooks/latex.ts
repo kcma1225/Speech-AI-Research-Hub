@@ -3,7 +3,12 @@
  * research → subsection outline (planning) → writers per subsection (parallel) → assemble + **verification compile**
  * (a throw-away compile of the project with the new section \input-ed; the project's own compile history and preview
  * are left as they were) → final verification → commit: a NEW section file plus a suggestion on the root file that adds
- * its \input — or, when the section already exists, a suggestion on that file. Nothing is overwritten directly.
+ * its \input — or, when the section already exists (in any file, the root included: lib/latex/structure.ts), a suggestion
+ * whose hunk covers only that section's range, keeping its command (\chapter stays \chapter) and \label. A title that
+ * matches several sections asks which. Nothing is overwritten directly.
+ *
+ * Edit mode (`route.latex = "edit"`, route.ts latexEditRoute): the parts of the given project the words name change and
+ * nothing else (playbooks/latex-edit.ts).
  */
 import { randomUUID } from "node:crypto";
 import { transaction } from "../../db.js";
@@ -12,7 +17,7 @@ import { LATEX_JOB_KIND, type LatexCompilePayload } from "../../lib/latex/contra
 import { addInput } from "../../lib/latex/inputs.js";
 import { sectionPath } from "../../lib/latex/templates.js";
 import { runnerManifest, snapshotProject } from "../../lib/latex-projects/service.js";
-import { findProject, insertTextFile, latexKeys, latexUrl, listFiles, liveText, sectionTitle, sha256Hex } from "../../lib/latex-projects/store.js";
+import { findProject, insertTextFile, latexKeys, latexUrl, listFiles, liveText, sha256Hex } from "../../lib/latex-projects/store.js";
 import { createSuggestion } from "../../lib/suggestions/service.js";
 import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
@@ -24,6 +29,8 @@ import { registerWorkflowPlaybook, type PlanResult, type WorkflowPlaybook } from
 import { generateUnit, unitContext, unitTokens } from "../units.js";
 import { unbalanced } from "../checks.js";
 import { stripPreamble } from "../../lib/latex/section-scope.js";
+import { applySplices, blockLabel, keepHeading, type Block } from "../../lib/latex/structure.js";
+import { assembleLatexEdit, commitLatexEdit, executeLatexEdit, finalLatexEdit, loadProjectSource, planLatexEdit } from "./latex-edit.js";
 
 /** A subsection reply: fence removed and anything that belongs to the root file (preamble, document, bibliography) stripped. */
 const cleanSubsection = (t: string) => stripPreamble(t.replace(/^```(?:latex|tex)?\n|\n```$/g, "").trim(), { keepAbstract: true }).text;
@@ -122,9 +129,14 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
   const project = await findProject(env.db, projectId);
   if (!project || project.study_id !== access.study.id) return { kind: "question", question: `這份 LaTeX 專案不在〈${access.study.title}〉裡。`, setup: true };
   const keys = await studyKeys(env, access.study.id);
-  const files = await listFiles(env.db, project.id);
-  const existing = files.filter((f) => f.kind === "text" && /\.tex$/.test(f.path) && f.path !== project.root_file).map((f) => ({ id: f.id, path: f.path, heading: sectionTitle(f.content ?? "") }));
-  await env.setState({ project_id: project.id, keys, project_title: project.title });
+  await env.setState({ project_id: project.id, keys, project_title: project.title, latex_edit: null });
+  // An edit of parts of this project (route.ts latexEditRoute): only those parts change.
+  if (env.route()?.latex === "edit") return planLatexEdit(env, access.study.id, project);
+  // The project's real structure (every file in \input order, the root included): what exists and at which level.
+  const source = await loadProjectSource(env, project);
+  const top = source.structure.chapters ? "chapter" : "section";
+  const tops = source.structure.blocks.filter((b) => b.kind === "heading" && b.level === top);
+  const existing = tops.map((b) => ({ path: b.path, heading: blockLabel(b) }));
 
   const research = await planningStep(env, {
     key: "research", role: "researcher", title: "讀筆記與文獻",
@@ -134,7 +146,7 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
   }, async (fix) => {
     const user = [
       `要撰寫的論文章節：${env.run.request}`,
-      `LaTeX 專案〈${project.title}〉現有章節：${existing.map((e) => `${e.path}${e.heading ? `（${e.heading}）` : ""}`).join("、") || "（沒有）"}；project_id ${project.id}。`,
+      `LaTeX 專案〈${project.title}〉現有章節：${existing.map((e) => `${e.heading}（${e.path}）`).join("、") || "（沒有）"}；project_id ${project.id}。`,
       `研究的文獻 cite key：${keys.join("、") || "（文獻庫是空的）"}。get_study_bibtex 可查看每個 key 對應的論文。`,
       "請用 list_notes / get_note 讀相關筆記，用 read_paper 讀要引用的論文重點，需要時 latex_read_file 看相鄰章節的寫法。輸出：要寫的內容重點（含數字與出處）、建議引用的 cite key 與對應論點。",
       env.guidanceText(),
@@ -160,10 +172,15 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
   const lo = outline.output.data as LatexOutline | undefined;
   if (!lo) throw new WorkflowInputError("無法規劃章節結構，請換個方式描述要寫的章節。");
   const subsections = lo.subsections.slice(0, 6).map((s) => ({ title: s.title.slice(0, 120), points: (s.points ?? []).slice(0, 6) }));
-  const target = existing.find((e) => e.heading && (e.heading.toLowerCase().includes(lo.section.toLowerCase()) || lo.section.toLowerCase().includes(e.heading.toLowerCase())));
+  // The section already exists (any file, the root too): rewrite that block in place; several matches → ask, never a duplicate file.
+  const matches = existingSection(tops, lo.section);
+  if (matches.length > 1) return { kind: "question", question: `〈${project.title}〉裡有好幾節符合「${lo.section}」：${matches.map((b) => `「${blockLabel(b)}」（${b.path}）`).join("、")}。要改寫的是哪一節？請說出節號或完整標題；要另外新增一節請說「新增一節」。` };
+  const hit = matches[0];
+  const file = hit ? source.files.find((f) => f.path === hit.path) : undefined;
+  const target: TargetBlock | null = hit && file ? { id: file.id, path: hit.path, start: hit.start, end: hit.end, before: file.text.slice(hit.start, hit.end), label: blockLabel(hit) } : null;
   const newPath = sectionPathSafe(lo.section);
   // One unit per subsection, each with its points and length budget (units.ts).
-  await env.setState({ section: lo.section, subsections, target_file: target ?? null, new_path: newPath, units: subsections.map((s, i) => ({ key: `write_${i + 1}`, title: s.title, points: s.points, budget: { chars: 1400 } })) });
+  await env.setState({ section: lo.section, subsections, target_file: target, top_command: top, new_path: newPath, units: subsections.map((s, i) => ({ key: `write_${i + 1}`, title: s.title, points: s.points, budget: { chars: 1400 } })) });
 
   const writes: StepSpec[] = subsections.map((s, i) => ({
     key: `write_${i + 1}`, role: "writer", title: `撰寫小節「${clipText(s.title, 40)}」`,
@@ -191,14 +208,26 @@ async function plan(env: WorkflowEnv): Promise<PlanResult> {
     objective: `為〈${project.title}〉撰寫「${lo.section}」一節（${titles.length} 個小節），引用研究文獻庫，並確認加入後能編譯。`,
     criteria,
     plan: {
-      summary: `讀筆記與文獻後規劃 ${titles.length} 個小節，由撰寫者平行撰寫，每節檢查引用；整合後做一次驗證編譯（不改動專案），通過後${target ? `以建議的方式修改 ${target.path}` : `新增章節檔 ${newPath}，並以建議的方式在主檔加入 \\input`}。`,
+      summary: `讀筆記與文獻後規劃 ${titles.length} 個小節，由撰寫者平行撰寫，每節檢查引用；整合後做一次驗證編譯（不改動專案），通過後${target ? `以建議的方式改寫 ${target.path} 裡的「${target.label}」（只涵蓋這一節，標題指令與標籤不變）` : `新增章節檔 ${newPath}，並以建議的方式在主檔加入 \\input`}。`,
       outline: subsections.map((s, i) => ({ n: i + 1, title: s.title, points: s.points })),
       writes: target
-        ? [{ kind: "latex_file", label: `對 ${target.path} 的修改建議（你在編輯器逐段接受）`, effect: "suggestion" as const }]
+        ? [{ kind: "latex_file", label: `對 ${target.path}「${target.label}」的修改建議（你在編輯器逐段接受）`, effect: "suggestion" as const }]
         : [{ kind: "latex_file", label: `新章節檔 ${newPath}`, effect: "new" as const }, { kind: "latex_file", label: "主檔加入 \\input 的建議", effect: "suggestion" as const }],
     },
     steps,
   };
+}
+
+/** Top-level headings whose title is the planned section's (exact first, else either contains the other, ignoring case). */
+export function existingSection(tops: Block[], section: string): Block[] {
+  const want = section.trim().toLowerCase();
+  if (!want) return [];
+  const exact = tops.filter((b) => b.title.trim().toLowerCase() === want);
+  if (exact.length) return exact;
+  return tops.filter((b) => {
+    const h = b.title.trim().toLowerCase();
+    return h.length >= 2 && (h.includes(want) || want.includes(h));
+  });
 }
 
 function sectionPathSafe(title: string) {
@@ -209,14 +238,19 @@ function sectionPathSafe(title: string) {
   }
 }
 
-/** The section file: heading + label, then the subsection units in order. `starts[i]` = the 1-based line where unit i begins. */
-export function assembleTex(section: string, parts: string[]): { content: string; starts: number[] } {
-  const head = `\\section{${section}}\n\\label{sec:${slugOf(section)}}\n\n`;
+/**
+ * The section file: heading + label, then the subsection units in order. `starts[i]` = the 1-based line where unit i
+ * begins. In a thesis (`command` chapter: templates.ts zh-thesis) the heading is a \chapter and the units move one level
+ * up (\subsection → \section), so a new part sits at the project's own top level.
+ */
+export function assembleTex(section: string, parts: string[], command: "section" | "chapter" = "section"): { content: string; starts: number[] } {
+  const head = `\\${command}{${section}}\n\\label{${command === "chapter" ? "chap" : "sec"}:${slugOf(section)}}\n\n`;
   const starts: number[] = [];
   let line = head.split("\n").length;
+  const up = (t: string) => (command === "chapter" ? t.replace(/\\(sub)?subsection(\*?)(?=[\s\[{])/g, (_m, sub: string | undefined, star: string) => `\\${sub ? "sub" : ""}section${star}`) : t);
   const body = parts.map((p) => {
     starts.push(line);
-    const t = p.trim();
+    const t = up(p.trim());
     line += t.split("\n").length + 1;
     return t;
   });
@@ -243,6 +277,11 @@ export function unitsForErrors(errors: string[], path: string, starts: number[],
 }
 
 async function execute(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepOutput> {
+  if (env.state("latex_edit")) {
+    if (step.key.startsWith("edit_")) return executeLatexEdit(env, step, fix);
+    if (step.key === "assemble") return assembleLatexEdit(env, verificationCompile);
+    return step.output ?? { summary: "（已完成）", text: "" };
+  }
   const keys = env.state<string[]>("keys") ?? [];
   if (step.key.startsWith("write_")) {
     const subs = env.state<{ title: string; points: string[] }[]>("subsections") ?? [];
@@ -265,14 +304,15 @@ async function execute(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepO
     const steps = await getSteps(env.db, env.run.id);
     const writers = steps.filter((s) => s.key.startsWith("write_") && s.output?.text).sort((a, b) => Number(a.key.slice(6)) - Number(b.key.slice(6)));
     const fixedUnits = { ...(env.state<Record<string, string>>("fixed_units") ?? {}) };
-    const target = env.state<{ id: string; path: string } | null>("target_file");
+    const target = env.state<TargetBlock | null>("target_file");
     const path = target?.path ?? env.state<string>("new_path")!;
     const section = env.state<string>("section") ?? "Section";
+    const command = env.state<"section" | "chapter">("top_command") ?? "section";
     const prev = env.state<{ content: string; errors: string[]; starts?: number[] }>("compiled");
     if (fix && prev?.errors.length) {
       // Compile errors: repair only the units they point at, each in its own call (content unchanged).
       const parts = writers.map((w) => fixedUnits[w.key] ?? w.output!.text!);
-      const targets = unitsForErrors(prev.errors, path, prev.starts ?? assembleTex(section, parts).starts, parts);
+      const targets = unitsForErrors(prev.errors, path, prev.starts ?? assembleTex(section, parts, command).starts, parts);
       for (const i of targets) {
         const w = writers[i];
         if (!w) continue;
@@ -283,14 +323,28 @@ async function execute(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepO
       }
       await env.setState({ fixed_units: fixedUnits });
     }
-    const { content, starts } = assembleTex(section, writers.map((w) => fixedUnits[w.key] ?? w.output!.text!));
+    const assembled = assembleTex(section, writers.map((w) => fixedUnits[w.key] ?? w.output!.text!), command);
+    const starts = assembled.starts;
+    // An existing section: its block rewritten in place (heading command, star and \label kept), the rest of its file as is.
+    const content = target ? `${keepHeading(target.before, assembled.content).replace(/\s*$/, "")}${/\s*$/.exec(target.before)![0]}` : assembled.content;
     const projectId = env.state<string>("project_id")!;
     const project = await findProject(env.db, projectId);
     if (!project) throw new WorkflowInputError("LaTeX 專案不存在。");
-    const rootFile = (await listFiles(env.db, project.id)).find((f) => f.path === project.root_file);
+    const all = await listFiles(env.db, project.id);
+    const rootFile = all.find((f) => f.path === project.root_file);
     const rootText = rootFile ? await liveText(env.db, null, rootFile) : "";
-    const root = target ? rootText : addInput(rootText, path);
-    const compile = await verificationCompile(env, project.id, [{ path, content }], root);
+    let extra = [{ path, content }];
+    let root = target ? rootText : addInput(rootText, path);
+    if (target) {
+      const f = all.find((x) => x.id === target.id);
+      const text = f ? await liveText(env.db, null, f) : "";
+      const next = applySplices(text, [{ start: target.start, end: target.end, after: content }]);
+      if (target.path === project.root_file) {
+        root = next;
+        extra = [];
+      } else extra = [{ path, content: next }];
+    }
+    const compile = await verificationCompile(env, project.id, extra, root);
     await env.setState({ compiled: { content, errors: compile.errors, starts }, tex: content });
     return { summary: `整合 ${content.length} 字；驗證編譯：${compile.status}${compile.errors.length ? `（${compile.errors.length} 個錯誤）` : ""}`, text: content, data: { compile, headings: latexHeadings(content) } };
   }
@@ -298,6 +352,7 @@ async function execute(env: WorkflowEnv, step: StepRow, fix: Fix): Promise<StepO
 }
 
 async function commit(env: WorkflowEnv, outcome: "done" | "partial") {
+  if (env.state("latex_edit")) return commitLatexEdit(env, outcome);
   const content = env.state<string>("tex");
   if (!content || env.state<string>("committed")) return content ? null : "章節沒有寫入（流程在整合前就停止了）。";
   if (!env.run.study_id) return null;
@@ -305,10 +360,15 @@ async function commit(env: WorkflowEnv, outcome: "done" | "partial") {
   const project = await findProject(env.db, env.state<string>("project_id")!);
   if (!project) return "LaTeX 專案已不存在，沒有寫入。";
   const deps = { db: env.db, collab: null };
-  const target = env.state<{ id: string; path: string } | null>("target_file");
+  const target = env.state<TargetBlock | null>("target_file");
   const title = outcome === "done" ? "Agent：撰寫章節" : "Agent：撰寫章節（未完全通過驗收）";
   if (target) {
-    const s = await createSuggestion(deps, { targetType: "latex_file", targetId: target.id, proposedText: content, title, source: "ai", actorId: env.user.id, conversationId: env.run.conversation_id, user: env.user });
+    // Only this section's range (re-located by its text when the file moved meanwhile); the rest of the file is untouched.
+    const row = (await listFiles(env.db, project.id)).find((f) => f.id === target.id);
+    const now = row ? await liveText(env.db, null, row) : "";
+    const at = now.slice(target.start, target.end) === target.before ? target.start : now.indexOf(target.before);
+    if (at < 0 || (at !== target.start && now.indexOf(target.before, at + 1) >= 0)) return `${target.path} 的「${target.label}」在這段期間被修改過，沒有建立建議。`;
+    const s = await createSuggestion(deps, { targetType: "latex_file", targetId: target.id, hunks: [{ from: at, to: at + target.before.length, before: target.before, after: content }], title, source: "ai", actorId: env.user.id, conversationId: env.run.conversation_id, user: env.user });
     await env.setState({ committed: true });
     await addArtifact(env.db, env.run.id, { kind: "latex_file", id: target.id, url: `${latexUrl(access.study.slug, project.id, target.id)}&suggestion=${s.id}`, title: `${target.path} 的修改建議`, role: "suggestion" });
     return `已在 ${target.path} 建立修改建議，請在 LaTeX 編輯器逐段接受。`;
@@ -338,6 +398,9 @@ async function commit(env: WorkflowEnv, outcome: "done" | "partial") {
   return `${line}。`;
 }
 
+/** An existing section the run rewrites in place: its file and range at planning. */
+type TargetBlock = { id: string; path: string; start: number; end: number; before: string; label: string };
+
 const latexSection: WorkflowPlaybook = {
   id: "latex_section",
   title: "論文章節撰寫",
@@ -350,6 +413,7 @@ const latexSection: WorkflowPlaybook = {
   plan,
   execute,
   async finalText(env) {
+    if (env.state("latex_edit")) return finalLatexEdit(env);
     const st = env.state<{ content: string; errors: string[] }>("compiled");
     const steps = await getSteps(env.db, env.run.id);
     const data = steps.find((s) => s.key === "assemble")?.output?.data ?? null;
@@ -357,6 +421,16 @@ const latexSection: WorkflowPlaybook = {
   },
   async repair(env, failing) {
     const out: { key: string; issues: string[] }[] = [];
+    const edit = env.state<{ targets: { key: string; action: string }[] }>("latex_edit");
+    if (edit) {
+      // Only the rewritten parts are reopened (removals have no writer); a compile / scope failure re-runs the splice.
+      const writers = edit.targets.filter((t) => t.action === "rewrite").map((t) => t.key);
+      for (const c of failing) {
+        if (c.id === "compile" || c.id === "scope") out.push({ key: "assemble", issues: [c.reason ?? c.text] });
+        else for (const k of writers) out.push({ key: k, issues: [`${c.text}：${c.reason ?? ""}`] });
+      }
+      return out;
+    }
     const subs = env.state<{ title: string }[]>("subsections") ?? [];
     for (const c of failing) {
       if (c.id === "compile") out.push({ key: "assemble", issues: [c.reason ?? "編譯失敗"] });

@@ -201,7 +201,7 @@ export function pageClaim(text: string): number | null {
 
 // ---------------------------------------------------------------- run accessors
 
-type RouteLike = { deck?: string; edit?: string; kind?: string; deliverable?: string; playbook?: string; informed?: boolean; reason?: string };
+type RouteLike = { deck?: string; edit?: string; latex?: string; kind?: string; deliverable?: string; playbook?: string; informed?: boolean; reason?: string };
 export const routeOf = (r: StoredRun): RouteLike | null => ((r.state?.route as RouteLike | undefined) ?? null);
 export const asksOf = (r: StoredRun): StoredAsk[] => Object.values(((r.state?.asks as Record<string, StoredAsk> | undefined) ?? {}));
 export const requirementsOf = (r: StoredRun): StoredRequirement[] => {
@@ -221,8 +221,20 @@ const DECK_PART_WORDS = /講稿|逐字稿|口稿|講者備註|備註|這(?:一)?
 const NEW_DECK_WORDS = /(?:做|建立|產生|生成|準備|製作|弄)\s*(?:一份|一個|個|份|新的?)?[^。！？\n]{0,30}?(?:簡報|投影片|slides|deck)|\b(?:make|create|build|prepare|generate)\s+(?:me\s+)?(?:a|an|another|new)\b[^.\n]{0,50}?\b(?:deck|presentation|slides)\b/i;
 export function isEditRun(r: StoredRun): boolean {
   const rt = routeOf(r);
-  return rt?.deck === "edit" || !!rt?.edit || !!r.plan?.edit_kind;
+  return rt?.deck === "edit" || !!rt?.edit || !!r.plan?.edit_kind || rt?.latex === "edit";
 }
+/**
+ * route.ts LATEX_PART_RE / LATEX_EDIT_VERB_RE / NEW_PAPER_RE / NEW_SECTION_RE, restated: words that name a part of a
+ * paper (「第三節」「Table 2」「附錄 A」「第二段」「Related Work 那節」) or change what is there, and do not ask for a new
+ * paper, a new section or a deck.
+ */
+const LATEX_PART_WORDS = /第\s*[0-9０-９一二三四五六七八九十兩]+(?:\.\d+)*\s*(?:節|章|段|小節)|(?:這|那|該|此)一?(?:節|章|段)|最後一段|\b(?:sub)*sections?\s*\d|§\s*\d|\bchapter\s*\d|(?<![代發列簡報])表\s*[0-9一二三四五六七八九十]|(?<![地試企意構藍])圖\s*[0-9一二三四五六七八九十]|\b(?:tables?|figures?|fig\.)\s*\d|附錄|\bappendix\b|\babstract\b|摘要|[A-Za-z][A-Za-z \-]{2,40}?\s*(?:那|這)一?(?:節|章|段)/i;
+const LATEX_EDIT_WORDS = /改成|改為|改寫|重寫|修改|修正|精簡|潤飾|調整|換成|替換|補充|補上|縮短|改短|擴寫|刪掉|刪除|刪去|拿掉|拿走|去掉|移除|砍掉|\b(?:rewrite|revise|edit|polish|shorten|replace|remove|delete|drop)\b/i;
+const NEW_PAPER_WORDS = /(?:寫|撰寫|起草|產出|生成|開|建立|做)\s*(?:一篇|一份|一個|個|篇|份)?\s*新的?\s*(?:latex\s*)?(?:論文|paper|專案|project)|新(?:的)?\s*(?:latex\s*)?(?:論文|專案)|從零|從頭(?:開始)?寫|(?:新增|增加|加上?|寫|撰寫)\s*(?:一|1|個)\s*(?:個)?\s*(?:新的?)?\s*(?:節|章|章節|小節)|\bnew (?:paper|project|section|chapter)\b|簡報|投影片|\bslides?\b|\bdeck\b|講稿/i;
+/** A note named as the thing to change, and a part of it (「調研筆記裡 RNN-T 那節」「再補一篇」). */
+const NOTE_PART_WORDS = /(?:這|那)一?(?:節|段|部分)|第\s*[0-9一二三四五六七八九十]+\s*(?:節|段)|[A-Za-z0-9][A-Za-z0-9 \-]{1,40}?\s*(?:那|這)一?(?:節|段|部分)|再(?:補|加)一(?:篇|段|節)/i;
+const NEW_NOTE_WORDS = /(?:新的|另一份|另外一份|再做一份|再寫一份|重新(?:做|寫|調研))\s*[^。！？\n]{0,10}筆記|重新調研|\b(?:a new|another) (?:note|survey)\b/i;
+const baseWords = (r: StoredRun) => (r.brief?.user_words ?? [r.request ?? ""]).slice(0, r.brief?.base ?? undefined).join("\n");
 const askText = (a: StoredAsk) => [a.title, a.intro, ...(a.questions ?? []).map((q) => q.prompt)].filter(Boolean).join("\n");
 const optionsOf = (a: StoredAsk) => (a.questions ?? []).flatMap((q) => (q.options ?? []).map((o) => ({ ...o, question: q.id ?? "" })));
 const userGuidance = (r: StoredRun) => (r.guidance ?? []).filter((g) => !g.system && g.text);
@@ -533,6 +545,53 @@ export const INVARIANTS: Invariant[] = [
       const words = (b.run.brief?.user_words ?? [b.run.request ?? ""]).slice(0, b.run.brief?.base ?? undefined).join("\n");
       if (!DECK_PART_WORDS.test(words) || NEW_DECK_WORDS.test(words)) return [];
       return rt.deck === "edit" ? [] : [{ message: `你的話指的是這份簡報的一部分，路由卻是新建（${rt.deck ?? "?"}）`, evidence: { words: clip(words, 200), route: rt } }];
+    },
+  },
+  {
+    id: "route.latex_part_edit", category: "route", scope: "run", severity: "critical",
+    title: "指定了 LaTeX 專案、話裡指的是論文的一部分（第三節、Table 2、某一段…）或要改它，且沒有要新論文／新章節：路由是修改這份論文",
+    reads: "inputs.project_id, brief.user_words (task turns), state.route.playbook / latex",
+    check: (b) => {
+      if (typeof b.run.inputs?.project_id !== "string" || b.run.goal_id) return [];
+      const rt = routeOf(b.run);
+      if (!rt) return [];
+      const words = baseWords(b.run);
+      if (!(LATEX_PART_WORDS.test(words) || LATEX_EDIT_WORDS.test(words)) || NEW_PAPER_WORDS.test(words)) return [];
+      return rt.playbook === "latex_section" && rt.latex === "edit" ? [] : [{ message: `你的話要改這份論文的一部分，路由卻是「${rt.playbook ?? "?"}」${rt.latex ? "" : "（新建）"}`, evidence: { words: clip(words, 200), route: rt, project_id: b.run.inputs.project_id } }];
+    },
+  },
+  {
+    id: "route.note_part_not_research", category: "route", scope: "run", severity: "high",
+    title: "指定了筆記、話裡只改其中一節／一段或補一篇：不重新做主題調研（不匯入一批論文）",
+    reads: "inputs.note_ids, brief.user_words (task turns), playbook",
+    check: (b) => {
+      const notes = b.run.inputs?.note_ids;
+      if (b.run.playbook !== "topic_research" || !Array.isArray(notes) || !notes.length || b.run.goal_id) return [];
+      const words = baseWords(b.run);
+      if (!(NOTE_PART_WORDS.test(words) || LATEX_EDIT_WORDS.test(words)) || NEW_NOTE_WORDS.test(words)) return [];
+      return [{ message: "你的話是修改既有筆記的一部分，卻重新做了一次主題調研", evidence: { words: clip(words, 200), note_ids: notes } }];
+    },
+  },
+  {
+    id: "latex.part_scope_kept", category: "deliverable", scope: "run", severity: "critical",
+    title: "只改論文指定部分的修改：其他內容一字不差、要刪的部分真的刪掉",
+    reads: "state.latex_edit_result.files[].kept / splices / next",
+    check: (b) => {
+      type F = { path?: string; kept?: string[]; next?: string; splices?: { start: number; end: number; after: string; before: string }[] };
+      const files = ((b.run.state?.latex_edit_result as { files?: F[] } | null | undefined)?.files ?? []);
+      const out: Hit[] = [];
+      for (const f of files) {
+        if (!f.kept || typeof f.next !== "string" || !f.splices) continue;
+        const sp = [...f.splices].sort((x, y) => x.start - y.start);
+        // The written file must be exactly: kept segment, replacement, kept segment, …
+        const want = f.kept.map((k, i) => `${k}${sp[i]?.after ?? ""}`).join("");
+        if (f.kept.length !== sp.length + 1 || want !== f.next) out.push({ message: `${f.path}：指定範圍以外的內容被改動了`, evidence: { path: f.path, segments: f.kept.length, splices: sp.length } });
+        // A removed passage may appear elsewhere in the kept text; more copies than that = it was not removed.
+        const next = f.next, kept = f.kept.join("\u0000");
+        const left = sp.filter((x) => !x.after && x.before.trim().length >= 12 && next.split(x.before).length > kept.split(x.before).length);
+        if (left.length) out.push({ message: `${f.path}：要刪掉的內容還在`, evidence: { path: f.path, removed: left.map((x) => clip(x.before, 80)) } });
+      }
+      return out;
     },
   },
   {
