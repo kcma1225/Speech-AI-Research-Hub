@@ -389,6 +389,24 @@ export function bodiesKept(deck: Deck, fixture: string): Grade {
   return grade("bodies_kept", !changed.length, changed.length ? `投影片本體被改：${changed.join("、")}` : "每頁投影片本體都和原本一樣");
 }
 
+/** A page-scoped removal: `removed` is gone and every other fixture page (title, body and notes) is exactly as it was, in order. */
+export function pagesKeptExcept(deck: Deck, fixture: string, removed: string): Grade {
+  const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+  const want = fixture.split(/^(?=## )/m).filter((p) => p.startsWith("## ")).map((p) => {
+    const nl = p.indexOf("\n");
+    const rest = nl < 0 ? "" : p.slice(nl + 1);
+    return { title: squash(p.slice(3, nl < 0 ? undefined : nl)), body: squash(rest.replace(/^:::+\s*\{?\.?notes\}?\s*\n[\s\S]*?^:::+\s*$/gm, "")), notes: squash(/^:::+\s*\{?\.?notes\}?\s*\n([\s\S]*?)^:::+\s*$/m.exec(rest)?.[1] ?? "") };
+  }).filter((p) => p.title !== removed);
+  const bad: string[] = [];
+  if (deck.slides.some((s) => squash(s.title) === removed)) bad.push(`「${removed}」還在`);
+  if (deck.slides.length !== want.length) bad.push(`頁數 ${deck.slides.length}／${want.length}`);
+  want.forEach((w, i) => {
+    const s = deck.slides[i];
+    if (!s || squash(s.title) !== w.title || squash(s.body) !== w.body || squash(s.notes) !== w.notes) bad.push(`p${i + 1}「${w.title}」被改`);
+  });
+  return grade("pages_kept_except", !bad.length, bad.length ? bad.slice(0, 6).join("、") : `刪掉「${removed}」，其他 ${want.length} 頁一字不差`);
+}
+
 export function slidesEnNotesZh(deck: Deck): Grade {
   const where: string[] = [];
   if (cjkCount(deck.title)) where.push("封面有中文");

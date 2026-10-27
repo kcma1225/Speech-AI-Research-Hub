@@ -253,6 +253,14 @@ export const TASKS: Task[] = [
     judge: "the speaker notes no longer say which paper, authors or venue a method comes from, otherwise keep their explanation; the slides themselves are unchanged",
   },
   {
+    id: "deck_remove_page_number", title: "「我要你把第三頁刪掉」：只刪那一頁（頁碼含封面），其他頁一字不改、不重寫（12e713d3）", tags: ["deck", "edit", "12e7", "quick"], mode: "api", study: "main",
+    request: "我要你把第三頁刪掉", deck: "en_cited", expect: { kind: "deck" },
+    grade: (o) => [
+      G.pagesKeptExcept(deckOf(o), EN_DECK_CITED, "Shallow fusion"),
+    ],
+    judge: "the slide titled Shallow fusion (page 3 counting the cover) is removed and every other slide and its speaker notes are unchanged",
+  },
+  {
     id: "deck_material_report", title: "附件的 deep research 結果做成給教授的報告簡報：以附件為主要材料、列出的部分各一頁、區分事實／推論／待驗證（301b6e1a）", tags: ["deck", "create", "material", "301b", "core"], mode: "api", study: "main",
     request: MATERIAL_REQUEST, upload: { name: MATERIAL_FILE, content: DEEP_RESEARCH_MD }, expect: { kind: "deck" }, timeoutMin: 120,
     grade: (o, c) => [

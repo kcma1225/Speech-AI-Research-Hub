@@ -550,6 +550,23 @@ export const INVARIANTS: Invariant[] = [
       return changed.length ? [{ message: `只改講稿，投影片本體卻改了：第 ${changed.join("、")} 頁`, evidence: { pages: changed } }] : [];
     },
   },
+  {
+    id: "deck.page_scope_kept", category: "deliverable", scope: "run", severity: "critical",
+    title: "只改指定頁面的修改：沒指定的頁面一字不差、要刪的頁面真的刪掉",
+    reads: "state.kept_pages, state.removed_pages, state.deck.body",
+    check: (b) => {
+      const st = (b.run.state ?? {}) as { kept_pages?: string[]; removed_pages?: string[]; deck?: { body?: string } };
+      if ((!st.kept_pages?.length && !st.removed_pages?.length) || !st.deck?.body) return [];
+      const pages = st.deck.body.split(/^(?=## )/m).filter((p) => p.startsWith("## ")).map((p) => p.trim());
+      const titleOf = (raw: string) => (/^## (.+)$/m.exec(raw)?.[1] ?? "").replace(/\s*\{[^}]*\}\s*$/, "").trim();
+      const out: { message: string; evidence: Record<string, unknown> }[] = [];
+      const changed = (st.kept_pages ?? []).filter((k) => !pages.includes(k.trim())).map(titleOf);
+      if (changed.length) out.push({ message: `沒有要求修改的頁面被改了或不見了：${changed.map((t) => `「${clip(t, 40)}」`).join("、")}`, evidence: { pages: changed } });
+      const left = (st.removed_pages ?? []).filter((t) => pages.some((p) => titleOf(p) === t));
+      if (left.length) out.push({ message: `要求刪掉的頁面還在：${left.map((t) => `「${clip(t, 40)}」`).join("、")}`, evidence: { pages: left } });
+      return out;
+    },
+  },
   // ------------------------------------------------------------ deliverable
   {
     id: "deliverable.consistent", category: "deliverable", scope: "run", severity: "critical",

@@ -9,7 +9,7 @@
  */
 import { createHash } from "node:crypto";
 import { CHECKS, parseSlides, runChecks } from "./checks.js";
-import { dataBlock, parseJson } from "./llm.js";
+import { dataBlock, parseJson, wordsBlock } from "./llm.js";
 import type { WorkflowEnv } from "./env.js";
 import { baseWords, userGuidance, type Brief } from "./brief.js";
 import { MATERIAL_REF_RE } from "./material.js";
@@ -350,12 +350,57 @@ export function detectPerItemFields(text: string): Requirement["params"] | null 
   return { item_kind: kind, fields: fields.slice(0, 8).map((f) => fieldTerm(f)) };
 }
 
-/** 「刪掉第 3 頁」「拿掉「卡住」這頁」「remove the slide "Blocked"」. */
+const ZH_DIGIT: Record<string, number> = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+/** 「9」「九」「十二」「二十」 → the number (1–99), else null. */
+export function pageNumber(s: string): number | null {
+  if (/^\d{1,2}$/.test(s)) return +s || null;
+  const m = /^([一二兩三四五六七八九]?)(十?)([一二三四五六七八九]?)$/.exec(s);
+  if (!m || !s) return null;
+  if (!m[2]) return m[1] && !m[3] ? ZH_DIGIT[m[1]]! : null;
+  return (m[1] ? ZH_DIGIT[m[1]]! : 1) * 10 + (m[3] ? ZH_DIGIT[m[3]]! : 0);
+}
+
+const NUM = "(?:\\d{1,2}|[一二兩三四五六七八九十]{1,3})";
+/** 「第九頁」「第 3、5 頁」「第3到5頁」「page 9」「slides 3 and 4」 (as the user counts: the player's page numbers). */
+export const PAGE_REF_RE = new RegExp(`第\\s*${NUM}(?:\\s*(?:[、,，和跟與及]|到|至|~|-|–)\\s*(?:第\\s*)?${NUM})*\\s*[頁張]|\\b(?:pages?|slides?)\\s+\\d{1,2}(?:\\s*(?:,|and|&|to|-|–)\\s*\\d{1,2})*\\b`, "gi");
+
+/** The page numbers a reference names (ranges expanded). */
+export function pageRefs(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(PAGE_REF_RE)) {
+    const parts = [...m[0].matchAll(new RegExp(`(到|至|~|-|–|\\bto\\b)?\\s*(?:第\\s*)?(${NUM})`, "gi"))];
+    for (const p of parts) {
+      const n = pageNumber(p[2]!);
+      if (!n) continue;
+      const prev = out.at(-1);
+      if (p[1] && prev && n > prev && n - prev <= 30) for (let k = prev + 1; k <= n; k++) out.push(k);
+      else out.push(n);
+    }
+  }
+  return [...new Set(out)];
+}
+
+const RM = "(?:刪掉|刪除|刪去|刪了|拿掉|拿走|去掉|移除|不要了|整頁不要|不需要了)";
+/** Between a page reference and its removal verb: a quoted title, 「這一頁」, adverbs — never 「的」 (「第九頁的圖刪掉」 removes a part). */
+const GAP = `((?:\\s*(?:[「『"][^」』"]{1,80}[」』"]|這一?頁|那一?頁|整頁|整個|完整|全部|直接|也|都|給我|請|就|先|要)\\s*)*)`;
+
+/** 「刪掉第 3 頁」「把第九頁刪掉」「拿掉「卡住」這頁」「第九頁「X」完整刪除」「remove the slide "Blocked"」「delete slide 9」. */
 export function detectExclude(text: string): Requirement["params"] | null {
-  const pages = [...text.matchAll(/(?:刪掉|刪除|拿掉|去掉|移除|不要)\s*第\s*(\d{1,2})\s*頁/g)].map((m) => +m[1]!);
-  const titles = [...text.matchAll(/(?:刪掉|刪除|拿掉|去掉|移除|不要)\s*[「『"]([^」』"]{1,60})[」』"](?:\s*(?:這|那)?一?頁)?/g), ...text.matchAll(/[「『"]([^」』"]{1,60})[」』"]\s*(?:這|那)?一?頁\s*(?:要|請)?(?:刪掉|刪除|拿掉|去掉|移除)/g), ...text.matchAll(/\b(?:remove|delete|drop)\s+(?:the\s+)?(?:slide|page|section)\s+["“']([^"”']{1,60})["”']/gi)].map((m) => m[1]!.trim());
-  if (!pages.length && !titles.length) return null;
-  return { scope: "page", ...(pages.length ? { pages } : {}), terms: titles.map((t) => ({ name: t })) };
+  const pages: number[] = [];
+  const titles: string[] = [];
+  for (const m of text.matchAll(new RegExp(`(?:刪掉|刪除|拿掉|去掉|移除|不要)\\s*(${PAGE_REF_RE.source})`, "gi"))) pages.push(...pageRefs(m[1]!));
+  for (const m of text.matchAll(new RegExp(`(${PAGE_REF_RE.source})${GAP}\\s*${RM}`, "gi"))) {
+    // A page named by number and quoted title: the title decides (the user's count may or may not include the cover).
+    const quoted = /[「『"]([^」』"]{1,80})[」』"]/.exec(m[2] ?? "")?.[1]?.trim();
+    if (quoted) titles.push(quoted);
+    else pages.push(...pageRefs(m[1]!));
+  }
+  for (const m of text.matchAll(/\b(?:remove|delete|drop|cut)\s+(?:the\s+)?((?:pages?|slides?)\s+\d{1,2}(?:\s*(?:,|and|&|to|-|–)\s*\d{1,2})*)\b|\b((?:page|slide)\s+\d{1,2})\s+(?:should\s+be\s+|needs\s+to\s+be\s+)?(?:removed|deleted|dropped)\b/gi)) pages.push(...pageRefs(m[1] ?? m[2]!));
+  titles.push(...[...text.matchAll(/(?:刪掉|刪除|拿掉|去掉|移除|不要)\s*[「『"]([^」』"]{1,60})[」』"](?:\s*(?:這|那)?一?頁)?/g), ...text.matchAll(/[「『"]([^」』"]{1,60})[」』"]\s*(?:這|那)?一?頁\s*(?:要|請)?(?:刪掉|刪除|拿掉|去掉|移除)/g), ...text.matchAll(/\b(?:remove|delete|drop)\s+(?:the\s+)?(?:slide|page|section)\s+["“']([^"”']{1,60})["”']/gi)].map((m) => m[1]!.trim()));
+  const uniq = [...new Set(pages)];
+  const names = [...new Set(titles)];
+  if (!uniq.length && !names.length) return null;
+  return { scope: "page", ...(uniq.length ? { pages: uniq } : {}), terms: names.map((t) => ({ name: t })) };
 }
 
 // ---------------------------------------------------------------- listed parts, distinctions, material
@@ -990,14 +1035,16 @@ export function messageLanguage(words: string[]): Omit<Requirement, "id">[] {
   return [{ type: "language", text: "成果用 English（你用英文提出這個要求）", params: { language: "en" }, source: "request", ...(quote ? { quote } : {}) }];
 }
 
+const WRAPPER_REASON_RE = /標示為資料|是資料|資料區塊|不是指令|非指令|依指示忽略|一律忽略|data block|marked as data|not an? instruction|prompt injection/i;
+
 async function extractWithModel(env: WorkflowEnv, ctx: Ctx): Promise<{ list: Omit<Requirement, "id">[]; mapped: Set<number>; dropped: { clause: string; reason: string }[] }> {
   const clauses = ctx.clauses ?? [];
   const user = [
     `成果類型：${ctx.kind === "deck" ? "簡報" : ctx.kind === "latex" ? "LaTeX 論文" : "筆記／文件"}`,
-    dataBlock("user_words", ctx.request.slice(0, 4000)),
-    ctx.guidance.length ? dataBlock("guidance", ctx.guidance.join("\n").slice(0, 3000)) : "",
-    clauses.length ? dataBlock("clauses", clauses.map((c, i) => `${i + 1}. ${c}`).join("\n")) : "",
-    ctx.recent.length ? dataBlock("recent_turns", ctx.recent.map((t) => `- ${t}`).join("\n").slice(0, 5000)) : "",
+    wordsBlock("request", ctx.request.slice(0, 4000)),
+    ctx.guidance.length ? wordsBlock("guidance", ctx.guidance.join("\n").slice(0, 3000)) : "",
+    clauses.length ? wordsBlock("clauses", clauses.map((c, i) => `${i + 1}. ${c}`).join("\n")) : "",
+    ctx.recent.length ? wordsBlock("recent_turns", ctx.recent.map((t) => `- ${t}`).join("\n").slice(0, 5000)) : "",
     ctx.standing.length ? `這份成果先前確認過的設定（沒有被這次的要求推翻就沿用，不必重複列出）：${ctx.standing.map((s) => s.text).join("；")}` : "",
   ].filter(Boolean).join("\n\n");
   // One call, no retry: the deterministic detection already covers language, page count, per-item fields and removals,
@@ -1026,7 +1073,8 @@ async function extractWithModel(env: WorkflowEnv, ctx: Ctx): Promise<{ list: Omi
     .map((r) => anchorTerms(r, words));
   const dropped = (Array.isArray(v?.dropped) ? v!.dropped : [])
     .map((d) => ({ n: typeof (d as { clause?: unknown })?.clause === "number" ? ((d as { clause: number }).clause - 1) : -1, reason: str((d as { reason?: unknown })?.reason, 120) }))
-    .filter((d) => d.n >= 0 && d.n < clauses.length && d.reason && !mapped.has(d.n))
+    // A clause set aside for being 「in a data block / not an instruction」 is the user's ask all the same: not a reason.
+    .filter((d) => d.n >= 0 && d.n < clauses.length && d.reason && !mapped.has(d.n) && !WRAPPER_REASON_RE.test(d.reason))
     .map((d) => ({ clause: clauses[d.n]!, reason: d.reason }));
   return { list: out, mapped, dropped };
 }

@@ -297,6 +297,46 @@ run("workflow requirements (probe suite)", () => {
     expect(await qmdOf(id)).not.toMatch(/^## 卡住/m);
   });
 
+  it("3b. 「我要你把第三頁刪掉」 (production 12e713d3): page 3 counting the cover is removed; no planner, writer or screenshot pass; the other pages byte for byte", async () => {
+    const id = await newDeck("熱詞週報（刪頁）", ORIGINAL);
+    const before = await qmdOf(id);
+    const pages = (q: string) => q.replace(/^---\n[\s\S]*?\n---\n/, "").split(/^(?=## )/m).filter((p) => p.startsWith("## ")).map((p) => p.trim());
+    // The extraction model sets the user's own words aside as 「data」 (what it did in production): not a reason.
+    m.set("requirements", JSON.stringify({ requirements: [], dropped: [{ clause: 1, reason: "位於使用者明確標示為資料、不是指令的區塊中，依指示忽略。" }] }));
+    const { planned, status, run: r } = await planAndRun("我要你把第三頁刪掉", { inputs: { deck_id: id } });
+    expect(planned.plan!.outline!.map((o) => o.title)).toEqual(["問題定義", "卡住"]);
+    expect(planned.plan!.requirements!.find((x) => x.type === "exclude")).toBeTruthy();
+    expect(planned.plan!.notes ?? "").not.toContain("依指示忽略");
+    expect(planned.state.kept_pages).toEqual([pages(before)[0], pages(before)[2]]);
+    expect(planned.state.removed_pages).toEqual(["方法"]);
+    expect(m.count("outline")).toBe(0);
+    expect(m.count("write_slides")).toBe(0);
+    const steps = await getSteps(t.db, r.id);
+    expect(steps.some((s) => s.key === "visual_qa")).toBe(false);
+    expect(steps.filter((s) => s.key.startsWith("write_")).every((s) => s.title.startsWith("沿用"))).toBe(true);
+    expect(status, JSON.stringify(r.report?.issues)).toBe("done");
+    const after = pages(await qmdOf(id));
+    expect(after).toEqual([pages(before)[0], pages(before)[2]]);
+    const { checkRun } = await import("../src/workflows/invariants.js");
+    expect(checkRun({ run: (await getRun(t.db, r.id))! } as never, ["deck.page_scope_kept"])).toEqual([]);
+  });
+
+  it("3c. 「把第二頁的標題改成「研究問題」」: only that page is written and screenshot-checked; the others stay byte for byte", async () => {
+    const id = await newDeck("熱詞週報（改一頁）", ORIGINAL);
+    const pages = (q: string) => q.replace(/^---\n[\s\S]*?\n---\n/, "").split(/^(?=## )/m).filter((p) => p.startsWith("## ")).map((p) => p.trim());
+    const before = pages(await qmdOf(id));
+    // The planner retitles a page nobody named too: the kept page keeps its own title.
+    m.set("outline", JSON.stringify({ pages: [{ title: "研究問題", points: ["罕見詞"], from: 1 }, { title: "方法（更新）", points: ["淺層融合"], from: 2 }, { title: "卡住", points: ["資料"], from: 3 }] }));
+    const { planned, status, run: r } = await planAndRun("把第二頁的標題改成「研究問題」", { inputs: { deck_id: id } });
+    expect(planned.plan!.outline!.map((o) => o.title)).toEqual(["研究問題", "方法", "卡住"]);
+    expect(planned.state.kept_pages).toEqual([before[1], before[2]]);
+    expect(m.count("write_slides")).toBe(1);
+    expect(status, JSON.stringify(r.report?.issues)).toBe("done");
+    const after = pages(await qmdOf(id));
+    expect(after[0]).toMatch(/^## 研究問題/);
+    expect(after.slice(1)).toEqual(before.slice(1));
+  });
+
   it("4. an exact page count on a new deck becomes a checked requirement", async () => {
     m.set("outline", JSON.stringify({ pages: ["問題定義", "方法", "結果", "下一步"].map((title) => ({ title, points: ["依資料"] })) }));
     const { planned, status, run: r } = await planAndRun("幫我做這個研究的進度報告簡報，做成 4 頁", { playbook: "slides", inputs: { mode: "progress" } });

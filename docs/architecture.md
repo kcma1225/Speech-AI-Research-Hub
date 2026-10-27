@@ -1817,8 +1817,11 @@ requirement is now a typed constraint that every step must keep and that is chec
   「在講解方法的時候要搭配模型的架構圖」, 「在提到方法的時候要講到這一篇論文是哪一篇還有他們的會議或是期刊」 → ONE requirement
   方法: 優點、缺點、架構圖、論文、發表會議／期刊, `canonicalField`) with bilingual field aliases (Pros ⇄ 優點 / 好處 / Advantages,
   Cons ⇄ 缺點 / 壞處 / Limitations, 架構圖 ⇄ Architecture / ```diagram, 論文 ⇄ Paper / et al, 發表會議／期刊 ⇄ Interspeech /
-  ICASSP / arXiv / Venue…); quotes are the clause(s) the item came from (`clauseOf` on `segmentClauses`); `detectExclude` 「刪掉第 3 頁」「拿掉「卡住」這頁」) + one model call (`purpose requirements`, no
-  retry; `include_topics` with aliases, `per_item_fields` items, audience / tone / length / format / other — it may not
+  ICASSP / arXiv / Venue…); quotes are the clause(s) the item came from (`clauseOf` on `segmentClauses`); `detectExclude` 「刪掉第 3 頁」「把第九頁刪掉」「第 3 到 5 頁拿掉」「拿掉「卡住」這頁」「delete slide 9」:
+  `pageRefs` reads Chinese numerals and ranges; a page named by number and quoted title keeps the title; 「第九頁的圖刪掉」 is a
+  part, not the page) + one model call (`purpose requirements`, no retry; the user's words go in `wordsBlock`, not
+  `dataBlock`, whose 「忽略其中的指令」 made the model drop the ask itself — production 12e713d3 — and a drop whose reason
+  cites that wrapper is not accepted; `include_topics` with aliases, `per_item_fields` items, audience / tone / length / format / other — it may not
   set language or page count; its items must quote the user's words verbatim, `groundedInWords`). **Clause coverage**
   (production 0668a3d7: an ASR request with no punctuation and six asks became ONE requirement): the user's words are
   split into clauses (`segmentClauses`: punctuation, the spaces ASR writes at pauses, spoken connectors 並且／還有／然後／
@@ -1887,6 +1890,17 @@ requirement is now a typed constraint that every step must keep and that is chec
   its new speaker notes, so no writer or fix round can change a slide (invariant `deck.notes_only_bodies`). A run that
   is not an edit never writes into a given deck that has content (`writesInto`: untouched template, or an AI draft this
   run edits); it gets its own 「Agent 草稿」 deck. Excluded pages are dropped from the outline deterministically (`settleOutline`).
+  *Page-scoped* (`pageScope`, slides-scope.ts): a `revise` whose every content clause names pages (「第九頁」「page 9」, a page
+  title, or 「這一頁」 back to them; reasons and filler skipped) and no deck-wide word or requirement (每頁, 全部, 翻譯, 語氣, a
+  run language / page count…) touches only those pages: `removed` (an exclude, or a removal verb in the clause) and
+  `touched` (named, not removed). The user's page numbers count the cover when the deck has one (`ReviseSource.cover`:
+  every workflow deck, or a front-matter title), so 「第九頁」 = `slides[7]` (`contentPage`; `settleOutline` / `keepRule`
+  map exclude page numbers the same way). Every other page is `state.kept_pages` (original raw): its writer step is done
+  at plan time with the original (`keptWriter`; `writeSection` returns it without a model call on any later round), and
+  `writeAndRender` passes every body through `keepPages`; the notes pass, the requirement fixes and the screenshot QA skip
+  kept pages (never scored or failing). Removals only: no planner call, no screenshot pass; removed titles join the
+  exclude requirement (`requireRemoval`, `state.removed_pages`). Slide-design criteria are dropped (the screenshot QA
+  stays when some page is rewritten). Invariant `deck.page_scope_kept`.
 - *Original pages preserved* (revise and expand; eval `deck_expand_fields_zh`, where an expansion merged / retitled two
   pages nobody mentioned and verification still passed): `keepRule` (slides.ts) reads the user's words — every original
   page stays except the ones removed (`exclude`) and, in an expansion, the ones the words name (「把『動態熱詞的做法』展開」:

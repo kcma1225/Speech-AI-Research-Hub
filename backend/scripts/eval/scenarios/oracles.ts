@@ -38,6 +38,13 @@ export function scenarioFindings(s: Scenario, b: RunBundle, ctx: { studyId: stri
     if (ctx.deckId && got !== ctx.deckId) out.push(f(b, "scenario.deck_resolved", "critical", got ? `改錯簡報（${got.slice(0, 8)}，應為 ${ctx.deckId.slice(0, 8)}）` : "要修改的簡報沒有被找到（inputs 沒有 deck_id）", { expected: ctx.deckId, got: got ?? null, entry: s.entry, history: s.history, anaphora: s.anaphora }));
     else if (rt && rt.deck !== "edit") out.push(f(b, "scenario.edit_route", "critical", `修改既有簡報，路由卻是 ${rt.deck ?? rt.playbook}`, { route: rt }));
     if (s.expect.notesOnly && rt?.deck === "edit" && (rt as { scope?: string }).scope !== "notes") out.push(f(b, "scenario.notes_only", "critical", "只要改講稿，路由卻允許改投影片本體", { route: rt }));
+    if (s.expect.removePages && rt?.deck === "edit") {
+      const st = (run.state ?? {}) as { kept_pages?: string[]; removed_pages?: string[]; original_slides?: string[] };
+      const removed = st.removed_pages?.length ?? 0;
+      const kept = st.kept_pages?.length ?? 0;
+      const all = st.original_slides?.length ?? 0;
+      if (removed !== s.expect.removePages || (all && kept !== all - removed)) out.push(f(b, "scenario.page_scope", "critical", `刪 ${s.expect.removePages} 頁：計畫刪 ${removed} 頁、原樣保留 ${kept}/${all - removed} 頁（其他頁不該被重寫）`, { removed: st.removed_pages ?? [], kept, all }));
+    }
     if (s.expect.editKind && rt?.edit && rt.edit !== s.expect.editKind) out.push(f(b, "scenario.edit_kind", "high", `修改種類應為 ${s.expect.editKind}，路由是 ${rt.edit}`, { expected: s.expect.editKind, route: rt }));
   }
   // A request for a NEW artifact made on a deck page (or after an earlier deck) is not an edit of that deck.

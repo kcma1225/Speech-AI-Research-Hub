@@ -16,7 +16,7 @@ const DECK = [
   raw("Idea card", ["把熱詞清單做成字首樹，在 RNN-T 解碼時加分"]),
   raw("下週與要問", ["實作字首樹加分的 baseline", "想問老師：罕見詞 recall 要用哪一份測試集"]),
 ];
-const src = { deck: { id: "d", title: "熱詞", kind: "progress" as const, paper_id: null }, slides: DECK.map((r) => ({ title: /^## (.+)$/m.exec(r)![1]!, raw: r })) };
+const src = { deck: { id: "d", title: "熱詞", kind: "progress" as const, paper_id: null }, slides: DECK.map((r) => ({ title: /^## (.+)$/m.exec(r)![1]!, raw: r })), cover: true };
 const page = (title: string, points: string[] = ["重點"], from?: number): SlideOutline => ({ n: 0, title, points, ...(from ? { from } : {}) });
 const numbered = (o: SlideOutline[]) => o.map((p, i) => ({ ...p, n: i + 1 }));
 const fields: Requirement = { id: "r1", type: "per_item_fields", text: "每個方法一頁，每頁都要有架構、優點、缺點", source: "request", params: { item_kind: "方法", fields: [{ name: "架構" }, { name: "優點" }, { name: "缺點" }] } } as Requirement;
