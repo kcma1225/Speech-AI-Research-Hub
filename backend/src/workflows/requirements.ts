@@ -416,6 +416,9 @@ const PROFESSOR_RE = /(?:向|給|跟|對|像)?(?:指導)?教授(?:報告|看|簡
 const SUBJECT_CLAUSE_RE = /^(?:(?:關於|有關|針對)\s*)?(?:〈[^〉]{2,80}〉|「[^」]{2,80}」)\s*(?:(?:關於|有關|針對)?\s*的?(?:這個|這|那個)?(?:部分|部份|主題|研究))?$|^(?:關於|有關|針對)?\s*(?:這|那)(?:個|一)?(?:部分|部份|主題|題目|研究)$/;
 
 /** Deterministic requirements of one text (the request, a guidance line, or an edited requirement). */
+const NOTES_WORD_RE = /講稿|逐字稿|口稿|講者備註|備註|speaker notes?|\bnotes\b|\bscript\b/i;
+const NOTES_ACTION_RE = /拿掉|拿走|去掉|刪掉|刪除|移除|不要|別再|加上|加入|補上|改成|改為|改寫|重寫|精簡|縮短|\bremove\b|\bdelete\b|\bdrop\b|\btake\b[^.\n]{0,60}\bout\b|get rid of|\bno longer\b|\bdon'?t\b|\badd\b|\brewrite\b|\bshorten\b/i;
+
 export function detectRequirements(text: string, opts: { pages?: unknown; kind?: ArtifactKind } = {}): Omit<Requirement, "id" | "source">[] {
   const out: Omit<Requirement, "id" | "source">[] = [];
   const q = (re: RegExp) => { const c = clauseOf(text, re); return c ? { quote: c } : {}; };
@@ -457,6 +460,10 @@ export function detectRequirements(text: string, opts: { pages?: unknown; kind?:
   if (opts.kind !== "doc" && opts.kind !== "latex") {
     const edits = cl.filter((c) => /加(?:一|兩|三|\d)\s*頁|新增(?:一|\d)?\s*頁|add (?:a|one|\d+) (?:new )?(?:slide|page)|[」』"]\s*(?:那|這)?頁\s*展開|展開\s*[「『"]|\bexpand the\b/i.test(c) && !out.some((r) => (r.quote ?? "").includes(c)));
     if (edits.length) out.push({ type: "other", text: `照你說的修改：${edits.join("；").slice(0, 120)}`, quote: edits.join(" ").slice(0, 200) });
+    // 「從講稿中拿掉引用論文的部分」「take the citations out of the speaker notes」: an instruction on the speaker notes is a
+    // checked requirement on them (scenario n80: it had none, so nothing verified the notes changed as asked).
+    const notesAsks = cl.filter((c) => NOTES_WORD_RE.test(c) && NOTES_ACTION_RE.test(c) && !out.some((r) => (r.quote ?? "").includes(c)) && !detectPartLanguages(c).length && !detectLanguage(c));
+    if (notesAsks.length) out.push({ type: "other", text: `講稿照你說的修改：${notesAsks.join("；").slice(0, 120)}`, params: { part: "notes" }, quote: notesAsks.join(" ").slice(0, 300) });
   }
   // 「每個方法一頁」「one slide per method」
   const perPage = cl.filter((c) => /(?:每|各)(?:一)?(?:個|種|篇)\s*[^\s，。,]{1,8}?\s*(?:都)?(?:要)?(?:獨立)?(?:一頁|各一頁|一張)|one (?:slide|page) (?:per|for each)/i.test(c));

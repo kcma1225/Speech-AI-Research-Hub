@@ -29,6 +29,8 @@
 | `route.no_new_artifact_option` | 路由 | critical | 修改既有成果（route.deck=edit／edit／plan.edit_kind）的卡片不能有「新建成果」或「改做別種成果」的選項（「仍做簡報：用研究的文獻庫…」、「改做筆記」、value `topic`／`switch`） | state.route、asks 的選項 | e6d552fc：講稿改中文，卡片給「仍做簡報（新主題簡報）／改做筆記」 |
 | `route.wording` | 路由 | high（只在紀錄 = medium） | 修改時卡片、問題、通知、紀錄、計畫、標題不能用「從 0 到 1／建立簡報／新簡報／主題簡報」；寫到「Agent 草稿」副本的計畫寫入是設計，不算 | asks、question、plan_question、log、notice、plan | e6d552fc：「「從 0 到 1 建立簡報」需要的資料不足」 |
 | `route.plan_matches` | 路由 | high | 修改路由的計畫不能寫一份新簡報（「Agent 草稿」副本除外）；新建路由不能覆蓋；plan.edit_kind = route.edit | route、plan.writes、plan.edit_kind | — |
+| `route.deck_part_edit` | 路由 | critical | 指定了簡報（inputs.deck_id）、使用者的話指的是它的一部分（講稿、某一頁、標題、圖表…）而且沒有要新簡報：路由必須是修改這份簡報（不論用了什麼動詞） | inputs.deck_id、原話、route.deck | 79ab 200851b8：「從講稿中拿掉引用論文的部分」被當成新的進度報告，覆寫了簡報 |
+| `deck.notes_only_bodies` | 交付物 | critical | 只改講稿的修改（state.notes_only）：每一頁的投影片本體和原本一字不差，頁數也一樣 | state.notes_only、state.original_slides、state.deck.body | 79ab 012599ad：講稿改中文，第 2 頁文字、第 8 頁的圖被改 |
 | `deliverable.consistent` | 交付物 | critical | Brief 的交付物 = 路由的種類 = 計畫寫入 = 實際成果（目標的階段 run 不比成果） | brief.deliverable、route.kind、plan.writes、artifacts | 50b49d80 類（簡報變筆記） |
 | `req.clause_coverage` | 要求 | high（主題句 = medium） | 使用者這次每一句有內容的話，都對應到一條要求（引用它、或型別參數在講它），或被明確列為不採用（`state.requirements_dropped`）；只說「幫我做一個簡報／幫我改」的核心句不算；新建成果的主題句由主題帶著 | 這個任務的原話、要求的 quote、dropped、主題欄位 | 0668a3d7：6 句要求只抓到語言 1 句 |
 | `req.contradicts_newest` | 要求 | critical | 要求不能違反使用者最新的話：語言分「投影片／講稿／整份」，越新的話越優先；頁數 | 原話（新到舊）、language 要求的 part、page_count | e6d552fc：講稿要中文，要求是整份英文 |

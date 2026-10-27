@@ -73,7 +73,9 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
   const words = clipWords(input.userWords?.length ? input.userWords : [input.request]);
   const paraphrase = input.userWords?.length ? input.request : null;
   const said = words.join("\n");
-  const aboutDeck = /簡報|投影片|slide|deck|presentation/i.test(`${said}\n${paraphrase ?? ""}`);
+  // Speaker notes / 講稿 are part of a deck (scenario n81: 「Take the paper citations out of the speaker notes」 on a deck
+  // page lost the deck and became a note).
+  const aboutDeck = /簡報|投影片|slide|deck|presentation|講稿|講者備註|逐字稿|口稿|speaker notes?/i.test(`${said}\n${paraphrase ?? ""}`);
   // The work object (scenario matrix: 「剛剛那個簡報」「同一個簡報」「繼續」 with no deck page open lost the deck): the page's
   // deck when the words are about a deck or edit one and do not ask for a NEW deck; else the deck the conversation's last
   // workflow wrote when the words point at an existing one or edit one. Notes likewise.
@@ -88,7 +90,7 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
       (inputs as Record<string, unknown>).deck_from = "conversation";
     }
   }
-  if (!inputs.note_ids?.length && /筆記|note/i.test(said) && !/簡報|投影片|slide|deck/i.test(said) && POINTS_AT_RE.test(said) && editAsked(said, [])) {
+  if (!inputs.note_ids?.length && /筆記|note/i.test(said) && !/簡報|投影片|slide|deck|speaker notes?/i.test(said) && POINTS_AT_RE.test(said) && editAsked(said, [])) {
     const n = (typeof ctx.noteId === "string" ? ctx.noteId : null) ?? (await conversationArtifact(client, input.conversationId, user.id, "note"));
     if (n) inputs.note_ids = [n];
   }

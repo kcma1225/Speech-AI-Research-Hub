@@ -58,7 +58,19 @@ export function deckModeOf(words: string, opts: { inputMode?: string; explicitPa
 // ---------------------------------------------------------------- editing an existing deck
 
 /** 「把這份簡報改成英文」、「精簡」、「重排」… — an edit of the deck itself, not a new deck. */
-export const REVISE_RE = /翻譯|translate|改成|改為|轉成|換成|修改|改寫|重寫|精簡|潤飾|潤稿|調整|英文版|中文版|英文|rewrite|revise|edit|polish|shorten|condense|\bchange\b|\bconvert|\bswitch\b|\b(?:to|into) (?:english|chinese|mandarin)\b/i;
+export const REVISE_RE = /翻譯|translate|改成|改為|轉成|換成|修改|改寫|重寫|精簡|潤飾|潤稿|調整|英文版|中文版|英文|rewrite|revise|edit|polish|shorten|condense|\bchange\b|\bconvert|\bswitch\b|\b(?:to|into) (?:english|chinese|mandarin)\b|拿掉|拿走|去掉|刪掉|刪除|刪去|移除|不要再|\bremove\b|\bdelete\b|\bdrop\b|get rid of|\btake\b[^.\n]{0,60}\bout\b/i;
+/**
+ * Words that point at a part of a deck (its notes, a page, a title, a figure…). With a deck given and no new deck asked
+ * they make the request an edit of that deck whatever the verb (production 79ab: 「從講稿中拿掉引用論文的部分」 had no
+ * edit verb the router knew and became a new progress report written over the deck).
+ */
+export const DECK_PART_RE = /講稿|逐字稿|口稿|講者備註|備註|這(?:一)?頁|那(?:一)?頁|每(?:一)?頁|第\s*[0-9一二三四五六七八九十]+\s*頁|投影片|標題|圖表|這份簡報|這個簡報|簡報裡|\bspeaker notes?\b|\bnotes\b|\bslides?\b|\bthis (?:deck|presentation)\b|\bpage \d+\b|\btitle\b/i;
+/** The speaker notes are what the words ask to change. */
+const NOTES_RE = /講稿|逐字稿|口稿|講者備註|備註|\bspeaker notes?\b|\bnotes\b|\bscript\b/i;
+/** …and the slides themselves too (their text, titles, figures, layout, pages). */
+const SLIDE_BODY_RE = /投影片(?!的?講稿|的?備註)|頁面?(?:上|的內容|的文字)|標題|圖表?|表格|版面|排版|字體|字太|bullet|條列|加(?:上|一)?頁|新增.{0,4}頁|刪掉第|\bslide (?:text|content|titles?|body)\b|\btitles?\b|\blayout\b|\bcharts?\b|\bfigures?\b|\bdiagrams?\b|\badd (?:a |\d+ )?(?:slides?|pages?)\b/i;
+/** 「把講稿改成中文」「從講稿中拿掉引用」: only the speaker notes change; every slide body stays as it is (slides.ts enforces it). */
+export const notesOnlyAsked = (text: string) => NOTES_RE.test(text) && !SLIDE_BODY_RE.test(text);
 /** 「再詳細一點」「focus 在…」「擴充成 20 頁」「每個方法要有 Pros/Cons」: a deeper / restructured version (new outline). */
 export const EXPAND_RE = /詳細|細一點|不夠細|更細|太淺|擴充|擴寫|展開|加深|深入|聚焦|重點放在|主軸|重新規劃|重新組織|重組|focus|expand|elaborate|in[- ]depth|more detail|detailed|deeper|restructure|reorgani[sz]e|rework|每(?:一)?(?:個|種)[^，。\n]{0,10}(?:都)?要有/i;
 /** Translation / language-only passes stay revisions even when they say "detailed" in passing. */
@@ -155,6 +167,8 @@ export type Route = {
   deck?: DeckRoute;
   /** Slides `edit`: revise (same pages) or expand (new outline). */
   edit?: EditKind;
+  /** Slides `edit`: what may change — `notes` = only the speaker notes (the slide bodies stay byte for byte). */
+  scope?: "notes";
   /** One run per paper (the user's own words asked for it). */
   batch: boolean;
   /** The router could not decide alone: ask ONE card (engine planPhase). */
@@ -255,7 +269,9 @@ export function route(input: RouteInput): Route {
     kind = briefKindOf(named);
     reasons.push(`${namedWords ? "你的話" : "助理的任務說明"}要的是${DELIVERABLE_LABEL[named]}`);
   } else if (!hint && typeof inp.project_id === "string") kind = "latex";
-  else if (!hint && typeof inp.deck_id === "string") kind = "deck";
+  // A given deck and words about one of its parts (講稿、speaker notes、某一頁…): that deck, whatever playbook a keyword
+  // suggested (scenario n81: 「speaker notes」 made the hint a note playbook).
+  else if (typeof inp.deck_id === "string" && (!hint || DECK_PART_RE.test(text))) kind = "deck";
   else kind = playbookKind(hint ?? detectPlaybook(text || input.paraphrase || "", inp as Record<string, unknown>));
   const d = named && sameDeliverable(briefKindOf(named), kind) ? named : null;
   // 2. The playbook: the user's pinned choice, else the hint when it delivers the kind and fits, else the kind's producer.
@@ -297,10 +313,12 @@ export function route(input: RouteInput): Route {
   // 3. Slides: the given deck itself, or which new deck.
   if (playbook === "slides") {
     const deckGiven = typeof inp.deck_id === "string" && (ready?.deckPages ?? 1) > 0;
-    if (deckGiven && !inp.mode && editAsked(text, input.requirements ?? []) && !newDeckAsked(text)) {
+    if (deckGiven && !inp.mode && (editAsked(text, input.requirements ?? []) || DECK_PART_RE.test(text)) && !newDeckAsked(text)) {
       out.deck = "edit";
-      out.edit = editKindOf(text, (input.requirements ?? []).filter((r) => r.source !== "standing"), ready?.deckPages ?? 0);
-      reasons.push(`修改這份簡報（${out.edit === "expand" ? "擴充：重新規劃大綱" : "修訂：頁數與順序照舊"}）`);
+      const notes = notesOnlyAsked(text);
+      out.edit = notes ? "revise" : editKindOf(text, (input.requirements ?? []).filter((r) => r.source !== "standing"), ready?.deckPages ?? 0);
+      if (notes) out.scope = "notes";
+      reasons.push(`修改這份簡報（${notes ? "只改講稿：投影片本體不動" : out.edit === "expand" ? "擴充：重新規劃大綱" : "修訂：頁數與順序照舊"}）`);
     } else {
       const explicit = !!input.explicitPaper || paperNamed || /\b\d{4}\.\d{4,5}\b|\b10\.\d{4,9}\//.test(text);
       out.deck = deckModeOf(text, { inputMode: typeof inp.mode === "string" ? inp.mode : undefined, explicitPaper: explicit, progressAsked: PROGRESS_RE.test(text), material: hasMaterial(inp) });

@@ -152,7 +152,6 @@ run("slides routes", () => {
     // Switch active back to v1, delete rules.
     expect((await write("PATCH", `/api/slides/${deck.id}/versions/${deck.versionId}`, member.cookie, { active: true })).statusCode).toBe(200);
     expect((await write("PATCH", `/api/slides/${deck.id}/versions/${v4.versionId}`, member.cookie, { active: true })).statusCode).toBe(404);
-    expect((await write("DELETE", `/api/slides/${deck.id}/versions/${deck.versionId}`, member.cookie)).statusCode).toBe(409);
     const v2Prefix = (await jobFor(v2.versionId)).payload.outputPrefix;
     expect((await write("DELETE", `/api/slides/${deck.id}/versions/${v2.versionId}`, member.cookie)).statusCode).toBe(200);
     expect(await ctx.storage.get(`${v2Prefix}index.html`)).toBeNull();

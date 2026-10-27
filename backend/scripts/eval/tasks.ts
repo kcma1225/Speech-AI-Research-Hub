@@ -43,7 +43,7 @@ export type Task = {
   /** Another task this one continues (same conversation, its deck). */
   after?: string;
   /** Edit tasks: start from a fresh copy of this fixture deck. */
-  deck?: "zh" | "en";
+  deck?: "zh" | "en" | "en_cited";
   prepare?: (ctx: Ctx) => Promise<Prep>;
   /** The deliverable that must come out, or the stop the run must make instead. */
   expect: { kind: Kind } | { stop: "needs_pdf" } | { kindOrAsk: Kind; never: Kind[] };
@@ -59,10 +59,18 @@ export type Task = {
   answer?: (card: { id: string; title?: string }) => { id: string; value?: unknown; other?: string }[] | null;
 };
 
+/** The English fixture deck with notes that say which paper each method comes from (synthetic citations). */
+const EN_DECK_CITED = EN_DECK
+  .replace("Shallow fusion is the simplest baseline and works with any decoder.", "Shallow fusion is the simplest baseline and works with any decoder. This approach comes from Williams et al., Interspeech 2018.")
+  .replace("CLAS learns the biasing end to end but needs training data with bias lists.", "CLAS learns the biasing end to end but needs training data with bias lists. The method was proposed by Pundak et al. at SLT 2018.")
+  .replace("Adapters are attractive for our setting because the Zipformer model stays frozen.", "Adapters are attractive for our setting because the Zipformer model stays frozen. The idea is from Sathyendra et al., ICASSP 2022.");
+const CITE_RE = /et al\.|Interspeech|ICASSP|\bSLT\b|20(?:18|22)|Williams|Pundak|Sathyendra/i;
+
 /** The fixture deck an edit task starts from (a fresh copy per run) and what it looked like before. */
 export const FIXTURE_DECKS = {
   zh: { title: ZH_DECK_TITLE, body: ZH_DECK, before: { titles: ZH_DECK_TITLES, pages: ZH_DECK_TITLES.length } },
   en: { title: EN_DECK_TITLE, body: EN_DECK, before: { titles: EN_DECK_TITLES, pages: EN_DECK_TITLES.length } },
+  en_cited: { title: EN_DECK_TITLE, body: EN_DECK_CITED, before: { titles: EN_DECK_TITLES, pages: EN_DECK_TITLES.length } },
 } as const;
 export async function fixtureDeck(ctx: Ctx, task: Task): Promise<Prep> {
   const f = FIXTURE_DECKS[task.deck!];
@@ -223,12 +231,26 @@ export const TASKS: Task[] = [
     request: NOTES_ZH, deck: "en", expect: { kind: "deck" },
     grade: (o, _c, p) => [
       G.slidesEnNotesZh(deckOf(o)),
+      G.bodiesKept(deckOf(o), EN_DECK),
       G.pageCount(deckOf(o), p.before!.pages),
       G.titlesKept(deckOf(o), p.before!.titles),
       G.grade("no_question", !o.asks.length, o.asks.length ? `問了：${o.asks.map((a) => a.title ?? a.id).join("、")}` : "沒有問問題"),
       G.grade("brief_notes_zh", (o.brief?.requirements ?? []).some((r) => r.type === "language" && /講稿用繁體中文/.test(r.text ?? "")), (o.brief?.requirements ?? []).map((r) => r.text).join("；") || "沒有要求"),
     ],
     judge: "speaker notes in natural spoken Traditional Chinese with English technical terms, readable aloud verbatim; slide text unchanged and English",
+  },
+  {
+    id: "deck_notes_drop_cites", title: "從講稿中拿掉引用論文的部分（沒有修改動詞；投影片本體一字不改）（79ab0678）", tags: ["deck", "edit", "79ab", "quick"], mode: "api", study: "main",
+    request: "我想要從講稿中拿掉引用論文的部分這樣子還要講他來自哪一個論文很奇怪", deck: "en_cited", expect: { kind: "deck" },
+    grade: (o, _c, p) => [
+      // (The fixture is a user-made deck: the revision lands in it or, by design, in its 「Agent 草稿」 copy; bodies_kept
+      // below proves it is that deck, not a new one.)
+      G.bodiesKept(deckOf(o), EN_DECK_CITED),
+      G.pageCount(deckOf(o), p.before!.pages),
+      G.grade("no_citations_in_notes", !!o.deck && deckOf(o).slides.every((s) => !CITE_RE.test(s.notes)), deckOf(o).slides.filter((s) => CITE_RE.test(s.notes)).map((s) => `p${s.n}`).join("、") || "講稿沒有引用"),
+      G.grade("notes_kept", !!o.deck && deckOf(o).slides.every((s) => s.notes.trim().length > 0), "每頁都有講稿"),
+    ],
+    judge: "the speaker notes no longer say which paper, authors or venue a method comes from, otherwise keep their explanation; the slides themselves are unchanged",
   },
   {
     id: "deck_material_report", title: "附件的 deep research 結果做成給教授的報告簡報：以附件為主要材料、列出的部分各一頁、區分事實／推論／待驗證（301b6e1a）", tags: ["deck", "create", "material", "301b", "core"], mode: "api", study: "main",

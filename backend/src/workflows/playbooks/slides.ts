@@ -35,7 +35,7 @@ import { generateUnit, neighbourBlock } from "../units.js";
 import { loadMaterial, materialForPages, materialsOf, materialText, materialTitleOf, type LoadedMaterial } from "../material.js";
 import { applyStudentPages, runStudentInput, STUDENT_INPUT_KEY, studentInputStep, studentPagesOf } from "../student-input.js";
 import { checkedCriteria, LIBRARY_SURVEY_RE, localizeLabels, notesLanguage, runLabels, segmentClauses, targetLanguage, LANGUAGE_LABEL } from "../requirements.js";
-import { deckSubtitle, failingPages, fixPages, frontMatterText, frontTitle, guardRequirements, splitChunks } from "./slides-requirements.js";
+import { deckSubtitle, failingPages, fixPages, frontMatterText, frontTitle, guardRequirements, keepSlideBodies, splitChunks } from "./slides-requirements.js";
 import type { EditKind, Requirement } from "../types.js";
 
 /**
@@ -690,7 +690,7 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   }
   // An existing deck with content + an edit request (translate, rewrite, restyle…) → revise it in place.
   const revise = r?.deck === "edit" ? await reviseSource(env, access.study.id) : null;
-  if (revise) return revisePlan(env, access, revise, r?.edit);
+  if (revise) return revisePlan(env, access, revise, r?.edit, r?.scope);
   const b = env.brief();
   const words = [...(b ? b.user_words : [env.run.request]), ...(b ? [] : userGuidance(env.run))].join("\n");
   // A paper given with the run (inputs / page context at creation) — not a fallback pick.
@@ -1054,7 +1054,10 @@ async function reviseSource(env: WorkflowEnv, studyId: string): Promise<ReviseSo
  * dropped. `expand` (「再詳細一點」「focus 在…」「每個方法要有 Pros/Cons」): a new outline grounded in the deck, the study's
  * data and notes on the requested focus (and the paper), original figures reused where they fit.
  */
-async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title: string } }, src: ReviseSource, routed?: EditKind): Promise<import("./registry.js").PlanResult> {
+/** Criteria about the slides themselves: not a notes-only edit's to meet (the user's slides stay exactly as they are). */
+const SLIDE_BODY_CRITERIA = new Set(["visual_qa", "visuals", "diagrams", "charts", "semantics", "figrefs", "names", "coverage"]);
+
+async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title: string } }, src: ReviseSource, routed?: EditKind, scope?: "notes"): Promise<import("./registry.js").PlanResult> {
   const mode = src.deck.kind;
   // The deck's paper backs figure crops and the content checks.
   if (src.deck.paper_id && !env.run.inputs.paper_id) {
@@ -1063,16 +1066,19 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
   }
   const paper = await paperOf(env);
   // Revise vs expand: the router's decision (the user's words + requirements against the deck's pages).
-  const kind = routed ?? editKindOf(userText(env), env.requirements(), src.slides.length);
+  // Only the speaker notes asked for (「把講稿改成中文」「從講稿拿掉引用」): same pages, every slide body kept as it is.
+  const notesOnly = scope === "notes";
+  const kind = notesOnly ? "revise" : routed ?? editKindOf(userText(env), env.requirements(), src.slides.length);
   // The deck's built-in labels (AI-filled marks, 「這頁留給你自己寫」, 「由報告者補充」 on student pages) in the target
-  // language before any writer sees them: writers keep such lines verbatim otherwise.
+  // language before any writer sees them: writers keep such lines verbatim otherwise. (Not on a notes-only edit: the
+  // slides stay exactly as they are.)
   const lang = targetLanguage(env.requirements());
-  src = { ...src, slides: src.slides.map((p) => ({ ...p, raw: localizeLabels(p.raw, lang) })) };
+  if (!notesOnly) src = { ...src, slides: src.slides.map((p) => ({ ...p, raw: localizeLabels(p.raw, lang) })) };
   const original = src.slides.map((p, i) => `<!-- 第 ${i + 1} 頁 -->\n${p.raw}`).join("\n\n");
   // Expanding needs more than the deck: the study's data, notes about the requested focus, the paper's text.
   const extra = kind === "expand" ? await expandSources(env, access.study.id, paper?.pdf_key ?? null) : "";
   const brief = kind === "expand" ? `# 原本的簡報（素材：可以沿用其中的圖、圖表、論文圖與數字）\n\n${original.slice(0, 20_000)}\n\n${extra}` : original;
-  await env.setState({ mode, revise: true, edit_kind: kind, original_slides: src.slides.map((p) => p.raw), brief: brief.slice(0, 40_000) });
+  await env.setState({ mode, revise: true, edit_kind: kind, notes_only: notesOnly, original_slides: src.slides.map((p) => p.raw), brief: brief.slice(0, 40_000) });
   await buildContentRefs(env, { brief, pdfKey: mode === "paper_report" ? paper?.pdf_key ?? null : null, extra: [paper?.title ?? "", access.study.title] });
   const research: StepSpec = kind === "expand"
     ? { key: "research", role: "researcher", title: "讀取現有簡報與研究資料", instructions: "讀出這份簡報每一頁的原始內容，加上研究進度、和要求焦點相關的筆記與論文內容。", expected: "原始投影片 + 研究資料", done: { output: { summary: `現有簡報 ${src.slides.length} 頁 + 研究資料 ${extra.length} 字`, text: brief.slice(0, 60_000) } } }
@@ -1091,7 +1097,7 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
     depends_on: ["research"],
     expected: kind === "expand" ? `${want} 頁大綱` : `${src.slides.length} 頁大綱`,
     verify: { checks: outlineChecks(want), judge: false },
-  }, (fix) => (kind === "expand" ? expandOutline(env, src, brief, want!, fix, keep) : reviseOutline(env, src, fix, keep)), 2, async (out, round) => {
+  }, (fix) => (notesOnly ? Promise.resolve(outlineOutput(src.slides.map((p, i) => ({ ...restoredPage({ n: i + 1, title: p.title, text: "" }, p.raw), n: i + 1 })))) : kind === "expand" ? expandOutline(env, src, brief, want!, fix, keep) : reviseOutline(env, src, fix, keep)), notesOnly ? 0 : 2, async (out, round) => {
     // After the planner's own fix round, kept pages it still dropped / moved / retitled are put back deterministically.
     const planned = (out.data as { outline?: SlideOutline[] } | undefined)?.outline;
     if (!keep || round < 1) return null;
@@ -1127,7 +1133,12 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
   // …nor (writers included) are pages that were left for the student to write (their placeholder stays, in the target language).
   const leftOpen = kind === "revise" ? outline.filter((o) => PLACEHOLDER_RE.test(origOf(o)) || /Left for you to write/.test(origOf(o))).map((o) => o.title) : [];
   const allow = (c: CheckSpec, extra: string[]) => (extra.length ? { ...c, params: { ...(c.params ?? {}), allow_titles: [...new Set([...((c.params?.allow_titles as string[] | undefined) ?? []), ...extra])] } } : c);
-  const steps = [research, outlineStep.spec, ...laterSteps(outline, vision)].map((st) =>
+  // A notes-only edit has no screenshot pass: the slides are the user's, unchanged (a layout defect already on a page is
+  // not this request's to fix — production 79ab: a notes rewrite ended 「partial」 for page 3's own layout).
+  const later = notesOnly
+    ? laterSteps(outline, false).filter((st) => st.key !== "visual_qa").map((st) => (st.depends_on?.includes("visual_qa") ? { ...st, depends_on: st.depends_on.map((d) => (d === "visual_qa" ? "constraints" : d)) } : st))
+    : laterSteps(outline, vision);
+  const steps = [research, outlineStep.spec, ...later].map((st) =>
     st.verify ? { ...st, verify: { ...st.verify, checks: st.verify.checks.map((c) => (c.id === "speaker_notes" ? allow(c, shortNotes) : c.id === "no_placeholder" ? allow(c, leftOpen) : c)) } } : st);
   const write = await plannedDeckWrite(env, access.study.id, src.deck.title);
   const cover = await frontTitle(env, src.deck.title);
@@ -1138,18 +1149,24 @@ async function revisePlan(env: WorkflowEnv, access: { study: { id: string; title
     studyId: access.study.id,
     objective: kind === "expand"
       ? `依使用者的要求把簡報〈${clipText(src.deck.title, 80)}〉擴充成更深入的 ${outline.length} 頁版本：${clipText(env.run.request, 200)}。可以重新組織頁面，內容來自原簡報、研究資料與筆記，編譯成可預覽的草稿。`
+      : notesOnly
+      ? `依使用者的要求修改簡報〈${clipText(src.deck.title, 80)}〉的講稿：${clipText(env.run.request, 200)}。只改每一頁的講稿（speaker notes），投影片本體（標題、文字、圖、圖表、出處）一字不改，編譯成可預覽的草稿。`
       : `依使用者的要求修改簡報〈${clipText(src.deck.title, 80)}〉：${clipText(env.run.request, 200)}。保留原本的頁面結構、圖、圖表、公式與出處，只改要求的部分，編譯成可預覽的草稿。`,
     criteria: [
       // (An existing deck's own first page is the user's: no cover-repeat rule on an edit.)
-      ...criteriaFor(outline.length, mode, [], false, outline.map((o) => o.title)).map((c) => (c.id === "pages" ? { ...c, text: `簡報正好 ${outline.length} 頁，頁面順序與確認的大綱一致`, check: { id: "slide_count", params: { ...(c.check!.params ?? {}), no_cover_repeat: false } } } : c)).map((c) => (c.id === "notes" && shortNotes.length ? { ...c, text: `${c.text}（原本講稿就很短的頁面除外：${shortNotes.map((t) => `「${t}」`).join("、")}）`, check: { id: "speaker_notes", params: { min_chars: 30, allow_titles: shortNotes } } } : c.id === "clean" && leftOpen.length ? { ...c, text: `${c.text}（留給報告者自己寫的頁面除外：${leftOpen.map((t) => `「${t}」`).join("、")}）`, check: { id: "no_placeholder", params: { allow_titles: leftOpen, on_slide: true } } } : c)),
+      ...criteriaFor(outline.length, mode, [], false, outline.map((o) => o.title)).filter((c) => !(notesOnly && SLIDE_BODY_CRITERIA.has(c.id))).map((c) => (c.id === "pages" ? { ...c, text: `簡報正好 ${outline.length} 頁，頁面順序與確認的大綱一致`, check: { id: "slide_count", params: { ...(c.check!.params ?? {}), no_cover_repeat: false } } } : c)).map((c) => (c.id === "notes" && shortNotes.length ? { ...c, text: `${c.text}（原本講稿就很短的頁面除外：${shortNotes.map((t) => `「${t}」`).join("、")}）`, check: { id: "speaker_notes", params: { min_chars: 30, allow_titles: shortNotes } } } : c.id === "clean" && leftOpen.length ? { ...c, text: `${c.text}（留給報告者自己寫的頁面除外：${leftOpen.map((t) => `「${t}」`).join("、")}）`, check: { id: "no_placeholder", params: { allow_titles: leftOpen, on_slide: true } } } : c)),
       kind === "expand"
         ? { id: "expanded", kind: "judge" as const, text: `依要求擴充（${clipText(env.run.request, 120)}）：要求的焦點講得夠深入（每頁有具體的機制、例子或數字），內容都來自原簡報、研究資料或論文，沒有捏造` }
+        : notesOnly
+        ? { id: "revised", kind: "judge" as const, text: `每一頁的講稿都照使用者的要求修改（${clipText(env.run.request, 120)}），沒有遺漏頁面或講稿；投影片本體由系統保留原樣，不在這次修改範圍` }
         : { id: "revised", kind: "judge" as const, text: `每一頁都照使用者的要求修改（${clipText(env.run.request, 120)}），沒有遺漏頁面或講稿${removed ? "（使用者要求刪掉的頁面除外）" : ""}，也沒有改掉原本的數字、圖與出處` },
       ...(keptTitles.length ? [{ id: "kept", kind: "check" as const, text: `原本的頁面都保留${keep!.ordered ? "且順序不變" : ""}（使用者要求刪掉${kind === "expand" ? "或展開" : ""}的除外）：${clipText(keptTitles.map((t) => `「${t}」`).join(""), 240)}`, check: { id: "pages_kept", params: { titles: keptTitles, ordered: keep!.ordered } } }] : []),
     ],
     plan: {
       summary: kind === "expand"
         ? `讀取現有 ${src.slides.length} 頁與研究資料，重新規劃 ${outline.length} 頁大綱（下方可修改），由 ${Math.ceil(outline.length / PAGES_PER_WRITER)} 個撰寫者平行撰寫，整合後逐條檢查你的要求、編譯預覽${vision ? "、看截圖檢查版面" : ""}並驗收。`
+        : notesOnly
+        ? `讀取現有 ${src.slides.length} 頁，由 ${Math.ceil(outline.length / PAGES_PER_WRITER)} 個撰寫者平行改寫每一頁的講稿（投影片本體不動），整合後逐條檢查你的要求、編譯預覽並驗收。`
         : `讀取現有 ${src.slides.length} 頁，依要求規劃每一頁（下方可修改），由 ${Math.ceil(outline.length / PAGES_PER_WRITER)} 個撰寫者平行改寫投影片與講稿，整合後逐條檢查你的要求、編譯預覽${vision ? "、看截圖檢查版面" : ""}並驗收。`,
       outline,
       writes: [write],
@@ -1234,13 +1251,22 @@ async function plannedDeckWrite(env: WorkflowEnv, studyId: string, title: string
   if (want) {
     const deck = (await env.db.query<{ id: string; title: string; study_id: string }>("SELECT id,title,study_id FROM decks WHERE id=$1", [want])).rows[0];
     const tree = deck ? await loadTree(env.db, deck.id) : null;
-    if (deck && deck.study_id === studyId && (!tree || tree.origin === "ai" || tree.revision <= 1)) {
+    if (deck && deck.study_id === studyId && writesInto(env, tree)) {
       const untouched = !tree || tree.revision <= 1;
       return { kind: "deck", label: untouched ? `簡報〈${clipText(deck.title, 60)}〉（還沒有內容的範本，寫入草稿，不會發布版本）` : `覆寫簡報〈${clipText(deck.title, 60)}〉的原始檔（新的修訂，不會發布版本）`, effect: untouched ? "draft_own" : "overwrite" };
     }
     return { kind: "deck", label: `新簡報「${clipText(title, 60)}（Agent 草稿）」（不會動到原本的簡報，不會發布版本）`, effect: "new" };
   }
   return { kind: "deck", label: `新簡報「${clipText(title, 60)}」（草稿，不會發布版本）`, effect: "new" };
+}
+
+/**
+ * The given deck is written into only when it is an untouched template, or an AI draft this run edits. A run making a
+ * new deck never writes over a deck that has content, AI-made or not (production 79ab: a notes request routed as a new
+ * progress report replaced the user's deck); it gets its own 「Agent 草稿」 deck.
+ */
+function writesInto(env: WorkflowEnv, tree: { origin: string; revision: number } | null): boolean {
+  return !tree || tree.revision <= 1 || (tree.origin === "ai" && !!env.state<boolean>("revise"));
 }
 
 async function ensureDeck(env: WorkflowEnv): Promise<DeckState & { deck_id: string }> {
@@ -1255,8 +1281,8 @@ async function ensureDeck(env: WorkflowEnv): Promise<DeckState & { deck_id: stri
   if (want) {
     const deck = (await env.db.query<{ id: string; slug: string; title: string; study_id: string }>("SELECT id,slug,title,study_id FROM decks WHERE id=$1", [want])).rows[0];
     const tree = deck ? await loadTree(env.db, deck.id) : null;
-    // Only an untouched template or an AI draft is written into; anything the user edited gets a new deck.
-    if (deck && deck.study_id === access.study.id && (!tree || tree.origin === "ai" || tree.revision <= 1)) {
+    // Only an untouched template or an AI draft this run edits is written into (writesInto); otherwise a new deck.
+    if (deck && deck.study_id === access.study.id && writesInto(env, tree)) {
       const s: DeckState = { deck_id: deck.id, deck_slug: deck.slug, deck_title: deck.title };
       await env.setState({ deck: s });
       return s as DeckState & { deck_id: string };
@@ -1286,6 +1312,10 @@ async function ensureDeck(env: WorkflowEnv): Promise<DeckState & { deck_id: stri
 /** Writes the body into the deck's entry (optimistic lock against user edits), renders a preview and waits. */
 export async function writeAndRender(env: WorkflowEnv, body: string, opts: { shots?: boolean } = {}): Promise<DeckState> {
   const deck = await ensureDeck(env);
+  // A notes-only edit never changes a slide: whatever a writer or a fix round produced, each page is its original with
+  // the new notes (production 79ab: 「只改講稿」 runs rewrote titles and turned a diagram into a bar chart).
+  const originals = env.state<boolean>("notes_only") ? env.state<string[]>("original_slides") : null;
+  if (originals?.length) body = keepSlideBodies(body, originals);
   // Placeholders a writer kept after its fix rounds never reach the deck (the student's own pages keep theirs).
   const scrub = scrubPlaceholders(body, outlineOf(env).filter((p) => p.student_owned).map((p) => p.title));
   if (scrub.removed) {
@@ -1420,7 +1450,9 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
       : original
       ? {
           // Revising an existing deck: rewrite these pages from their originals, changing only what the user asked.
-          request: `使用者的修改要求：${env.run.request}\n只照這個要求修改；保留原本的版型、圖、圖表（\`\`\`chart / diagram 規格）、論文圖（paper-fig 語法）、公式、表格、數字與出處，講稿一起修改。`,
+          request: env.state<boolean>("notes_only")
+            ? `使用者的修改要求：${env.run.request}\n這次只改講稿（::: {.notes} 裡的文字）：投影片本體（標題、條列、圖、圖表、表格、出處）逐字照原頁輸出，系統也會把本體還原成原頁。`
+            : `使用者的修改要求：${env.run.request}\n只照這個要求修改；保留原本的版型、圖、圖表（\`\`\`chart / diagram 規格）、論文圖（paper-fig 語法）、公式、表格、數字與出處，講稿一起修改。`,
           your_pages: outlineText(pages),
           original_pages: pages.map((p) => `<!-- 第 ${p.n} 頁 -->\n${original[fromOf(p) - 1] ?? ""}`).join("\n\n"),
           format_rules: VISUAL_RULES,

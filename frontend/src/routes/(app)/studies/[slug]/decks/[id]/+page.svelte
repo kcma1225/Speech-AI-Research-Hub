@@ -2,7 +2,7 @@
   import { displayName } from "#lib/people.svelte.ts";
   import { tick, untrack } from "svelte";
   import { DropdownMenu, Tabs } from "bits-ui";
-  import { ArrowLeft, CircleAlert, Download, Ellipsis, Expand, FileCode2, FilePen, FileSearch, Globe, History, Info, LoaderCircle, MessageSquareQuote, Play, Presentation, Send, Trash2 } from "@lucide/svelte";
+  import { ArrowLeft, CircleAlert, CircleCheck, CopyPlus, Download, Ellipsis, Expand, FileCode2, FilePen, FileSearch, Globe, History, Info, LoaderCircle, MessageSquareQuote, Play, Presentation, Send, Trash2 } from "@lucide/svelte";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { api, ApiError } from "#lib/api.ts";
@@ -28,8 +28,9 @@
   import ReviewsPanel from "#lib/components/slides/ReviewsPanel.svelte";
   import UploadSheet from "#lib/components/slides/UploadSheet.svelte";
   import VersionsPanel from "#lib/components/slides/VersionsPanel.svelte";
+  import RestoreVersionDialog from "#lib/components/slides/RestoreVersionDialog.svelte";
   import SlideLayoutReview from "#lib/components/vision/SlideLayoutReview.svelte";
-  import type { PageManifest, SlideDetail, SlideReview } from "#lib/slides/types.ts";
+  import type { PageManifest, SlideDetail, SlideReview, SlideVersion } from "#lib/slides/types.ts";
   import { deckUrl, isBusy, watchStatus } from "#lib/slides/util.ts";
 
   type Tab = "reviews" | "versions" | "info";
@@ -139,6 +140,26 @@
     }
   }
   let discardOpen = $state(false);
+  // 「用這版建立新版本」 / 「設為目前版本」 / 刪除 for the version shown in the player (or picked in the versions tab).
+  let restoreOf = $state<SlideVersion | null>(null);
+  let restoreOpen = $state(false);
+  const openRestore = (v: SlideVersion) => ((restoreOf = v), (restoreOpen = true));
+  let activating = $state(false);
+  async function makeCurrent() {
+    const v = shownVersion;
+    if (!v) return;
+    activating = true;
+    try {
+      await api.patch(`/slides/${id}/versions/${v.id}`, { active: true });
+      toasts.show(t("slides.versions.activated", { n: v.version }), "success");
+      previewId = null;
+      await load();
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    } finally {
+      activating = false;
+    }
+  }
   let deleteOpen = $state(false);
   async function showInfo() {
     tab = "info";
@@ -386,8 +407,15 @@
           {/if}
         </div>
       {:else if preview}
-        <div class="flex items-center justify-between gap-3 rounded-2xl border border-ink/80 bg-surface px-4 py-2.5 text-[13px]">
-          <span class="font-medium">{t("slides.previewing", { n: preview.version })}</span>
+        <!-- An earlier version in the player: make it current, or make the next version from it, right here. -->
+        <div class="flex flex-wrap items-center gap-2 rounded-2xl border border-ink/80 bg-surface px-4 py-2.5 text-[13px]">
+          <span class="mr-auto font-medium">{t("slides.previewing", { n: preview.version })}</span>
+          {#if d.permissions.manage && preview.status === "published" && !preview.is_active}
+            <Button size="sm" variant="secondary" loading={activating} onclick={makeCurrent}><CircleCheck />{t("slides.preview.makeCurrent")}</Button>
+          {/if}
+          {#if d.permissions.manage && preview.sourceType === "quarto"}
+            <Button size="sm" variant="primary" onclick={() => openRestore(preview)}><CopyPlus />{t("slides.versions.restore")}</Button>
+          {/if}
           <Button size="sm" variant="ghost" class="-mr-2" onclick={() => (previewId = null)}>{t("slides.backToActive")}</Button>
         </div>
       {/if}
@@ -430,6 +458,7 @@
               onUpload={() => (uploadOpen = true)}
               onChanged={load}
               onReindex={(versionId, jobId) => (reindexing = { ...reindexing, [versionId]: jobId })}
+              onRestore={d.permissions.manage ? openRestore : undefined}
             />
           </Tabs.Content>
           <Tabs.Content value="info" class="outline-none">
@@ -454,6 +483,18 @@
       description={t("slides.versions.discardDescription")}
       confirmLabel={t("slides.versions.discard")}
       onConfirm={discardShown}
+    />
+    <RestoreVersionDialog
+      bind:open={restoreOpen}
+      deckId={d.project.id}
+      version={restoreOf}
+      unpublished={unpublished}
+      editUrl={deckUrl(studySlug, d.project.id, "edit")}
+      onDone={async published => {
+        previewId = null;
+        view = published ? "published" : "draft";
+        await load();
+      }}
     />
     <DeleteDeckDialog bind:open={deleteOpen} deck={{ id: d.project.id, title: d.project.title }} studySlug={d.study?.slug ?? studySlug} />
   {/if}

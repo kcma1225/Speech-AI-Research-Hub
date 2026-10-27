@@ -518,7 +518,7 @@ Frontend: `components/doc-import/` (`DocImportSheet` — file drop, mode/placeme
 | PATCH `/slides/:id/versions/:versionId` `{active:true}` | study editor | set active (must be published; a `review` version → 404) |
 | POST `/slides/:id/versions/:versionId/publish` | study editor | confirm a `review` version: status → `published`, `published_at` = now, active by the activation rule → `{ok:true, status:"published", active: boolean}`; 404 when the version is not in `review` |
 | POST `/slides/:id/versions/:versionId/reindex` | study editor | re-render a **published** version into `output-<suffix>/` to (re)build pages, e.g. for versions rendered before pages existed → 202 `{versionId, jobId}`; 404 not published, 409 while its job is queued/running. The deck keeps being served from the old output; on success the finalizer swaps `output_prefix`, `entry_html`, `pdf_key`, thumbnail and page fields (status and `published_at` unchanged) and deletes the old prefix; on failure only the new prefix is deleted. No notification |
-| DELETE `/slides/:id/versions/:versionId` | study editor | not the active one; deletes S3 objects. Discards a `review` version |
+| DELETE `/slides/:id/versions/:versionId` | study editor | deletes S3 objects; the active one too (the newest other `published` version becomes active, none → no active version). Discards a `review` version |
 | GET `/slides/:id/status` | user | latest version status `{id,status,version,error,stage,progress}` (`status` may be `review`, then `progress` = 100) |
 | POST `/slides/:id/render` | study editor | retry the latest failed version (new job, same source type) |
 | GET `/slides/:id/versions/:versionId/pages` | user | page manifest (see "Slide pages") of a `published` or `review` version; 404 `此版本沒有頁面資訊。` when it has none |
@@ -567,6 +567,7 @@ binary upload (≤ 20 MB). ≤ 200 files and 100 MB per tree. Templates (`lib/sl
 | DELETE `/slides/:id/source/files/:fileId` | study editor | not the entry (400); removes its suggestions and S3 object → `{ok, revision}` |
 | POST `/slides/:id/source/preview` | study editor | queue a quick preview of the current revision (the SPA calls it ~2 s after the last save); a queued/ready preview of the same revision is reused (200), else 202; older **queued** previews are cancelled → `{preview: PreviewInfo}` |
 | GET `/slides/:id/source/preview` | user | `{preview: PreviewInfo}` |
+| POST `/slides/:id/source/restore` `{versionId, publish?}` | study editor | 「用這版建立新版本」 (`lib/slides/restore.ts`): the tree becomes the files of a `published`/`review` **Quarto** version's `source.zip` as a new revision (same-path text files keep their row and get version+1; other files are replaced, their suggestions deleted; paths the tree does not accept are skipped and listed; size limits as the tree's, 413). Versions are untouched. `publish: true` then publishes it (`publishTree`) → 202 `{revision, from, skipped, version, versionId}`; otherwise a preview is queued → 200 `{revision, from, skipped}`. 400 for pdf/pptx or failed versions, 404 missing version / source |
 | POST `/slides/:id/source/publish` | study editor | 「發布新版本」: packs the tree into a ZIP (`lib/slides/zip-write.ts`), validates it like an upload, stores it as `source.zip` of a new version and enqueues `slide_render` (normal finalizer, activity, notification) → 202 `{versionId, version, jobId, revision, sourceType:"quarto", entry}`; sets `published_revision` |
 | POST `/slides/:id/ai/generate` `{instructions?, mode?, replace?}` | study editor | 503 `code: llm_unavailable` unless role `slides` is ok/degraded; 409 while a draft job is queued/running; 409 `code: confirm_replace` when the tree was edited (revision > 1) and `replace` is not true → 202 `{job}` |
 | GET `/slides/:id/ai/generate` | user | newest draft job `{job: {id,status,stage,progress,error,result,created_at,finished_at} \| null}` |
@@ -1770,9 +1771,12 @@ words name none, never a mode):
   `meeting_prep`, `experiment_report` (實驗結果／實驗報告 words), else `generic`. A rejected hint is recorded
   (`hint.accepted = false`) and logged on the run (「助理建議用「閱讀筆記」，但它不符合你要的成果…」).
 - *Slides*: `deck = edit` when a deck with slides is given (`deckPagesOf`: the workflow body or an edited entry; an untouched
-  template or another study's deck is 0) and the words / non-standing requirements edit it (`editAsked`: REVISE_RE,
-  EXPAND_RE, added pages, a removal, a language, a page count, per-item fields), with `edit = revise | expand`
-  (`editKindOf` on the words against the deck's pages); else `deckModeOf` (below) with `explicitPaper` = a paper given at
+  template or another study's deck is 0), no new deck is asked (`newDeckAsked`), and the words / non-standing
+  requirements edit it (`editAsked`: REVISE_RE incl. removal verbs 拿掉／刪掉／移除…, EXPAND_RE, added pages, a removal, a
+  language, a page count, per-item fields) or point at a part of the deck (`DECK_PART_RE`: 講稿、某一頁、標題、圖表…;
+  production 79ab: 「從講稿中拿掉引用論文的部分」 had no edit verb and became a new progress report), with
+  `edit = revise | expand` (`editKindOf` on the words against the deck's pages) and `scope = notes` when only the speaker
+  notes are named (`notesOnlyAsked`: 講稿／備註／notes and nothing about the slides themselves); else `deckModeOf` (below) with `explicitPaper` = a paper given at
   creation or a study paper named in the words (`matchPaperTitle` over the study's titles) or an arXiv id / DOI.
 - *Batch*: per-paper playbooks only when the user's words ask for each paper (`EACH_PAPER_RE`) and there are ≥ 2 papers;
   「這三篇做成簡報」 with ≥ 2 `paper_ids` and no 「一份／每篇」 → `ask = batch`.
@@ -1877,7 +1881,12 @@ requirement is now a typed constraint that every step must keep and that is chec
   in the original deck + `progressContext` + up to 3 study notes matching the focus words + the paper's digest; writers
   get the original deck as material; criterion `expanded` = depth on the requested focus, grounded). A deck edit is
   planned when the router says `deck = edit` (Routing above). `plan.edit_kind` is on the
-  card. Excluded pages are dropped from the outline deterministically (`settleOutline`).
+  card. *Notes-only* (`scope = notes`, `state.notes_only`): always `revise`; the outline is the deck's own pages (no
+  planner call), no screenshot pass (the slides are the user's; a layout defect already there is not this request's),
+  and `writeAndRender` passes every body through `keepSlideBodies` (slides-requirements.ts): each original page with only
+  its new speaker notes, so no writer or fix round can change a slide (invariant `deck.notes_only_bodies`). A run that
+  is not an edit never writes into a given deck that has content (`writesInto`: untouched template, or an AI draft this
+  run edits); it gets its own 「Agent 草稿」 deck. Excluded pages are dropped from the outline deterministically (`settleOutline`).
 - *Original pages preserved* (revise and expand; eval `deck_expand_fields_zh`, where an expansion merged / retitled two
   pages nobody mentioned and verification still passed): `keepRule` (slides.ts) reads the user's words — every original
   page stays except the ones removed (`exclude`) and, in an expansion, the ones the words name (「把『動態熱詞的做法』展開」:
@@ -2571,6 +2580,10 @@ player: the running AI draft (stage/progress), then 「AI 草稿已完成，尚�
 A deck with a published version and newer source edits (`revision ≠ published_revision`, e.g. edits made in the chat) gets
 a 「已發布（第 N 版）／未發布的修改」 switch with 「編輯」/「發布新版本」 for editors: the second view is `DraftState` without its
 banner. `DraftState` queues a preview (POST `/source/preview`, editors) when the source moved past the newest one.
+An earlier version shown in the player (「正在預覽 vN」) offers editors 「設為目前版本」 (published, not active) and
+「用這版建立新版本」 (Quarto; `RestoreVersionDialog`: POST `/source/restore`, published right away or opened in the editor;
+it warns when unpublished edits would be replaced); the versions tab menu has the same restore and deletes any version,
+the current one included.
 
 Frontend player (`frontend/src/lib/components/slides/SlidePlayer.svelte`): pdf/pptx versions are drawn from the manifest's
 page images, quarto decks in the iframe above; both get the same counter, thumbnails (review counts per page), keyboard,

@@ -153,6 +153,7 @@ const EDIT_VERB = /改|修改|翻譯|調整|edit|revise|translate|change/i;
  * A content clause asks for something (a demand), not filler. The bare 「幫我做一個簡報」/「幫我改」 is the core ask
  * (the deliverable / the edit itself), carried by the Brief's deliverable and the route, not by a requirement.
  */
+const REASON_CLAUSE = /^(?:因為|畢竟|不然|否則)|^[^，。！？\n]{0,20}(?:很奇怪|很怪|怪怪的|好怪|不自然|很突兀|很尷尬|很多餘|沒必要|沒有必要)[。！!.]?$|^(?:because|since|as)\b|\b(?:sounds|looks|feels|is|it's) (?:odd|weird|strange|unnatural|awkward|redundant)\b/i;
 export function contentClauses(text: string): { clause: string; core: boolean }[] {
   return clauses(text)
     .filter((c) => norm(c).length >= 4 && !FILLER.test(norm(c)))
@@ -160,6 +161,8 @@ export function contentClauses(text: string): { clause: string; core: boolean }[
       // English request scaffolding (「Write me a note」, "Please make a deck for me") is the deliverable ask, not content.
       const bare = c.replace(/〈[^〉]*〉|「[^」]*」|“[^”]*”|"[^"]*"/g, "").replace(/\b(?:please|can you|could you|i (?:want|need|would like)(?: you)?(?: to)?|for me|me|us|a|an|the|this|new)\b/gi, " ");
       const rest = norm(bare).replace(/我要你|我想要你|我想要|幫我|一個|一份|一篇|請你|這個|這份/g, "");
+      // A reason given for the ask (「講出處很奇怪」「it sounds odd…」) is not an ask of its own (scenario n82).
+      if (REASON_CLAUSE.test(c.trim())) return { clause: c, core: true };
       return { clause: c, core: ((DELIVERABLE_NOUN.test(c) && CREATE_VERB.test(c)) || EDIT_VERB.test(c)) && rest.replace(DELIVERABLE_NOUN, "").replace(CREATE_VERB, "").length <= 6 };
     });
 }
@@ -213,6 +216,9 @@ export const requirementsOf = (r: StoredRun): StoredRequirement[] => {
   });
 };
 /** Whether the run edits a given artifact (a deck revise / expand, a note edit). */
+/** route.ts DECK_PART_RE / NEW_DECK_RE, restated (invariants read stored runs only, no router imports). */
+const DECK_PART_WORDS = /講稿|逐字稿|口稿|講者備註|備註|這(?:一)?頁|那(?:一)?頁|每(?:一)?頁|第\s*[0-9一二三四五六七八九十]+\s*頁|投影片|標題|圖表|這份簡報|這個簡報|簡報裡|\bspeaker notes?\b|\bnotes\b|\bslides?\b|\bthis (?:deck|presentation)\b|\bpage \d+\b|\btitle\b/i;
+const NEW_DECK_WORDS = /(?:做|建立|產生|生成|準備|製作|弄)\s*(?:一份|一個|個|份|新的?)?[^。！？\n]{0,30}?(?:簡報|投影片|slides|deck)|\b(?:make|create|build|prepare|generate)\s+(?:me\s+)?(?:a|an|another|new)\b[^.\n]{0,50}?\b(?:deck|presentation|slides)\b/i;
 export function isEditRun(r: StoredRun): boolean {
   const rt = routeOf(r);
   return rt?.deck === "edit" || !!rt?.edit || !!r.plan?.edit_kind;
@@ -515,6 +521,33 @@ export const INVARIANTS: Invariant[] = [
       if (!edit && overwrite.length && rt.deck && rt.deck !== "edit") hits.push({ message: "路由是新建，計畫卻覆蓋既有內容", evidence: { route: rt, writes: overwrite } });
       if (rt.edit && plan.edit_kind && rt.edit !== plan.edit_kind) hits.push({ message: `路由的修改種類是 ${rt.edit}，計畫是 ${plan.edit_kind}`, evidence: { route_edit: rt.edit, plan_edit: plan.edit_kind } });
       return hits;
+    },
+  },
+  {
+    id: "route.deck_part_edit", category: "route", scope: "run", severity: "critical",
+    title: "指定了簡報、話裡指的是它的一部分（講稿、某一頁、標題…）且沒有要新簡報：路由是修改這份簡報",
+    reads: "inputs.deck_id, brief.user_words (task turns), state.route.deck",
+    check: (b) => {
+      const rt = routeOf(b.run);
+      if (b.run.playbook !== "slides" || typeof b.run.inputs?.deck_id !== "string" || !rt || b.run.inputs?.mode) return [];
+      const words = (b.run.brief?.user_words ?? [b.run.request ?? ""]).slice(0, b.run.brief?.base ?? undefined).join("\n");
+      if (!DECK_PART_WORDS.test(words) || NEW_DECK_WORDS.test(words)) return [];
+      return rt.deck === "edit" ? [] : [{ message: `你的話指的是這份簡報的一部分，路由卻是新建（${rt.deck ?? "?"}）`, evidence: { words: clip(words, 200), route: rt } }];
+    },
+  },
+  {
+    id: "deck.notes_only_bodies", category: "deliverable", scope: "run", severity: "critical",
+    title: "只改講稿的修改：每一頁的投影片本體和原本一字不差",
+    reads: "state.notes_only, state.original_slides, state.deck.body",
+    check: (b) => {
+      const st = (b.run.state ?? {}) as { notes_only?: boolean; original_slides?: string[]; deck?: { body?: string } };
+      if (!st.notes_only || !st.original_slides?.length || !st.deck?.body) return [];
+      const bodyOf = (raw: string) => raw.replace(/^:::+\s*\{?\.?notes\}?\s*\n[\s\S]*?^:::+\s*$/gm, "").replace(/\s+/g, " ").trim();
+      const got = st.deck.body.split(/^(?=## )/m).filter((p) => p.startsWith("## ")).map(bodyOf);
+      const want = st.original_slides.map(bodyOf);
+      const changed = want.map((w, i) => (got[i] === w ? 0 : i + 1)).filter(Boolean);
+      if (got.length !== want.length) return [{ message: `只改講稿，頁數卻從 ${want.length} 變成 ${got.length}`, evidence: { want: want.length, got: got.length } }];
+      return changed.length ? [{ message: `只改講稿，投影片本體卻改了：第 ${changed.join("、")} 頁`, evidence: { pages: changed } }] : [];
     },
   },
   // ------------------------------------------------------------ deliverable

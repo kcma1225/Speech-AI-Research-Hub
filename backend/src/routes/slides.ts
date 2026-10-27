@@ -444,7 +444,11 @@ const slides: FastifyPluginAsync = async app => {
     await requireDeckEditor(request, id);
     await transaction(app.db, async client => {
       const project = await lockProject(client, id);
-      if (project.active_version_id === versionId) throw conflict("無法刪除目前版本；請先切換版本。");
+      // Removing the current version: the newest other published version becomes current (none left: no current version).
+      if (project.active_version_id === versionId) {
+        const next = (await client.query<{ id: string }>("SELECT id FROM slide_versions WHERE deck_id=$1 AND id<>$2 AND status='published' ORDER BY version DESC LIMIT 1", [id, versionId])).rows[0];
+        await client.query("UPDATE decks SET active_version_id=$2,updated_at=now() WHERE id=$1", [id, next?.id ?? null]);
+      }
       const removed = await client.query<{ job_id: string | null }>("DELETE FROM slide_versions WHERE id=$1 AND deck_id=$2 RETURNING job_id", [versionId, id]);
       if (!removed.rowCount) throw notFound("版本不存在。");
       const jobId = removed.rows[0]!.job_id;

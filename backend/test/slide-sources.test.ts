@@ -243,6 +243,53 @@ run("slide sources, previews, publish and AI drafts", () => {
     expect(versions[0]).toMatchObject({ version: 1, sourceType: "quarto", status: "queued" });
   });
 
+  it("restores an earlier version's files as a new revision (and publishes it), and removes the current version", async () => {
+    const created = json(await write("POST", "/api/slides", member.cookie, { studyId: study.id, title: "Restore deck", kind: "progress", template: "blank" }));
+    const id = created.id as string;
+    const finishRender = async (versionId: string) => {
+      const job = (await ctx.db.query<{ id: string; payload: any }>("SELECT j.id,j.payload FROM jobs j JOIN slide_versions v ON v.job_id=j.id WHERE v.id=$1", [versionId])).rows[0]!;
+      await ctx.storage.put(`${job.payload.outputPrefix}index.html`, "<html><head></head><body><script>Reveal.initialize({hash:true})</script></body></html>", "text/html");
+      await ctx.db.query("UPDATE jobs SET status='succeeded',progress=100,finished_at=now(),result=$2 WHERE id=$1", [job.id, JSON.stringify({ entryHtml: "index.html", fileCount: 1, quartoVersion: "1.10.19" })]);
+      await ctx.finalizer.drain();
+    };
+    await write("PUT", `/api/slides/${id}/source/files`, member.cookie, { path: "index.qmd", content: "---\ntitle: v1\n---\n\n## First\n\n![](images/a.png)\n" });
+    const up = multipart({ path: "images/a.png" }, { filename: "a.png", data: PNG, type: "image/png" });
+    expect((await ctx.app.inject({ method: "POST", url: `/api/slides/${id}/source/files`, headers: { origin: ORIGIN, cookie: member.cookie, ...up.headers }, payload: up.payload })).statusCode).toBe(201);
+    const v1 = json(await write("POST", `/api/slides/${id}/source/publish`, member.cookie));
+    await finishRender(v1.versionId);
+    // Later edits: new text, the image removed, an extra file.
+    const files = json(await get(`/api/slides/${id}/source`, member.cookie)).files as { id: string; path: string }[];
+    await write("PUT", `/api/slides/${id}/source/files`, member.cookie, { path: "index.qmd", content: "---\ntitle: v2\n---\n\n## Changed\n" });
+    await write("PUT", `/api/slides/${id}/source/files`, member.cookie, { path: "extra.md", content: "x" });
+    expect((await write("DELETE", `/api/slides/${id}/source/files/${files.find((f) => f.path === "images/a.png")!.id}`, member.cookie)).statusCode).toBe(200);
+    const entryId = files.find((f) => f.path === "index.qmd")!.id;
+
+    expect((await write("POST", `/api/slides/${id}/source/restore`, advisor.cookie, { versionId: v1.versionId })).statusCode).toBe(403);
+    const restored = await write("POST", `/api/slides/${id}/source/restore`, member.cookie, { versionId: v1.versionId });
+    expect(restored.statusCode).toBe(200);
+    expect(json(restored)).toMatchObject({ from: 1, skipped: [] });
+    const after = json(await get(`/api/slides/${id}/source`, member.cookie));
+    expect(after.files.map((f: { path: string }) => f.path).sort()).toEqual(["images/a.png", "index.qmd"]);
+    const entryAfter = after.files.find((f: { path: string }) => f.path === "index.qmd");
+    expect(entryAfter.id).toBe(entryId);
+    expect(entryAfter.content).toContain("## First");
+    expect(after.source.revision).toBeGreaterThan(after.source.published_revision);
+    const png = after.files.find((f: { path: string }) => f.path === "images/a.png");
+    expect((await get(`/api/slides/${id}/source/files/${png.id}/raw`, member.cookie)).rawPayload.equals(PNG)).toBe(true);
+
+    // Restore + publish in one go: the next version, rendered like any publish.
+    const again = await write("POST", `/api/slides/${id}/source/restore`, member.cookie, { versionId: v1.versionId, publish: true });
+    expect(again.statusCode).toBe(202);
+    expect(json(again)).toMatchObject({ from: 1, version: 2 });
+    await finishRender(json(again).versionId);
+    expect(json(await get(`/api/slides/${id}`, member.cookie)).activeVersion.version).toBe(2);
+    // The current version can be removed: the newest other published one becomes current.
+    expect((await write("DELETE", `/api/slides/${id}/versions/${json(again).versionId}`, member.cookie)).statusCode).toBe(200);
+    expect(json(await get(`/api/slides/${id}`, member.cookie)).activeVersion.version).toBe(1);
+    expect((await write("DELETE", `/api/slides/${id}/versions/${v1.versionId}`, member.cookie)).statusCode).toBe(200);
+    expect(json(await get(`/api/slides/${id}`, member.cookie)).activeVersion).toBeNull();
+  });
+
   it("starts editing an uploaded deck from a template, and changes the entry", async () => {
     const created = json(await write("POST", "/api/slides", member.cookie, { studyId: study.id, title: "Blank deck", kind: "progress", template: "blank" }));
     expect((await write("POST", `/api/slides/${created.id}/source`, member.cookie, { template: "blank" })).statusCode).toBe(409);

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { displayName } from "#lib/people.svelte.ts";
   import { DropdownMenu } from "bits-ui";
-  import { ChevronDown, ChevronUp, CircleCheck, Download, Ellipsis, Eye, FileSearch, Images, LoaderCircle, RotateCcw, Send, Trash2, Upload } from "@lucide/svelte";
+  import { ChevronDown, ChevronUp, CircleCheck, CopyPlus, Download, Ellipsis, Eye, FileSearch, Images, LoaderCircle, RotateCcw, Send, Trash2, Upload } from "@lucide/svelte";
   import { api, ApiError } from "#lib/api.ts";
   import { formatDate, relativeTime, t } from "#lib/i18n.svelte.ts";
   import { jobsStore } from "#lib/stores/jobs.svelte.ts";
@@ -16,7 +16,7 @@
   import { isBusy, renderLog } from "#lib/slides/util.ts";
   import StatusPill from "./StatusPill.svelte";
 
-  let { projectId, versions, canManage, previewId = $bindable(null), reindexing = [], onUpload, onChanged, onReindex }: {
+  let { projectId, versions, canManage, previewId = $bindable(null), reindexing = [], onUpload, onChanged, onReindex, onRestore }: {
     projectId: string;
     versions: SlideVersion[];
     canManage: boolean;
@@ -26,6 +26,8 @@
     onUpload: () => void;
     onChanged: () => void | Promise<void>;
     onReindex?: (versionId: string, jobId: string) => void;
+    /** 「用這版建立新版本」 (Quarto versions; the page opens RestoreVersionDialog). */
+    onRestore?: (v: SlideVersion) => void;
   } = $props();
 
   let openError = $state<string | null>(null);
@@ -133,16 +135,18 @@
                     {#if v.status === "review"}
                       <DropdownMenu.Item class={menuItem} onSelect={() => publish(v)}><Send />{t("slides.versions.publish")}</DropdownMenu.Item>
                     {/if}
+                    {#if onRestore && v.sourceType === "quarto" && (v.status === "published" || v.status === "review")}
+                      <DropdownMenu.Item class={menuItem} onSelect={() => onRestore(v)}><CopyPlus />{t("slides.versions.restore")}</DropdownMenu.Item>
+                    {/if}
                     {#if v.status === "published" && v.pageCount === null}
                       <DropdownMenu.Item class={menuItem} disabled={reindexing.includes(v.id)} onSelect={() => reindex(v)}><Images />{t("slides.versions.reindex")}</DropdownMenu.Item>
                     {/if}
                     {#if v.status === "failed" && v.id === latestId}
                       <DropdownMenu.Item class={menuItem} onSelect={retry}><RotateCcw />{t("slides.versions.retry")}</DropdownMenu.Item>
                     {/if}
-                    {#if !v.is_active}
-                      <DropdownMenu.Separator class={menuSeparator} />
-                      <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => ((confirmDelete = v), (confirmOpen = true))}><Trash2 />{v.status === "review" ? t("slides.versions.discard") : t("slides.versions.delete")}</DropdownMenu.Item>
-                    {/if}
+                    <!-- The current version too: the newest other published version then becomes current. -->
+                    <DropdownMenu.Separator class={menuSeparator} />
+                    <DropdownMenu.Item class="{menuItem} text-danger [&_svg]:text-danger" onSelect={() => ((confirmDelete = v), (confirmOpen = true))}><Trash2 />{v.status === "review" ? t("slides.versions.discard") : t("slides.versions.delete")}</DropdownMenu.Item>
                   {/if}
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
@@ -196,7 +200,7 @@
 <ConfirmDialog
   bind:open={confirmOpen}
   title={confirmDelete?.status === "review" ? t("slides.versions.discardTitle", { n: confirmDelete.version }) : t("slides.versions.deleteTitle", { n: confirmDelete?.version ?? "" })}
-  description={confirmDelete?.status === "review" ? t("slides.versions.discardDescription") : t("slides.versions.deleteDescription")}
+  description={confirmDelete?.status === "review" ? t("slides.versions.discardDescription") : confirmDelete?.is_active ? t("slides.versions.deleteActiveDescription") : t("slides.versions.deleteDescription")}
   confirmLabel={confirmDelete?.status === "review" ? t("slides.versions.discard") : t("slides.versions.delete")}
   onConfirm={remove}
 />

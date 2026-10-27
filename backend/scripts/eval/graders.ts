@@ -374,6 +374,21 @@ export function checkFlips(rounds: { round: number; failures: string[] }[], chec
  * Slides English, every speaker note 繁中 with English terms (「講稿要是中文的…多用一點英文的專用名詞」): the cover and every
  * slide's title / body have no CJK; each note has Han characters and at least as many Han characters as English words.
  */
+/** A notes-only edit: every slide's title and body (outside the speaker notes) as in the fixture, whitespace aside. */
+export function bodiesKept(deck: Deck, fixture: string): Grade {
+  const squash = (t: string) => t.replace(/\s+/g, " ").trim();
+  const before = fixture.split(/^(?=## )/m).filter((p) => p.startsWith("## ")).map((p) => {
+    const nl = p.indexOf("\n");
+    return { title: squash(p.slice(3, nl < 0 ? undefined : nl)), body: squash((nl < 0 ? "" : p.slice(nl + 1)).replace(/^:::+\s*\{?\.?notes\}?\s*\n[\s\S]*?^:::+\s*$/gm, "")) };
+  });
+  const changed = before.map((b, i) => {
+    const s = deck.slides[i];
+    return s && squash(s.title) === b.title && squash(s.body) === b.body ? null : `p${i + 1}`;
+  }).filter(Boolean);
+  if (deck.slides.length !== before.length) changed.push(`頁數 ${deck.slides.length}／${before.length}`);
+  return grade("bodies_kept", !changed.length, changed.length ? `投影片本體被改：${changed.join("、")}` : "每頁投影片本體都和原本一樣");
+}
+
 export function slidesEnNotesZh(deck: Deck): Grade {
   const where: string[] = [];
   if (cjkCount(deck.title)) where.push("封面有中文");

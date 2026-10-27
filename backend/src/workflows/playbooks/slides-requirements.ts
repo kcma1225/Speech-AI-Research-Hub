@@ -8,6 +8,7 @@ import { normalizeDiagrams } from "../../lib/slides/deck-visuals.js";
 import { dataBlock } from "../llm.js";
 import { checkedCriteria, languageViolations, regressions, requirementResults, runLabels, translateTitle } from "../requirements.js";
 import type { WorkflowEnv } from "../env.js";
+import { parseSlides, titleMatches } from "../checks.js";
 import { closeOpenBlocks, VISUAL_RULES } from "./slides-visual.js";
 import { systemFor } from "./common.js";
 
@@ -33,6 +34,29 @@ export function splitChunks(body: string): { pre: string; chunks: string[] } {
   const parts = body.replace(/\r\n/g, "\n").split(/^(?=## )/m);
   const pre = parts[0]?.startsWith("## ") ? "" : (parts.shift() ?? "");
   return { pre, chunks: parts };
+}
+
+const NOTES_BLOCK_RE = /^:::+\s*\{?\.?notes\}?\s*\n[\s\S]*?^:::+\s*$/gm;
+
+/**
+ * A notes-only edit: every original page with the speaker notes of its rewritten counterpart (same title, else the
+ * same position); a page without new notes keeps its own. The result has exactly the original pages, bodies byte for
+ * byte, whatever the writers changed, added or dropped.
+ */
+export function keepSlideBodies(body: string, originals: string[]): string {
+  const fresh = parseSlides(body);
+  const used = new Set<number>();
+  const pages = originals.map((raw, i) => {
+    const title = parseSlides(raw)[0]?.title ?? "";
+    let j = fresh.findIndex((f, k) => !used.has(k) && !!title && f.title === title);
+    if (j < 0) j = fresh.findIndex((f, k) => !used.has(k) && !!title && titleMatches(title, f.title));
+    if (j < 0 && fresh[i] && !used.has(i)) j = i;
+    if (j >= 0) used.add(j);
+    const notes = j >= 0 ? fresh[j]!.notes.trim() : "";
+    if (!notes) return raw.trim();
+    return `${raw.replace(NOTES_BLOCK_RE, "").replace(/\n{3,}/g, "\n\n").trim()}\n\n::: {.notes}\n${notes}\n:::`;
+  });
+  return `${pages.join("\n\n")}\n`;
 }
 
 /** Replaces the given pages (1-based) by position; null when the counts do not line up. */

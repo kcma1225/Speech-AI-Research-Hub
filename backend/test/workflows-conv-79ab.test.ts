@@ -143,10 +143,15 @@ run("production conversation 79ab0678", () => {
     const logs = (await t.db.query<{ data: { text?: string } }>("SELECT data FROM workflow_events WHERE run_id=$1 AND type='log'", [id])).rows.map((x) => x.data.text ?? "");
     expect(logs.some((l) => l.includes("修改簡報"))).toBe(true);
     expect(logs.join("\n")).not.toContain("從 0 到 1");
-    // Every writer is told: notes in 繁中 with English terms, slides stay English.
-    const block = m.prompts("outline").join("\n");
-    expect(block).toContain("講稿（::: {.notes}）語言：繁體中文");
-    expect(block).toContain("投影片本體（封面、頁面標題、條列、表格、圖表與流程圖標籤、圖說）語言：English");
+    // Only the notes change: the outline is the deck's own pages (no planner call), no screenshot pass, and every write
+    // keeps the slide bodies (slides.ts keepSlideBodies; deck.notes_only_bodies).
+    expect((r.state.route as { scope?: string }).scope).toBe("notes");
+    expect(r.state.notes_only).toBe(true);
+    expect(m.prompts("outline")).toHaveLength(0);
+    expect(r.plan!.outline!.map((o) => o.title)).toEqual(r.state.original_slides ? (r.state.original_slides as string[]).map((raw) => raw.split("\n")[0]!.slice(3).trim()) : []);
+    const keys = (await t.db.query<{ key: string }>("SELECT key FROM workflow_steps WHERE run_id=$1", [id])).rows.map((x) => x.key);
+    expect(keys).toContain("final");
+    expect(keys).not.toContain("visual_qa");
   });
 
   it("2. a home-page topic request with two studies: a study-picker card; the answer is not the topic or a requirement", async () => {

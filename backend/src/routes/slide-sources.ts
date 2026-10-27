@@ -15,6 +15,7 @@ import {
 import { DECK_TEMPLATES, progressTitle, taipeiToday, templateQmd, type DeckTemplate } from "../lib/slides/templates.js";
 import { receiveUpload } from "../lib/slides/upload.js";
 import { publishTree } from "../lib/slides/publish.js";
+import { restoreVersionSource } from "../lib/slides/restore.js";
 import { setDeckSourcePreview } from "../lib/slides/suggest-target.js";
 import { loadStudyAccess } from "../lib/studies/access.js";
 import { deleteSuggestionsOf } from "../lib/suggestions/service.js";
@@ -27,6 +28,7 @@ const initInput = z.object({ template: z.enum(DECK_TEMPLATES as [DeckTemplate, .
 const textInput = z.object({ path: z.string().min(1).max(200), content: z.string().max(SOURCE_LIMITS.textBytes), baseVersion: z.number().int().min(0).optional() });
 const renameInput = z.object({ path: z.string().min(1).max(200) });
 const treePatch = z.object({ entry: z.string().min(1).max(200) });
+const restoreInput = z.object({ versionId: z.uuid(), publish: z.boolean().default(false) });
 
 /** Preview fields for the editor: newest attempt (with job stage) and newest ready render (with its iframe URL). */
 export function previewInfo(secret: string, project: Pick<SlideProject, "id" | "slug">, state: Awaited<ReturnType<typeof previewState>>) {
@@ -268,6 +270,20 @@ const slideSources: FastifyPluginAsync = async app => {
     const { user } = await requireDeckEditor(request, id);
     const published = (await publishTree(app.db, app.storage, id, user.id, { maxZipBytes: app.config.MAX_SLIDE_ZIP_BYTES }))!;
     return reply.code(202).send({ versionId: published.versionId, version: published.version, jobId: published.jobId, revision: published.revision, sourceType: "quarto", entry: published.entry });
+  });
+
+  /**
+   * 「從這個版本建立新版本」: the source tree becomes the files of an earlier Quarto version (new revision, unpublished);
+   * `publish` also publishes it right away as the next version.
+   */
+  app.post("/slides/:id/source/restore", async (request, reply) => {
+    const { id } = parse(deckParams, request.params);
+    const { user } = await requireDeckEditor(request, id);
+    const { versionId, publish } = parse(restoreInput, request.body ?? {}, "請指定要還原的版本。");
+    const restored = await restoreVersionSource(app.db, app.storage, id, versionId, user.id);
+    const published = publish ? await publishTree(app.db, app.storage, id, user.id, { maxZipBytes: app.config.MAX_SLIDE_ZIP_BYTES }) : null;
+    if (!published) void enqueuePreview(app.db, app.storage, id, user.id).catch(error => app.log.warn({ err: error, deckId: id }, "preview after restore failed"));
+    return reply.code(published ? 202 : 200).send({ revision: restored.revision, from: restored.version, skipped: restored.skipped, ...(published ? { version: published.version, versionId: published.versionId } : {}) });
   });
 };
 
