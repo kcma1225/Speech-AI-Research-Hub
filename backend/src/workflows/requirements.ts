@@ -259,22 +259,32 @@ const PAGE_PHRASE_RE = /\d{1,2}\s*(?:[-–~到至]|to)?\s*\d{0,2}\s*(?:頁|張|p
 
 export function detectPageCount(text: string, pages?: unknown): Requirement["params"] | null {
   if (typeof pages === "number" && pages > 0) return { exact: Math.round(pages) };
-  const range = /(\d{1,2})\s*(?:[-–~到至]|to)\s*(\d{1,2})\s*(?:頁|張|pages?\b|slides?\b)/i.exec(text);
-  if (range) return { min: Math.min(+range[1]!, +range[2]!), max: Math.max(+range[1]!, +range[2]!) };
-  const min = /(?:至少|最少|不少於|at least)\s*(\d{1,2})\s*(?:頁|張|pages?\b|slides?\b)/i.exec(text);
-  if (min) return { min: +min[1]! };
-  const max = /(?:最多|不超過|以內|at most|no more than)\s*(\d{1,2})\s*(?:頁|張|pages?\b|slides?\b)|(\d{1,2})\s*頁以內/i.exec(text);
-  if (max) return { max: +(max[1] ?? max[2])! };
-  const exact = /(?:做成|做|共|總共|剛好|正好|改成|變成|擴充到|擴充成|擴到|增加到|縮成|縮減到|精簡到|控制在|大約|大概|差不多|約|一份|exactly|about|around|roughly|approximately|into|to)\s*(\d{1,2})\s*(?:頁|張|pages?\b|slides?\b)|(?<![第\d])(\d{1,2})\s*(?:頁(?:的|簡報|投影片|左右)|-?(?:page|slide)\b(?: deck| presentation)?|\s(?:pages|slides)\b)/i.exec(text);
+  // Page REFERENCES are not counts: 「把第 3 頁的標題改成…」「第九頁的圖」「page 3」「最後一頁」 (scenario: 「第 3 頁的」 became 「正好 3 頁」).
+  const t = text.replace(PAGE_REF_RE, " ");
+  const N = `(${NUM})`;
+  // 張 counts pages only as slides: 「改成 3 張圖」「一張表」 are figures.
+  const U = "(?:頁|張投影片|張(?![圖表照])|pages?\\b|slides?\\b)";
+  const num = (s: string | undefined) => (s ? pageNumber(s) : null);
+  const range = new RegExp(`${N}\\s*(?:[-–~到至]|to)\\s*${N}\\s*${U}`, "i").exec(t);
+  if (range) {
+    const a = num(range[1]);
+    const b = num(range[2]);
+    if (a && b) return { min: Math.min(a, b), max: Math.max(a, b) };
+  }
+  const min = new RegExp(`(?:至少|最少|不少於|at least)\\s*${N}\\s*${U}`, "i").exec(t);
+  if (min && num(min[1])) return { min: num(min[1])! };
+  const max = new RegExp(`(?:最多|不超過|以內|at most|no more than)\\s*${N}\\s*${U}|${N}\\s*頁以內`, "i").exec(t);
+  if (max && num(max[1] ?? max[2])) return { max: num(max[1] ?? max[2])! };
+  const exact = new RegExp(`(?:做成|做|共|總共|剛好|正好|改成|變成|擴充到|擴充成|擴到|增加到|縮成|縮減到|精簡到|控制在|大約|大概|差不多|約|一份|exactly|about|around|roughly|approximately|into|to)\\s*${N}\\s*${U}|(?<![第\\d一二兩三四五六七八九十])(\\d{1,2})\\s*(?:頁(?:的|簡報|投影片|左右)|-?(?:page|slide)\\b(?: deck| presentation)?|\\s(?:pages|slides)\\b)`, "i").exec(t);
   if (exact) {
-    const n = +(exact[1] ?? exact[2])!;
-    if (n >= 1 && n <= 60) return { exact: n };
+    const n = num(exact[1] ?? exact[2]);
+    if (n && n >= 1 && n <= 60) return { exact: n };
   }
   // A bare 「…，8 頁」 at the end of a clause (eval deck_study_answer_topic: 「用我們的文獻庫，8 頁」 got the default 10).
-  const bare = /(?:^|[，,、；;\s])(\d{1,2})\s*(?:頁|張投影片)\s*(?:$|[，,。.！!；;])/.exec(text);
-  if (bare && !/第\s*$/.test(text.slice(0, bare.index + 1))) {
-    const n = +bare[1]!;
-    if (n >= 1 && n <= 60) return { exact: n };
+  const bare = new RegExp(`(?:^|[，,、；;\\s])${N}\\s*(?:頁|張投影片)\\s*(?:$|[，,。.！!；;])`).exec(t);
+  if (bare) {
+    const n = num(bare[1]);
+    if (n && n >= 1 && n <= 60) return { exact: n };
   }
   return null;
 }
@@ -351,40 +361,75 @@ export function detectPerItemFields(text: string): Requirement["params"] | null 
 }
 
 const ZH_DIGIT: Record<string, number> = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-/** 「9」「九」「十二」「二十」 → the number (1–99), else null. */
+const EN_NUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10, eleventh: 11, twelfth: 12 };
+/** 「9」「九」「十二」「二十」「nine」「9th」「ninth」 → the number (1–99), else null. */
 export function pageNumber(s: string): number | null {
-  if (/^\d{1,2}$/.test(s)) return +s || null;
-  const m = /^([一二兩三四五六七八九]?)(十?)([一二三四五六七八九]?)$/.exec(s);
-  if (!m || !s) return null;
+  const t = s.trim().toLowerCase();
+  if (/^\d{1,2}(?:st|nd|rd|th)?$/.test(t)) return parseInt(t, 10) || null;
+  if (EN_NUM[t]) return EN_NUM[t]!;
+  const m = /^([一二兩三四五六七八九]?)(十?)([一二三四五六七八九]?)$/.exec(t);
+  if (!m || !t) return null;
   if (!m[2]) return m[1] && !m[3] ? ZH_DIGIT[m[1]]! : null;
   return (m[1] ? ZH_DIGIT[m[1]]! : 1) * 10 + (m[3] ? ZH_DIGIT[m[3]]! : 0);
 }
 
 const NUM = "(?:\\d{1,2}|[一二兩三四五六七八九十]{1,3})";
-/** 「第九頁」「第 3、5 頁」「第3到5頁」「page 9」「slides 3 and 4」 (as the user counts: the player's page numbers). */
-export const PAGE_REF_RE = new RegExp(`第\\s*${NUM}(?:\\s*(?:[、,，和跟與及]|到|至|~|-|–)\\s*(?:第\\s*)?${NUM})*\\s*[頁張]|\\b(?:pages?|slides?)\\s+\\d{1,2}(?:\\s*(?:,|and|&|to|-|–)\\s*\\d{1,2})*\\b`, "gi");
+const EN_WORD = `(?:\\d{1,2}|${Object.keys(EN_NUM).filter((w) => !/(?:st|nd|rd|th)$/.test(w)).join("|")})`;
+const EN_ORD = `(?:\\d{1,2}(?:st|nd|rd|th)|${Object.keys(EN_NUM).filter((w) => /(?:st|nd|rd|th)$/.test(w)).join("|")})`;
+/** A page unit after a Chinese number: 頁, 張 (not 張圖／張表), 張投影片. */
+const ZH_UNIT = "(?:張投影片|頁投影片|頁|張(?![圖表照]))";
+const ZH_SEP = "(?:[、,，和跟與及]|到|至|~|-|–)";
+/**
+ * A page reference as the user counts (the player's page numbers): 「第九頁」「第 3、5 頁」「第三頁和第五頁」「第3到5頁」
+ * 「第九張投影片」「最後一頁」「倒數第二頁」「page 9」「slides 3 and 4」「page nine」「the 9th slide」「the last slide」.
+ * Negative numbers in `pageRefs`: from the end (-1 = the last page).
+ */
+export const PAGE_REF_RE = new RegExp([
+  `第\\s*${NUM}(?:\\s*${ZH_UNIT})?(?:\\s*${ZH_SEP}\\s*(?:第\\s*)?${NUM}(?:\\s*${ZH_UNIT})?)*\\s*${ZH_UNIT}`,
+  `最後(?:一)?${ZH_UNIT}|倒數第\\s*${NUM}\\s*${ZH_UNIT}`,
+  `\\b(?:pages?|slides?)\\s+${EN_WORD}(?:\\s*(?:,|and|&|to|-|–)\\s*${EN_WORD})*\\b`,
+  `\\b(?:the\\s+)?(?:${EN_ORD}|last)\\s+(?:slide|page)\\b`,
+].join("|"), "gi");
 
-/** The page numbers a reference names (ranges expanded). */
+/** The page numbers a reference names (ranges expanded; -1 = the last page, -2 = the one before it). */
 export function pageRefs(text: string): number[] {
   const out: number[] = [];
   for (const m of text.matchAll(PAGE_REF_RE)) {
-    const parts = [...m[0].matchAll(new RegExp(`(到|至|~|-|–|\\bto\\b)?\\s*(?:第\\s*)?(${NUM})`, "gi"))];
+    const ref = m[0];
+    if (/^(?:最後|(?:the\s+)?last\b)/i.test(ref)) {
+      out.push(-1);
+      continue;
+    }
+    const back = /^倒數第\s*(\S+?)\s*(?:張投影片|頁投影片|頁|張)$/.exec(ref);
+    if (back) {
+      const n = pageNumber(back[1]!);
+      if (n) out.push(-n);
+      continue;
+    }
+    const parts = [...ref.matchAll(new RegExp(`(到|至|~|-|–|\\bto\\b)?\\s*(?:第\\s*)?(${NUM}(?![一二兩三四五六七八九十\\d])|${EN_ORD}|${EN_WORD})`, "gi"))];
     for (const p of parts) {
       const n = pageNumber(p[2]!);
       if (!n) continue;
       const prev = out.at(-1);
-      if (p[1] && prev && n > prev && n - prev <= 30) for (let k = prev + 1; k <= n; k++) out.push(k);
+      if (p[1] && prev && prev > 0 && n > prev && n - prev <= 30) for (let k = prev + 1; k <= n; k++) out.push(k);
       else out.push(n);
     }
   }
   return [...new Set(out)];
 }
 
-const RM = "(?:刪掉|刪除|刪去|刪了|拿掉|拿走|去掉|移除|不要了|整頁不要|不需要了)";
+/** 「第 9 頁」, 「最後一頁」 (-1), 「倒數第 2 頁」 (-2). */
+export const pageLabel = (n: number) => (n === -1 ? "最後一頁" : n < 0 ? `倒數第 ${-n} 頁` : `第 ${n} 頁`);
+
+const RM = "(?:刪掉|刪除|刪去|刪了|拿掉|拿走|去掉|移除|不要了|整頁不要|不需要了|不要(?=$|[，,。.！!；;\\s]|吧))";
 /** Between a page reference and its removal verb: a quoted title, 「這一頁」, adverbs — never 「的」 (「第九頁的圖刪掉」 removes a part). */
 const GAP = `((?:\\s*(?:[「『"][^」』"]{1,80}[」』"]|這一?頁|那一?頁|整頁|整個|完整|全部|直接|也|都|給我|請|就|先|要)\\s*)*)`;
+const EN_RM = "(?:remove|delete|drop|cut|get\\s+rid\\s+of)";
 
-/** 「刪掉第 3 頁」「把第九頁刪掉」「拿掉「卡住」這頁」「第九頁「X」完整刪除」「remove the slide "Blocked"」「delete slide 9」. */
+/**
+ * 「刪掉第 3 頁」「把第九頁刪掉」「把第三頁和第五頁刪掉」「最後一頁不要」「拿掉「卡住」這頁」「第九頁「X」完整刪除」
+ * 「remove the slide "Blocked"」「delete slide 9」「delete the last slide」「delete page nine」.
+ */
 export function detectExclude(text: string): Requirement["params"] | null {
   const pages: number[] = [];
   const titles: string[] = [];
@@ -395,7 +440,7 @@ export function detectExclude(text: string): Requirement["params"] | null {
     if (quoted) titles.push(quoted);
     else pages.push(...pageRefs(m[1]!));
   }
-  for (const m of text.matchAll(/\b(?:remove|delete|drop|cut)\s+(?:the\s+)?((?:pages?|slides?)\s+\d{1,2}(?:\s*(?:,|and|&|to|-|–)\s*\d{1,2})*)\b|\b((?:page|slide)\s+\d{1,2})\s+(?:should\s+be\s+|needs\s+to\s+be\s+)?(?:removed|deleted|dropped)\b/gi)) pages.push(...pageRefs(m[1] ?? m[2]!));
+  for (const m of text.matchAll(new RegExp(`\\b${EN_RM}\\s+(${PAGE_REF_RE.source})|(${PAGE_REF_RE.source})\\s+(?:should\\s+be\\s+|needs\\s+to\\s+be\\s+|has\\s+to\\s+be\\s+)?(?:removed|deleted|dropped)\\b`, "gi"))) pages.push(...pageRefs(m[1] ?? m[2]!));
   titles.push(...[...text.matchAll(/(?:刪掉|刪除|拿掉|去掉|移除|不要)\s*[「『"]([^」』"]{1,60})[」』"](?:\s*(?:這|那)?一?頁)?/g), ...text.matchAll(/[「『"]([^」』"]{1,60})[」』"]\s*(?:這|那)?一?頁\s*(?:要|請)?(?:刪掉|刪除|拿掉|去掉|移除)/g), ...text.matchAll(/\b(?:remove|delete|drop)\s+(?:the\s+)?(?:slide|page|section)\s+["“']([^"”']{1,60})["”']/gi)].map((m) => m[1]!.trim()));
   const uniq = [...new Set(pages)];
   const names = [...new Set(titles)];
@@ -545,7 +590,7 @@ export function detectRequirements(text: string, opts: { pages?: unknown; kind?:
   if (subj.length && named) out.push({ type: "other", text: `主題是〈${named}〉`, quote: subj.join(" ").slice(0, 200) });
   if (PROFESSOR_RE.test(text) && !out.some((r) => r.type === "audience")) out.push({ type: "audience", text: "對象是教授：像向教授報告一樣，重點與證據清楚，能拿來討論與做決定", quote: clauseOf(text, PROFESSOR_RE) });
   const ex = detectExclude(text);
-  if (ex) out.push({ type: "exclude", text: `刪掉：${[...(ex.pages ?? []).map((p) => `第 ${p} 頁`), ...(ex.terms ?? []).map((t) => `「${t.name}」`)].join("、")}`, params: ex, ...q(/刪掉|刪除|拿掉|去掉|移除|不要|remove|delete|drop/i) });
+  if (ex) out.push({ type: "exclude", text: `刪掉：${[...(ex.pages ?? []).map(pageLabel), ...(ex.terms ?? []).map((t) => `「${t.name}」`)].join("、")}`, params: ex, ...q(/刪掉|刪除|拿掉|去掉|移除|不要|remove|delete|drop/i) });
   return out;
 }
 
@@ -803,7 +848,7 @@ export function requirementsBlock(reqs: Requirement[], audience: "producer" | "v
     if (r.type === "page_count") return `- 頁數：${pageText(p)}。`;
     if (r.type === "include_topics" && p.sections) return `- 要呈現這幾個部分，每個部分至少一${(r.text.includes("段落") ? "個段落" : "頁")}，標題包含該部分的名稱：${(p.topics ?? []).map((t) => `「${t.name}」`).join("、")}。`;
     if (r.type === "include_topics") return `- 一定要涵蓋：${(p.topics ?? []).map((t) => t.name).join("、")}（${r.text}）。`;
-    if (r.type === "exclude") return `- 要刪掉／不要出現：${[...(p.pages ?? []).map((n) => `原本第 ${n} 頁`), ...(p.terms ?? []).map((t) => `「${t.name}」`)].join("、") || r.text}。`;
+    if (r.type === "exclude") return `- 要刪掉／不要出現：${[...(p.pages ?? []).map((n) => `原本${pageLabel(n)}（頁碼含封面）`), ...(p.terms ?? []).map((t) => `「${t.name}」`)].join("、") || r.text}。`;
     if (r.type === "per_item_fields") return `- 每個${p.item_kind ?? "項目"}${p.items?.length ? `（${p.items.join("、")}）` : ""}都要有，而且用清楚的小標或欄位標出：${(p.fields ?? []).map((f) => f.name).join("、")}。`;
     return `- ${r.text}`;
   });
@@ -959,7 +1004,9 @@ export async function standingOf(env: WorkflowEnv): Promise<{ list: Omit<Require
   }
   if (!row) return { list: [], artifact: null };
   const saved = (row.agent_prefs?.requirements ?? []).map((r) => cleanRequirement(r, "standing")).filter((r): r is Omit<Requirement, "id"> => !!r && STANDING_TYPES.includes(r.type));
-  if (!saved.some((r) => r.type === "language") && row.content && inferLanguage(row.content) === "en") {
+  // Inferred from the artifact's own text only for a deck the run edits: a note in `note_ids` is a SOURCE of a new note
+  // (experiment_report: an English log did not make the Chinese report English).
+  if (i.deck_id && !saved.some((r) => r.type === "language") && row.content && inferLanguage(row.content) === "en") {
     saved.push({ type: "language", text: `成果全部用 English（沿用：${artifact}目前是英文）`, params: { language: "en" }, source: "standing" });
   }
   return { list: saved.map((r) => ({ ...r, text: r.text.startsWith("沿用") || r.text.includes("沿用") ? r.text : `${r.text}（沿用${artifact}的設定）` })), artifact };
@@ -1017,7 +1064,13 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string, br
   const removed = new Set(env.state<string[]>("requirements_removed") ?? []);
   const userEdits = (prev ?? []).filter((r) => r.source === "user").map(({ id: _id, ...r }) => r);
   // Last resort for the language (after the artifact's own): the user wrote the request in English → English.
-  const fromMessage = messageLanguage(start);
+  // …and only for something new: the language of the user's message never changes an existing artifact's language
+  // (「Please shorten the title of slide 3」 on a Chinese deck is not 「translate it」).
+  // (An edit: the route says so for a deck — a deck page's empty template is filled, not edited; a LaTeX project is
+  // always existing. `note_ids` are a new note's sources, not its target: the message language still applies there.)
+  const rt = (env.run.state?.route ?? {}) as { deck?: string; edit?: string };
+  const editing = rt.deck === "edit" || !!rt.edit || !!(env.run.inputs as { project_id?: unknown }).project_id;
+  const fromMessage = editing ? [] : messageLanguage(start);
   const merged = mergeRequirements(userEdits, det, llm, fromClauses, fromChat, standing.list, fromMessage).filter((r) => !removed.has(keyOf(r)));
   const reqs = merged.map((r, i) => ({ ...r, id: `r${i + 1}` }));
   await env.setState({ requirements: reqs, requirements_key: key });

@@ -8,9 +8,12 @@ import { detectExclude, pageRefs, segmentClauses, trivialClause } from "../requi
 import type { Requirement } from "../types.js";
 import { splitChunks } from "./slides-requirements.js";
 
-/** 1-based content page = the user's page number (the player's, cover included when the deck has one), else null. */
+/**
+ * 1-based content page = the user's page number (the player's, cover included when the deck has one), else null.
+ * Negative: from the end (「最後一頁」 -1 = the last content page, 「倒數第二頁」 -2).
+ */
 export function contentPage(n: number, pages: number, cover: boolean): number | null {
-  const i = cover ? n - 1 : n;
+  const i = n < 0 ? pages + 1 + n : cover ? n - 1 : n;
   return i >= 1 && i <= pages ? i : null;
 }
 
@@ -30,11 +33,13 @@ export function excludedPages(params: Requirement["params"] | undefined, titles:
 }
 
 /** Words about the deck as a whole: not a page-scoped edit. */
-const DECK_WIDE_RE = /每一?[頁張]|所有(?:的)?(?:頁|投影片|內容)|全部|整份|整個簡報|整體|全篇|通篇|翻譯|翻成|譯成|語氣|風格|排版|版面|順序|重新組織|重組|\bevery (?:slide|page)\b|\ball (?:the )?(?:slides|pages)\b|\b(?:whole|entire) deck\b|\bthroughout\b|\btranslat/i;
+const DECK_WIDE_RE = /每一?[頁張]|所有(?:的)?(?:頁|投影片|內容|標題)|全部|都|其他頁|其餘|各頁|整份|整個簡報|整體|全篇|通篇|翻譯|翻成|譯成|語氣|風格|排版|版面|順序|重新組織|重組|\bevery (?:slide|page)\b|\ball (?:the )?(?:slides|pages)\b|\b(?:whole|entire) deck\b|\bthroughout\b|\btranslat/i;
 /** A reason or a remark, not an ask (「因為這頁的內容不準確」). */
 const REASON_RE = /^(?:因為|畢竟|不然|否則|由於|because\b|since\b)/i;
-/** Refers back to a page named before (「不要保留這一頁的講稿」). */
-const THIS_PAGE_RE = /這一?頁|該頁|那一?頁|\b(?:this|that) (?:slide|page)\b/i;
+/** Adds pages (「在第三頁後面加一頁」「再加一頁結論」「add a slide after slide 3」). */
+const ADD_RE = /(?:加上|加入|新增|增加|多加|補上|再加|插入|加)\s*(?:\d{1,2}|[一二兩三四五六七八九十])?\s*(?:頁|張投影片)|\b(?:add|insert)\b[^.\n]{0,30}\b(?:slides?|pages?)\b/i;
+/** A page named as a position for added pages, not as a page to change (「在第三頁後面」「after slide 3」). */
+const ANCHOR_RE = /後面|之後|以後|前面|之前|以前|[前後](?=加|插|新增|補)|\b(?:after|before|between)\b/i;
 /** Requirement types that change the deck as a whole (a run-wide language, page count, topics…). */
 const DECK_WIDE_TYPES = new Set<Requirement["type"]>(["language", "page_count", "include_topics", "per_item_fields", "audience", "length", "tone", "format"]);
 
@@ -55,7 +60,8 @@ function namedPages(clause: string, titles: string[], cover: boolean): number[] 
   return [...out];
 }
 
-export type PageScope = { removed: number[]; touched: number[] };
+/** `added`: the words add pages (placed by the planner, next to the anchor they name); the other pages stay. */
+export type PageScope = { removed: number[]; touched: number[]; added: boolean };
 
 /**
  * The edit's page scope, or null when the words are about the deck as a whole. Every content clause has to name pages
@@ -69,13 +75,24 @@ export function pageScope(words: string, reqs: { type: Requirement["type"]; para
   const removed = new Set(excludedPages(reqs.find((r) => r.type === "exclude")?.params, titles, cover));
   const named: number[] = [];
   let last: number[] = [];
+  let added = false;
   for (const c of segmentClauses(words)) {
     if (REASON_RE.test(c.trim())) continue;
     const hits = namedPages(c, titles, cover);
+    // Added pages: the pages a clause names are where they go, not pages to change.
+    if (ADD_RE.test(c)) {
+      added = true;
+      if (hits.length && !ANCHOR_RE.test(c)) named.push(...hits);
+      continue;
+    }
     // A short clause that names a page is not filler (「Delete slide 3 from this deck」).
     if (!hits.length && trivialClause(c)) continue;
     if (!hits.length) {
-      if (THIS_PAGE_RE.test(c) && last.length) continue;
+      // A clause after one that names pages is about those pages (「第三頁的內容太多了，精簡一點」).
+      if (last.length) {
+        if (!last.every((n) => removed.has(n))) named.push(...last);
+        continue;
+      }
       return null;
     }
     last = hits;
@@ -85,8 +102,8 @@ export function pageScope(words: string, reqs: { type: Requirement["type"]; para
     named.push(...hits);
   }
   const touched = [...new Set(named)].filter((n) => !removed.has(n)).sort((a, b) => a - b);
-  if (!removed.size && !touched.length) return null;
-  return { removed: [...removed].sort((a, b) => a - b), touched };
+  if (!removed.size && !touched.length && !added) return null;
+  return { removed: [...removed].sort((a, b) => a - b), touched, added };
 }
 
 const titleOf = (raw: string) => parseSlides(raw)[0]?.title ?? "";

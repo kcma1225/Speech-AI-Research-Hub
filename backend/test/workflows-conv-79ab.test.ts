@@ -154,6 +154,19 @@ run("production conversation 79ab0678", () => {
     expect(keys).not.toContain("visual_qa");
   });
 
+  it("1b. get_deck numbers pages like the player: the cover is page 1 (audit: 「改第九頁」 read the tenth)", async () => {
+    const { createTree } = await import("../src/lib/slides/sources.js");
+    const deckId = (await t.db.query<{ id: string }>("INSERT INTO decks(study_id,kind,title,slug,share_key,created_by,updated_by) VALUES($1,'progress','Cover deck',$2,$3,$4,$4) RETURNING id",
+      [studyS.id, `cv-${randomBytes(3).toString("hex")}`, `sk-${randomBytes(6).toString("hex")}`, user.id])).rows[0]!.id;
+    await createTree(t.db, deckId, user.id, "ai", [{ path: "index.qmd", content: `---\ntitle: "Cover deck"\n---\n\n${EN_DECK}\n` }]);
+    const out = await getAgentTool("get_deck")!.execute({ deck_id: deckId, pages: [3] } as never, await toolCtx(await homeChat()) as never);
+    const src = (out.data as { source: { cover?: { n: number }; slides: { n: number; title: string; body?: string }[] } }).source;
+    expect(src.cover?.n).toBe(1);
+    expect(src.slides.map((s) => s.n)).toEqual([2, 3, 4]);
+    const full = src.slides.filter((s) => s.body !== undefined);
+    expect(full.map((s) => s.title)).toEqual(["Taxonomy of Methods"]);
+  });
+
   it("2. a home-page topic request with two studies: a study-picker card; the answer is not the topic or a requirement", async () => {
     const conv = await homeChat();
     await msg(conv, "user", REQUEST_A);

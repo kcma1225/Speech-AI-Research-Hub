@@ -36,8 +36,8 @@ registerAgentTool({
   title: "讀取簡報",
   titleEn: "Read deck",
   risk: "read",
-  description: "Read a deck's content: title, kind, versions and (for in-app Quarto decks) every slide's title, a short preview of its text and speaker notes, plus the entry .qmd text (≤ 12 000 characters). Pass `pages` (e.g. [3, 5]) to get those slides in full (body + speaker notes). Use it before answering any question about what a deck says or covers.",
-  input: z.object({ deck_id: uuidArg("Deck"), pages: z.array(z.number().int().min(1).max(200)).max(20).optional().describe("Slide numbers (1-based) to return in full") }),
+  description: "Read a deck's content: title, kind, versions and (for in-app Quarto decks) every slide's title, a short preview of its text and speaker notes, plus the entry .qmd text (≤ 12 000 characters). Pass `pages` (e.g. [3, 5]) to get those slides in full (body + speaker notes). Slides are numbered the way the player shows them and the user counts them: when the deck has a cover (front-matter title) the cover is page 1 and the first `## ` slide is page 2 (`cover` says which). Use it before answering any question about what a deck says or covers.",
+  input: z.object({ deck_id: uuidArg("Deck"), pages: z.array(z.number().int().min(1).max(200)).max(20).optional().describe("Page numbers as the player shows them (the cover is page 1 when there is one) to return in full") }),
   summarize: () => "讀取簡報",
   async execute(a, ctx) {
     if (!isUuid(a.deck_id)) throw notFound("簡報不存在。");
@@ -57,10 +57,14 @@ registerAgentTool({
       othersWrote ||= files.some((f) => f.updated_by && f.updated_by !== ctx.user.id);
       // Every slide is listed (a long deck's clipped entry text once hid half of it from the assistant), the asked pages in full.
       const slides = entry?.content ? parseSlides(entry.content.replace(/^---\n[\s\S]*?\n---\n?/, "")) : [];
+      // The player's numbering (what the user says, what get_deck_pages returns): the front-matter cover is page 1.
+      const cover = /^---\n[\s\S]*?^title:\s*\S/m.test(entry?.content ?? "") ? (/^title:\s*(.+)$/m.exec(entry!.content!)?.[1] ?? "").replace(/^["']|["']$/g, "") : null;
+      const at = (i: number) => i + 1 + (cover !== null ? 1 : 0);
       const want = new Set(a.pages ?? []);
       source = {
         entry: tree.entry, entry_file_id: entry?.id ?? null, files: files.map((f) => ({ id: f.id, path: f.path, kind: f.kind, bytes: f.bytes })),
-        slides: slides.map((s, i) => (want.has(i + 1) ? { n: i + 1, title: scrub(s.title), body: clip(scrub(s.body), 4000), notes: clip(scrub(s.notes), 3000) } : { n: i + 1, title: scrub(s.title), preview: clip(scrub(s.body.replace(/\s+/g, " ")), 240), notes_preview: clip(scrub(s.notes.replace(/\s+/g, " ")), 160) })),
+        ...(cover !== null ? { cover: { n: 1, title: scrub(cover), note: "封面（由 front matter 產生）算第 1 頁；第一個 ## 投影片是第 2 頁" } } : {}),
+        slides: slides.map((s, i) => (want.has(at(i)) ? { n: at(i), title: scrub(s.title), body: clip(scrub(s.body), 4000), notes: clip(scrub(s.notes), 3000) } : { n: at(i), title: scrub(s.title), preview: clip(scrub(s.body.replace(/\s+/g, " ")), 240), notes_preview: clip(scrub(s.notes.replace(/\s+/g, " ")), 160) })),
         entry_text: entry?.content && !want.size ? clip(scrub(entry.content), 12000) : null,
       };
     }

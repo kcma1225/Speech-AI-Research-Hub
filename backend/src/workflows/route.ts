@@ -81,7 +81,7 @@ const CN_NUM: Record<string, number> = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4,
 /** 「加上一頁…」「新增兩頁」「add 2 slides」: how many pages the request adds to the deck (0 when none). */
 export function addedPages(text: string): number {
   let n = 0;
-  for (const m of text.matchAll(/(?:加上|加入|新增|增加|多加|補上|再加|加)\s*(\d{1,2}|[一二兩三四五六七八九十])\s*(?:頁|張)/g)) n += Number(m[1]) || CN_NUM[m[1]!] || 0;
+  for (const m of text.matchAll(/(?:加上|加入|新增|增加|多加|補上|再加|加)\s*(\d{1,2}|[一二兩三四五六七八九十])\s*(?:頁|張投影片|張(?![圖表照]))/g)) n += Number(m[1]) || CN_NUM[m[1]!] || 0;
   for (const m of text.matchAll(/\badd(?:ing)?\s+(?:an?|one|(\d{1,2}))\s+(?:new\s+|more\s+|extra\s+)?(?:slides?|pages?)\b/gi)) n += Number(m[1]) || 1;
   return Math.min(n, 20);
 }

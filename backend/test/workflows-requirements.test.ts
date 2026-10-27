@@ -266,7 +266,7 @@ run("workflow requirements (probe suite)", () => {
     // The planner was told which pages stay, and got the missing page as an issue before the deterministic repair.
     const prompts = m.prompts("outline");
     expect(prompts).toHaveLength(2);
-    expect(prompts[0]).toContain("第 3 頁「卡住」");
+    expect(prompts[0]).toContain("原第 3 張「卡住」");
     expect(prompts[1]).toContain("原本的這些頁面不見了：第 3 頁「卡住」");
     expect(planned.plan!.outline!.map((o) => o.title)).toEqual(["問題定義", "Shallow fusion", "TCPGen", "結果與下一步", "卡住"]);
     expect(planned.criteria.find((c) => c.id === "kept")!.check).toEqual({ id: "pages_kept", params: { titles: ["問題定義", "卡住"], ordered: true } });
