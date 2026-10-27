@@ -82,7 +82,20 @@ export type CompletionFacts = {
   earlierWrite: boolean;
   /** The latest plan when it was set or changed in this turn, else null. */
   plan: Plan | null;
+  /**
+   * Paper tutoring: the concept `next_concept` handed out in this turn (its label, 「情境偏置（contextual biasing）」).
+   * The turn is meant to end after teaching it (the user answers): an open plan is then expected, an untaught concept
+   * is not (staging: the plan said 「情境偏置（已講解）」, no message explained it, and the plan check made the model
+   * explain its plan instead).
+   */
+  teaching?: string | null;
 };
+
+/** The concept's names in a label 「中文（English）」. */
+const termNames = (label: string) => [label.split(/[（(]/)[0]!, /[（(]([^）)]+)[）)]/.exec(label)?.[1] ?? ""].map((x) => x.trim()).filter((x) => x.length >= 2);
+
+/** The answer teaches the concept: names it and says more than a line about it. */
+export const teaches = (text: string, label: string) => text.replace(/\s+/g, "").length >= 60 && termNames(label).some((n) => text.toLowerCase().includes(n.toLowerCase()));
 
 /** One hidden correction prompt when the final answer does not match the run, else null. */
 export function completionReview(f: CompletionFacts): string | null {
@@ -99,7 +112,11 @@ export function completionReview(f: CompletionFacts): string | null {
         : `你的回答提到「${claim}」，但這一輪沒有執行任何寫入工具，所以什麼都還沒有被建立或修改。`,
     );
   }
-  const open = f.plan ? unfinishedSteps(f.plan) : [];
+  if (f.teaching && !teaches(f.text, f.teaching)) {
+    issues.push(`你在這一輪用 next_concept 取得了要教的概念「${f.teaching}」，但回答裡沒有講解它。現在就在回答中直接講解（依 next_concept 給的方式：直覺說明、這篇論文為什麼需要它），講完可以邀請使用者用一句話說明，然後結束這一輪；不要只更新計畫或說明進度。`);
+  }
+  // Tutoring waits for the user after each concept: the plan's remaining steps are not unfinished work of this turn.
+  const open = f.plan && !f.teaching ? unfinishedSteps(f.plan) : [];
   if (open.length) issues.push(`工作計畫還有 ${open.length} 個步驟沒有完成：\n${planText(f.plan!)}`);
   if (!issues.length) return null;
   return [

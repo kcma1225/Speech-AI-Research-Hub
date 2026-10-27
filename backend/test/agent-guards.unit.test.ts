@@ -100,3 +100,22 @@ describe("cleared tool results", () => {
     expect(JSON.stringify(tool.content)).toContain("相同參數重新呼叫");
   });
 });
+
+describe("completion review: paper tutoring (staging: 「情境偏置（已講解）」 in the plan, no message explained it)", () => {
+  const plan = { plan: [{ step: "補概念 1/6：情境偏置", status: "in_progress" as const }, { step: "講解論文", status: "pending" as const }] };
+  const term = "情境偏置（contextual biasing）";
+  it("an untaught concept is a correction; the open plan is not (the turn waits for the user)", () => {
+    const nudge = completionReview({ text: "", calls: [], earlierWrite: false, plan, teaching: term })!;
+    expect(nudge).toContain("沒有講解它");
+    expect(nudge).not.toContain("工作計畫還有");
+  });
+  it("a taught concept ends the turn cleanly, plan open or not", () => {
+    const text = "情境偏置（contextual biasing）就是在辨識時給模型一份詞清單，讓清單裡的罕見詞更容易被選中；這篇論文用它來補 Whisper 認不出聯絡人名字的問題。用一句話說：它在做什麼？";
+    expect(completionReview({ text, calls: [], earlierWrite: false, plan, teaching: term })).toBeNull();
+    expect(completionReview({ text: "Contextual biasing feeds the decoder a list of rare words so they win more often; the paper uses it for names Whisper misses.", calls: [], earlierWrite: false, plan: null, teaching: term })).toBeNull();
+  });
+  it("without tutoring the plan check is unchanged", () => {
+    expect(completionReview({ text: "好了", calls: [], earlierWrite: false, plan })).toContain("工作計畫還有");
+  });
+});
+

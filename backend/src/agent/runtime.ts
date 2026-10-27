@@ -1314,8 +1314,8 @@ export class AgentRuntime {
    */
   private async turnFacts(conversationId: string) {
     const lastUser = (await this.db.query<{ seq: string | null }>("SELECT max(seq) AS seq FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL", [conversationId])).rows[0]?.seq ?? "0";
-    const rows = (await this.db.query<{ tool: string; risk: RunCall["risk"]; status: string; step: number; args: unknown; edited_args: unknown }>(
-      `SELECT tc.tool, tc.risk, tc.status, tc.step, tc.args, tc.edited_args FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
+    const rows = (await this.db.query<{ tool: string; risk: RunCall["risk"]; status: string; step: number; args: unknown; edited_args: unknown; result: { data?: { next?: { term?: string } | null } } | null }>(
+      `SELECT tc.tool, tc.risk, tc.status, tc.step, tc.args, tc.edited_args, CASE WHEN tc.tool='next_concept' THEN tc.result END AS result FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
         WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL AND m.seq > $2 ORDER BY m.seq, tc.position`,
       [conversationId, lastUser],
     )).rows;
@@ -1325,7 +1325,9 @@ export class AgentRuntime {
       [conversationId, lastUser],
     )).rowCount ?? 0) > 0;
     const planRow = [...rows].reverse().find((r) => r.tool === "update_plan" && r.status === "done");
-    return { calls: rows as RunCall[], earlierWrite, plan: planRow ? ((planRow.edited_args ?? planRow.args) as Plan) : null };
+    // Paper tutoring: the concept the last next_concept of this turn handed out (null: nothing left to teach).
+    const teaching = [...rows].reverse().find((r) => r.tool === "next_concept" && r.status === "done")?.result?.data?.next?.term ?? null;
+    return { calls: rows as RunCall[], earlierWrite, plan: planRow ? ((planRow.edited_args ?? planRow.args) as Plan) : null, teaching };
   }
 
   /** Deterministic review of a final answer against the turn; returns the hidden correction prompt or null. */

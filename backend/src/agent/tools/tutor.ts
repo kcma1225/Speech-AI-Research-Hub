@@ -168,6 +168,7 @@ registerAgentTool({
           `下一個：[${c.key}] ${termLabel(c)}${c.section ? `（論文 §${c.section} 需要）` : ""}${n.chain.length ? `，是為了理解 ${n.chain.join(" ← ")}` : ""}。`,
           `一句話說明：${c.gloss}`,
           how,
+          "講解要寫在這一輪給使用者的回答文字裡（不是只更新工作計畫或說明進度）；這一輪只講這一個概念。",
           verify,
           `講完這個之後還有 ${n.remaining} 個要補。使用者還是不懂時，用 add_subconcepts 列出它依賴的更基礎概念（每個最多 ${MAX_SUB_PER_PARENT} 個）。`,
         ].join("\n"),
