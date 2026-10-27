@@ -567,6 +567,21 @@ export const INVARIANTS: Invariant[] = [
       return out;
     },
   },
+  {
+    id: "note.continue_scoped", category: "deliverable", scope: "run", severity: "critical",
+    title: "筆記「繼續改」只建議重跑後真的改變的章節，其他章節不產生修改",
+    reads: "state.continue_prev_doc, state.doc, state.continue_sections",
+    check: (b) => {
+      const st = (b.run.state ?? {}) as { continue_prev_doc?: string; doc?: string; continue_sections?: string[] };
+      if (typeof st.continue_prev_doc !== "string" || !st.doc || !st.continue_sections) return [];
+      // Own parser: `## ` sections by heading, compared trimmed.
+      const sections = (text: string) => new Map(text.split(/^(?=## )/m).filter((s) => s.startsWith("## ")).map((s) => [(/^## (.+)$/m.exec(s)?.[1] ?? "").trim(), s.trim()] as const));
+      const before = sections(st.continue_prev_doc);
+      const after = sections(st.doc);
+      const untouched = st.continue_sections.filter((t) => before.has(t.trim()) && before.get(t.trim()) === after.get(t.trim()));
+      return untouched.length ? [{ message: `沒有重跑、內容也沒變的章節被放進了修改建議：${untouched.map((t) => `「${clip(t, 40)}」`).join("、")}`, evidence: { sections: untouched } }] : [];
+    },
+  },
   // ------------------------------------------------------------ deliverable
   {
     id: "deliverable.consistent", category: "deliverable", scope: "run", severity: "critical",
