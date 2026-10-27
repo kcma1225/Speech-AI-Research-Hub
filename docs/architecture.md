@@ -56,6 +56,11 @@ meetings `0080–0089`, search/embeddings `0090–0099`, QA fixes `0100+`.
 - Uploads use `@fastify/multipart` (`request.file()`), streamed to S3 via `app.storage.put` — never buffer
   whole files in memory. Enforce the `MAX_*_BYTES` config limits (use `limits.fileSize` and check `file.truncated`).
 - Schema changes: add `backend/migrations/NNNN_name.sql` (applied in order at backend start, under an advisory lock).
+- Every pool from `createPool` (backend, ai-worker, tests) uses `SafeClient` (`db.ts`): string parameters and objects sent
+  as JSON go through `pgSafe`, which drops U+0000 (raw or `\u0000` in JSON) — Postgres text / jsonb reject it, and
+  extracted text (PDF fonts, uploads, pages, model output) can carry it. Paper full text strips control characters at
+  extraction (`fulltext.ts`, `FULLTEXT_VERSION` 2). An agent tool's internal failure tells the model it is the system's,
+  not the data's (no re-download / substitute source).
   Never edit an applied migration.
 - Tests: `vitest` in `backend/test/*.test.ts`. Pure logic gets unit tests; route tests use `app.inject()` with a
   real Postgres when `TEST_DATABASE_URL` is set (skipped otherwise).

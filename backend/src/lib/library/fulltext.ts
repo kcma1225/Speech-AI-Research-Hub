@@ -11,7 +11,7 @@ import type { Storage } from "../storage.js";
 import { SourceError } from "./http.js";
 import { isPdf } from "./pdf.js";
 
-export const FULLTEXT_VERSION = 1;
+export const FULLTEXT_VERSION = 2;
 
 export type PaperSection = {
   /** Stable within one extraction: `front`, `abstract`, `s1`, `s2`, … */
@@ -231,7 +231,8 @@ export async function extractFullText(data: Uint8Array, opts: { maxPages?: numbe
       for (const it of content.items) {
         if (!("str" in it) || typeof it.str !== "string") continue;
         const tr = (it as { transform: number[] }).transform;
-        items.push({ str: it.str, x: tr[4] ?? 0, y: tr[5] ?? 0, h: Math.abs((it as { height?: number }).height || tr[3] || 0), eol: !!(it as { hasEOL?: boolean }).hasEOL });
+        // Control characters (NUL bytes from some fonts) are not text: the reader, the model and Postgres choke on them.
+        items.push({ str: it.str.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ""), x: tr[4] ?? 0, y: tr[5] ?? 0, h: Math.abs((it as { height?: number }).height || tr[3] || 0), eol: !!(it as { hasEOL?: boolean }).hasEOL });
       }
       pages.push(pageLines(items));
       page.cleanup();

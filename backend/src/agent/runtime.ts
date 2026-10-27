@@ -128,7 +128,12 @@ const UNRESOLVED = ["pending_approval", "approved", "running"];
 const stable = (v: unknown): string =>
   v && typeof v === "object" ? (Array.isArray(v) ? `[${v.map(stable).join(",")}]` : `{${Object.keys(v as object).sort().map((k) => `${JSON.stringify(k)}:${stable((v as Record<string, unknown>)[k])}`).join(",")}}`) : JSON.stringify(v);
 
-const errorText = (e: unknown) => (e instanceof HttpError ? e.message : isPlatformError(e) ? e.message_zh : e instanceof AiError ? e.message_zh : "工具執行時發生錯誤。");
+/**
+ * An internal failure says it is the system's, not the data's (production 研究內容講解: a bare 「工具執行時發生錯誤」 on
+ * read_paper made the assistant fetch a PDF the library already had).
+ */
+const INTERNAL_ERROR = "工具執行時發生系統內部錯誤（不是資料或檔案本身的問題）。不要重新下載、匯入或改用其他來源取代；可以換個參數再試一次（例如改讀其他章節），仍失敗就告訴使用者這個工具暫時出錯。";
+const errorText = (e: unknown) => (e instanceof HttpError ? e.message : isPlatformError(e) ? e.message_zh : e instanceof AiError ? e.message_zh : INTERNAL_ERROR);
 
 export class AgentRuntime {
   readonly options: AgentOptions;
