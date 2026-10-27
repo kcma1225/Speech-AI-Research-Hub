@@ -14,7 +14,7 @@ import { activeConversationGoal, createGoal, goalDetail, goalResult, updateGoal,
 import { getGoal } from "./store.js";
 import type { GoalRow } from "./types.js";
 import { collectUserWords } from "../brief.js";
-import { wantedDeliverable } from "../route.js";
+import { editsExisting, wantedDeliverable } from "../route.js";
 
 const uuid = (v?: string) => (v && /^[0-9a-f-]{36}$/i.test(v) ? v : undefined);
 
@@ -84,6 +84,8 @@ const GOAL_KINDS = new Set<DeliverableKind>(["paper", "outline"]);
  * Null = start the workflow.
  */
 export async function routeWorkflowRequest(ctx: AgentToolContext, a: StartArgs & { paper_ids?: string[] }) {
+  // An edit of a part of an existing paper / note is one workflow (or the assistant's own suggestion), never a goal.
+  if (editsExisting(a.userWords, a.request, { project_id: uuid(a.project_id), note_ids: a.note_ids })) return null;
   const want = wantedOf(a);
   if (!want) return null;
   const hint = a.playbook && getWorkflowPlaybook(a.playbook) ? a.playbook : null;

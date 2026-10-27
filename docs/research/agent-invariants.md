@@ -33,6 +33,9 @@
 | `deck.notes_only_bodies` | 交付物 | critical | 只改講稿的修改（state.notes_only）：每一頁的投影片本體和原本一字不差，頁數也一樣 | state.notes_only、state.original_slides、state.deck.body | 79ab 012599ad：講稿改中文，第 2 頁文字、第 8 頁的圖被改 |
 | `deck.page_scope_kept` | 交付物 | critical | 只改指定頁面的修改（state.kept_pages / removed_pages）：沒指定的頁面一字不差，要刪的頁面不在成果裡 | state.kept_pages、state.removed_pages、state.deck.body | 12e713d3：「把第九頁刪掉」重寫並重新截圖全部 10 頁，那一頁還在 |
 | `note.continue_scoped` | 交付物 | critical | 筆記「繼續改」的修改建議只含重跑後內容真的改變的章節（state.continue_sections 對照 continue_prev_doc 與 doc） | state.continue_prev_doc、state.doc、state.continue_sections | 稽核：繼續改把整份組好的筆記拿去和線上筆記比對，還原了使用者後來的修改、把英文標題改回中文、拿掉橫幅 |
+| `route.latex_part_edit` | 路由 | critical | 指定了 LaTeX 專案（inputs.project_id）、使用者的話指的是論文的一部分（第三節、Table 2、附錄 A、某一段…）或要改它，而且沒有要新論文／新章節：路由必須是 latex_section 的修改模式（route.latex = edit） | inputs.project_id、原話、route.playbook／latex | 稽核 F3：「把 Related Work 第二段刪掉」被 LIT_RE 變成文獻回顧筆記；「把 latex 論文裡的 Table 2 拿掉」建立了一份新的論文專案 |
+| `route.note_part_not_research` | 路由 | high | 指定了筆記、話裡只改其中一節／一段或只補一篇：不重新做主題調研（不匯入一批論文） | inputs.note_ids、原話、playbook | 稽核 F6：「把調研筆記裡 RNN-T 那節刪掉」重跑 topic_research，匯入 8–12 篇論文 |
+| `latex.part_scope_kept` | 交付物 | critical | 只改論文指定部分的修改：每個檔案的結果 = 保留的片段＋指定範圍的新內容，其他內容一字不差，要刪的內容不在結果裡 | state.latex_edit_result.files[].kept／splices／next | 稽核 F1：章節修改整節重寫、整檔取代，刪除無法通過最短長度與引用檢查 |
 | `deliverable.consistent` | 交付物 | critical | Brief 的交付物 = 路由的種類 = 計畫寫入 = 實際成果（目標的階段 run 不比成果） | brief.deliverable、route.kind、plan.writes、artifacts | 50b49d80 類（簡報變筆記） |
 | `req.clause_coverage` | 要求 | high（主題句 = medium） | 使用者這次每一句有內容的話，都對應到一條要求（引用它、或型別參數在講它），或被明確列為不採用（`state.requirements_dropped`）；只說「幫我做一個簡報／幫我改」的核心句不算；新建成果的主題句由主題帶著 | 這個任務的原話、要求的 quote、dropped、主題欄位 | 0668a3d7：6 句要求只抓到語言 1 句 |
 | `req.contradicts_newest` | 要求 | critical | 要求不能違反使用者最新的話：語言分「投影片／講稿／整份」，越新的話越優先；頁數 | 原話（新到舊）、language 要求的 part、page_count | e6d552fc：講稿要中文，要求是整份英文 |

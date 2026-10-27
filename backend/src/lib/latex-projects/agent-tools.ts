@@ -114,6 +114,29 @@ registerAgentTool({
   },
 });
 
+export const PART_EDIT_ONLY = "這個檔案已有內容：要改其中一部分時請用 edits（只送要改的那段原文 before 與新文字 after），不要用 content 重送整個檔案；只有使用者要求整個檔案重寫時才用 content。";
+/** 「整個檔案重寫」「全部重寫」「rewrite the whole file」: the user asked for the whole file. */
+export const WHOLE_REWRITE_RE = /整個(?:檔案|檔|章節|文件)|整份|整篇|全部(?:重寫|改寫)|重寫整|從頭(?:重)?寫|整節重寫|\brewrite (?:the )?(?:whole|entire|full)\b|\bfrom scratch\b/i;
+
+/** Original lines that the new text keeps verbatim (the share of the file a full `content` leaves as it was). */
+export function keptLineShare(current: string, next: string): number {
+  const lines = current.split("\n").map((l) => l.trim()).filter((l) => l.length >= 8);
+  if (!lines.length) return 0;
+  const have = new Set(next.split("\n").map((l) => l.trim()));
+  return lines.filter((l) => have.has(l)).length / lines.length;
+}
+
+/**
+ * A full-file `content` is fine for an empty / tiny file, when it changes most of the file (it really is a rewrite: under
+ * half of the file's lines kept), or when the user's own recent words ask to rewrite the whole file.
+ */
+async function wholeFileChangeAllowed(ctx: AgentToolContext, current: string, next: string): Promise<boolean> {
+  if (current.trim().length < 400 || keptLineShare(current, next) < 0.5) return true;
+  if (!ctx.conversationId) return false;
+  const said = (await ctx.db.query<{ text: string | null }>("SELECT text FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq DESC LIMIT 3", [ctx.conversationId]).catch(() => ({ rows: [] as { text: string | null }[] }))).rows;
+  return said.some((r) => WHOLE_REWRITE_RE.test(r.text ?? ""));
+}
+
 registerAgentTool({
   name: "latex_suggest_edit",
   title: "建議修改 LaTeX 檔案",
@@ -121,7 +144,7 @@ registerAgentTool({
   risk: "write",
   suggests: true,
   description:
-    "Propose changes to ONE text file of a LaTeX project (one section file per suggestion). Give `content` (the full new file text) or `edits` (exact `before` passages from the current text and their replacement). Creates a suggestion the user reviews in the LaTeX editor; nothing is changed directly.",
+    "Propose changes to ONE text file of a LaTeX project (one section file per suggestion). To change part of an existing file (a section, a paragraph, a table, a citation) give `edits`: exact `before` passages from the current text and their replacement — everything else stays as it is. `content` (the full new file text) is only for a new / empty file or when the user asked to rewrite the whole file; it is refused for a file with content otherwise. Creates a suggestion the user reviews in the LaTeX editor; nothing is changed directly.",
   input: z.object({
     project_id: uuidArg("LaTeX project"),
     file_id: uuidArg("File").optional(),
@@ -145,6 +168,12 @@ registerAgentTool({
     if (isGeneratedBib({ ...project, path: file.path })) throw badRequest("這個 .bib 檔由文獻庫自動產生；請改用文獻庫工具新增文獻。");
     if (a.content === undefined && !a.edits?.length) throw badRequest("請提供 content 或 edits。");
     let hunks: { from: number; to: number; before: string; after: string }[] | undefined;
+    // A full-file `content` for a file with content re-types it (under autopilot it is applied as is): only when the user
+    // asked to rewrite the whole file or the change really is the whole file; a part goes through `edits`.
+    if (a.content !== undefined) {
+      const current = await liveText(ctx.db, ctx.app.collab, file);
+      if (!(await wholeFileChangeAllowed(ctx, current, a.content))) throw badRequest(PART_EDIT_ONLY);
+    }
     if (a.content === undefined) {
       const text = await liveText(ctx.db, ctx.app.collab, file);
       hunks = a.edits!.map((e) => {

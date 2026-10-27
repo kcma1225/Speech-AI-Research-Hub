@@ -200,6 +200,13 @@ async function routePhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workf
       if (kind && (await chooseDeliverable(env, kind))) continue;
       throw new WorkflowInputError(`目前沒有工作流程能產生「${b.deliverable.label}」。`);
     }
+    // A narrow edit of an existing note (route.ts noteEditRedirect; the Brief got the words only now): no new research run.
+    if (r.redirect === "note_edit" && !env.run.goal_id) {
+      const message = `${r.reason}：這個工作流程不執行。請直接在對話中請助理修改那份筆記（它會以建議的方式只改你指出的部分）。`;
+      await setStatus(env, "cancelled", { stop_reason: "skipped", question: null, report: { summary_md: message, done: [], issues: [message] }, finished_at: new Date().toISOString() });
+      await env.note(message, "warn");
+      return null;
+    }
     // 「每一篇文獻」 whose study (or papers) were only known now: the batch creation would have made; this run ends.
     if (r.batch && !env.run.batch_id) {
       const message = await splitBatch(env, r.playbook);
@@ -218,7 +225,7 @@ async function routePhase(env: WorkflowEnv, pb: WorkflowPlaybook): Promise<Workf
         await prepareBrief(env, next.id, (x) => prepareRequirements(env, next.id, x));
       }
     }
-    const changed = !prev || prev.playbook !== next.id || prev.deck !== r.deck || prev.edit !== r.edit || prev.batch !== r.batch;
+    const changed = !prev || prev.playbook !== next.id || prev.deck !== r.deck || prev.edit !== r.edit || prev.batch !== r.batch || prev.latex !== r.latex;
     const state = await saveRoute(env, { ...r, playbook: next.id });
     if (changed) await env.note(routeNote(state));
     return next;
@@ -266,7 +273,7 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook, replans = 0): P
   const asked = env.state<string>("plan_question");
   // Never for a setup question (which study / paper / project: the general workflow needs it too) or an edit of a given
   // deck (production e6d552fc: a notes revise was offered 「仍做簡報」 = a NEW topic deck, or a note).
-  const editing = env.route()?.deck === "edit";
+  const editing = env.route()?.deck === "edit" || env.route()?.latex === "edit";
   if (res.kind === "question" && !res.setup && !editing && pb.id !== "generic" && env.run.guidance.length > 0 && (asked === res.question || asked === undefined)) {
     const fallback = getWorkflowPlaybook("generic");
     if (fallback) {

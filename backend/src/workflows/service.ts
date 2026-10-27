@@ -29,7 +29,7 @@ import { lockUserSlots, MAX_ACTIVE_PER_USER, promoteAllQueued, promoteQueued, sl
 import { fixLine, loadLedger } from "./ledger.js";
 import { artifactKindOf, detectPageCount, editedRequirements, withRequirementCriteria } from "./requirements.js";
 import { clipWords, collectUserWords, deliverableFor, editedBrief, saveBrief, seedBrief, type BriefKind } from "./brief.js";
-import { editAsked, newDeckAsked, route, routeContext, routeNote, routeState, type RouteState } from "./route.js";
+import { editAsked, latexEditAsked, newDeckAsked, NOTE_EDIT_MESSAGE, noteFollowUpAsked, route, routeContext, routeNote, routeState, type RouteState } from "./route.js";
 import { DELIVERABLE_LABEL } from "./goals/capabilities.js";
 import type { Requirement } from "./types.js";
 import { describeRef, type AttachmentRef, type StoredAttachment } from "../agent/attachments/index.js";
@@ -94,6 +94,17 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
     const n = (typeof ctx.noteId === "string" ? ctx.noteId : null) ?? (await conversationArtifact(client, input.conversationId, user.id, "note"));
     if (n) inputs.note_ids = [n];
   }
+  // A LaTeX project the words edit a part of (「把第三節刪掉」 on the paper page, 「把論文裡的 Table 2 拿掉」 after a run wrote
+  // it): the page's project, else the one the conversation's last workflow wrote (route.ts latexEditRoute).
+  if (!inputs.project_id && !inputs.deck_id && !input.briefDeliverable && latexEditAsked(said) && !/筆記|\bnotes?\b/i.test(said)) {
+    const p = (typeof ctx.projectId === "string" ? ctx.projectId : null) ?? (/論文|paper|latex|thesis/i.test(said) ? await conversationArtifact(client, input.conversationId, user.id, "latex_project") : null);
+    if (p) inputs.project_id = p;
+  }
+  // A narrow follow-up on the note the conversation made (「再補一篇 Conformer 的論文」「那節刪掉」): that note.
+  if (!inputs.note_ids?.length && !inputs.deck_id && !inputs.project_id && !input.briefDeliverable && noteFollowUpAsked(said)) {
+    const n = (typeof ctx.noteId === "string" ? ctx.noteId : null) ?? (await conversationArtifact(client, input.conversationId, user.id, "note"));
+    if (n) inputs.note_ids = [n];
+  }
   // User-provided material (material.ts; production 301b6e1a: an attached Deep-Research file never reached the run):
   // references to the files the caller handed over, the task turns' own attachments / pasted text, or — when the words
   // point at material — the conversation's newest uploaded document.
@@ -121,6 +132,8 @@ export async function insertWorkflows(client: Queryable, user: CurrentUser, inpu
   // ONE routing decision (route.ts): deliverable, playbook (the given one is a hint), deck mode, batch.
   const explicitPaper = !!inputs.paper_id;
   const r = route({ words, paraphrase, kind: input.briefDeliverable?.kind ?? null, hint, inputs: inputs as Record<string, unknown>, explicitPaper, ready: await routeContext(client, studyId, inputs.deck_id) });
+  // A narrow edit of an existing note (route.ts noteEditRedirect): no run — the assistant edits the note itself.
+  if (r.redirect === "note_edit" && !input.briefDeliverable) throw new HttpError(422, NOTE_EDIT_MESSAGE, { code: "note_edit" });
   const playbook = r.playbook;
   const deliverable = input.briefDeliverable ?? { kind: r.kind, label: r.deliverable ? DELIVERABLE_LABEL[r.deliverable] : deliverableFor([], null, playbook).label };
   const items = r.batch ? await batchPapers(client, { studyId, paperId: inputs.paper_id, paperIds: inputs.paper_ids }) : null;
