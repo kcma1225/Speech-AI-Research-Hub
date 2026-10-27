@@ -64,13 +64,16 @@ export type PageScope = { removed: number[]; touched: number[] };
  */
 export function pageScope(words: string, reqs: { type: Requirement["type"]; params?: Requirement["params"]; source?: Requirement["source"] }[], titles: string[], cover: boolean): PageScope | null {
   if (!titles.length || DECK_WIDE_RE.test(words)) return null;
-  if (reqs.some((r) => r.source !== "standing" && DECK_WIDE_TYPES.has(r.type))) return null;
+  // (Not a language the system inferred from an English message: 「Delete slide 3」 asks for no translation.)
+  if (reqs.some((r) => r.source !== "standing" && !r.params?.inferred && DECK_WIDE_TYPES.has(r.type))) return null;
   const removed = new Set(excludedPages(reqs.find((r) => r.type === "exclude")?.params, titles, cover));
   const named: number[] = [];
   let last: number[] = [];
   for (const c of segmentClauses(words)) {
-    if (trivialClause(c) || REASON_RE.test(c.trim())) continue;
+    if (REASON_RE.test(c.trim())) continue;
     const hits = namedPages(c, titles, cover);
+    // A short clause that names a page is not filler (「Delete slide 3 from this deck」).
+    if (!hits.length && trivialClause(c)) continue;
     if (!hits.length) {
       if (THIS_PAGE_RE.test(c) && last.length) continue;
       return null;

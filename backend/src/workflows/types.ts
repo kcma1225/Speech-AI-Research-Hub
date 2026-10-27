@@ -52,6 +52,8 @@ export type Requirement = {
     part?: "slides" | "notes";
     /** include_topics: the topics are the parts the user listed (「呈現 A、B、C」): each gets its own page / section. */
     sections?: boolean;
+    /** Set by the system, not said by the user (the language of an English message): never makes an edit deck-wide. */
+    inferred?: boolean;
   };
   source: "request" | "guidance" | "conversation" | "standing" | "user";
   /** The user's own words this requirement rests on (verbatim, from `brief.user_words` / guidance); standing ones have none. */

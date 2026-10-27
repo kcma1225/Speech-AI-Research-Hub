@@ -55,6 +55,7 @@ describe("pageScope", () => {
 
   it("named pages are touched, the rest kept", () => {
     expect(pageScope("第三頁的標題改短一點", [], TITLES, true)).toEqual({ removed: [], touched: [2] });
+    expect(pageScope("改 slide 3", [], TITLES, true)).toEqual({ removed: [], touched: [2] });
     expect(pageScope("把第九頁刪掉，然後第三頁的圖改成表格", exclude("把第九頁刪掉，然後第三頁的圖改成表格"), TITLES, true)).toEqual({ removed: [8], touched: [2] });
     expect(pageScope("「Key Takeaways」那頁多加一點結論", [], TITLES, true)).toEqual({ removed: [], touched: [10] });
   });
@@ -65,6 +66,8 @@ describe("pageScope", () => {
     expect(pageScope("把第九頁刪掉，再加一頁結論", exclude("把第九頁刪掉"), TITLES, true)).toBeNull();
     expect(pageScope("翻成中文", [], TITLES, true)).toBeNull();
     expect(pageScope("刪掉第九頁", [...exclude("刪掉第九頁"), { type: "language", params: { language: "zh" }, source: "request" }], TITLES, true)).toBeNull();
+    // Nor does the language of an English message (the system's inference, not the user's ask).
+    expect(pageScope("Delete slide 3 from this deck.", [...exclude("Delete slide 3 from this deck."), { type: "language", params: { language: "en", inferred: true }, source: "request" }], TITLES, true)).toEqual({ removed: [2], touched: [] });
     // A standing preference does not make the edit deck-wide.
     expect(pageScope("刪掉第九頁", [...exclude("刪掉第九頁"), { type: "language", params: { language: "en" }, source: "standing" }], TITLES, true)).toEqual({ removed: [8], touched: [] });
   });

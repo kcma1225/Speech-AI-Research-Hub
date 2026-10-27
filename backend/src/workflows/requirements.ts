@@ -1032,7 +1032,7 @@ export function messageLanguage(words: string[]): Omit<Requirement, "id">[] {
   const text = words.join("\n").replace(/https?:\/\/\S+/g, " ").replace(/```[\s\S]*?```/g, " ");
   if ((text.match(HAN_G) ?? []).length || latinWords(text) < 5) return [];
   const quote = words.findLast((w) => latinWords(w) >= 3)?.replace(/\s+/g, " ").trim().slice(0, 80);
-  return [{ type: "language", text: "成果用 English（你用英文提出這個要求）", params: { language: "en" }, source: "request", ...(quote ? { quote } : {}) }];
+  return [{ type: "language", text: "成果用 English（你用英文提出這個要求）", params: { language: "en", inferred: true }, source: "request", ...(quote ? { quote } : {}) }];
 }
 
 const WRAPPER_REASON_RE = /標示為資料|是資料|資料區塊|不是指令|非指令|依指示忽略|一律忽略|data block|marked as data|not an? instruction|prompt injection/i;
