@@ -10,6 +10,7 @@
   import DatePicker from "#lib/components/ui/DatePicker.svelte";
   import Pill from "#lib/components/ui/Pill.svelte";
   import Select from "#lib/components/ui/Select.svelte";
+  import Sheet from "#lib/components/ui/Sheet.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import MarkdownEditor from "#lib/components/markdown/MarkdownEditor.svelte";
   import { uploadMdImage } from "#lib/components/doc-import/api.ts";
@@ -20,7 +21,9 @@
 
   /**
    * One study's AI draft. Owners/members of THAT study may edit, confirm (→ 會議筆記 + 待辦 in the study) or dismiss;
-   * everyone else (including advisors) only reads it.
+   * everyone else (including advisors) only reads it. Each proposed task's assignee can be changed in place (saved to
+   * the draft), and 「確認寫入」 opens a review of the tasks first: include / exclude each one, change its assignee and due
+   * date — the tasks are created only as reviewed.
    */
   let { draft, study, meetingId, onSeek, onChanged }: {
     draft: Draft;
@@ -43,6 +46,9 @@
   let busy = $state(false);
   let confirmOpen = $state(false);
   let dismissOpen = $state(false);
+  /** The review before confirming: the tasks as they will be created (`include` = create it). */
+  let review = $state<(ProposedTask & { include: boolean })[]>([]);
+  let reviewOpen = $state(false);
 
   const assignable = $derived((study?.members ?? []).filter(m => m.role !== "advisor"));
   const nameOf = (id: string | null) => (id ? (study?.members.find(m => m.id === id)?.name ?? null) : null);
@@ -86,6 +92,33 @@
     }
   }
   const taskCount = $derived(editing ? cleanTasks().length : draft.proposed_tasks.length);
+
+  /** 「確認寫入」: with tasks, review them first (assignee / due / include); without, the plain confirmation. */
+  function openConfirm() {
+    const source = editing ? cleanTasks() : draft.proposed_tasks;
+    if (!source.length) {
+      confirmOpen = true;
+      return;
+    }
+    review = source.map(x => ({ ...x, assignee_id: x.assignee_id ?? null, due: x.due ?? null, include: true }));
+    reviewOpen = true;
+  }
+  const reviewCount = $derived(review.filter(x => x.include).length);
+  async function confirmReviewed() {
+    const tasks = review.filter(x => x.include).map(({ include: _i, ...x }) => ({ id: x.id, title: x.title, detail: x.detail, assignee_id: x.assignee_id || null, due: x.due || null }));
+    const body = editing ? { summary_md: summary, feedback_md: feedback, tasks } : { tasks };
+    const next = await call(`/meetings/${meetingId}/drafts/${draft.id}/confirm`, body);
+    if (next) {
+      editing = false;
+      reviewOpen = false;
+      toasts.show(t("meet.draft.confirmedToast", { study: draft.study_title }), "success");
+    }
+  }
+  /** Changes one proposed task's assignee in place (saved to the draft; the AI will not overwrite an edited draft). */
+  async function setAssignee(taskId: string, assigneeId: string | null) {
+    const tasks = draft.proposed_tasks.map(x => ({ id: x.id, title: x.title, detail: x.detail, assignee_id: x.id === taskId ? assigneeId : x.assignee_id, due: x.due }));
+    if (await call(`/meetings/${meetingId}/drafts/${draft.id}`, { proposed_tasks: tasks }, "patch")) toasts.show(t("meet.draft.assigneeSaved"), "success");
+  }
 </script>
 
 <article class="rounded-[22px] border border-line/70 bg-surface p-4 shadow-card sm:p-5" aria-labelledby="draft-{draft.id}">
@@ -142,10 +175,17 @@
           <h4 class="mb-1.5 flex items-center gap-1 text-[12px] font-semibold tracking-wide text-ink-3"><ListTodo class="size-3.5" />{t("meet.draft.tasks")}</h4>
           <ul class="flex flex-col gap-1.5">
             {#each draft.proposed_tasks as task (task.id)}
-              <li class="flex flex-wrap items-baseline gap-x-2 rounded-xl bg-surface-2 px-3 py-2 text-[13.5px]">
-                <span class="min-w-0 flex-1 text-ink">{task.title}</span>
-                <span class="text-[12px] text-ink-3">{nameOf(task.assignee_id) ?? t("meet.draft.unassigned")}{task.due ? ` · ${task.due}` : ""}</span>
-              </li>
+              {#if pending && draft.can_edit}
+                <li class="flex flex-col gap-2 rounded-xl bg-surface-2 px-3 py-2 text-[13.5px] sm:flex-row sm:items-center sm:gap-3">
+                  <span class="min-w-0 flex-1 break-words text-ink">{task.title}{#if task.due}<span class="text-[12px] text-ink-3 tabular-nums"> · {task.due}</span>{/if}</span>
+                  <Select value={task.assignee_id ?? ""} label={t("meet.draft.assigneeFor", { task: task.title })} options={assigneeOptions} onValueChange={v => void setAssignee(task.id, v || null)} class="w-full shrink-0 sm:w-44" />
+                </li>
+              {:else}
+                <li class="flex flex-wrap items-baseline gap-x-2 rounded-xl bg-surface-2 px-3 py-2 text-[13.5px]">
+                  <span class="min-w-0 flex-1 text-ink">{task.title}</span>
+                  <span class="text-[12px] text-ink-3">{nameOf(task.assignee_id) ?? t("meet.draft.unassigned")}{task.due ? ` · ${task.due}` : ""}</span>
+                </li>
+              {/if}
             {/each}
           </ul>
         </section>
@@ -177,13 +217,13 @@
         <Button variant="ghost" size="sm" onclick={() => (editing = false)}><X />{t("meet.cancel")}</Button>
         <div class="flex flex-col gap-2 sm:flex-row">
           <Button size="sm" loading={busy} onclick={save}>{t("meet.draft.saveDraft")}</Button>
-          <Button variant="primary" size="sm" disabled={busy} onclick={() => (confirmOpen = true)}><Check />{t("meet.draft.confirm")}</Button>
+          <Button variant="primary" size="sm" disabled={busy} onclick={openConfirm}><Check />{t("meet.draft.confirm")}</Button>
         </div>
       {:else}
         <Button variant="ghost" size="sm" disabled={busy} onclick={() => (dismissOpen = true)}><CircleSlash />{t("meet.draft.dismiss")}</Button>
         <div class="flex flex-col gap-2 sm:flex-row">
           <Button size="sm" onclick={startEdit}><Pencil />{t("meet.draft.edit")}</Button>
-          <Button variant="primary" size="sm" disabled={busy || empty} onclick={() => (confirmOpen = true)}><Check />{t("meet.draft.confirm")}</Button>
+          <Button variant="primary" size="sm" disabled={busy || empty} onclick={openConfirm}><Check />{t("meet.draft.confirm")}</Button>
         </div>
       {/if}
     {:else}
@@ -193,4 +233,34 @@
 </article>
 
 <ConfirmDialog bind:open={confirmOpen} title={t("meet.draft.confirmTitle", { study: draft.study_title })} description={t("meet.draft.confirmHint", { n: taskCount })} confirmLabel={t("meet.draft.confirm")} onConfirm={confirm} />
+<Sheet bind:open={reviewOpen} title={t("meet.draft.reviewTitle", { study: draft.study_title })} description={t("meet.draft.reviewHint")} side="right" guard={false}>
+  <ul class="flex flex-col gap-2.5">
+    {#each review as task (task.id)}
+      <li class="flex flex-col gap-2 rounded-2xl border border-line/80 p-3 {task.include ? '' : 'opacity-60'}">
+        <label class="flex cursor-pointer items-start gap-2.5">
+          <input type="checkbox" class="mt-0.5 size-4 shrink-0 accent-[var(--ink)]" bind:checked={task.include} />
+          <span class="min-w-0 flex-1 text-[14px] leading-snug break-words text-ink">{task.title}</span>
+        </label>
+        {#if task.include}
+          <div class="flex flex-wrap gap-2 pl-6.5">
+            <div class="flex min-w-44 flex-1 flex-col gap-1">
+              <span class="text-[12px] font-medium text-ink-3">{t("meet.draft.assignee")}</span>
+              <Select value={task.assignee_id ?? ""} label={t("meet.draft.assigneeFor", { task: task.title })} options={assigneeOptions} onValueChange={v => (task.assignee_id = v || null)} class="w-full min-w-0" />
+            </div>
+            <div class="flex min-w-48 flex-1 flex-col gap-1">
+              <span class="text-[12px] font-medium text-ink-3">{t("meet.draft.due")}</span>
+              <DatePicker value={task.due ?? ""} label={t("meet.draft.due")} clearable placeholder={t("meet.draft.noDue")} onValueChange={v => (task.due = v || null)} class="w-full" />
+            </div>
+          </div>
+        {/if}
+      </li>
+    {/each}
+  </ul>
+  {#snippet footer()}
+    <div class="flex w-full flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <Button variant="ghost" onclick={() => (reviewOpen = false)}>{t("meet.cancel")}</Button>
+      <Button variant="primary" loading={busy} onclick={confirmReviewed}><Check />{t("meet.draft.createN", { n: reviewCount })}</Button>
+    </div>
+  {/snippet}
+</Sheet>
 <ConfirmDialog bind:open={dismissOpen} title={t("meet.draft.dismissTitle")} description={t("meet.draft.dismissHint")} confirmLabel={t("meet.draft.dismiss")} onConfirm={() => call(`/meetings/${meetingId}/drafts/${draft.id}/dismiss`)} />

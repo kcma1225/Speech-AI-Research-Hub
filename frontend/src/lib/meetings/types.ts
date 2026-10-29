@@ -112,7 +112,9 @@ export type MeetingStudy = {
 };
 
 export type MeetingDetail = {
-  meeting: { id: string; title: string; held_at: string; status: MeetingStatus; notes: string; language: string; created_by: string | null; creator_name: string | null; created_at: string; updated_at: string; transcript_id: string | null };
+  meeting: { id: string; title: string; held_at: string; status: MeetingStatus; notes: string; language: string; created_by: string | null; creator_name: string | null; created_at: string; updated_at: string; transcript_id: string | null;
+    /** Imported Markdown summary ('' = none). */
+    summary_md: string; summary_at: string | null; summary_by_name: string | null };
   studies: MeetingStudy[];
   participants: { id: string; name: string; role: Role }[];
   decks: { deck_id: string; title: string; slug: string; kind: string; study_id: string; version_id: string | null; version: number | null }[];

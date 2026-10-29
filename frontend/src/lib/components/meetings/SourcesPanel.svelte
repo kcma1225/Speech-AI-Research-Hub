@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { FileAudio, FileText, Mic, Upload } from "@lucide/svelte";
+  import { FileAudio, FileText, ListTodo, Mic, Upload } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import FileDrop from "#lib/components/ui/FileDrop.svelte";
@@ -10,18 +10,24 @@
   import type { Media } from "#lib/meetings/types.ts";
   import { MEDIA_ACCEPT, TRANSCRIPT_ACCEPT } from "#lib/meetings/util.ts";
   import RecorderPanel from "./RecorderPanel.svelte";
+  import SummaryImport from "./SummaryImport.svelte";
 
-  /** Where the meeting's content comes from: record in the browser, upload audio/video, or upload a transcript. */
-  let { meetingId, unfinished = null, maxBytes = 1024 ** 3, initial = "record", onChanged, onRecordingState }: {
+  /**
+   * Where the meeting's content comes from: record in the browser, upload audio/video, upload a transcript, or import
+   * a Markdown summary written on another platform (→ drafts with every action item as a task).
+   */
+  let { meetingId, unfinished = null, maxBytes = 1024 ** 3, initial = "record", summary = "", hasStudies = true, onChanged, onRecordingState }: {
     meetingId: string;
     unfinished?: Media | null;
     maxBytes?: number;
-    initial?: "record" | "media" | "transcript";
+    initial?: "record" | "media" | "transcript" | "summary";
+    summary?: string;
+    hasStudies?: boolean;
     onChanged: () => void | Promise<void>;
     onRecordingState?: (state: "recording" | "paused" | null) => void;
   } = $props();
 
-  type Tab = "record" | "media" | "transcript";
+  type Tab = "record" | "media" | "transcript" | "summary";
   let tab = $state<Tab>(untrack(() => initial));
   let file = $state<File | null>(null);
   let transcriptFile = $state<File | null>(null);
@@ -32,6 +38,7 @@
     { value: "record" as Tab, label: t("meet.src.record"), icon: Mic },
     { value: "media" as Tab, label: t("meet.src.media"), icon: FileAudio },
     { value: "transcript" as Tab, label: t("meet.src.transcript"), icon: FileText },
+    { value: "summary" as Tab, label: t("meet.src.summary"), icon: ListTodo },
   ]);
 
   /** XHR for upload progress (fetch has none). Resolves with the parsed body or rejects with the backend's message. */
@@ -86,6 +93,8 @@
     <FileDrop bind:file accept={MEDIA_ACCEPT} label={t("meet.src.mediaDrop")} hint={t("meet.src.mediaHint")} {maxBytes} onError={m => toasts.show(m, "error")} />
     {#if uploading && progress !== null}<Progress value={progress} label={t("meet.src.uploading")} />{/if}
     <div class="flex justify-end"><Button variant="primary" disabled={!file} loading={uploading} onclick={() => upload("media")}><Upload />{t("meet.src.upload")}</Button></div>
+  {:else if tab === "summary"}
+    <SummaryImport {meetingId} initial={summary} {hasStudies} onDone={() => onChanged()} />
   {:else}
     <FileDrop bind:file={transcriptFile} accept={TRANSCRIPT_ACCEPT} label={t("meet.src.transcriptDrop")} hint={t("meet.src.transcriptHint")} maxBytes={20 * 1024 * 1024} onError={m => toasts.show(m, "error")} />
     {#if uploading && progress !== null}<Progress value={progress} label={t("meet.src.uploading")} />{/if}

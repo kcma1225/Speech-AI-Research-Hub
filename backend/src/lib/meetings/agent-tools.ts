@@ -55,7 +55,7 @@ registerAgentTool({
   title: "讀取會議",
   titleEn: "Read meeting",
   risk: "read",
-  description: "Read a meeting: title, time, studies, participants, decks, feedback, the AI drafts per study (summary, feedback, proposed tasks, status) and transcript info (use get_transcript_excerpt for the text).",
+  description: "Read a meeting: title, time, studies, participants, decks, feedback, the imported Markdown summary (when one was pasted), the AI drafts per study (summary, feedback, proposed tasks, status) and transcript info (use get_transcript_excerpt for the text).",
   input: z.object({ meeting_id: meetingArg }),
   summarize: a => `讀取會議 ${a.meeting_id}`,
   async execute(a, ctx) {
@@ -86,6 +86,7 @@ registerAgentTool({
           tasks: d.proposed_tasks.map(t => ({ title: t.title, due: t.due })), note_id: d.note_id,
         })),
         other_md: meeting.analysis?.other_md ?? "",
+        ...(meeting.summary_md ? { imported_summary_md: clip(meeting.summary_md, 6000) } : {}),
         transcript: transcript
           ? { source: transcript.source, segments: transcript.segments.length, duration: formatClock(transcript.duration_sec ?? transcript.segments.at(-1)?.end ?? 0), speakers: [...names.values()] }
           : null,

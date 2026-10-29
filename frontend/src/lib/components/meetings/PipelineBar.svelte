@@ -27,7 +27,8 @@
 
   const processingMedia = $derived(detail.media.filter(m => m.status === "processing"));
   const readyMedia = $derived(detail.media.some(m => m.status === "ready" && m.has_audio));
-  const hasContent = $derived(detail.media.some(m => m.status !== "failed") || Boolean(detail.transcript));
+  const hasSummary = $derived(Boolean(detail.meeting.summary_md?.trim()));
+  const hasContent = $derived(detail.media.some(m => m.status !== "failed") || Boolean(detail.transcript) || hasSummary);
   const asrTranscript = $derived(detail.transcripts.some(x => x.source !== "live"));
   const tJob = $derived(detail.jobs.transcribe);
   const aJob = $derived(detail.jobs.analyze);
@@ -36,7 +37,7 @@
   const asrDown = $derived(!aiStatus.available("asr"));
   const analysisDown = $derived(!aiStatus.available("analysis"));
   const pendingDrafts = $derived(detail.drafts.filter(d => d.status === "pending").length);
-  const canAnalyze = $derived(detail.permissions.edit && detail.studies.length > 0 && (Boolean(detail.transcript) || detail.feedback.length > 0));
+  const canAnalyze = $derived(detail.permissions.edit && detail.studies.length > 0 && (Boolean(detail.transcript) || detail.feedback.length > 0 || hasSummary));
   let busy = $state(false);
 
   async function run(path: string) {
@@ -68,7 +69,8 @@
   type StepState = "done" | "active" | "waiting" | "failed" | "idle";
   const steps = $derived.by(() => {
     const content: StepState = hasContent ? "done" : "idle";
-    const tr: StepState = asrTranscript ? "done" : transcribing ? (asrDown && jobActive(tJob) ? "waiting" : "active") : tJob?.status === "failed" ? "failed" : "idle";
+    // An imported summary stands in for the transcript when there is no recording to transcribe.
+    const tr: StepState = asrTranscript || (hasSummary && !detail.media.length) ? "done" : transcribing ? (asrDown && jobActive(tJob) ? "waiting" : "active") : tJob?.status === "failed" ? "failed" : "idle";
     const an: StepState = analyzing ? (analysisDown ? "waiting" : "active") : detail.drafts.length ? "done" : aJob?.status === "failed" ? "failed" : "idle";
     const rv: StepState = detail.drafts.length ? (pendingDrafts ? "active" : "done") : "idle";
     return [

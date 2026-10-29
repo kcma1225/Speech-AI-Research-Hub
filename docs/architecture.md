@@ -864,11 +864,11 @@ state `q, type, study, author, from, to`; per-type 「更多…」 switches to o
 ### Meetings (`meetings.ts` → `meetings-media.ts`, `meetings-live.ts`; `lib/meetings/`, `ai-jobs/meetings/`)
 
 Cross-study lab meetings (spec §0/§3): a meeting can include several studies of different owners; record in the browser,
-upload audio/video (audio extracted) or a transcript, add feedback; AI splits it into per-study drafts that only members of
+upload audio/video (audio extracted) or a transcript, import a Markdown summary written elsewhere, add feedback; AI splits it into per-study drafts that only members of
 THAT study confirm (advisors/professors cannot, spec §13.3). Confirming writes a 會議筆記 and tasks into the study.
 
 Tables (`0080_meetings.sql`): `meetings` (`title`, `held_at`, `status`, `notes`, `language` (default `zh-TW`, or `auto`),
-`transcript_id` = transcript shown/analysed, `analysis` jsonb `{other_md, other_evidence, speaker_guesses[{label,user_id,name,reason}],
+`transcript_id` = transcript shown/analysed, `summary_md` / `summary_by` / `summary_at` = imported Markdown summary (`0125_meeting_summary.sql`, ≤ 100 000 chars, '' = none), `analysis` jsonb `{other_md, other_evidence, speaker_guesses[{label,user_id,name,reason}],
 model, analyzed_at, chunks, warnings}`, `analysis_error`, `transcribe_job_id`, `analyze_job_id`, `created_by`), `meeting_participants`,
 `meeting_studies` (`position`; study delete cascades), `meeting_decks` (`deck_id`, `version_id?`), `meeting_media` (`kind recording|upload`,
 `status recording|processing|ready|failed`, `parts` jsonb `{<part>: lastSeq}`, `bytes`, `has_video`, `video_key?`, `audio_key`, `duration_sec`,
@@ -880,7 +880,7 @@ model, analyzed_at, chunks, warnings}`, `analysis_error`, `transcribe_job_id`, `
 
 **Status** is derived (`refreshStatus`, called in every change's transaction): analysis job active → `analyzing`; else drafts exist →
 `review` (any pending) / `done` (all confirmed or dismissed); else media processing or ASR job active without a transcript → `processing`;
-transcript → `transcribed`; media (incl. a recording in progress) → `recorded`; else `draft`. The current transcript is the newest
+transcript or an imported summary → `transcribed`; media (incl. a recording in progress) → `recorded`; else `draft`. The current transcript is the newest
 `asr`/`upload` one, else the newest `live` one (`pickCurrentTranscript`, on upload/live/delete), unless chosen with PUT
 `/meetings/:id/transcript`. A finished ASR transcript becomes current only when the current one is not a user upload
 (`adoptAsrTranscript`); otherwise the upload stays current and the ASR one is an alternative (UI: transcript switcher + 「改用語音轉錄」).
@@ -911,10 +911,11 @@ Detail `permissions = {edit, delete, feedback, studies: <study ids the caller ma
 | GET `/meetings/:id/transcripts/:tid/export` | user | SRT attachment, speakers as `名字：` (mapped name, else `語者 N`) |
 | PUT `/meetings/:id/speakers` `{speakers:[{label, user_id?, name?}]}` | editor | upsert; neither → delete the mapping → `{speaker_map}` |
 | POST `/meetings/:id/transcribe` `{media_id?}` | editor | queue ASR for the given/newest ready media; 409 while one runs → 202 `MeetingDetail` |
-| POST `/meetings/:id/analyze` | editor | needs ≥ 1 study and a transcript or feedback; 409 while one runs → 202 |
+| PUT `/meetings/:id/summary` `{summary_md ≤ 100 000, analyze? (default true)}` | editor | import / replace (`''` clears) the Markdown summary written on another platform; with studies, `analyze` and a non-empty summary the analysis is queued (409 while one runs) → 200 `MeetingDetail` (`meeting.summary_md`, `summary_at`, `summary_by_name`) |
+| POST `/meetings/:id/analyze` | editor | needs ≥ 1 study and a transcript, an imported summary or feedback; 409 while one runs → 202 |
 | POST `/meetings/:id/jobs/transcribe\|analyze/cancel` | editor | 409 when nothing runs |
 | POST `/meetings/:id/feedback` (JSON `{body_md}` or multipart `body_md` + file .txt/.md/.docx/.pdf/.srt/.vtt ≤ 30 MB) · PATCH / DELETE `…/feedback/:fid` · GET `…/feedback/:fid/file` | user (author/admin for writes) | text extracted (DOCX `word/document.xml`, PDF via pdfjs ≤ 40 pages) for the analysis |
-| PATCH `/meetings/:id/drafts/:draftId` `{summary_md?, feedback_md?, proposed_tasks?}` | member of that study | pending only (409); assignees must be members (400); `origin = edited` |
+| PATCH `/meetings/:id/drafts/:draftId` `{summary_md?, feedback_md?, proposed_tasks?}` | member of that study | pending only (409); assignees must be members (400); `origin = edited` (the SPA's in-place assignee change of a proposed task uses it) |
 | POST `/meetings/:id/drafts/:draftId/confirm` `{summary_md?, feedback_md?, tasks?, note_title?}` | member of that study | pending only (409). In one transaction: note (`createNote`, system template kind `meeting`, title `會議筆記 <YYYY-MM-DD> <meeting>`, event date = meeting day) with 摘要 / 回饋 / 待辦 / 逐字稿片段 (links `/meetings/<id>?t=<s>`), tasks via `createTask` (`source: meeting`, `source_ref: <meeting id>`, assignees notified), activity `meeting_confirmed` (url = note), notification `kind: meeting` to the study's other members (pref `tasks`) → `MeetingDetail & {confirmed: {note_id, note_url, task_ids}}` |
 | POST `…/drafts/:draftId/dismiss` · `…/reopen` | member of that study | pending ↔ dismissed |
 | GET `/meetings/:id/live?rate=16000\|24000\|48000` (WebSocket) | editor; Origin = APP_ORIGIN | live captions via `ai.liveTranscribe` (role `asr_live`): client sends binary PCM16 mono frames + `{type:"commit"\|"stop"}`; server sends `ready {provider}`, `partial {itemId,text}`, `final {itemId,text,start?,end?,speaker?}`, `speech {state}`, `error {code, error, hint}` (then closes 1011 when the session could not start, e.g. `llm_unavailable`), `closed`. 4 h limit. nginx: `location ~ ^/api/meetings/<id>/live$` with the WebSocket snippet |
@@ -961,6 +962,20 @@ media `failed`, sources deleted, creator notified (pref `mediaTranscoded`).
   per window, checkpointed per window) and the final call gets the notes. Saving replaces only `pending` drafts with `origin ai` (edited,
   confirmed and dismissed drafts stay), stores `meetings.analysis`, notifies owner/member of studies with content (「會議草稿待確認」,
   pref `tasks`). `analysis` down → waits; UI 「分析維護中」.
+- **Imported summary** (`lib/meetings/summary.ts`): when `summary_md` is set, the final call gets it as `<meeting_summary>` (≤ 30 000
+  chars; the transcript block is left out when there is no transcript) with extra rules: keep the summary's wording when splitting it
+  per study, every action item becomes a task, written assignees / dates are used. Then code makes sure of the last part
+  (`extractActionItems` + `reconcileSummaryTasks`): action items = every checkbox item, and under a heading naming tasks (待辦 / 代辦 /
+  行動 / 任務 / 分工 / 後續 / 下一步 / Action items / To-do / Next steps / Follow-ups …, or a bold line like `**待辦**`) every top-level
+  bullet (deeper bullets → its detail) and every table row (task / owner / due columns found by header words). Assignee markers:
+  `@名字`, `（負責：名字）`, `負責人：名字`, `Owner: Name`, `[名字]` / `名字：` at the start; names are 1–6 Han characters or one / two
+  capitalised English words, resolved to an account by exact name, else the one person whose name contains it (or vice versa).
+  Dates: `2026-11-05`, `2026/11/5`, `11/5`, `11月5日` (+ 前 / 截止 / due …); a year-less date takes the meeting's year, or the next year
+  when that would be > 60 days before the meeting. An item matching a model task (same normalised title, containment ≥ 4 chars or
+  bigram Dice ≥ 0.5) fills that task's empty assignee (only an owner/member of that study) / due; a missing item is added to the
+  study its heading names, else the one study its assignee is an owner/member of, else the only study (≤ 50 per draft); anything
+  left is listed in 「其他」 (`other_md`) so it is not lost. `analysis.warnings` gets `summary_tasks:added=…,filled=…,unplaced=…`.
+  `get_meeting` (agent) includes `imported_summary_md` (≤ 6000 chars).
 
 Agent tools (`lib/meetings/agent-tools.ts`, read, `untrusted`): `list_meetings {study?, person?, when?, limit?}`, `get_meeting {meeting_id}`,
 `get_transcript_excerpt {meeting_id, from?, to?, q?, max_chars?}`. Search: the search module indexes `meeting` and the current transcript
@@ -969,8 +984,10 @@ Agent tools (`lib/meetings/agent-tools.ts`, read, `untrusted`): `list_meetings {
 Frontend: `/meetings` (upcoming/past/all, study + person filters, search), `/meetings/new` (wizard 基本資料 → 研究 → 參與者 → 簡報;
 `?study=<slug>` preselects; studies show their owner), `/meetings/<id>` (pipeline bar with 「轉錄維護中」/「分析維護中」, sources panel:
 browser recorder / upload audio-video with progress / upload transcript, player (audio waveform or kept video) + `TranscriptView` with
-speaker colours (`meta` snippet), speaker sheet with AI guesses, per-study `DraftCard`s (edit, confirm, dismiss, evidence chips seek the
-player), 「其他」, feedback; `?t=<s>` seeks; phones switch sections with a segmented control, sections stay mounted). Recorder
+speaker colours (`meta` snippet), speaker sheet with AI guesses, the sources panel's 「會議摘要」 tab (`SummaryImport.svelte`: paste
+or read a .md / .txt file → 「轉換成待辦」) and an 「匯入的會議摘要」 card (collapsed preview, edit in a sheet, remove), per-study
+`DraftCard`s (edit; each proposed task's assignee changeable in place; 「確認寫入」 with tasks opens a review sheet — include / exclude,
+assignee, due — and only the reviewed tasks are created; dismiss; evidence chips seek the player), 「其他」, feedback; `?t=<s>` seeks; phones switch sections with a segmented control, sections stay mounted). Recorder
 (`lib/meetings/recorder.svelte.ts`): MediaRecorder Opus/WebM (MP4 on Safari) with a 10 s timeslice, chunks PUT immediately with retry
 (never dropped), `localStorage hub-rec:<meetingId>` `{mediaId, part, elapsed, mime}` to continue after a reload in a new part, level
 meter, pause/resume, wake lock, `beforeunload` guard; live captions only when `asr_live` is available: AudioWorklet

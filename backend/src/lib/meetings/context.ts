@@ -75,6 +75,7 @@ export async function loadAnalysisInput(db: Queryable, meeting: MeetingRow): Pro
     feedback: feedback.rows
       .map(f => ({ author: f.author ?? "（已刪除的帳號）", text: [f.body_md, f.file_text].filter(Boolean).join("\n\n").trim() }))
       .filter(f => f.text),
+    summary: meeting.summary_md ?? "",
   };
 }
 

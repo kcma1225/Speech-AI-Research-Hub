@@ -19,6 +19,10 @@ export type MeetingRow = {
   notes: string;
   language: string;
   transcript_id: string | null;
+  /** Imported Markdown summary (0125); '' = none. */
+  summary_md: string;
+  summary_by: string | null;
+  summary_at: string | null;
   analysis: MeetingAnalysis | null;
   analysis_error: string | null;
   transcribe_job_id: string | null;
@@ -168,7 +172,7 @@ export async function refreshStatus(db: Queryable, meetingId: string, opts: { fi
        EXISTS (SELECT 1 FROM jobs j WHERE j.id=m.analyze_job_id AND j.status IN ${ACTIVE} AND j.id IS DISTINCT FROM $2::uuid) AS analyzing,
        EXISTS (SELECT 1 FROM jobs j WHERE j.id=m.transcribe_job_id AND j.status IN ${ACTIVE} AND j.id IS DISTINCT FROM $2::uuid)
          OR EXISTS (SELECT 1 FROM meeting_media mm WHERE mm.meeting_id=m.id AND mm.status='processing') AS transcribing,
-       m.transcript_id IS NOT NULL AS has_transcript,
+       (m.transcript_id IS NOT NULL OR m.summary_md<>'') AS has_transcript,
        (SELECT count(*)::int FROM meeting_media WHERE meeting_id=m.id AND status<>'failed') AS media
      FROM meetings m WHERE m.id=$1`,
     [meetingId, opts.finishingJobId ?? null],

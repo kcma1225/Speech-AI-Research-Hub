@@ -9,6 +9,7 @@ import type { AfterCommit } from "../lib/studies/tasks.js";
 import { confirmDraft, confirmInput, draftPatchInput, patchDraft, setDraftStatus } from "../lib/meetings/drafts.js";
 import { feedbackFileText, parseTranscriptFile, UnreadableFile } from "../lib/meetings/files.js";
 import { meetingKeys } from "../lib/meetings/keys.js";
+import { SUMMARY_MAX } from "../lib/meetings/summary.js";
 import { enqueueAnalyze, enqueueTranscribe, jobActive, registerMeetingMediaFinalizer } from "../lib/meetings/media.js";
 import {
   checkDecks, checkStudies, checkUsers, currentTranscript, jobInfo, listDrafts, listMeetings, mediaView, meetingCard, meetingDecks,
@@ -73,6 +74,7 @@ const liveTranscriptInput = z.object({
   media_id: z.uuid().nullable().optional(),
 });
 const feedbackInput = z.object({ body_md: z.string().max(50000) });
+const summaryInput = z.object({ summary_md: z.string().max(SUMMARY_MAX), analyze: z.boolean().default(true) });
 const deckOptionsQuery = z.object({ studies: z.string().trim().min(1).max(2000) });
 
 const TRANSCRIPT_MAX = 20 * 1024 * 1024;
@@ -111,11 +113,13 @@ export async function meetingDetail(db: Queryable, meeting: MeetingRow, user: Cu
     jobInfo(db, meeting.analyze_job_id),
   ]);
   const editable = new Set(permissions.studies);
+  const summaryBy = meeting.summary_by ? ((await db.query<{ name: string }>("SELECT name FROM users WHERE id=$1", [meeting.summary_by])).rows[0]?.name ?? null) : null;
   return {
     meeting: {
       id: meeting.id, title: meeting.title, held_at: meeting.held_at, status: meeting.status, notes: meeting.notes, language: meeting.language,
       created_by: meeting.created_by, creator_name: card?.creator_name ?? null, created_at: meeting.created_at, updated_at: meeting.updated_at,
       transcript_id: meeting.transcript_id,
+      summary_md: meeting.summary_md ?? "", summary_at: meeting.summary_at ?? null, summary_by_name: summaryBy,
     },
     studies: studies.map(s => ({
       id: s.id, slug: s.slug, title: s.title, status: s.status, current_stage: s.current_stage,
@@ -437,6 +441,28 @@ export default async function meetingRoutes(app: FastifyInstance) {
     return reply.code(202).send(await sendDetail(app, id, user));
   });
 
+  /**
+   * Import (or replace / clear) a meeting summary written elsewhere (Markdown). With studies and `analyze` (default),
+   * the analysis is queued: per-study drafts whose proposed tasks include every action item of the summary.
+   */
+  app.put("/meetings/:id/summary", async (request, reply) => {
+    const user = await requireUser(request);
+    const { id } = parse(idParams, request.params);
+    const input = parse(summaryInput, request.body);
+    const md = input.summary_md.replace(/\r\n?/g, "\n").replace(/\u0000/g, "").trim();
+    await transaction(app.db, async client => {
+      const { meeting } = await requireMeetingEditor(client, id, user, true);
+      await client.query("UPDATE meetings SET summary_md=$2, summary_by=$3, summary_at=$4, updated_at=now() WHERE id=$1", [id, md, md ? user.id : null, md ? new Date() : null]);
+      const studies = await client.query("SELECT 1 FROM meeting_studies WHERE meeting_id=$1", [id]);
+      if (md && input.analyze && studies.rowCount) {
+        if (await jobActive(client, meeting.analyze_job_id)) throw conflict("分析已在進行中，請等它完成再匯入。");
+        await enqueueAnalyze(client, meeting, user.id);
+      }
+      await refreshStatus(client, id);
+    });
+    return reply.code(200).send(await sendDetail(app, id, user));
+  });
+
   app.post("/meetings/:id/analyze", async (request, reply) => {
     const user = await requireUser(request);
     const { id } = parse(idParams, request.params);
@@ -448,7 +474,7 @@ export default async function meetingRoutes(app: FastifyInstance) {
         [id],
       )).rows[0]!;
       if (!facts.studies) throw badRequest("請先選擇會議涉及的研究。");
-      if (!meeting.transcript_id && !facts.feedback) throw badRequest("還沒有逐字稿或回饋可以分析。");
+      if (!meeting.transcript_id && !facts.feedback && !meeting.summary_md) throw badRequest("還沒有逐字稿、會議摘要或回饋可以分析。");
       await enqueueAnalyze(client, meeting, user.id);
       await refreshStatus(client, id);
     });

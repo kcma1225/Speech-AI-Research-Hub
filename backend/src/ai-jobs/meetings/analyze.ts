@@ -16,6 +16,8 @@ import {
 import { loadAnalysisInput, saveAnalysis } from "../../lib/meetings/context.js";
 import type { AnalyzePayload } from "../../lib/meetings/media.js";
 import { findMeeting, meetingUrl, refreshStatus } from "../../lib/meetings/store.js";
+import { extractActionItems, reconcileSummaryTasks } from "../../lib/meetings/summary.js";
+import { taipeiDate } from "../../lib/meetings/time.js";
 import { notifyFromJob } from "./notify.js";
 
 export type AnalyzeResult = { drafts: number; tasks: number; chunks: number; model: string | null; repaired: boolean; warnings: number };
@@ -86,7 +88,7 @@ export async function runAnalyze(ctx: AiJobContext<AnalyzePayload>, opts: { mapT
   await ctx.progress("context", 3);
   const input = await loadAnalysisInput(ctx.db, meeting);
   if (!input.studies.length) throw new AiJobInputError("會議沒有選擇研究，無法拆分草稿。");
-  if (!input.segments.length && !input.feedback.length) throw new AiJobInputError("還沒有逐字稿或回饋可以分析。");
+  if (!input.segments.length && !input.feedback.length && !input.summary.trim()) throw new AiJobInputError("還沒有逐字稿、會議摘要或回饋可以分析。");
   const refs = buildRefs(input);
   const lines = transcriptLines(input, refs);
   const checkpoint: Checkpoint = (ctx.checkpoint as Checkpoint | null) ?? {};
@@ -113,6 +115,8 @@ export async function runAnalyze(ctx: AiJobContext<AnalyzePayload>, opts: { mapT
   await ctx.progress("analyzing", chunks > 1 ? 70 : 20);
   const final = await callJson(ctx, state, messages, "meeting_drafts", FINAL_SCHEMA, parseFinal, 12_000);
   const result = toResult(final, input, refs);
+  // An imported summary: every action item it lists becomes a proposed task (the model may merge or drop some).
+  if (input.summary.trim()) reconcileSummaryTasks(result, input, extractActionItems(input.summary, taipeiDate(meeting.held_at)));
 
   await ctx.progress("saving", 95);
   const recipients = await transaction(ctx.db, async client => {

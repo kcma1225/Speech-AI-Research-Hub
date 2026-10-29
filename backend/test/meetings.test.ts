@@ -333,6 +333,55 @@ describe.skipIf(!hasTestDb)("meetings", () => {
     expect((ranged.data as any).lines).toHaveLength(1);
   });
 
+  it("imported Markdown summary: editors only, queues the analysis, every action item becomes a task", async () => {
+    const m = json(await send(ya, "POST", "/api/meetings", { title: "外部摘要週會", held_at: "2026-10-28T06:00:00Z", study_ids: [studyA.slug, studyC.id], participant_ids: [bo.id, prof.id] })).meeting.id;
+    const md = `# 週會摘要\n\n## 林雅婷的研究2\n- DER 降到 12%\n\n## Action Items\n- @林雅婷 整理 DER 結果表格 11/5 前\n- [ ] 陳柏宇：確認標註規範\n- 訂下次的會議室\n`;
+    expect((await send(outsider, "PUT", `/api/meetings/${m}/summary`, { summary_md: md })).statusCode).toBe(403);
+    expect((await send(ya, "PUT", `/api/meetings/${m}/summary`, { summary_md: "x".repeat(100_001) })).statusCode).toBe(400);
+    const put = await send(ya, "PUT", `/api/meetings/${m}/summary`, { summary_md: md });
+    expect(put.statusCode, put.body).toBe(200);
+    const body = json(put);
+    expect(body.meeting).toMatchObject({ summary_md: md.trim(), summary_by_name: "林雅婷" });
+    expect(body.jobs.analyze.status).toBe("queued");
+    expect(body.meeting.status).toBe("analyzing");
+    expect((await send(ya, "PUT", `/api/meetings/${m}/summary`, { summary_md: md })).statusCode).toBe(409); // analysis already queued
+
+    const job = (await t.db.query<{ id: string; payload: AnalyzePayload }>("SELECT id,payload FROM jobs WHERE kind='ai_meeting_analyze' AND payload->>'meetingId'=$1", [m])).rows[0]!;
+    // The model keeps one item (without assignee) and drops the other two.
+    const reply = JSON.stringify({ studies: [
+      { study: "R1", summary_md: "- DER 降到 12%", feedback_md: "", tasks: [{ title: "整理DER結果表格", detail: "", assignee: null, due: null }], evidence: [] },
+      { study: "R2", summary_md: "", feedback_md: "", tasks: [], evidence: [] },
+    ], other_md: "", speakers: [] });
+    const { ai, calls } = scripted([reply]);
+    const { ctx } = jobCtx<AnalyzePayload>(t, ai, job.payload);
+    (ctx.job as any).id = job.id;
+    await runAnalyze(ctx);
+    const prompt = calls[0].messages[1].content as string;
+    expect(prompt).toContain("<meeting_summary");
+    expect(prompt).not.toContain("<transcript>");
+    const drafts = (await t.db.query("SELECT study_id,proposed_tasks FROM meeting_study_drafts WHERE meeting_id=$1", [m])).rows;
+    const tasksOf = (sid: string) => drafts.find((d) => d.study_id === sid)!.proposed_tasks.map((x: any) => [x.title, x.assignee_id, x.due]);
+    expect(tasksOf(studyA.id)).toEqual([["整理DER結果表格", ya.id, "2026-11-05"]]);
+    expect(tasksOf(studyC.id)).toEqual([["確認標註規範", bo.id, null]]);
+    const analysis = (await t.db.query("SELECT analysis FROM meetings WHERE id=$1", [m])).rows[0].analysis;
+    expect(analysis.other_md).toContain("訂下次的會議室");
+    await t.db.query("UPDATE jobs SET status='succeeded', finished_at=now() WHERE id=$1", [job.id]);
+
+    // Assignee changed before confirming: the task is created for the chosen member.
+    const detail = json(await get(bo, `/api/meetings/${m}`));
+    const draftC = detail.drafts.find((d: any) => d.study_id === studyC.id);
+    const confirmed = await send(bo, "POST", `/api/meetings/${m}/drafts/${draftC.id}/confirm`, { tasks: [{ ...draftC.proposed_tasks[0], assignee_id: dee.id }] });
+    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    expect((await t.db.query("SELECT assignee_id FROM tasks WHERE source_ref=$1 AND title='確認標註規範'", [m])).rows[0].assignee_id).toBe(dee.id);
+
+    // Clearing the summary: no analysis queued; a summary alone is enough to analyze again.
+    const cleared = json(await send(ya, "PUT", `/api/meetings/${m}/summary`, { summary_md: "" }));
+    expect(cleared.meeting).toMatchObject({ summary_md: "", summary_by_name: null });
+    expect((await send(ya, "POST", `/api/meetings/${m}/analyze`)).statusCode).toBe(400);
+    await send(ya, "PUT", `/api/meetings/${m}/summary`, { summary_md: md, analyze: false });
+    expect((await send(ya, "POST", `/api/meetings/${m}/analyze`)).statusCode).toBe(202);
+  });
+
   it("live captions WebSocket: checks origin and access, reports an unbound asr_live role", async () => {
     const url = `/api/meetings/${meetingId}/live?rate=16000`;
     await expect(t.app.injectWS(url, { headers: { cookie: ya.cookie, origin: "http://evil.test" } })).rejects.toThrow();

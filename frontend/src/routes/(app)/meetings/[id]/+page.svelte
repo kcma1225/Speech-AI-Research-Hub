@@ -1,7 +1,7 @@
 <script lang="ts">
   import { displayName } from "#lib/people.svelte.ts";
   import { untrack } from "svelte";
-  import { ArrowLeft, CalendarDays, FileAudio, MessageSquareText, Pencil, Plus, Presentation, Sparkles, Trash2, TriangleAlert, X } from "@lucide/svelte";
+  import { ArrowLeft, CalendarDays, ChevronDown, FileAudio, MessageSquareText, Pencil, Plus, Presentation, Sparkles, Trash2, TriangleAlert, X } from "@lucide/svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { api, ApiError } from "#lib/api.ts";
@@ -25,6 +25,7 @@
   import MeetingForm from "#lib/components/meetings/MeetingForm.svelte";
   import PipelineBar from "#lib/components/meetings/PipelineBar.svelte";
   import SourcesPanel from "#lib/components/meetings/SourcesPanel.svelte";
+  import SummaryImport from "#lib/components/meetings/SummaryImport.svelte";
   import StatusPill from "#lib/components/meetings/StatusPill.svelte";
   import Pill from "#lib/components/ui/Pill.svelte";
   import TranscriptPanel from "#lib/components/meetings/TranscriptPanel.svelte";
@@ -44,6 +45,10 @@
   let deleteOpen = $state(false);
   let removeMedia = $state<string | null>(null);
   let removeMediaOpen = $state(false);
+  // The imported Markdown summary: expanded preview, edit sheet, remove.
+  let summaryOpen = $state(false);
+  let summaryEdit = $state(false);
+  let summaryRemove = $state(false);
   type Section = "transcript" | "drafts" | "feedback";
   let section = $state<Section>("transcript");
 
@@ -83,7 +88,8 @@
   });
 
   const unfinished = $derived(detail?.media.find(m => m.kind === "recording" && m.status === "recording" && m.created_by === session.user?.id) ?? null);
-  const hasMaterial = $derived(Boolean(detail && (detail.transcript || detail.media.some(m => m.status !== "failed" && m.status !== "recording"))));
+  const hasSummary = $derived(Boolean(detail?.meeting.summary_md?.trim()));
+  const hasMaterial = $derived(Boolean(detail && (detail.transcript || hasSummary || detail.media.some(m => m.status !== "failed" && m.status !== "recording"))));
   const studyById = $derived(new Map((detail?.studies ?? []).map(s => [s.id, s])));
   const pendingCount = $derived(detail?.drafts.filter(d => d.status === "pending").length ?? 0);
   const sections = $derived([
@@ -119,6 +125,10 @@
     await api.del(`/meetings/${id}`);
     toasts.show(t("meet.deleted"), "success");
     await goto("/meetings");
+  }
+  async function removeSummary() {
+    detail = await api.put<MeetingDetail>(`/meetings/${id}/summary`, { summary_md: "" });
+    toasts.show(t("meet.sum.removed"), "success");
   }
   async function deleteMedia() {
     if (!removeMedia) return;
@@ -187,6 +197,23 @@
   <div class="grid grid-cols-[minmax(0,1fr)] items-start gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
     <!-- Sections are hidden, not unmounted, on phones: switching tabs must not stop a recording. -->
     <div class="flex min-w-0 flex-col gap-5" class:hidden={!show("transcript")}>
+        {#if hasSummary}
+          <Card>
+            <CardHeader title={t("meet.sum.title")} subtitle={d.meeting.summary_by_name ? t("meet.sum.by", { name: displayName(d.meeting.summary_by_name) }) : undefined}>
+              {#snippet actions()}
+                {#if d.permissions.edit}
+                  <Button variant="ghost" size="sm" onclick={() => (summaryEdit = true)}><Pencil />{t("meet.sum.edit")}</Button>
+                  <Button variant="ghost" size="icon-sm" aria-label={t("meet.sum.remove")} onclick={() => (summaryRemove = true)}><Trash2 /></Button>
+                {/if}
+              {/snippet}
+            </CardHeader>
+            <div class="relative {summaryOpen ? '' : 'max-h-64 overflow-hidden'}">
+              <MarkdownView source={d.meeting.summary_md} class="text-[14px]" />
+              {#if !summaryOpen}<div class="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-surface to-transparent"></div>{/if}
+            </div>
+            <Button variant="ghost" size="sm" class="mt-2 self-start" aria-expanded={summaryOpen} onclick={() => (summaryOpen = !summaryOpen)}><ChevronDown class="transition-transform {summaryOpen ? 'rotate-180' : ''}" />{summaryOpen ? t("meet.sum.collapse") : t("meet.sum.expand")}</Button>
+          </Card>
+        {/if}
         <Card>
           <CardHeader title={t("meet.sec.transcript")} subtitle={d.transcript ? t("meet.tr.count", { n: d.transcript.segments.length }) : undefined}>
             {#snippet actions()}
@@ -198,7 +225,7 @@
           {#if d.permissions.edit}
             <!-- Kept mounted while hidden, so an ongoing recording survives toggling the panel. -->
             <div class="{hasMaterial ? 'mb-5 border-b border-line/70 pb-5' : ''}" class:hidden={hasMaterial && !showSources && !unfinished}>
-              <SourcesPanel meetingId={d.meeting.id} {unfinished} onRecordingState={s => (recording = s)} onChanged={async () => { showSources = false; await load(); }} />
+              <SourcesPanel meetingId={d.meeting.id} {unfinished} summary={d.meeting.summary_md} hasStudies={d.studies.length > 0} onRecordingState={s => (recording = s)} onChanged={async () => { showSources = false; await load(); }} />
             </div>
           {/if}
           {#if hasMaterial}
@@ -269,5 +296,9 @@
     </Sheet>
   {/if}
   <ConfirmDialog bind:open={deleteOpen} title={t("crud.meeting.deleteTitle", { title: d.meeting.title })} description={t("meet.deleteHint")} confirmLabel={t("meet.delete")} danger onConfirm={remove} />
+  <Sheet bind:open={summaryEdit} title={t("meet.sum.title")} side="right">
+    <SummaryImport meetingId={d.meeting.id} initial={d.meeting.summary_md} hasStudies={d.studies.length > 0} onCancel={() => (summaryEdit = false)} onDone={(next) => { detail = next; summaryEdit = false; }} />
+  </Sheet>
+  <ConfirmDialog bind:open={summaryRemove} title={t("meet.sum.removeTitle")} description={t("meet.sum.removeHint")} confirmLabel={t("meet.sum.remove")} danger onConfirm={removeSummary} />
   <ConfirmDialog bind:open={removeMediaOpen} title={t("meet.media.deleteTitle")} description={t("meet.media.deleteHint")} confirmLabel={t("meet.media.delete")} danger onConfirm={deleteMedia} />
 {/if}

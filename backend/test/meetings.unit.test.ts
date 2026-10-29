@@ -61,6 +61,7 @@ describe("analysis helpers", () => {
     ],
     speakerNames: new Map([["S2", "雅婷"], ["S1", null]]),
     feedback: [],
+    summary: "",
   };
   it("builds refs and transcript lines without ids", () => {
     const refs = buildRefs(input);
