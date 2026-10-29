@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 import { HttpError } from "../lib/http.js";
+import { parseQuizAnswer, quizAnswerLines, type QuizAnswer } from "./quiz.js";
 import { CONCEPT_LEVELS, DIRECT, LEVEL_LABEL, parseCardValue, termLabel } from "./tutor.js";
 
 /**
@@ -12,7 +13,12 @@ import { CONCEPT_LEVELS, DIRECT, LEVEL_LABEL, parseCardValue, termLabel } from "
  * 不懂, plus 「全部都懂，直接講」. The model only names the paper; the rows are filled by code (`ask_user` prepare).
  * The answer value is `["<key>=known|heard|unknown", …]` (+ `"__direct__"` for the shortcut).
  */
-export const QUESTION_TYPES = ["single_choice", "multi_choice", "short_text", "long_text", "number", "date", "scale", "yes_no", "concept_check"] as const;
+/**
+ * `quiz` (the end-of-paper 小測驗, src/agent/quiz.ts): the model only names the paper and the quiz (`build_quiz`); the
+ * items are filled by code without the answer keys. The answer value is a JSON string
+ * `{"q1":{"choice":"b","guess":true},"q4":{"text":"…"}}`; the stored answer gains `graded` (the result per item).
+ */
+export const QUESTION_TYPES = ["single_choice", "multi_choice", "short_text", "long_text", "number", "date", "scale", "yes_no", "concept_check", "quiz"] as const;
 export type QuestionType = (typeof QUESTION_TYPES)[number];
 
 const option = z.object({
@@ -63,6 +69,17 @@ const conceptRow = z.object({
 });
 export type ConceptRow = z.infer<typeof conceptRow>;
 
+const quizItem = z.object({
+  id: z.string().regex(/^q\d{1,2}$/),
+  concept: z.string().max(60),
+  term: z.string().max(220),
+  level: z.enum(["concept", "apply"]),
+  format: z.enum(["choice", "short"]),
+  prompt: z.string().max(400),
+  options: z.array(z.object({ value: z.string().max(4), label: z.string().max(160) })).max(4),
+  section: z.string().max(40),
+});
+
 const questionObject = z.object({
   id: z.string().trim().min(1).max(40).regex(/^[A-Za-z0-9_-]+$/).describe("Short unique id, e.g. q1 or data_type"),
   prompt: z.string().trim().min(1).max(300).describe("The question (user's language)"),
@@ -74,6 +91,8 @@ const questionObject = z.object({
   scale_labels: z.array(z.string().trim().min(1).max(40)).min(2).max(10).optional().describe("Scale: custom point labels (low → high)"),
   paper_id: z.string().trim().max(64).optional().describe("concept_check only: the paper whose prerequisites (from extract_prerequisites) the card asks about"),
   concepts: z.array(conceptRow).max(10).optional().describe("concept_check only: filled by the system from extract_prerequisites — omit"),
+  quiz_id: z.string().trim().max(16).optional().describe("quiz only: the quiz build_quiz created"),
+  items: z.array(quizItem).max(8).optional().describe("quiz only: filled by the system from build_quiz — omit"),
 });
 export const questionSchema = z.preprocess(normaliseQuestion, questionObject);
 export type Question = z.infer<typeof questionObject>;
@@ -101,6 +120,10 @@ export const askUserInput = z
         if (v.questions.length > 1) ctx.addIssue({ code: "custom", path: ["questions"], message: "a concept_check card has only that one question" });
         if (q.concepts && new Set(q.concepts.map((c) => c.key)).size !== q.concepts.length) ctx.addIssue({ code: "custom", path: ["questions", i, "concepts"], message: "duplicate concept key" });
       }
+      if (q.type === "quiz") {
+        if (!q.paper_id || !q.quiz_id) ctx.addIssue({ code: "custom", path: ["questions", i], message: "quiz needs paper_id and quiz_id (from build_quiz)" });
+        if (v.questions.length > 1) ctx.addIssue({ code: "custom", path: ["questions"], message: "a quiz card has only that one question" });
+      }
       if ((q.type === "single_choice" || q.type === "multi_choice") && !q.options?.length) ctx.addIssue({ code: "custom", path: ["questions", i, "options"], message: "choice questions need 2–12 options" });
       if (q.options && new Set(q.options.map((o) => o.value)).size !== q.options.length) ctx.addIssue({ code: "custom", path: ["questions", i, "options"], message: "duplicate option value" });
     });
@@ -116,7 +139,9 @@ export const answerInput = z.object({
 });
 export const answersInput = z.object({ tool_call_id: z.uuid(), answers: z.array(answerInput).max(6) });
 export type AnswersInput = z.infer<typeof answersInput>;
-export type StoredAnswers = { toolCallId: string; answers: { id: string; value: string | number | boolean | string[] | null; other?: string; skipped?: boolean }[] };
+/** A quiz item's result, kept on the stored answer once graded (the card shows ✓ / ✗ and the correct option). */
+export type QuizGraded = { id: string; outcome: "correct" | "guessed" | "wrong" | "unanswered" | "short"; correct: string | null; why?: string };
+export type StoredAnswers = { toolCallId: string; answers: { id: string; value: string | number | boolean | string[] | null; other?: string; skipped?: boolean; graded?: QuizGraded[] }[] };
 
 const bad = (q: Question, why: string) => new HttpError(400, `「${q.prompt.slice(0, 40)}」${why}`);
 const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`));
@@ -192,6 +217,21 @@ export function validateAnswers(args: AskUserArgs, input: AnswersInput): StoredA
         out.push({ id: q.id, value: parsed.direct ? [...list, DIRECT] : list });
         break;
       }
+      case "quiz": {
+        if (!q.items?.length) throw bad(q, "的格式不正確。");
+        let parsed: QuizAnswer | null;
+        try {
+          parsed = parseQuizAnswer(q.items, v);
+        } catch (e) {
+          throw bad(q, (e as Error).message);
+        }
+        if (!parsed) {
+          out.push({ id: q.id, value: null, skipped: true });
+          break;
+        }
+        out.push({ id: q.id, value: JSON.stringify(parsed) });
+        break;
+      }
     }
   }
   return { toolCallId: input.tool_call_id, answers: out };
@@ -222,8 +262,20 @@ export function answerLabel(q: Question, a: StoredAnswers["answers"][number] | u
       const n = Number(a.value);
       return q.scale_labels ? `${q.scale_labels[n - 1] ?? n}（${n}/${q.scale_labels.length}）` : `${n}/5`;
     }
+    case "quiz":
+      return `\n${quizAnswerLines(q.items ?? [], quizValue(a.value)).join("\n")}`;
     default:
       return String(a.value);
+  }
+}
+
+/** A stored quiz answer value (JSON string) back to the per-item answers. */
+export function quizValue(v: unknown): QuizAnswer | null {
+  if (typeof v !== "string") return null;
+  try {
+    return JSON.parse(v) as QuizAnswer;
+  } catch {
+    return null;
   }
 }
 
@@ -244,6 +296,15 @@ function conceptLinesForModel(q: Question, a: StoredAnswers["answers"][number] |
 export function answersText(args: AskUserArgs, stored: StoredAnswers): { model: string; display: string } {
   const byId = new Map(stored.answers.map((a) => [a.id, a]));
   const lines = args.questions.map((q, i) => `${i + 1}. ${q.prompt}\n   → ${answerLabel(q, byId.get(q.id))}`);
+  const quiz = args.questions.find((q) => q.type === "quiz");
+  if (quiz) {
+    const a = byId.get(quiz.id);
+    const body = !a || a.skipped ? "（使用者略過了小測驗）" : quizAnswerLines(quiz.items ?? [], quizValue(a.value)).join("\n");
+    return {
+      model: `<user_answers to="ask_user" note="使用者在小測驗卡片上的作答；判分結果在 tutor_note">\n${quiz.prompt}\n${body}\n</user_answers>`,
+      display: `${quiz.prompt}\n${body}`,
+    };
+  }
   if (args.questions.some((q) => q.type === "concept_check")) {
     const model = args.questions.map((q, i) => `${i + 1}. ${q.prompt}\n${q.type === "concept_check" ? conceptLinesForModel(q, byId.get(q.id)) : `   → ${answerLabel(q, byId.get(q.id))}`}`);
     return {

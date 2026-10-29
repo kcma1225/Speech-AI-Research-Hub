@@ -265,6 +265,25 @@ describe("chat.no_silent_supersede (a new message cancelled a pending consent ca
   });
 });
 
+describe("tutor.quiz_* (the end-of-paper quiz)", () => {
+  const conv = { id: "c-quiz", study_id: null };
+  const result = (seq: number, body: string): StoredMessage => ({ seq, role: "user", text: "小測驗", content: [{ type: "text", text: `<tutor_note>小測驗第 1 輪的結果（系統判分）：\n1. [ctc] ?\n   ${body}</tutor_note>` }] });
+  const use = (seq: number, name: string, input: Record<string, unknown> = {}): StoredMessage => ({ seq, role: "assistant", content: [{ type: "tool_use", id: `t${seq}`, name, input }] });
+  const quiz = { paper_id: "p", questions: [{ concept: "ctc" }] };
+  it("catches a next round built before the re-teach, and a card carrying answer keys", () => {
+    const f = checkConversation({ conversation: conv, messages: [result(1, "→ 答錯：選了「A」"), use(2, "build_quiz", quiz)] }, ["tutor.quiz_miss_retaught"]);
+    expect(f.map((x) => x.invariant)).toEqual(["tutor.quiz_miss_retaught"]);
+    const keys = checkConversation({ conversation: conv, messages: [], toolCalls: [{ id: "tc", tool: "ask_user", status: "done", quiz_keys_shown: true }] }, ["tutor.quiz_keys_hidden"]);
+    expect(keys).toHaveLength(1);
+  });
+  it("stays silent after a re-teach, when everything was right, and for a keyless card", () => {
+    expect(checkConversation({ conversation: conv, messages: [result(1, "→ 答錯：選了「A」"), use(2, "next_concept", { paper_id: "p" }), use(3, "build_quiz", quiz)] }, ["tutor.quiz_miss_retaught"])).toEqual([]);
+    expect(checkConversation({ conversation: conv, messages: [result(1, "→ 答對：「A」"), use(2, "build_quiz", quiz)] }, ["tutor.quiz_miss_retaught"])).toEqual([]);
+    expect(checkConversation({ conversation: conv, messages: [result(1, "→ 答錯"), use(2, "build_quiz", { paper_id: "p" })] }, ["tutor.quiz_miss_retaught"])).toEqual([]);
+    expect(checkConversation({ conversation: conv, messages: [], toolCalls: [{ id: "tc", tool: "ask_user", status: "done", quiz_keys_shown: false }] }, ["tutor.quiz_keys_hidden"])).toEqual([]);
+  });
+});
+
 describe("chat.duplicate_workflow (a second run for the same deliverable while the first was active)", () => {
   const DECK = "f7da00dc-0000-4000-8000-000000000001";
   const base = (over: Partial<StoredRun> = {}): StoredRun => ({ id: "r2", status: "planning", conversation_id: "c", study_id: "s1", created_at: "2026-10-26T10:10:00Z", inputs: { deck_id: DECK }, brief: { deliverable: { kind: "deck" }, user_words: ["把講稿改成中文"] }, ...over });

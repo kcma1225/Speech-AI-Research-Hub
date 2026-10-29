@@ -9,17 +9,34 @@
   import Pill from "#lib/components/ui/Pill.svelte";
   import Select from "#lib/components/ui/Select.svelte";
   import Skeleton from "#lib/components/ui/Skeleton.svelte";
+  import Switch from "#lib/components/ui/Switch.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
-  import type { ConceptLevel, UserConcept } from "#lib/agent/types.ts";
+  import type { AgentSettings, ConceptLevel, UserConcept } from "#lib/agent/types.ts";
 
-  /** Settings → AI 助理 → 懂的概念 (`/api/concepts`): what 「先確認先備知識」 remembered; change the level or delete. */
+  /**
+   * Settings → AI 助理 → 懂的概念 (`/api/concepts`): what 「先確認先備知識」 remembered; change the level or delete; the
+   * 「記住我懂的概念」 switch (`/agent/settings` concept_memory).
+   */
   let concepts = $state<UserConcept[] | null>(null);
+  let remember = $state<boolean | null>(null);
   let deleteAllOpen = $state(false);
   const levelOptions = $derived((["known", "heard", "unknown"] as const).map((v) => ({ value: v, label: t(`agent.tutor.${v}`) })));
 
   $effect(() => {
     api.get<{ concepts: UserConcept[] }>("/concepts").then((r) => (concepts = r.concepts), (e) => toasts.show(e.message, "error"));
+    api.get<{ settings: AgentSettings }>("/agent/settings").then((r) => (remember = r.settings.concept_memory ?? true), () => {});
   });
+  async function setRemember(v: boolean) {
+    const before = remember;
+    remember = v;
+    try {
+      remember = (await api.patch<{ settings: AgentSettings }>("/agent/settings", { concept_memory: v })).settings.concept_memory;
+      toasts.show(t("agent.tutor.saved"), "success");
+    } catch (e) {
+      remember = before;
+      toasts.show((e as Error).message, "error");
+    }
+  }
   const path = (c: UserConcept) => `/concepts/${encodeURIComponent(c.key)}`;
   async function setLevel(c: UserConcept, level: ConceptLevel) {
     if (level === c.level) return;
@@ -51,6 +68,15 @@
   <Card>
     <CardHeader title={t("agent.tutor.concepts")} subtitle={concepts ? String(concepts.length) : undefined} />
     <p class="-mt-1 mb-3 max-w-2xl text-[13px] leading-relaxed text-ink-3">{t("agent.tutor.conceptsHint")}</p>
+    {#if remember !== null}
+      <div class="mb-3 flex items-start justify-between gap-4 rounded-2xl border border-line px-4 py-3">
+        <div>
+          <p class="text-[14px] font-medium">{t("agent.tutor.memorySwitch")}</p>
+          <p class="mt-0.5 max-w-lg text-[12.5px] leading-relaxed text-ink-3">{t("agent.tutor.memorySwitchHint")}</p>
+        </div>
+        <Switch label={t("agent.tutor.memorySwitch")} checked={remember} onCheckedChange={(v) => void setRemember(v)} />
+      </div>
+    {/if}
     {#if !concepts}
       <div class="flex flex-col gap-2">{#each [0, 1] as i (i)}<Skeleton class="h-14 w-full rounded-2xl" />{/each}</div>
     {:else if !concepts.length}

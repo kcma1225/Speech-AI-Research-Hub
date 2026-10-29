@@ -1,4 +1,5 @@
-// 「先確認先備知識」 paper tutoring: the composer switch, the concept_check card and 設定 → 懂的概念. Keys "agent.tutor.".
+// 「先確認先備知識」 paper tutoring: the composer switch, the concept_check card, 設定 → 懂的概念 ("agent.tutor.") and the
+// end-of-paper quiz card ("agent.quiz.").
 export const zh = {
   "agent.tutor.toggle": "先確認先備知識",
   "agent.tutor.toggleShort": "先備知識",
@@ -31,6 +32,23 @@ export const zh = {
   "agent.tutor.deleteAllHint": "之後讀論文時會重新詢問。這個動作無法復原。",
   "agent.tutor.deleted": "已刪除",
   "agent.tutor.saved": "已更新",
+  "agent.tutor.memorySwitch": "記住我懂的概念",
+  "agent.tutor.memorySwitchHint": "關閉後，概念卡片與小測驗的結果不會記下來，也不會用來預先填答。",
+  "agent.quiz.title": "小測驗",
+  "agent.quiz.hint": "不計分，只是確認你懂了；答錯的概念我會換個方式再講一次。不想做可以略過。",
+  "agent.quiz.apply": "應用",
+  "agent.quiz.guess": "我是猜的",
+  "agent.quiz.shortPlaceholder": "用自己的話回答，寫幾句就好",
+  "agent.quiz.skip": "略過測驗",
+  "agent.quiz.submit": "送出答案",
+  "agent.quiz.answered": "已作答 {n}/{total}",
+  "agent.quiz.skipped": "略過了小測驗",
+  "agent.quiz.rightAnswer": "正確答案：{answer}",
+  "agent.quiz.outcome.correct": "答對",
+  "agent.quiz.outcome.guessed": "猜對",
+  "agent.quiz.outcome.wrong": "答錯",
+  "agent.quiz.outcome.unanswered": "沒作答",
+  "agent.quiz.outcome.short": "簡答",
 } as const;
 
 export const en: Record<keyof typeof zh, string> = {
@@ -65,4 +83,21 @@ export const en: Record<keyof typeof zh, string> = {
   "agent.tutor.deleteAllHint": "You will be asked again when reading papers. This cannot be undone.",
   "agent.tutor.deleted": "Deleted",
   "agent.tutor.saved": "Updated",
+  "agent.tutor.memorySwitch": "Remember concepts I know",
+  "agent.tutor.memorySwitchHint": "When off, concept cards and quiz results are not kept or used to pre-fill answers.",
+  "agent.quiz.title": "Quick quiz",
+  "agent.quiz.hint": "Not scored — just a check that it clicked. Anything you miss gets explained another way. Skip it if you like.",
+  "agent.quiz.apply": "Apply",
+  "agent.quiz.guess": "I guessed",
+  "agent.quiz.shortPlaceholder": "Answer in your own words, a few sentences",
+  "agent.quiz.skip": "Skip quiz",
+  "agent.quiz.submit": "Submit answers",
+  "agent.quiz.answered": "{n}/{total} answered",
+  "agent.quiz.skipped": "Skipped the quiz",
+  "agent.quiz.rightAnswer": "Correct answer: {answer}",
+  "agent.quiz.outcome.correct": "Correct",
+  "agent.quiz.outcome.guessed": "Guessed right",
+  "agent.quiz.outcome.wrong": "Wrong",
+  "agent.quiz.outcome.unanswered": "Not answered",
+  "agent.quiz.outcome.short": "Short answer",
 };

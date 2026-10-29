@@ -58,7 +58,8 @@ export type RunBundle = {
   now?: string;
 };
 /** An assistant tool call as stored (`tool_calls`): status, the result text the model saw, the user's deny reason. */
-export type StoredToolCall = { id: string; tool: string; status: string; summary?: string | null; result_text?: string | null; deny_reason?: string | null; created_at?: string; finished_at?: string | null };
+/** `quiz_keys_shown`: an ask_user quiz card whose arguments (what the SPA receives) carry an answer-key field (computed by the loader). */
+export type StoredToolCall = { id: string; tool: string; status: string; summary?: string | null; result_text?: string | null; deny_reason?: string | null; created_at?: string; finished_at?: string | null; quiz_keys_shown?: boolean | null };
 export type ConversationBundle = { conversation: { id: string; study_id?: string | null }; messages: StoredMessage[]; runs?: StoredRun[]; toolCalls?: StoredToolCall[] };
 
 export type Finding = { invariant: string; severity: Severity; run_id: string | null; conversation_id: string | null; message: string; evidence: Record<string, unknown> };
@@ -1110,6 +1111,42 @@ export const INVARIANTS: Invariant[] = [
             const named = before.some((m) => m.role === "user" && msgText(m).includes(id));
             if (onPage || ownRun || created || named) continue;
             if (results.some((n) => SEARCH.test(n))) hits.push({ message: `助理對一份只在搜尋／列表結果裡出現的成果呼叫 ${u.name}（不是這個對話的成果，使用者也沒指定）`, evidence: { tool: u.name, id, found_by: [...new Set(results)].slice(0, 4) } });
+          }
+        }
+      }
+      return hits;
+    },
+  },
+  // ------------------------------------------------------------ paper tutoring: the end-of-paper quiz (src/agent/quiz.ts)
+  {
+    id: "tutor.quiz_keys_hidden", category: "assistant", scope: "conversation", severity: "critical",
+    title: "小測驗卡片送到前端的內容不含答案（正解、解釋、引用、評分標準只留在伺服器）",
+    reads: "ask_user tool calls with a quiz question: whether their arguments carry an answer-key field (a boolean the loader computes; arguments are never loaded)",
+    check: (b) =>
+      (b.toolCalls ?? [])
+        .filter((c) => c.tool === "ask_user" && c.quiz_keys_shown)
+        .map((c) => ({ message: "小測驗卡片的參數帶有答案欄位（correct／why／evidence／rubric），使用者在作答前就看得到答案", evidence: { tool_call: c.id, at: c.created_at ?? null } })),
+  },
+  {
+    id: "tutor.quiz_miss_retaught", category: "assistant", scope: "conversation", severity: "high",
+    title: "小測驗答錯或猜的概念，先重講（next_concept）才出下一輪",
+    reads: "user turns carrying a quiz result (tutor_note 「小測驗第 N 輪的結果」 with 答錯／猜的), the assistant's later next_concept / build_quiz calls",
+    check: (b) => {
+      const hits: Hit[] = [];
+      const ms = b.messages;
+      for (let i = 0; i < ms.length; i++) {
+        const u = ms[i]!;
+        if (u.role !== "user") continue;
+        const body = JSON.stringify(u.content ?? "");
+        const round = body.match(/小測驗第 (\d+) 輪的結果/);
+        if (!round || !/→ 答錯|→ 答對但使用者說是猜的/.test(body)) continue;
+        for (let j = i + 1; j < ms.length; j++) {
+          const uses = toolUses(ms[j]!);
+          if (uses.some((x) => x.name === "next_concept")) break;
+          const rebuilt = uses.find((x) => x.name === "build_quiz" && Array.isArray(x.input?.questions) && x.input.questions.length);
+          if (rebuilt) {
+            hits.push({ message: `第 ${round[1]} 輪小測驗有答錯／猜的概念，助理沒有先重講就出了下一輪`, evidence: { result_message: u.seq, build_quiz_message: ms[j]!.seq } });
+            break;
           }
         }
       }

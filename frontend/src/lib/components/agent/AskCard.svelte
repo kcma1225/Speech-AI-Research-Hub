@@ -8,6 +8,7 @@
   import DatePicker from "#lib/components/ui/DatePicker.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import ConceptCheckCard from "./ConceptCheckCard.svelte";
+  import QuizCard from "./QuizCard.svelte";
   import Textarea from "#lib/components/ui/Textarea.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { answerLabel, answered, draftFrom, scaleSize, toAnswer, type Draft } from "#lib/agent/ask.ts";
@@ -34,6 +35,8 @@
   const questions: AskQuestion[] = args.questions;
   // 「先確認先備知識」: a concept_check card has only that question and its own layout.
   const conceptQ = questions.find((x) => x.type === "concept_check") ?? null;
+  // The end-of-paper 小測驗: also alone on its card.
+  const quizQ = questions.find((x) => x.type === "quiz") ?? null;
   // svelte-ignore state_referenced_locally
   let drafts = $state<Draft[]>(questions.map((q) => draftFrom(q, initial.find((a) => a.id === q.id))));
   const multi = questions.length > 1;
@@ -168,6 +171,8 @@
 
 {#if conceptQ}
   <ConceptCheckCard question={conceptQ} {initial} {editing} {deferred} {disabled} {onSubmit} {onCancel} />
+{:else if quizQ}
+  <QuizCard question={quizQ} {initial} {editing} {deferred} {disabled} {onSubmit} {onCancel} />
 {:else if !open}
   <div class="flex flex-wrap items-center gap-3 rounded-[20px] border border-line bg-raised px-4 py-3 text-[13.5px] text-ink-2">
     <MessageCircleQuestion class="size-4 shrink-0 text-ink-3" />

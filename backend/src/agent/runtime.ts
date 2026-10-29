@@ -24,7 +24,7 @@ import type { ChatEvent, ContentBlock, ProviderState, TextBlock, ToolResultBlock
 import { transaction, type Queryable } from "../db.js";
 import { CURRENT_USER_COLUMNS, toCurrentUser, type CurrentUser } from "../lib/auth.js";
 import { conflict, HttpError, notFound } from "../lib/http.js";
-import { answersFromText, answersText, askUserInput, validateAnswers, type AnswersInput, type StoredAnswers } from "./ask.js";
+import { answersFromText, answersText, askUserInput, quizValue, validateAnswers, type AnswersInput, type StoredAnswers } from "./ask.js";
 import { EventWriter, insertEvent } from "./events.js";
 import { memoriesForContext, stripMemoryMarkers, usedMemories } from "./memory.js";
 import { autopilotLimitNotice, decide, DEFERRED_TEXT, grantScope, OUTBOUND_SKIPPED_TEXT } from "./policy.js";
@@ -33,7 +33,8 @@ import {
   type PageContext, type StoredMessage,
 } from "./prompt.js";
 import { getAgentSettings } from "./settings.js";
-import { applyConceptCheckAnswer, parseCardValue } from "./tutor.js";
+import { applyQuizAnswer } from "./quiz.js";
+import { applyConceptCheckAnswer, parseCardValue, rewindSessions, tagPending } from "./tutor.js";
 import { completionReview, failureNote, failureStreak, FAILURE_NOTE_AT, FAILURE_STOP, planReminder, REPEAT_NOTE, type RunCall } from "./guards.js";
 import type { Plan } from "./tools/plan.js";
 import { inlineToolImages, storeToolImages, toolResultContent, type StoredToolImage } from "./images.js";
@@ -134,6 +135,14 @@ const stable = (v: unknown): string =>
  * read_paper made the assistant fetch a PDF the library already had).
  */
 const INTERNAL_ERROR = "工具執行時發生系統內部錯誤（不是資料或檔案本身的問題）。不要重新下載、匯入或改用其他來源取代；可以換個參數再試一次（例如改讀其他章節），仍失敗就告訴使用者這個工具暫時出錯。";
+/** Whether an `ask_user` call is a tutoring card (concept_check / quiz), whose answer changes tutoring state. */
+async function tutorCard(client: Queryable, callId: string): Promise<boolean> {
+  return !!(await client.query(
+    "SELECT 1 FROM tool_calls WHERE id=$1 AND tool='ask_user' AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(edited_args,args)->'questions') q WHERE q->>'type' IN ('concept_check','quiz'))",
+    [callId],
+  )).rowCount;
+}
+
 const errorText = (e: unknown) => (e instanceof HttpError ? e.message : isPlatformError(e) ? e.message_zh : e instanceof AiError ? e.message_zh : INTERNAL_ERROR);
 
 export class AgentRuntime {
@@ -426,16 +435,22 @@ export class AgentRuntime {
     )).rowCount;
     if (answered) throw conflict("這些問題已經回答過了；要改的話請按「修改答案」。");
     const stored = validateAnswers(args.data, input.answers);
-    const out = answersText(args.data, stored);
     // A concept_check card (「先確認先備知識」): the session records the answer and the self-reports are remembered.
+    // A quiz card: graded here (the keys never left the server); the result goes on the stored answer for the card.
     const notes: string[] = [];
     for (const q of args.data.questions) {
-      if (q.type !== "concept_check" || !q.paper_id || !q.concepts) continue;
       const a = stored.answers.find((x) => x.id === q.id);
+      if (q.type === "quiz" && q.paper_id && q.quiz_id && a) {
+        const res = await applyQuizAnswer(client, conversationId, q.paper_id, q.quiz_id, a.skipped ? null : quizValue(a.value));
+        if (res.graded) a.graded = res.graded;
+        if (res.note) notes.push(res.note);
+      }
+      if (q.type !== "concept_check" || !q.paper_id || !q.concepts) continue;
       const parsed = a && !a.skipped && Array.isArray(a.value) ? parseCardValue(q.concepts, a.value) : null;
       const note = await applyConceptCheckAnswer(client, conversationId, q.paper_id, parsed);
       if (note) notes.push(note);
     }
+    const out = answersText(args.data, stored);
     const modelOut = notes.length ? `${out.model}\n<tutor_note trust="system">${notes.join("\n")}</tutor_note>` : out.model;
     const model = extra ? `${modelOut}\n\n補充：${extra}` : modelOut;
     const display = extra ? `${out.display}\n\n${extra}` : out.display;
@@ -458,6 +473,8 @@ export class AgentRuntime {
       [conv.id, user.id, this.limits.maxSteps, conv.autopilot, turn.taint.length > 0, JSON.stringify(turn.taint)],
     )).rows[0]!;
     await client.query("UPDATE agent_messages SET run_id=$2 WHERE id=$1", [msg.id, run.id]);
+    // Tutoring writes made while building this turn (a concept_check / quiz answer) belong to this message.
+    await tagPending(client, conv.id, msg.id);
     return { msg: { ...msg, run_id: run.id }, run, conversation };
   }
 
@@ -726,15 +743,24 @@ export class AgentRuntime {
       const prepared = refs.length && !target.answers ? await prepareAttachments(this.app, user, conv.id, refs) : undefined;
       if (input.answers || input.text?.trim()) {
         if (target.answers && !input.answers) throw new HttpError(400, "這則是問題卡片的回答，請用「修改答案」。");
+      }
+      const firstUser = (await client.query<{ id: string }>("SELECT id FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq LIMIT 1", [conv.id])).rows[0];
+      // The discarded tail is hidden first and tutoring state follows the branch back (tutor.ts rewindSessions), so the
+      // new version (an edited card answer included) applies to the state before the edited message.
+      await this.hideFrom(client, conv.id, seq, target.id);
+      await rewindSessions(client, conv.id);
+      if (input.answers || input.text?.trim()) {
         turn = await this.buildTurn(client, conv.id, { ...input, intent, prepared }, ctx, seq);
       } else if (target.answers) {
-        // Regenerate after an answered card: the same answers again.
-        turn = { blocks: target.content, text: target.text, answers: target.answers, ...turnAttachments() };
+        // Regenerate after an answered card: the same answers again. A tutoring card's answer (concept_check / quiz) is
+        // applied again to the rewound tutoring state.
+        const { toolCallId, answers } = target.answers as StoredAnswers;
+        turn = (await tutorCard(client, toolCallId))
+          ? await this.buildTurn(client, conv.id, { answers: { tool_call_id: toolCallId, answers: answers.map((a) => ({ id: a.id, value: a.value, ...(a.other ? { other: a.other } : {}), ...(a.skipped ? { skipped: true } : {}) })) } }, ctx, seq)
+          : { blocks: target.content, text: target.text, answers: target.answers, ...turnAttachments() };
       } else {
         turn = await this.buildTurn(client, conv.id, { text: target.text, intent, prepared }, ctx, seq);
       }
-      const firstUser = (await client.query<{ id: string }>("SELECT id FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL ORDER BY seq LIMIT 1", [conv.id])).rows[0];
-      await this.hideFrom(client, conv.id, seq, target.id);
       if (firstUser?.id === target.id) await client.query("UPDATE conversations SET title='' WHERE id=$1 AND title_source='auto'", [conv.id]);
       const out = await this.insertTurn(client, conv, user, turn, ctx, target.version_of ?? target.id);
       return { events, ...out };
@@ -779,6 +805,7 @@ export class AgentRuntime {
       await this.closeStep(client, conversationId, "cancel");
       await this.hideFrom(client, conversationId, Number(current.seq), current.id);
       await client.query("UPDATE agent_messages SET hidden_by=NULL WHERE conversation_id=$1 AND hidden_by=$2", [conversationId, target.id]);
+      await rewindSessions(client, conversationId);
       await client.query("UPDATE conversations SET updated_at=now() WHERE id=$1", [conversationId]);
       return true;
     });

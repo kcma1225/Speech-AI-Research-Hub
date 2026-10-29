@@ -9,7 +9,9 @@
 import { z } from "zod";
 import { transaction } from "../../db.js";
 import { badRequest, conflict, notFound } from "../../lib/http.js";
+import { paperFullText } from "../../lib/library/fulltext.js";
 import { getPaper } from "../../lib/library/store.js";
+import { MAX_QUESTIONS, MAX_ROUNDS, normQuote, quizCardItems, quizHint, quizQuestionInput, quizTargets, validateQuiz, type Quiz } from "../quiz.js";
 import {
   addSubConcepts,
   applyOutcomes,
@@ -150,15 +152,23 @@ registerAgentTool({
       const n = nextConcept(s, a.section ?? null);
       if (n.kind === "card_needed") throw conflict(`使用者還沒回答概念確認卡片：先呼叫 ask_user ${JSON.stringify({ questions: [{ id: "concepts", type: "concept_check", prompt: CARD_PROMPT, paper_id: s.paper_id }] })}。`);
       if (n.kind === "none") {
+        const hint = n.section ? "" : quizHint(s);
         return {
-          data: { next: null, section: n.section, remaining: n.remaining },
+          data: { next: null, section: n.section, remaining: n.remaining, ...(hint ? { quiz: quizTargets(s).kind === "targets" } : {}) },
           text: n.section
             ? `§${n.section} 之前沒有需要先補的概念（整篇還有 ${n.remaining} 個要補）：直接講這一節。`
-            : "沒有要補的概念了：繼續講解論文。",
+            : ["沒有要補的概念了：繼續講解論文。", hint].filter(Boolean).join("\n"),
         };
       }
       const c = n.concept;
-      const how = n.mode === "recap" ? "使用者說「有聽過」：用 2–4 句簡短複習重點，連到這篇論文怎麼用它。" : "使用者說「不懂」：從直覺講起，配一個具體例子，再連到這篇論文怎麼用它；不要用使用者還沒懂的詞。";
+      const how =
+        c.quiz === "failed"
+          ? `使用者在小測驗答錯了這個概念（${c.quiz_miss || "答錯"}）。換一個和之前不同的角度與例子重講，直接處理這個誤解；不要只是重複之前的說法。`
+          : c.quiz === "guessed"
+            ? "使用者在小測驗是猜對的：用 2–4 句換個說法講清楚關鍵的區別（為什麼正確答案對、其他選項錯在哪）。"
+            : n.mode === "recap"
+              ? "使用者說「有聽過」：用 2–4 句簡短複習重點，連到這篇論文怎麼用它。"
+              : "使用者說「不懂」：從直覺講起，配一個具體例子，再連到這篇論文怎麼用它；不要用使用者還沒懂的詞。";
       const verify = n.verify
         ? `這是核心概念：講完後可以（選擇性）邀請使用者用一句話說明，例如「用一句話說：${c.term_zh || c.term_en} 在做什麼？（想跳過也可以）」，然後結束這一輪；之後用 mark_concepts 記錄 explain_back_passed / explain_back_failed / skipped。`
         : "不要出確認題；講完依使用者的反應用 mark_concepts 記錄 understood / unclear / skipped（使用者沒有表示時，可以在下一個概念開始前一起記錄）。";
@@ -255,11 +265,95 @@ registerAgentTool({
         ...res.notes,
         res.s.checks_off ? "之後不要再出確認題。" : "",
         left ? `還有 ${left} 個概念要補：需要時呼叫 next_concept。` : "先備概念都處理完了：繼續講解論文。",
+        left ? "" : quizHint(res.s),
       ].filter(Boolean).join("\n"),
       links: res.saved.length ? [{ label: "管理懂的概念", url: "/settings?tab=assistant#concepts", kind: "memory" as const }] : [],
     };
   },
 });
+
+const QUIZ_PROMPT = "小測驗：確認你真的懂了";
+
+/** Whether a quote is in the paper (null = no full text to check against: not checked). */
+async function quoteChecker(ctx: AgentToolContext, paper: { pdf_key: string | null; abstract: string | null; title: string }): Promise<(q: string) => boolean | null> {
+  let text = `${paper.title}\n${paper.abstract ?? ""}`;
+  let full = false;
+  if (paper.pdf_key) {
+    const ft = await paperFullText(ctx.app.storage, paper.pdf_key).catch(() => null);
+    if (ft) {
+      text += `\n${ft.sections.map((x) => `${x.title}\n${x.text}`).join("\n")}`;
+      full = true;
+    }
+  }
+  const hay = normQuote(text);
+  return (q) => {
+    const needle = normQuote(q);
+    if (needle.length < 8) return false;
+    if (hay.includes(needle)) return true;
+    return full ? false : null;
+  };
+}
+
+registerAgentTool({
+  name: "build_quiz",
+  title: "出小測驗",
+  titleEn: "Build a quiz",
+  risk: "read",
+  mcp: false,
+  conversationFlag: "prereq_check",
+  description:
+    "End-of-paper quiz that checks the user really understood. Call it WITHOUT questions first: the system says which concepts to test (or why not now). " +
+    `Then call it with ${MAX_QUESTIONS} or fewer questions: one or two per listed concept, at least one 'apply' question (how THIS paper uses the concept: why X and not Y, what breaks without it), ` +
+    "choice questions with 3–4 options, exactly one correct, wrong options = plausible misconceptions of similar length, each option with a why; at most one short (free-text) question with a rubric. " +
+    "Every question cites a sentence copied verbatim from the paper (evidence) and its section. The system checks, shuffles and grades; then show it with the ask_user call it returns.",
+  input: z.object({
+    paper_id: paperArg,
+    questions: z.array(quizQuestionInput).max(8).optional().describe("Omit to get the concepts to test"),
+  }),
+  summarize: (a) => (a.questions?.length ? `出小測驗（${a.questions.length} 題）` : "確認要測驗的概念"),
+  async execute(a, ctx) {
+    const paper = await paperOf(ctx, a.paper_id);
+    const grounded = a.questions?.length ? await quoteChecker(ctx, paper) : () => null;
+    return withSession(ctx, paper.id, async (s) => {
+      const t = quizTargets(s);
+      if (t.kind === "teach_first") throw conflict(`上一輪答錯／猜的概念還沒重講：先呼叫 next_concept（paper_id ${s.paper_id}）重講 ${t.keys.join("、")}，講完再出下一輪。`);
+      if (t.kind === "limit") throw conflict(`這篇論文已經考了 ${MAX_ROUNDS} 輪：不要再出題，改用對話確認使用者還卡在哪裡。`);
+      if (t.kind === "none") throw conflict("沒有需要測驗的概念（都已確認懂、或使用者略過了）：不要出題，繼續回答使用者。");
+      const targets = t.concepts.map((c) => ({ key: c.key, term: termLabel(c), gloss: c.gloss, ...(c.section ? { section: c.section } : {}), ...(c.quiz_miss ? { last_miss: c.quiz_miss } : {}) }));
+      if (!a.questions?.length) {
+        return {
+          data: { round: t.round, retest: t.retest, targets },
+          text: [
+            `第 ${t.round} 輪小測驗要考：${targets.map((x) => `[${x.key}] ${x.term}`).join("、")}。`,
+            t.retest ? "這是重考：題目要和上一輪不同，針對上一輪的誤解（last_miss）設計選項。" : "",
+            `再呼叫 build_quiz 帶 questions：每個概念 1–2 題、總共最多 ${MAX_QUESTIONS} 題、至少一題 apply；選擇題 3–4 個選項、剛好一個正確、錯誤選項是合理的誤解且長度相近；最多一題簡答。每題附論文逐字引用的 evidence 與 section。`,
+          ].filter(Boolean).join("\n"),
+        };
+      }
+      const quizId = crypto.randomUUID().slice(0, 8);
+      const v = validateQuiz(t.concepts, a.questions, quizId, grounded);
+      if (!v.items) throw conflict(`小測驗沒有通過檢查，請修正後再呼叫 build_quiz：\n${v.problems.map((p) => `- ${p}`).join("\n")}\n要考的概念：${targets.map((x) => x.key).join("、")}`);
+      for (const q of s.quizzes ?? []) if (q.status === "open") q.status = "replaced";
+      const quiz: Quiz = { id: quizId, round: t.round, status: "open", items: v.items, created_at: new Date().toISOString() };
+      s.quizzes = [...(s.quizzes ?? []), quiz];
+      const call = { questions: [{ id: "quiz", type: "quiz", prompt: QUIZ_PROMPT, paper_id: s.paper_id, quiz_id: quizId }] };
+      return {
+        data: { quiz_id: quizId, round: t.round, questions: v.items.length },
+        text: `小測驗已建立（第 ${t.round} 輪，${v.items.length} 題；選項順序由系統打亂，答案不會給使用者看到）。下一步：用一句話邀請使用者做測驗（可以略過），呼叫 ask_user ${JSON.stringify(call)}（題目由系統填入，不要在文字裡列出題目或答案），然後結束這一輪。`,
+      };
+    });
+  },
+});
+
+/** `ask_user` prepare (tools/ask.ts): fills a quiz question's items (without answer keys) from the open quiz. */
+export async function prepareQuiz(q: { paper_id?: string; quiz_id?: string }, ctx: AgentToolContext) {
+  const conv = conversationOf(ctx);
+  const s = q.paper_id && isUuid(q.paper_id) ? await loadSession(ctx.db, conv, q.paper_id) : null;
+  const quiz = s?.quizzes?.find((x) => x.id === q.quiz_id);
+  if (!s || !quiz) throw conflict("找不到這份小測驗：先呼叫 build_quiz 建立題目。");
+  if (quiz.status !== "open") throw conflict("這份小測驗已經作答或被取代了：要再考請重新呼叫 build_quiz。");
+  return quizCardItems(quiz);
+}
 
 /** `ask_user` prepare (tools/ask.ts): fills a concept_check question's rows from the conversation's session. */
 export async function prepareConceptCheck(q: { paper_id?: string; concepts?: unknown }, ctx: AgentToolContext) {

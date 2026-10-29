@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 import type { Queryable } from "../db.js";
+import type { Quiz } from "./quiz.js";
 
 export const CONCEPT_KINDS = ["prerequisite", "paper_defined", "symbol"] as const;
 export const CONCEPT_LEVELS = ["known", "heard", "unknown"] as const;
@@ -77,9 +78,13 @@ export type SessionConcept = {
   outcome: "known" | "understood" | "unclear" | "skipped" | null;
   /** The one optional explain-back of a core concept. */
   check: "none" | "offered" | "passed" | "failed" | "skipped";
+  /** The end-of-paper quiz (quiz.ts): passed = verified; failed / guessed = taught again, tested in the next round. */
+  quiz?: "passed" | "failed" | "guessed";
+  /** The misconception behind a wrong quiz answer (the option chosen and why it is wrong), for the re-teach. */
+  quiz_miss?: string;
 };
 
-export type Session = { paper_id: string; concepts: SessionConcept[]; answered: boolean; checks_off: boolean };
+export type Session = { paper_id: string; concepts: SessionConcept[]; answered: boolean; checks_off: boolean; quizzes?: Quiz[] };
 export type MemoryRow = { concept_key: string; term_zh: string; term_en: string; level: ConceptLevel; source: ConceptSource };
 export type MemoryWrite = { key: string; term_zh: string; term_en: string; level: ConceptLevel; source: ConceptSource };
 
@@ -167,7 +172,7 @@ export function buildSession(paperId: string, input: ConceptInput[], memory: Map
     if (isPrereq(c) && checkedKnown(m)) Object.assign(c, { level: "known", status: "done", outcome: "known", check: "passed" });
     if (!isPrereq(c)) c.status = "done";
   }
-  return { session: { paper_id: paperId, concepts: [...ordered, ...defined], answered: false, checks_off: false }, dropped, merged, cyclesBroken: broken };
+  return { session: { paper_id: paperId, concepts: [...ordered, ...defined], answered: false, checks_off: false, quizzes: [] }, dropped, merged, cyclesBroken: broken };
 }
 
 /** A row of the concept_check card. */
@@ -274,7 +279,7 @@ export function nextConcept(s: Session, section?: string | null): NextConcept {
   const gapKeys = new Set(gaps.map((g) => g.key));
   const c = pool.find((x) => x.depends_on.every((d) => !gapKeys.has(d))) ?? pool[0];
   if (!c) return { kind: "none", section: section ?? null, remaining: gaps.length };
-  const verify = c.centrality === "core" && c.depth === 0 && c.check === "none" && !s.checks_off;
+  const verify = c.centrality === "core" && c.depth === 0 && c.check === "none" && !c.quiz && !s.checks_off;
   c.status = "teaching";
   if (verify) c.check = "offered";
   const chain: string[] = [];
@@ -432,14 +437,22 @@ export function savedLine(writes: MemoryWrite[], byKey: Map<string, Pick<Session
 
 // ---------------------------------------------------------------- DB
 
+/** Whether the user lets 「先確認先備知識」 remember concepts (設定 → 懂的概念; on by default). */
+export async function conceptMemoryOn(db: Queryable, userId: string): Promise<boolean> {
+  const row = (await db.query<{ concept_memory: boolean }>("SELECT concept_memory FROM agent_settings WHERE user_id=$1", [userId])).rows[0];
+  return row?.concept_memory ?? true;
+}
+
+/** The user's memory of these concepts (empty when concept memory is off). */
 export async function loadMemory(db: Queryable, userId: string, keys: string[]): Promise<Map<string, MemoryRow>> {
-  if (!keys.length) return new Map();
+  if (!keys.length || !(await conceptMemoryOn(db, userId))) return new Map();
   const rows = (await db.query<MemoryRow>("SELECT concept_key,term_zh,term_en,level,source FROM user_concepts WHERE user_id=$1 AND concept_key = ANY($2::text[])", [userId, keys])).rows;
   return new Map(rows.map((r) => [r.concept_key, r]));
 }
 
-/** Writes memory rows by the merge rule. Returns the writes that changed something. */
+/** Writes memory rows by the merge rule (nothing when concept memory is off). Returns the writes that changed something. */
 export async function writeMemory(db: Queryable, userId: string, paperId: string | null, writes: MemoryWrite[]): Promise<MemoryWrite[]> {
+  if (!writes.length || !(await conceptMemoryOn(db, userId))) return [];
   const existing = await loadMemory(db, userId, writes.map((w) => w.key));
   const done: MemoryWrite[] = [];
   for (const w of writes) {
@@ -458,19 +471,57 @@ export async function writeMemory(db: Queryable, userId: string, paperId: string
   return done;
 }
 
-type SessionRow = { paper_id: string; concepts: SessionConcept[]; answered: boolean; checks_off: boolean };
+type SessionRow = { paper_id: string; concepts: SessionConcept[]; answered: boolean; checks_off: boolean; quizzes: Quiz[] };
 
 export async function loadSession(db: Queryable, conversationId: string, paperId: string, forUpdate = false): Promise<Session | null> {
-  const row = (await db.query<SessionRow>(`SELECT paper_id,concepts,answered,checks_off FROM paper_concept_sessions WHERE conversation_id=$1 AND paper_id=$2${forUpdate ? " FOR UPDATE" : ""}`, [conversationId, paperId])).rows[0];
+  const row = (await db.query<SessionRow>(`SELECT paper_id,concepts,answered,checks_off,quizzes FROM paper_concept_sessions WHERE conversation_id=$1 AND paper_id=$2${forUpdate ? " FOR UPDATE" : ""}`, [conversationId, paperId])).rows[0];
   return row ?? null;
 }
 
-export async function saveSession(db: Queryable, conversationId: string, s: Session): Promise<void> {
+/**
+ * Saves a session and records the write in paper_concept_history, tagged with the conversation's newest message on the
+ * current branch, or untagged (`pending`) while the user turn that caused it is still being inserted (`tagPending`
+ * tags it then). `rewindSessions` uses the history to follow edits and version switches.
+ */
+export async function saveSession(db: Queryable, conversationId: string, s: Session, opts: { pending?: boolean } = {}): Promise<void> {
+  const quizzes = JSON.stringify(s.quizzes ?? []);
   await db.query(
-    `INSERT INTO paper_concept_sessions(conversation_id,paper_id,concepts,answered,checks_off) VALUES($1,$2,$3,$4,$5)
-     ON CONFLICT (conversation_id,paper_id) DO UPDATE SET concepts=EXCLUDED.concepts, answered=EXCLUDED.answered, checks_off=EXCLUDED.checks_off, updated_at=now()`,
-    [conversationId, s.paper_id, JSON.stringify(s.concepts), s.answered, s.checks_off],
+    `INSERT INTO paper_concept_sessions(conversation_id,paper_id,concepts,answered,checks_off,quizzes) VALUES($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (conversation_id,paper_id) DO UPDATE SET concepts=EXCLUDED.concepts, answered=EXCLUDED.answered, checks_off=EXCLUDED.checks_off, quizzes=EXCLUDED.quizzes, updated_at=now()`,
+    [conversationId, s.paper_id, JSON.stringify(s.concepts), s.answered, s.checks_off, quizzes],
   );
+  await db.query(
+    `INSERT INTO paper_concept_history(conversation_id,paper_id,message_id,concepts,answered,checks_off,quizzes)
+     VALUES($1,$2,${opts.pending ? "NULL" : "(SELECT id FROM agent_messages WHERE conversation_id=$1 AND hidden_by IS NULL ORDER BY seq DESC LIMIT 1)"},$3,$4,$5,$6)`,
+    [conversationId, s.paper_id, JSON.stringify(s.concepts), s.answered, s.checks_off, quizzes],
+  );
+}
+
+/** Tags the session writes of a user turn (saved with `pending`) with its message, once inserted. */
+export async function tagPending(db: Queryable, conversationId: string, messageId: string): Promise<void> {
+  await db.query("UPDATE paper_concept_history SET message_id=$2 WHERE conversation_id=$1 AND message_id IS NULL", [conversationId, messageId]);
+}
+
+/**
+ * After the current branch changed (a message edited / regenerated, another version shown): every tutoring session of
+ * the conversation goes back to its newest write whose message is on the current branch; a session with none (it was
+ * started in the discarded part) is removed. Concept memory is not rolled back (the user edits it in 設定).
+ */
+export async function rewindSessions(db: Queryable, conversationId: string): Promise<void> {
+  await db.query("DELETE FROM paper_concept_history WHERE conversation_id=$1 AND message_id IS NULL", [conversationId]);
+  const papers = (await db.query<{ paper_id: string }>("SELECT paper_id FROM paper_concept_sessions WHERE conversation_id=$1 FOR UPDATE", [conversationId])).rows;
+  for (const { paper_id } of papers) {
+    const h = (await db.query<SessionRow>(
+      `SELECT h.paper_id,h.concepts,h.answered,h.checks_off,h.quizzes FROM paper_concept_history h JOIN agent_messages m ON m.id=h.message_id
+        WHERE h.conversation_id=$1 AND h.paper_id=$2 AND m.hidden_by IS NULL ORDER BY h.id DESC LIMIT 1`,
+      [conversationId, paper_id],
+    )).rows[0];
+    if (!h) await db.query("DELETE FROM paper_concept_sessions WHERE conversation_id=$1 AND paper_id=$2", [conversationId, paper_id]);
+    else
+      await db.query("UPDATE paper_concept_sessions SET concepts=$3, answered=$4, checks_off=$5, quizzes=$6, updated_at=now() WHERE conversation_id=$1 AND paper_id=$2", [
+        conversationId, paper_id, JSON.stringify(h.concepts), h.answered, h.checks_off, JSON.stringify(h.quizzes ?? []),
+      ]);
+  }
 }
 
 /** Whether the conversation has 「先確認先備知識」 on. */
@@ -488,7 +539,7 @@ export async function applyConceptCheckAnswer(db: Queryable, conversationId: str
   const s = conv ? await loadSession(db, conversationId, paperId, true) : null;
   if (!conv || !s) return "";
   const writes = applyCardAnswer(s, parsed);
-  await saveSession(db, conversationId, s);
+  await saveSession(db, conversationId, s, { pending: true });
   const saved = await writeMemory(db, conv.user_id, paperId, writes);
   const byKey = new Map(s.concepts.map((c) => [c.key, c]));
   const line = savedLine(saved, byKey);

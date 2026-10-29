@@ -49,7 +49,7 @@ const editInput = z.object({ text: z.string().trim().max(20000).optional(), answ
 const messageParams = z.object({ id: z.uuid(), messageId: z.uuid() });
 const decisionInput = z.object({ decision: z.enum(["approve", "approve_conversation", "deny"]), reason: z.string().max(500).optional(), edited_args: z.record(z.string(), z.unknown()).optional() });
 const listQuery = z.object({ mode: z.enum(["chat", "interview"]).optional(), q: z.string().max(100).optional(), limit: z.coerce.number().int().min(1).max(200).optional() });
-const settingsInput = z.object({ memory_enabled: z.boolean().optional(), autopilot_default: z.boolean().optional(), autopilot_explained: z.boolean().optional() });
+const settingsInput = z.object({ memory_enabled: z.boolean().optional(), autopilot_default: z.boolean().optional(), autopilot_explained: z.boolean().optional(), concept_memory: z.boolean().optional() });
 
 async function ownConversation(app: FastifyInstance, userId: string, id: string) {
   const conv = (await app.db.query<ConversationRow>("SELECT * FROM conversations WHERE id=$1 AND user_id=$2", [id, userId])).rows[0];

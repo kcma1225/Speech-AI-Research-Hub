@@ -1077,7 +1077,8 @@ Spec §5/§9, research `docs/research/agent-harness.md`. The loop runs **in the 
 `agentFor(app)`), persists every step, and streams through an event log, so a reload or restart never loses state.
 
 Tables (`0070_agent.sql`):
-- `agent_settings` (per user: `memory_enabled` default **false**, `autopilot_default` default false, `autopilot_explained`).
+- `agent_settings` (per user: `memory_enabled` default **false**, `autopilot_default` default false, `autopilot_explained`,
+  `concept_memory` default true — 懂的概念, `0124_paper_quiz.sql`).
 - `conversations` (`user_id`, `title` + `title_source auto|user`, `mode chat|interview`, `context` = latest page context,
   `study_id` (scope for study memories), `autopilot`, `memory_enabled`, `summary` + `summary_until` = compaction,
   `prereq_check` = 「先確認先備知識」 (`0123_paper_tutor.sql`; see Prerequisite check)).
@@ -1167,7 +1168,8 @@ conversation (GET + SSE from the new `resumeFrom`), so replay never shows events
 **`ask_user`** (`src/agent/ask.ts`, `tools/ask.ts`; risk read, never asks for consent, chat + interview, not on MCP):
 `{intro?, questions: 1–6 × {id, prompt, type single_choice|multi_choice|short_text|long_text|number|date|scale|yes_no,
 options?: [{value,label,description?}] (2–12, required for choices; a missing `value` defaults to the label or `o<n>`, and `question`/`text` are accepted for `prompt`), allow_other?, required? (default false), placeholder?,
-scale_labels?}}`; type `concept_check` (+ `paper_id`, `concepts` filled by code — see Prerequisite check) is alone on its card. The call only shows the card; after its step the run ends (`done`, `stop_reason awaiting_input`) without
+scale_labels?}}`; type `concept_check` (+ `paper_id`, `concepts` filled by code) and type `quiz` (+ `paper_id`, `quiz_id`,
+`items` filled by code without answer keys) — see Prerequisite check — are alone on their card. The call only shows the card; after its step the run ends (`done`, `stop_reason awaiting_input`) without
 another model call. The answers are a **user turn**: `POST …/messages {answers: {tool_call_id, answers}}` (validated against
 the questions: required, option values, number/date/scale ranges → 400; card must be on the current branch and not already
 answered → 404/409); the model gets a clean `<user_answers>` list (question → answer labels, 「（略過）」 for skipped). A normal
@@ -1206,7 +1208,38 @@ conversation's tutoring state and the user's own concept memory, whose source is
   counts as understood); explain_back_failed → heard (no second check); unclear → unknown (still a gap); skipped → done, no
   memory (a skipped check turns checks off). Memory merge: a `checked` + `known` row is not demoted by a `known` self-report;
   any other write replaces the row. The result carries 「已記下…」 and a 「管理懂的概念」 link (`/settings?tab=assistant#concepts`).
-- 設定 → AI 助理 → 懂的概念 (`ConceptSettings.svelte`): list, change the level (becomes `self_report`), delete one / all.
+- **Quiz** (`src/agent/quiz.ts`, `0124_paper_quiz.sql`): `build_quiz {paper_id, questions?}`. Without questions → the code's
+  targets (`quizTargets`): after a round with wrong / guessed answers only those concepts, once re-taught (409 until
+  `next_concept` handed them out again); otherwise the paper's own prerequisites not verified — taught here first, then
+  self-reported 懂, core before supporting, ≤ 4; skipped rows, earlier `checked` concepts and quiz-passed ones left out; ≤ 3
+  rounds per paper (409 after). With `questions` (≤ 5 × `{concept, level concept|apply, format choice|short, prompt,
+  options? 3–4 × {text, correct?, why}, rubric?, model_answer?, section, evidence}`) `validateQuiz` refuses (409, one line per
+  problem) unless: every target has 1–2 questions, ≥ 1 `apply` when ≥ 2 questions, ≤ 1 short (with rubric + model answer), ≥ 1
+  choice; a choice has exactly one correct option, no duplicate options, the correct one is not much longer (> 1.5× and
+  > 12 chars) than every other, the prompt does not contain it; `evidence` is in the paper (NFKC, lower case, letters / digits
+  only; title + abstract + PDF full text; not checked when there is no full text). Options are shuffled with a seed from the
+  quiz id (values a–d). The quiz is stored in the session (`quizzes`, an earlier open one becomes `replaced`); the result
+  names the `ask_user {questions:[{id, type: "quiz", prompt, paper_id, quiz_id}]}` call, whose `prepare` fills `items`
+  `{id q<n>, concept, term, level, format, prompt, options [{value,label}], section}` — never `correct` / `why` / `evidence` /
+  `rubric`. Answer value = a JSON string `{"q1":{"choice":"b","guess":true},"q2":{"text":"…"}}` (unknown item / option → 400;
+  nothing answered = skipped). Inside the answer turn's transaction choice items are graded by the key (`correct` /
+  `guessed` (「我是猜的」) / `wrong` / `unanswered`; a short answer is never graded — the model gives feedback from the rubric) and
+  the stored answer gains `graded: [{id, outcome, correct, why?}]` (the SPA shows ✓ / ✗ and the right option). Per concept:
+  any wrong → pending again (level unknown, `quiz: failed`, the chosen option and its why kept as `quiz_miss`; memory demoted
+  to heard/self_report when it was 懂); else any guessed → pending (level heard, memory unchanged); else correct → done and
+  remembered known/**checked**. `next_concept` re-teaches a failed concept from another angle with the misconception, never
+  with an explain-back. The `<tutor_note>` lists each item with the result and why, and what to do next. The quiz is offered by
+  the tools, never forced: `next_concept` (no section) and `mark_concepts` add 「…呼叫 build_quiz」 once no gap is left (not
+  after 直接講 / a skipped card unless a round was already taken, not after a skipped quiz, not when no concept qualifies);
+  after the re-teach they ask for the next round. The user can always skip; 「考我」 calls it directly.
+- **Branches**: every session write is also appended to `paper_concept_history`, tagged with the conversation's newest message
+  of the current branch (a write made while a user turn is built — a card answer — is tagged with that turn's message once
+  inserted). Editing / regenerating a message and switching versions (‹ 1/2 ›) restore each session to its newest write whose
+  message is on the current branch (none → the session is removed) before the new version is built, so an edited answer is
+  applied to the state before it; regenerating after a tutoring card applies the same answer again. Concept memory is not
+  rolled back (the user edits it in 設定).
+- 設定 → AI 助理 → 懂的概念 (`ConceptSettings.svelte`): list, change the level (becomes `self_report`), delete one / all, and
+  the switch 「記住我懂的概念」 (`agent_settings.concept_memory`, default on; off = memory is neither read nor written).
 
 **Interview** (`mode interview`): creating the conversation seeds a finished run with one assistant message holding a fixed
 `ask_user` card (`MATURITY_QUESTION`, `tools/interview.ts`: 「這個研究目前進行到哪個程度？」 exploring / problem_defined /
@@ -1272,7 +1305,7 @@ stripped from the text).
 
 | Method & path | Access | Notes |
 |---|---|---|
-| GET / PATCH `/agent/settings` `{memory_enabled?, autopilot_default?, autopilot_explained?}` | user | → `{settings}` |
+| GET / PATCH `/agent/settings` `{memory_enabled?, autopilot_default?, autopilot_explained?, concept_memory?}` | user | → `{settings}` |
 | GET `/agent/tools` | user | `{tools:[{name,title,titleEn,risk,alwaysAsk,grantable,openWorld,suggests}]}` |
 | GET `/agent/pending` | user | pending approvals + deferred deletions across my conversations → `{count, conversations:[{id,title,mode,n}]}` (badges) |
 | GET `/agent/conversations?mode=chat\|interview&q=&limit=` | user (own) | `{conversations: (Conversation & {last_text, run_status, pending})[]}` newest first |
@@ -1351,7 +1384,7 @@ the identifier online, reuses a same/likely lab copy, then fetches the open-acce
 `pdf.status`), `fetch_paper_pdf` (open-world; paper editors only), `create_deck`, `add_paper_to_study`, `remember` (memory); destructive `delete_task`,
 `delete_note`, `remove_paper_from_study`; `ask_user` + `list_lab_members` (chat and interview); interview-only
 `propose_study_plan` (read, no side effects); with 「先確認先備知識」 on: `extract_prerequisites`, `next_concept`,
-`add_subconcepts`, `mark_concepts` (see Prerequisite check).
+`add_subconcepts`, `mark_concepts`, `build_quiz` (see Prerequisite check).
 
 **Audit tools** (`tools/more-writes.ts`; admins refused in every tool, `403 管理員帳號只能…`; none on MCP):
 - `update_milestone {study, milestone_id, title?, due_on?, done?, stage_id?}` (write, study editors; `lib/studies/milestones.ts`

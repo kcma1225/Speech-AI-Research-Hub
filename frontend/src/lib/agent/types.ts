@@ -92,7 +92,7 @@ export type Message = {
   created_at: string;
 };
 
-export type QuestionType = "single_choice" | "multi_choice" | "short_text" | "long_text" | "number" | "date" | "scale" | "yes_no" | "concept_check";
+export type QuestionType = "single_choice" | "multi_choice" | "short_text" | "long_text" | "number" | "date" | "scale" | "yes_no" | "concept_check" | "quiz";
 export type ConceptLevel = "known" | "heard" | "unknown";
 /** A row of a concept_check card (「先確認先備知識」; filled by the server). */
 export type ConceptRow = { key: string; term_zh?: string; term_en: string; gloss: string; section?: string; centrality?: "core" | "supporting"; prefill?: ConceptLevel; remembered?: boolean };
@@ -107,13 +107,22 @@ export type AskQuestion = {
   required?: boolean;
   placeholder?: string;
   scale_labels?: string[];
-  /** concept_check only. */
+  /** concept_check / quiz. */
   paper_id?: string;
   concepts?: ConceptRow[];
+  /** quiz only (filled by the server, no answer keys). */
+  quiz_id?: string;
+  items?: QuizItem[];
 };
+/** An item of the end-of-paper quiz card (backend `agent/quiz.ts` quizCardItems). */
+export type QuizItem = { id: string; concept: string; term: string; level: "concept" | "apply"; format: "choice" | "short"; prompt: string; options: { value: string; label: string }[]; section: string };
+/** A quiz item's result after grading (on the stored answer). */
+export type QuizGraded = { id: string; outcome: "correct" | "guessed" | "wrong" | "unanswered" | "short"; correct: string | null; why?: string };
+/** A quiz answer: per item the option chosen (+ 「我是猜的」) or the short answer; posted as a JSON string. */
+export type QuizAnswer = Record<string, { choice?: string; guess?: boolean; text?: string }>;
 export type AskArgs = { intro?: string; questions: AskQuestion[] };
 export type AnswerValue = string | number | boolean | string[] | null;
-export type Answer = { id: string; value?: AnswerValue; other?: string; skipped?: boolean };
+export type Answer = { id: string; value?: AnswerValue; other?: string; skipped?: boolean; graded?: QuizGraded[] };
 export type StoredAnswers = { toolCallId: string; answers: Answer[] };
 
 export type Risk = "read" | "write" | "destructive";
@@ -157,7 +166,7 @@ export type ToolCall = {
   finished_at: string | null;
 };
 
-export type AgentSettings = { memory_enabled: boolean; autopilot_default: boolean; autopilot_explained: boolean };
+export type AgentSettings = { memory_enabled: boolean; autopilot_default: boolean; autopilot_explained: boolean; concept_memory: boolean };
 
 export type ConversationDetail = {
   conversation: Conversation;

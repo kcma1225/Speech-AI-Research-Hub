@@ -11,6 +11,7 @@
   import { menuContent, menuItem } from "#lib/components/ui/menu.ts";
   import AgentMarkdown from "./AgentMarkdown.svelte";
   import AskCard from "./AskCard.svelte";
+  import QuizResult from "./QuizResult.svelte";
   import MessageAttachments from "./attach/MessageAttachments.svelte";
   import { answerLabel } from "#lib/agent/ask.ts";
   import { workflowsApi } from "#lib/workflows/api.ts";
@@ -161,7 +162,11 @@
           <dl class="flex flex-col gap-1.5 text-[13.5px]">
             {#each ask.questions as q (q.id)}
               {@const a = answers.find((x) => x.id === q.id)}
-              <div class="flex flex-col"><dt class="text-[12px] text-ink-3">{q.prompt}</dt><dd class="break-words {a?.skipped || !a ? 'text-ink-3 italic' : 'text-ink'}">{answerLabel(q, a)}</dd></div>
+              {#if q.type === "quiz"}
+                <div class="flex flex-col gap-1.5"><dt class="text-[12px] text-ink-3">{q.prompt}</dt><dd><QuizResult question={q} answer={a} /></dd></div>
+              {:else}
+                <div class="flex flex-col"><dt class="text-[12px] text-ink-3">{q.prompt}</dt><dd class="break-words {a?.skipped || !a ? 'text-ink-3 italic' : 'text-ink'}">{answerLabel(q, a)}</dd></div>
+              {/if}
             {/each}
           </dl>
         </div>

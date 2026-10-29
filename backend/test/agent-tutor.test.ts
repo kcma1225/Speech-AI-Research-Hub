@@ -1,13 +1,15 @@
 /**
  * 「先確認先備知識」 end to end through the agent runtime with a scripted mock model: the per-conversation switch, tool
  * gating, extract → concept_check card (rows filled by code, memory pre-fill) → answer → next_concept /
- * mark_concepts → user_concepts, and the /concepts routes.
+ * mark_concepts → user_concepts, the /concepts routes, the end-of-paper quiz (build_quiz → quiz card without keys →
+ * graded answer → re-teach), tutoring state following message edits / versions, and the concept-memory switch.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { LightMyRequestResponse } from "fastify";
 import type { ChatEvent } from "../src/ai/types.js";
 import type { RoleChatRequest } from "../src/ai/platform/index.js";
 import { agentFor, type ModelCall } from "../src/agent/runtime.js";
+import { writeMemory, type Session } from "../src/agent/tutor.js";
 import { createTestContext, hasTestDb, ORIGIN, type TestContext } from "./helpers.js";
 
 let ids = 0;
@@ -27,7 +29,8 @@ describe.skipIf(!hasTestDb)("paper tutoring (prereq_check)", () => {
   let alice: { id: string; cookie: string };
   let bob: { id: string; cookie: string };
   let paperId: string;
-  let script: ChatEvent[][] = [];
+  // A step is the model's events, or a function computing them when the model is called (e.g. a quiz id).
+  let script: (ChatEvent[] | (() => Promise<ChatEvent[]>))[] = [];
   const requests: RoleChatRequest[] = [];
   const json = (r: LightMyRequestResponse) => r.json() as Record<string, any>;
   const req = (who: { cookie: string }, method: "POST" | "PATCH" | "DELETE" | "GET", url: string, payload?: object) =>
@@ -35,7 +38,8 @@ describe.skipIf(!hasTestDb)("paper tutoring (prereq_check)", () => {
   const runtime = () => agentFor(t.app);
   const model: ModelCall = async function* (r) {
     requests.push(r);
-    for (const e of script.shift() ?? say("（沒有更多腳本）")) yield e;
+    const next = script.shift();
+    for (const e of (typeof next === "function" ? await next() : next) ?? say("（沒有更多腳本）")) yield e;
   };
   const newConversation = async (body: object = {}) => json(await req(alice, "POST", "/api/agent/conversations", body)).conversation;
   async function send(conv: string, body: object) {
@@ -174,5 +178,96 @@ describe.skipIf(!hasTestDb)("paper tutoring (prereq_check)", () => {
     expect(json(await req(alice, "DELETE", "/api/concepts")).deleted).toBeGreaterThanOrEqual(2);
     expect(json(await req(alice, "GET", "/api/concepts")).concepts).toEqual([]);
     expect((await t.app.inject({ method: "GET", url: "/api/concepts" })).statusCode).toBe(401);
+  });
+
+  it("quiz: targets → checked questions → card without keys → graded → re-teach; edits rewind; memory switch", async () => {
+    const conv = (await newConversation({ prereq_check: true })).id;
+    const concepts = [
+      { key: "connectionist temporal classification", term_en: "CTC", gloss: "對齊未知時的序列損失", kind: "prerequisite", centrality: "core", section: "3" },
+      { key: "hidden markov model", term_en: "HMM", gloss: "隱藏狀態的序列模型", kind: "prerequisite", section: "2" },
+    ];
+    script = [calls(["read_paper", { paper_id: paperId }]), calls(["extract_prerequisites", { paper_id: paperId, concepts }]), calls(["ask_user", { questions: [{ id: "concepts", type: "concept_check", prompt: "?", paper_id: paperId }] }])];
+    await send(conv, { text: "幫我講解這篇論文" });
+    const card = (await state(conv)).toolCalls.at(-1);
+    script = [
+      calls(["next_concept", { paper_id: paperId }]),
+      calls(["mark_concepts", { paper_id: paperId, updates: [{ key: "connectionist temporal classification", outcome: "understood" }] }]),
+      calls(["next_concept", { paper_id: paperId }]),
+      say("論文講完了"),
+    ];
+    await send(conv, { answers: { tool_call_id: card.id, answers: [{ id: "concepts", value: ["connectionist temporal classification=unknown", "hidden markov model=known"] }] } });
+    let s = await state(conv);
+    expect(s.toolCalls.at(-1).result.data.next).toBeNull();
+    expect(s.toolCalls.at(-1).result.data.quiz).toBe(true);
+
+    const session = async () => (await t.db.query<Session>("SELECT paper_id,concepts,answered,checks_off,quizzes FROM paper_concept_sessions WHERE conversation_id=$1", [conv])).rows[0]!;
+    const opt = (text: string, correct = false) => ({ text, correct, why: correct ? "論文第三節的定義" : "常見誤解：以為需要事先對齊" });
+    const q = (concept: string, level: "concept" | "apply") => ({
+      concept, level, format: "choice", prompt: `${concept} 在這篇論文中的作用是什麼？`,
+      options: [opt("讓模型不必事先對齊", true), opt("需要逐幀的人工標記"), opt("只用在語言模型解碼")],
+      section: "3", evidence: "We use CTC on MFCC features.",
+    });
+    script = [
+      calls(["build_quiz", { paper_id: paperId }]),
+      calls(["build_quiz", { paper_id: paperId, questions: [q("connectionist temporal classification", "apply")] }]), // misses HMM
+      calls(["build_quiz", { paper_id: paperId, questions: [q("connectionist temporal classification", "apply"), q("hidden markov model", "concept")] }]),
+      async () => calls(["ask_user", { questions: [{ id: "quiz", type: "quiz", prompt: "小測驗", paper_id: paperId, quiz_id: (await session()).quizzes!.at(-1)!.id }] }]),
+    ];
+    await send(conv, { text: "考我" });
+    s = await state(conv);
+    const quizCalls = s.toolCalls.slice(-4);
+    expect(quizCalls.map((c: any) => [c.tool, c.status])).toEqual([["build_quiz", "done"], ["build_quiz", "failed"], ["build_quiz", "done"], ["ask_user", "done"]]);
+    expect(quizCalls[0].result.data.targets.map((x: any) => x.key)).toEqual(["connectionist temporal classification", "hidden markov model"]);
+    expect(quizCalls[1].error).toContain("還缺：hidden markov model");
+    const quizCard = quizCalls[3];
+    expect(quizCard.args.questions[0].items).toHaveLength(2);
+    expect(JSON.stringify(quizCard.args)).not.toMatch(/correct|why|evidence/);
+
+    const items = (await session()).quizzes!.at(-1)!.items;
+    const right = (i: number) => items[i]!.options.find((o) => o.correct)!.value;
+    const wrong = (i: number) => items[i]!.options.find((o) => !o.correct)!.value;
+    script = [say("第一題答錯了，我們換個角度")];
+    requests.length = 0;
+    await send(conv, { answers: { tool_call_id: quizCard.id, answers: [{ id: "quiz", value: JSON.stringify({ q1: { choice: wrong(0) }, q2: { choice: right(1) } }) }] } });
+    expect(lastUserText(requests[0]!)).toContain("答錯");
+    expect(lastUserText(requests[0]!)).toContain("next_concept");
+    s = await state(conv);
+    const answerMsg = s.messages.filter((m: any) => m.answers).at(-1);
+    expect(answerMsg.answers.answers[0].graded.map((g: any) => g.outcome)).toEqual(["wrong", "correct"]);
+    let mem = Object.fromEntries((await t.db.query("SELECT concept_key,level,source FROM user_concepts WHERE user_id=$1", [alice.id])).rows.map((r) => [r.concept_key, `${r.level}/${r.source}`]));
+    expect(mem).toMatchObject({ "connectionist temporal classification": "heard/self_report", "hidden markov model": "known/checked" });
+    let ctc = (await session()).concepts.find((c) => c.key === "connectionist temporal classification")!;
+    expect(ctc).toMatchObject({ status: "pending", quiz: "failed" });
+    // build_quiz now asks for the re-teach first
+    script = [calls(["build_quiz", { paper_id: paperId }]), say("先重講")];
+    await send(conv, { text: "再考一次" });
+    expect((await state(conv)).toolCalls.at(-1).error).toContain("還沒重講");
+
+    // 「修改答案」: the tutoring state goes back to before the answer, the new answer is graded on it
+    script = [say("全部答對")];
+    const edit = await req(alice, "POST", `/api/agent/conversations/${conv}/messages/${answerMsg.id}/edit`, { answers: { tool_call_id: quizCard.id, answers: [{ id: "quiz", value: JSON.stringify({ q1: { choice: right(0) }, q2: { choice: right(1) } }) }] } });
+    expect(edit.statusCode, edit.body).toBeLessThan(300);
+    await runtime().settle();
+    let ss = await session();
+    ctc = ss.concepts.find((c) => c.key === "connectionist temporal classification")!;
+    expect(ctc).toMatchObject({ status: "done", quiz: "passed" });
+    expect(ss.quizzes!.at(-1)!.status).toBe("answered");
+    // ‹ 1/2 ›: back to the first version → the failed state again
+    await req(alice, "POST", `/api/agent/conversations/${conv}/messages/${answerMsg.id}/activate`, {});
+    ss = await session();
+    expect(ss.concepts.find((c) => c.key === "connectionist temporal classification")).toMatchObject({ status: "pending", quiz: "failed" });
+    // editing the first message drops the session started after it
+    const first = (await state(conv)).messages.find((m: any) => m.role === "user");
+    script = [say("好")];
+    await req(alice, "POST", `/api/agent/conversations/${conv}/messages/${first.id}/edit`, { text: "只是打招呼" });
+    await runtime().settle();
+    expect((await t.db.query("SELECT 1 FROM paper_concept_sessions WHERE conversation_id=$1", [conv])).rowCount).toBe(0);
+
+    // concept memory switch (設定 → 懂的概念): off = nothing read or written
+    expect(json(await req(alice, "PATCH", "/api/agent/settings", { concept_memory: false })).settings.concept_memory).toBe(false);
+    expect(await writeMemory(t.db, alice.id, paperId, [{ key: "x", term_zh: "", term_en: "X", level: "known", source: "self_report" }])).toEqual([]);
+    mem = Object.fromEntries((await t.db.query("SELECT concept_key FROM user_concepts WHERE user_id=$1 AND concept_key='x'", [alice.id])).rows.map((r) => [r.concept_key, 1]));
+    expect(mem).toEqual({});
+    await req(alice, "PATCH", "/api/agent/settings", { concept_memory: true });
   });
 });

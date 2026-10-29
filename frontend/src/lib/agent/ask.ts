@@ -1,6 +1,6 @@
 /** `ask_user` question cards: draft state, validation and answer labels (mirrors backend/src/agent/ask.ts). */
 import { t } from "#lib/i18n.svelte.ts";
-import type { Answer, AskArgs, AskQuestion, ConceptLevel, ConceptRow, Message, ToolCall } from "./types.ts";
+import type { Answer, AskArgs, AskQuestion, ConceptLevel, ConceptRow, Message, QuizAnswer, ToolCall } from "./types.ts";
 
 export type Draft = { value: string | number | boolean | string[] | null; other: string; otherOn: boolean; skipped: boolean };
 
@@ -17,6 +17,16 @@ export function conceptLevels(list: string[]): Map<string, ConceptLevel> {
     out.set(x.slice(0, at), x.slice(at + 1) as ConceptLevel);
   }
   return out;
+}
+/** A quiz answer value (JSON string, backend `agent/quiz.ts`) back to the per-item answers. */
+export function quizAnswer(v: unknown): QuizAnswer {
+  if (typeof v !== "string") return {};
+  try {
+    const parsed = JSON.parse(v) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as QuizAnswer) : {};
+  } catch {
+    return {};
+  }
 }
 export const conceptTerm = (c: Pick<ConceptRow, "term_zh" | "term_en">) => (c.term_zh ? `${c.term_zh}（${c.term_en}）` : c.term_en);
 
@@ -75,6 +85,11 @@ export function answerLabel(q: AskQuestion, a: Answer | undefined): string {
         .filter(([, names]) => names.length)
         .map(([lv, names]) => `${t(`agent.tutor.${lv}`)}：${names.join("、")}`)
         .join("；") || t("agent.ask.skipped");
+    }
+    case "quiz": {
+      const ans = quizAnswer(a.value);
+      const n = (q.items ?? []).filter((it) => ans[it.id]?.choice || ans[it.id]?.text).length;
+      return t("agent.quiz.answered", { n, total: q.items?.length ?? 0 });
     }
     case "scale": {
       const n = Number(a.value);

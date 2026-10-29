@@ -112,11 +112,15 @@ export async function loadBundles(db: ReadOnlyDb, runs: Row[]): Promise<{ bundle
         [convIds],
       )
     : [];
-  // The assistant's tool calls (chat.no_silent_supersede): status + the result the model saw, never arguments.
+  // The assistant's tool calls (chat.no_silent_supersede): status + the result the model saw, never arguments. Quiz
+  // cards (tutor.quiz_keys_hidden): only whether the card's arguments carry an answer-key field, computed here.
   const toolCalls = convIds.length
     ? await db.query<StoredToolCall & { conversation_id: string }>(
-        `SELECT tc.conversation_id, tc.id, tc.tool, tc.status, left(tc.summary, 200) AS summary, left(tc.result_text, 300) AS result_text, tc.deny_reason, tc.created_at, tc.finished_at
-           FROM tool_calls tc WHERE tc.conversation_id = ANY($1::uuid[]) AND tc.status IN ('denied', 'cancelled') ORDER BY tc.created_at`,
+        `SELECT tc.conversation_id, tc.id, tc.tool, tc.status, left(tc.summary, 200) AS summary, left(tc.result_text, 300) AS result_text, tc.deny_reason, tc.created_at, tc.finished_at,
+                CASE WHEN tc.tool = 'ask_user' THEN coalesce(tc.edited_args, tc.args)::text ~ '"(correct|why|evidence|rubric|model_answer)"' END AS quiz_keys_shown
+           FROM tool_calls tc WHERE tc.conversation_id = ANY($1::uuid[])
+            AND (tc.status IN ('denied', 'cancelled') OR (tc.tool = 'ask_user' AND coalesce(tc.edited_args, tc.args)->'questions' @> '[{"type":"quiz"}]'))
+          ORDER BY tc.created_at`,
         [convIds],
       )
     : [];

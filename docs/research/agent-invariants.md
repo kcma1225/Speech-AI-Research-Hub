@@ -57,6 +57,8 @@
 | `outcome.not_stuck_awaiting` | 結果 | high | 使用者回答後超過 10 分鐘仍停在 awaiting_input、之後沒有進展 | 回答時間、之後的狀態快照 | e6d552fc：卡了一小時以上 |
 | `assistant.read_before_claim` | 助理 | high | 使用者問成果內容時，助理談內容（列出 ≥ 2 項＋涵蓋／包括…）之前，同一輪要有讀內容的工具（get_deck、get_deck_pages、get_note、read_paper…；get_workflow 不算） | 對話訊息與工具呼叫 | 79ab0678：只呼叫 get_workflow 就說簡報涵蓋 density-ratio |
 | `assistant.target_grounded` | 助理 | critical | 助理對某份成果（deck_id／note_id／project_id）呼叫會動手的工具（start_workflow、suggest_deck_edit、刪除…）時，那份成果要是這個對話的（頁面、這個對話的 run 的 inputs／artifacts、create_* 的結果）或使用者指定的；只在搜尋／列表結果出現過的不行 | 對話訊息的工具呼叫與結果、page_context、對話的 runs | 情境 g22：沒開簡報，助理搜尋後挑了無關的評估集簡報並提議刪頁 |
+| `tutor.quiz_keys_hidden` | 助理 | critical | 小測驗卡片送到前端的參數不含答案欄位（correct／why／evidence／rubric／model_answer） | ask_user 小測驗卡片：載入時計算的布林值（不載入參數本身） | 設計時：題目和正解放在同一份卡片參數，作答前就能看到答案 |
+| `tutor.quiz_miss_retaught` | 助理 | high | 小測驗答錯或猜的概念，先用 next_concept 重講才出下一輪（build_quiz 帶題目） | 帶小測驗結果（tutor_note「小測驗第 N 輪的結果」、答錯／猜的）的使用者訊息之後的 next_concept／build_quiz | 設計時：沒有重講就再考一次，使用者只是在猜答案 |
 | `chat.no_silent_supersede` | 對話 | critical | 待確認的操作（同意卡片）只有在使用者明確確認「取消它並送出」後，才會因為新訊息被取消；結果文字／拒絕理由要記錄「使用者確認取消」 | 對話的 tool_calls：denied／cancelled 且結果是「改提其他要求」、deny_reason | 舊行為：送新訊息就把待確認的動作默默拒絕（「使用者改提了其他要求，這個操作沒有執行。」） |
 | `chat.duplicate_workflow` | 對話 | high | 同一個對話裡，前一個工作流程還在進行（建立時尚未結束）時，不能為同一份成果再開一個：同一份簡報／筆記／LaTeX 專案（輸入或已寫入的成果），或沒指定成果時同一種交付物＋同一個研究（論文不同不算）；使用者最新的話明說「另外一份」除外；同批次、目標階段不算 | siblings 的建立／結束時間、inputs、artifacts、brief.deliverable、study、paper、原話 | 執行中說「改成 8 頁」，助理又開了一個新的簡報工作流程 |
 | `wf.chat_answer_lost` | 問題 | high | 工作流程停在 awaiting_input 時，使用者在對話裡打的訊息要交給它：那則訊息之後（容許 2 秒）要有補充指示或卡片回答；使用者按了「改成一般對話」（page_context.chatOnly）、ask_user 的回答不算 | 狀態快照的 awaiting_input 區間、那段時間的使用者訊息、guidance／卡片回答時間 | e6d552fc：問題只能在卡片上回答，對話裡打的回覆沒有送到工作流程 |

@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { askUserInput } from "../ask.js";
 import { registerAgentTool } from "./registry.js";
-import { prepareConceptCheck } from "./tutor.js";
+import { prepareConceptCheck, prepareQuiz } from "./tutor.js";
 
 registerAgentTool({
   name: "ask_user",
@@ -20,12 +20,17 @@ registerAgentTool({
     "(with short descriptions when helpful) and an 「還不確定」 option where it applies; questions are optional unless truly required. " +
     "After calling it, stop: do not answer for the user. The answers arrive as the next user message.",
   input: askUserInput,
-  summarize: (a) => (a.questions.some((q) => q.type === "concept_check") ? "確認先備知識" : `詢問 ${a.questions.length} 個問題`),
-  // A concept_check question lists the rows code chose (tutor.ts), never the model's own list.
+  summarize: (a) => (a.questions.some((q) => q.type === "concept_check") ? "確認先備知識" : a.questions.some((q) => q.type === "quiz") ? "小測驗" : `詢問 ${a.questions.length} 個問題`),
+  // A concept_check question lists the rows code chose (tutor.ts), a quiz the items build_quiz stored (without the
+  // answer keys) — never the model's own list.
   async prepare(a, ctx) {
-    if (!a.questions.some((q) => q.type === "concept_check")) return a;
+    if (!a.questions.some((q) => q.type === "concept_check" || q.type === "quiz")) return a;
     const questions = [];
-    for (const q of a.questions) questions.push(q.type === "concept_check" ? { ...q, concepts: await prepareConceptCheck(q, ctx) } : q);
+    for (const q of a.questions) {
+      if (q.type === "concept_check") questions.push({ ...q, concepts: await prepareConceptCheck(q, ctx) });
+      else if (q.type === "quiz") questions.push({ ...q, items: await prepareQuiz(q, ctx) });
+      else questions.push(q);
+    }
     return { ...a, questions };
   },
   async execute(a) {

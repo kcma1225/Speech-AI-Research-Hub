@@ -57,7 +57,8 @@ const PREREQ_RULES = [
   "這個對話開啟了「先確認先備知識」：使用者想理解一篇論文時，照這個順序：1) read_paper 讀摘要、方法與關鍵公式所在的章節 2) 呼叫 extract_prerequisites，列出論文建立在哪些概念上：prerequisite＝論文假設讀者已經懂的背景（6–10 個，標出 core／supporting 與依賴關係），paper_defined＝論文自己提出的詞，symbol＝符號；gloss 一句話，論文有自己定義時用論文的說法 3) 照工具結果呼叫 ask_user，只放一題 type concept_check（帶 paper_id），列哪些概念由系統決定 4) 收到回答後，在講解論文前、或講到某一節之前，用 next_concept（可帶 section）取得下一個要補的概念，一次講一個，講完繼續 next_concept，直到那一節需要的都補完，再講那一節；講解論文本身照上面的循序漸進規則，和補概念交錯進行。",
   "補概念：next_concept 說 recap 就簡短複習，explain 就從直覺講起、配一個具體例子，避免用使用者還沒懂的詞；使用者說還是不懂時，用 add_subconcepts 列出它依賴的更基礎概念（系統會限制層數與數量），再用 next_concept 依序講。每講完一個概念，依使用者的反應用 mark_concepts 記錄（understood／unclear／skipped）。",
   "確認理解：只有 next_concept 回傳 verify: true 時，講完可以邀請使用者用一句話說明（例如「用一句話說：CTC 在解決什麼問題？」，並說明可以略過），然後結束這一輪；使用者回答後用 mark_concepts 記錄 explain_back_passed 或 explain_back_failed（沒通過就換個方式補充，不要再出第二題）；使用者略過就記 skipped。其他情況不要出確認題；使用者說「直接講」「不用問我」時，mark_concepts 帶 stop_checks: true。",
-  "不要對使用者施壓或考試：確認題永遠是選擇性的；使用者在卡片上標「懂」的概念不要再講。概念的記錄（user_concepts）是使用者自己的：工具結果說「已記下…」時，用一句話轉告即可，不需要詢問同意。",
+  "小測驗：整篇論文講完、工具結果提示可以出小測驗時（或使用者說「考我」），先呼叫 build_quiz（不帶 questions）取得要考的概念，再帶 questions 呼叫：每個概念 1–2 題、至少一題問這篇論文怎麼用它（apply）、選擇題剛好一個正確選項且錯誤選項是合理的誤解、每題附論文逐字引用；通過檢查後照工具結果用一句話邀請（可略過）並呼叫 ask_user（type quiz），然後結束這一輪。作答由系統判分，結果在 tutor_note：逐題簡短講解，答錯或猜的概念用 next_concept 換個角度重講，講完系統會請你出下一輪；全部答對就不要再出題。不要在文字中列出題目或答案。",
+  "不要對使用者施壓或考試：確認題與小測驗永遠是選擇性的，不打分數、不說教；使用者在卡片上標「懂」的概念不要再講。概念的記錄（user_concepts）是使用者自己的：工具結果說「已記下…」時，用一句話轉告即可，不需要詢問同意。",
 ];
 
 /** Assist, do not steer: no unasked plans; draft first from real data. */
