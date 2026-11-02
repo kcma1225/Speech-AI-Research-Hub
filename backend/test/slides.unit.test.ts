@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chooseEntry, safeEntryName, scanZip } from "../src/lib/slides/zip-validate.js";
 import { safeEqual, validCapability, validViewToken, viewToken, type SlideProject } from "../src/lib/slides/access.js";
-import { deckCsp, patchDeckHtml, safeAssetPath } from "../src/routes/slide-view.js";
+import { deckCsp, patchDeckHtml, safeAssetPath, stripSourceMap } from "../src/routes/slide-view.js";
 import { writeZip, type ZipEntry } from "./slides-fixtures.js";
 
 let dir: string;
@@ -190,5 +190,14 @@ describe("added pages", () => {
     expect(_test.addedPages("新增兩頁 baseline 比較")).toBe(2);
     expect(_test.addedPages("Please add 2 slides on related work")).toBe(2);
     expect(_test.addedPages("每一頁都要有講稿")).toBe(0);
+  });
+});
+
+describe("stripSourceMap", () => {
+  it("drops the trailing source map reference of scripts and stylesheets only", () => {
+    expect(stripSourceMap("var a=1;\n//# sourceMappingURL=reveal.js.map\n", ".js")).toBe("var a=1;");
+    expect(stripSourceMap(".a{color:red}\n/*# sourceMappingURL=8be3.css.map */", ".css")).toBe(".a{color:red}\n");
+    const code = 'var s="//# sourceMappingURL=x.map";\nrun();';
+    expect(stripSourceMap(code, ".js")).toBe(code);
   });
 });

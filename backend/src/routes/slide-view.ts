@@ -50,6 +50,17 @@ export function patchDeckHtml(html: string) {
     .replace(/<\/head>/i, match => `${TOUCH_CSS}${match}`);
 }
 
+/**
+ * Drops the trailing source map reference of a deck script / stylesheet: the sandbox CSP (`connect-src 'none'`) blocks
+ * the DevTools fetch of `*.map`, which only printed a CSP error in the console on every deck load.
+ */
+export function stripSourceMap(text: string, extension: string) {
+  if (extension === ".css") return text.replace(/\/\*[#@]\s*sourceMappingURL=[^*]*\*\/\s*$/, "");
+  return text.replace(/(?:^|\n)\/\/[#@]\s*sourceMappingURL=[^\n]*\s*$/, "");
+}
+/** Scripts and stylesheets up to this size are buffered to drop their source map reference; larger ones stream as is. */
+const STRIP_MAX_BYTES = 8 * 1024 * 1024;
+
 /** Sandbox CSP: the iframe has an opaque origin, so 'self' cannot load its own assets; name the app origin instead. */
 export function deckCsp(origin: string) {
   return `sandbox allow-scripts allow-pointer-lock allow-presentation; default-src 'none'; script-src ${origin} https://cdn.jsdelivr.net 'unsafe-inline' 'unsafe-eval'; style-src ${origin} https://cdn.jsdelivr.net https://fonts.googleapis.com 'unsafe-inline'; img-src ${origin} data: blob:; font-src ${origin} https://cdn.jsdelivr.net https://fonts.gstatic.com data:; media-src ${origin} blob:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors ${origin}`;
@@ -150,9 +161,11 @@ const slideView: FastifyPluginAsync = async app => {
     const extension = path.posix.extname(relative).toLowerCase();
     const contentType = CONTENT_TYPES[extension] ?? "application/octet-stream";
     const isHtml = extension === ".html" || extension === ".htm";
+    // Whole scripts / stylesheets (not range requests) are buffered to drop their source map reference.
+    const isCode = (extension === ".js" || extension === ".mjs" || extension === ".css") && !request.headers.range;
     let object: StoredObject | null;
     try {
-      object = await app.storage.get(keyFor(relative), isHtml ? undefined : request.headers.range);
+      object = await app.storage.get(keyFor(relative), isHtml || isCode ? undefined : request.headers.range);
     } catch (error) {
       if (s3Status(error) === 416) return reply.code(416).send();
       throw error;
@@ -171,6 +184,11 @@ const slideView: FastifyPluginAsync = async app => {
       const chunks: Buffer[] = [];
       for await (const chunk of object.body) chunks.push(Buffer.from(chunk as Uint8Array));
       return reply.header("Content-Type", "text/html; charset=utf-8").send(patchDeckHtml(Buffer.concat(chunks).toString("utf8")));
+    }
+    if (isCode && (object.contentLength ?? 0) <= STRIP_MAX_BYTES) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of object.body) chunks.push(Buffer.from(chunk as Uint8Array));
+      return reply.header("Content-Type", contentType).send(stripSourceMap(Buffer.concat(chunks).toString("utf8"), extension));
     }
     return sendObject(reply, object, contentType);
   };
