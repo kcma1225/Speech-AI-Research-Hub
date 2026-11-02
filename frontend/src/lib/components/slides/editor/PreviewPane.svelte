@@ -13,8 +13,11 @@
    * capability URL), with the status of the render in progress. `slide` (the slide under the editor cursor) is shown
    * after every reload and, with 「跟隨游標」 on, whenever it changes. `notes`: a toggleable panel under the preview with
    * the speaker notes of the slide shown (asked from the deck with Reveal's `getSlideNotes`, sanitised like the player's).
+   * A new render loads in a second iframe under the shown one, goes to the slide being viewed (Reveal's `slidechanged`
+   * state), and only then replaces it: no blank flash, no jump back to the cover while the AI or a co-editor edits.
+   * `activity`: an AI turn / workflow is reading or editing the deck right now (「AI 編輯中」).
    */
-  let { preview, slide = 0, stale = false, canRefresh = false, notes: withNotes = false, onRefresh, onAskAi }: {
+  let { preview, slide = 0, stale = false, canRefresh = false, notes: withNotes = false, activity = null, onRefresh, onAskAi }: {
     preview: PreviewInfo | null;
     slide?: number;
     /** The editor has changes newer than the shown render. */
@@ -22,6 +25,7 @@
     canRefresh?: boolean;
     /** Offer the speaker-notes panel. */
     notes?: boolean;
+    activity?: "editing" | "reading" | null;
     onRefresh?: () => void;
     /** 「請 AI 找出問題」 under a failed render: the assistant reads the error and suggests a fix. */
     onAskAi?: () => void | Promise<void>;
@@ -36,7 +40,6 @@
     }
   }
 
-  let frame = $state<HTMLIFrameElement | null>(null);
   let wrap = $state<HTMLElement | null>(null);
   let follow = $state(readFollow());
   let showLog = $state(false);
@@ -66,32 +69,99 @@
   });
 
   const ready = $derived(preview?.ready ?? null);
-  $effect(() => {
-    void ready?.id;
-    slideNotes = undefined;
-  });
   const latest = $derived(preview?.latest ?? null);
   const busy = $derived(latest?.status === "queued" || latest?.status === "rendering");
   const failed = $derived(latest?.status === "failed" ? latest : null);
   // The newest failure is only relevant while it is newer than the shown render.
   const showFailure = $derived(Boolean(failed && (!ready || failed.revision > ready.revision)));
 
-  function go(index: number) {
-    frame?.contentWindow?.postMessage(JSON.stringify({ method: "slide", args: [index, 0] }), "*");
+  // ── frames: the shown render and, while it loads, the next one under it ──────────────────────────────
+  type Frame = { id: string; url: string };
+  let frames = $state<Frame[]>([]);
+  let shownId = $state<string | null>(null);
+  const els = new Map<string, HTMLIFrameElement>();
+  const registerFrame = (el: HTMLIFrameElement, id: string) => {
+    els.set(id, el);
+    return { destroy: () => els.get(id) === el && els.delete(id) };
+  };
+  /** The slide being viewed (Reveal indices): kept across renders, moved by `slide` and by navigating in the deck. */
+  let at = { h: untrack(() => slide), v: 0 };
+  /** Pending frame: where it was sent, and the fallback timer that shows it anyway. */
+  let swapTimer: ReturnType<typeof setTimeout> | undefined;
+  let loadTimer: ReturnType<typeof setTimeout> | undefined;
+
+  $effect(() => {
+    const r = ready;
+    untrack(() => {
+      if (!r) {
+        frames = [];
+        shownId = null;
+        return;
+      }
+      if (frames.some((f) => f.id === r.id)) return;
+      const shown = frames.find((f) => f.id === shownId);
+      if (!shown) {
+        frames = [{ id: r.id, url: r.viewUrl }];
+        shownId = r.id;
+        return;
+      }
+      // A newer render replaces a pending one that has not been shown yet.
+      frames = [shown, { id: r.id, url: r.viewUrl }];
+      clearTimeout(swapTimer);
+      clearTimeout(loadTimer);
+      // A deck that never reports `ready` (broken script) is shown anyway.
+      loadTimer = setTimeout(() => show(r.id), 15_000);
+    });
+  });
+  $effect(() => () => (clearTimeout(swapTimer), clearTimeout(loadTimer)));
+
+  function show(id: string) {
+    if (!frames.some((f) => f.id === id) || shownId === id) return;
+    clearTimeout(swapTimer);
+    clearTimeout(loadTimer);
+    shownId = id;
+    frames = frames.filter((f) => f.id === id);
+    slideNotes = undefined;
+    if (withNotes) askNotes();
   }
-  const askNotes = () => frame?.contentWindow?.postMessage(JSON.stringify({ method: "getSlideNotes", args: [] }), "*");
-  // Reveal posts its events as JSON strings; only messages from our iframe count (its origin is opaque).
+
+  const post = (id: string | null, method: string, args: unknown[]) => els.get(id ?? "")?.contentWindow?.postMessage(JSON.stringify({ method, args }), "*");
+  function go(index: number) {
+    at = { h: index, v: 0 };
+    post(shownId, "slide", [index, 0]);
+  }
+  const askNotes = () => post(shownId, "getSlideNotes", []);
+  // Reveal posts its events as JSON strings; only messages from our iframes count (their origin is opaque).
   $effect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (!frame || event.source !== frame.contentWindow || typeof event.data !== "string" || event.data.length > 250_000) return;
-      let data: { namespace?: string; eventName?: string; method?: string; result?: unknown } | null = null;
+      if (typeof event.data !== "string" || event.data.length > 250_000) return;
+      const id = [...els].find(([, el]) => el.contentWindow === event.source)?.[0];
+      if (!id) return;
+      let data: { namespace?: string; eventName?: string; method?: string; result?: unknown; state?: { indexh?: unknown; indexv?: unknown } } | null = null;
       try {
         data = JSON.parse(event.data);
       } catch {
         return;
       }
       if (data?.namespace !== "reveal") return;
-      if (data.eventName === "ready") untrack(() => go(slide));
+      const h = typeof data.state?.indexh === "number" ? data.state.indexh : null;
+      const v = typeof data.state?.indexv === "number" ? data.state.indexv : 0;
+      if (id !== shownId) {
+        // The next render: go to the slide being viewed, show it once it is there.
+        if (data.eventName === "ready") {
+          if (at.h === (h ?? 0) && at.v === v) swapTimer = setTimeout(() => show(id), 60);
+          else {
+            post(id, "slide", [at.h, at.v]);
+            swapTimer = setTimeout(() => show(id), 1500);
+          }
+        } else if (data.eventName === "slidechanged") {
+          clearTimeout(swapTimer);
+          swapTimer = setTimeout(() => show(id), 120);
+        }
+        return;
+      }
+      if (data.eventName === "ready") untrack(() => post(id, "slide", [at.h, at.v]));
+      else if (data.eventName === "slidechanged" && h !== null) at = { h, v };
       // The deck is user-authored: its notes are sanitised before they are shown.
       if (data.eventName === "callback" && data.method === "getSlideNotes") slideNotes = sanitizeNotes(data.result);
       else if (withNotes && (data.eventName === "ready" || data.eventName === "slidechanged")) askNotes();
@@ -110,7 +180,7 @@
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
       else await wrap?.requestFullscreen();
-      frame?.focus();
+      els.get(shownId ?? "")?.focus();
     } catch {}
   }
 </script>
@@ -123,6 +193,8 @@
         <span class="truncate">{latest?.status === "rendering" ? t("slides.editor.preview.rendering", { pct: latest.progress }) : t("slides.editor.preview.queued")}</span>
       {:else if showFailure}
         <CircleAlert class="size-3.5 shrink-0 text-danger" /><span class="truncate text-danger">{t("slides.editor.preview.failed")}</span>
+      {:else if activity === "editing"}
+        <Sparkles class="size-3.5 shrink-0 text-[var(--pill-lilac-ink)]" /><span class="truncate">{t("slides.editor.preview.aiEditingHint")}</span>
       {:else if stale}
         <span class="size-2 shrink-0 rounded-full bg-[var(--pill-butter-ink)]"></span><span class="truncate">{t("slides.editor.preview.stale")}</span>
       {:else if ready}
@@ -141,19 +213,26 @@
 
   <div bind:this={wrap} class="relative aspect-[16/10] w-full overflow-hidden rounded-2xl border border-line bg-surface-2 [&:fullscreen]:rounded-none [&:fullscreen]:border-0 [&:fullscreen]:bg-black">
     {#if ready}
-      {#key ready.id}
+      {#each frames as f (f.id)}
         <iframe
-          bind:this={frame}
-          src={ready.viewUrl}
+          use:registerFrame={f.id}
+          src={f.url}
           title={t("slides.editor.preview.title")}
           sandbox="allow-scripts allow-pointer-lock allow-presentation"
           allow="fullscreen"
           referrerpolicy="no-referrer"
-          class="size-full border-0 bg-white"
+          inert={f.id !== shownId}
+          aria-hidden={f.id !== shownId}
+          class="absolute inset-0 size-full border-0 bg-white {f.id === shownId ? 'z-10' : 'z-0'}"
         ></iframe>
-      {/key}
+      {/each}
+      {#if activity}
+        <div class="pointer-events-none absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 rounded-full border border-line bg-surface/95 px-2.5 py-1 text-[12px] font-medium text-ink-2 shadow-card">
+          <Sparkles class="size-3.5 text-[var(--pill-lilac-ink)] {activity === 'editing' ? 'animate-pulse motion-reduce:animate-none' : ''}" />{activity === "editing" ? t("slides.editor.preview.aiEditing") : t("slides.editor.preview.aiReading")}
+        </div>
+      {/if}
       {#if busy}
-        <div class="pointer-events-none absolute inset-x-0 top-0"><Progress value={latest?.progress || null} class="h-1 rounded-none" /></div>
+        <div class="pointer-events-none absolute inset-x-0 top-0 z-20"><Progress value={latest?.progress || null} class="h-1 rounded-none" /></div>
       {/if}
     {:else}
       <div class="grid size-full place-items-center p-6 text-center">

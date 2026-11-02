@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   artifactFromUrl, artifactKey, artifactsOfCall, closeViewer, conversationArtifacts, findPageCites, normalizeRef, notifyArtifactChanged, openArtifact, paperBefore,
-  refFromArtifact, refreshArtifact, viewer,
+  refFromArtifact, refreshArtifact, turnActivity, viewer,
 } from "./viewer.ts";
 import type { ToolCall } from "./types.ts";
 import { ViewerStore } from "./viewer-state.svelte.ts";
@@ -220,5 +220,52 @@ describe("viewer state per conversation", () => {
     v.bindConversation(A);
     expect(v.current?.key).toBe(`note:${N}`);
     expect(v.open).toBe(false);
+  });
+});
+
+describe("AI activity on documents", () => {
+  const edit = (over: Partial<ToolCall> = {}) => call({ tool: "suggest_deck_edit", risk: "write", args: { deck_id: D }, ...over });
+
+  it("focuses a deck edit on the first page its text lands on", () => {
+    expect(artifactsOfCall(edit({ result: { data: { suggestion_id: S, pages: [4, 5] }, links: [], source: null } }))[0]).toMatchObject({ ref: { kind: "deck", id: D }, focus: { page: 4 } });
+    expect(artifactsOfCall(edit({ args: { deck_id: D, page: 2 }, result: { data: { pages: [4] }, links: [], source: null } }))[0]?.focus).toEqual({ page: 2 });
+  });
+
+  it("marks what the running turn reads and edits, and nothing once it waits or ended", () => {
+    const read = call({ tool: "get_deck", args: { deck_id: D } });
+    const note = call({ id: "c3", tool: "get_note", args: { note_id: N } });
+    expect(turnActivity({ id: "r1", status: "running" }, [read, note])).toEqual({ [`deck:${D}`]: "reading", [`note:${N}`]: "reading" });
+    expect(turnActivity({ id: "r1", status: "running" }, [read, edit({ id: "c2", status: "running" })])).toEqual({ [`deck:${D}`]: "editing" });
+    // Another turn's call, a call refused or waiting for approval: not an edit in progress.
+    expect(turnActivity({ id: "r1", status: "running" }, [edit({ run_id: "r0" }), edit({ id: "c4", status: "denied" })])).toEqual({});
+    expect(turnActivity({ id: "r1", status: "running" }, [edit({ status: "pending_approval" })])).toEqual({ [`deck:${D}`]: "reading" });
+    expect(turnActivity({ id: "r1", status: "awaiting_approval" }, [edit()])).toEqual({});
+    expect(turnActivity(null, [edit()])).toEqual({});
+  });
+
+  it("marks the conversation's newest document of the kind while the model writes an edit's arguments", () => {
+    const D2 = "77777777-7777-4777-8777-777777777777";
+    const candidates = [{ kind: "deck" as const, id: D }, { kind: "note" as const, id: N }, { kind: "deck" as const, id: D2 }];
+    expect(turnActivity({ id: "r1", status: "running" }, [], { composing: ["suggest_deck_edit"], candidates })).toEqual({ [`deck:${D2}`]: "editing" });
+    expect(turnActivity({ id: "r1", status: "running" }, [], { composing: ["get_deck", "suggest_note_edit"], candidates })).toEqual({ [`note:${N}`]: "editing" });
+    expect(turnActivity({ id: "r1", status: "running" }, [], { composing: ["latex_suggest_edit"], candidates })).toEqual({});
+    expect(turnActivity({ id: "r1", status: "done" }, [], { composing: ["suggest_deck_edit"], candidates })).toEqual({});
+  });
+
+  it("merges sources: editing wins, a source that stops clears only its own", () => {
+    const v = new ViewerStore();
+    const ref = { kind: "deck" as const, id: D };
+    v.setActivity("chat:a", { [`deck:${D}`]: "reading" });
+    expect(v.activityOf(ref)).toBe("reading");
+    v.setActivity("workflow:w", { [`deck:${D}`]: "editing" });
+    expect(v.activityOf(ref)).toBe("editing");
+    const before = v.activity;
+    v.setActivity("workflow:w", { [`deck:${D}`]: "editing" });
+    expect(v.activity).toBe(before);
+    v.setActivity("workflow:w", null);
+    expect(v.activityOf(ref)).toBe("reading");
+    v.setActivity("chat:a", {});
+    expect(v.activityOf(ref)).toBeNull();
+    expect(v.activity).toEqual({});
   });
 });

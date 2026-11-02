@@ -15,8 +15,8 @@
  * note / deck / paper / meeting / LaTeX project / upload) is enough when `kind`/`id` are unknown — see `refFromArtifact`.
  * Viewers only load what the signed-in user can read through the normal API (no new data exposure).
  */
-import type { Message, ToolCall } from "./types.ts";
-import { viewer } from "./viewer-state.svelte.ts";
+import type { Message, Run, ToolCall } from "./types.ts";
+import { viewer, type ArtifactActivity } from "./viewer-state.svelte.ts";
 
 export type ArtifactKind = "deck" | "note" | "paper" | "meeting" | "latex_project" | "latex_file" | "upload";
 export const ARTIFACT_KINDS: readonly ArtifactKind[] = ["deck", "note", "paper", "meeting", "latex_project", "latex_file", "upload"];
@@ -160,7 +160,10 @@ export function artifactsOfCall(call: Pick<ToolCall, "tool" | "args" | "target" 
   const page = pages[0] ?? regions[0];
   if (isUuid(a.note_id)) add({ kind: "note", id: a.note_id }, sFocus);
   if (isUuid(a.paper_id)) add({ kind: "paper", id: a.paper_id }, page ? { page } : {});
-  if (isUuid(a.deck_id)) add({ kind: "deck", id: a.deck_id }, typeof a.page === "number" ? { page: a.page } : {});
+  // Deck edits: the page asked for, else the first page the suggested text lands on (`suggest_deck_edit` → `pages`).
+  const landed = Array.isArray(data?.pages) ? (data.pages as unknown[]).find((n): n is number => typeof n === "number" && n > 0) : undefined;
+  const deckPage = typeof a.page === "number" ? a.page : landed;
+  if (isUuid(a.deck_id)) add({ kind: "deck", id: a.deck_id }, deckPage ? { page: deckPage } : {});
   if (isUuid(a.meeting_id)) add({ kind: "meeting", id: a.meeting_id });
   if (isUuid(a.project_id)) add({ kind: "latex_project", id: a.project_id }, { ...(isUuid(a.file_id) ? { fileId: a.file_id } : {}), ...sFocus });
   if (isUuid(a.attachment_id)) add({ kind: "upload", id: a.attachment_id });
@@ -183,6 +186,39 @@ export function artifactsOfCall(call: Pick<ToolCall, "tool" | "args" | "target" 
 
 /** Tools that change a document without being `write` by risk (none today); reads never auto-open. */
 export const isWriteCall = (call: Pick<ToolCall, "risk" | "tool">) => call.risk !== "read" && call.tool !== "remember";
+
+/** Statuses of calls that did not and will not touch anything. */
+const IDLE_CALLS = new Set<ToolCall["status"]>(["denied", "cancelled", "expired", "failed"]);
+/** Tools that edit an existing document, by the kind they edit: their call exists only once the AI wrote the arguments. */
+const EDIT_TOOLS: Record<string, ArtifactKind> = { suggest_deck_edit: "deck", suggest_note_edit: "note", latex_suggest_edit: "latex_project", latex_add_section: "latex_project" };
+/**
+ * What the turn in progress does to artifacts (「AI 編輯中」 on the viewer): every artifact a call of the running run
+ * touched, `editing` once a write call (running, approved or done) touched it. While the model is still writing the
+ * arguments of an edit tool (`composing`, streamed tool names), the newest `candidates` ref of that kind (the
+ * conversation's documents, newest last) is being edited. Nothing once the run waits or ended.
+ */
+export function turnActivity(
+  run: Pick<Run, "id" | "status"> | null,
+  calls: Pick<ToolCall, "run_id" | "tool" | "args" | "target" | "result" | "risk" | "status">[],
+  opts: { composing?: string[]; candidates?: ArtifactRef[] } = {},
+): Record<string, ArtifactActivity> {
+  const out: Record<string, ArtifactActivity> = {};
+  if (!run || (run.status !== "running" && run.status !== "awaiting_llm")) return out;
+  for (const c of calls) {
+    if (c.run_id !== run.id || IDLE_CALLS.has(c.status)) continue;
+    const write = isWriteCall(c) && c.status !== "pending_approval";
+    for (const a of artifactsOfCall(c)) {
+      const key = artifactKey(normalizeRef(a.ref).ref);
+      if (write || out[key] !== "editing") out[key] = write ? "editing" : "reading";
+    }
+  }
+  for (const tool of opts.composing ?? []) {
+    const kind = EDIT_TOOLS[tool];
+    const ref = kind && opts.candidates?.findLast((r) => normalizeRef(r).ref.kind === kind);
+    if (ref) out[artifactKey(normalizeRef(ref).ref)] = "editing";
+  }
+  return out;
+}
 
 /** Everything this conversation attached or touched through tools (deduplicated; newest last). */
 export function conversationArtifacts(messages: Pick<Message, "id" | "seq" | "attachments" | "created_at">[], calls: Pick<ToolCall, "tool" | "args" | "target" | "result" | "risk" | "status" | "message_id" | "created_at" | "finished_at">[]): ConversationArtifact[] {

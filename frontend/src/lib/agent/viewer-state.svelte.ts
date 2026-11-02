@@ -4,6 +4,8 @@ import { artifactKey, normalizeRef, sameArtifact, type ArtifactFocus, type Artif
 export type ViewerEntry = { ref: ArtifactRef; key: string; focus: ArtifactFocus; highlight: ArtifactHighlight | null; nonce: number; auto: boolean };
 /** How the host lays the panel out (set by `ViewerSplit`): phones never switch to the document by themselves. */
 export type ViewerLayout = "split" | "drawer" | "tabs" | "none";
+/** What an AI turn or a workflow is doing to an artifact right now: 「AI 編輯中」 / 「AI 正在看」 on its viewer. */
+export type ArtifactActivity = "editing" | "reading";
 
 const AUTO_KEY = "hub.viewer.autoOpen";
 const FOLLOW_KEY = "hub.viewer.follow";
@@ -49,6 +51,8 @@ export class ViewerStore {
   unseen = $state(0);
   titles = $state<Record<string, string>>({});
   layout = $state<ViewerLayout>("none");
+  /** Live activity per source (a chat session, a workflow run): artifact key → what it is doing. */
+  activity = $state<Record<string, Record<string, ArtifactActivity>>>({});
   private autoOpenValue = $state(readBool(AUTO_KEY, true));
   private followValue = $state(readBool(FOLLOW_KEY, true));
   private nonce = 0;
@@ -126,6 +130,27 @@ export class ViewerStore {
   /** The viewer reports that its content changed (remote edit, new render): 「已更新」. */
   markUpdated(ref: ArtifactRef) {
     this.updated = { key: artifactKey(ref), at: Date.now() };
+  }
+
+  /** Replaces what `source` is doing (null / empty = nothing); unchanged sets keep the state as it is. */
+  setActivity(source: string, items: Record<string, ArtifactActivity> | null) {
+    const next = items && Object.keys(items).length ? items : null;
+    const prev = this.activity[source];
+    if (!next && !prev) return;
+    if (next && prev && JSON.stringify(next) === JSON.stringify(prev)) return;
+    const { [source]: _drop, ...rest } = this.activity;
+    this.activity = next ? { ...rest, [source]: next } : rest;
+  }
+  /** 「editing」 when any source edits the artifact, else 「reading」 when one reads it. */
+  activityOf(ref: ArtifactRef): ArtifactActivity | null {
+    const key = artifactKey(ref);
+    let out: ArtifactActivity | null = null;
+    for (const items of Object.values(this.activity)) {
+      const a = items[key];
+      if (a === "editing") return a;
+      if (a) out = a;
+    }
+    return out;
   }
 
   remember(ref: ArtifactRef) {

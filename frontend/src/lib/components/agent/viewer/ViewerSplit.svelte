@@ -4,8 +4,9 @@
   import { t } from "#lib/i18n.svelte.ts";
   import type { ChatSession } from "#lib/agent/chat.svelte.ts";
   import {
-    artifactFromUrl, artifactsOfCall, findPageCites, isWriteCall, notifyArtifactChanged, openArtifact, paperBefore, refreshArtifact, viewer,
+    artifactFromUrl, artifactsOfCall, conversationArtifacts, findPageCites, isWriteCall, notifyArtifactChanged, openArtifact, paperBefore, refreshArtifact, turnActivity, viewer,
   } from "#lib/agent/viewer.ts";
+  import type { ArtifactRef } from "#lib/agent/viewer.ts";
   import type { ViewerLayout } from "#lib/agent/viewer-state.svelte.ts";
   import ViewerPanel from "./ViewerPanel.svelte";
 
@@ -60,6 +61,21 @@
       }
     });
   });
+
+  // What the running turn does to documents: their viewers show 「AI 編輯中」 instead of reloading out of nowhere.
+  const activitySource = `chat:${Math.random().toString(36).slice(2)}`;
+  $effect(() => {
+    const ctx = session.conversation?.context;
+    const candidates: ArtifactRef[] = [
+      ...(ctx?.noteId ? [{ kind: "note" as const, id: ctx.noteId }] : []),
+      ...(ctx?.deckId ? [{ kind: "deck" as const, id: ctx.deckId }] : []),
+      ...(viewer.current ? [viewer.current.ref] : []),
+      ...conversationArtifacts(session.messages, session.toolCalls).map((a) => a.ref),
+    ];
+    const items = turnActivity(session.run, session.toolCalls, { composing: session.streaming?.inputs.map((i) => i.name), candidates });
+    untrack(() => viewer.setActivity(activitySource, items));
+  });
+  $effect(() => () => viewer.setActivity(activitySource, null));
 
   // ---------------------------------------------------------------- links in the chat → viewer
   let chat = $state<HTMLElement | null>(null);

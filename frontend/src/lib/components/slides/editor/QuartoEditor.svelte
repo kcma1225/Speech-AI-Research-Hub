@@ -24,6 +24,7 @@
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { assistantPanel } from "#lib/agent/panel.svelte.ts";
   import { pageContextFrom } from "#lib/agent/context.ts";
+  import { viewer } from "#lib/agent/viewer.ts";
   import { debounce, isImage, languageFor, slideIndexAt } from "#lib/slides/source.ts";
   import type { AiDraftJob, DeckTemplate, PreviewInfo, SlideDetail, SourceFile, SourceResponse } from "#lib/slides/types.ts";
   import { copyText, deckUrl } from "#lib/slides/util.ts";
@@ -677,7 +678,7 @@
         class="min-w-0 rounded-[22px] border border-line/70 bg-surface p-3 shadow-card lg:sticky lg:top-4 lg:flex-1 {mobileTab === 'preview' ? '' : 'max-lg:hidden'} {previewHidden ? 'lg:hidden' : ''} {splitting ? 'pointer-events-none' : ''}"
         aria-label={t("slides.editor.tab.preview")}
       >
-        <PreviewPane {preview} slide={cursorSlide} stale={previewStale} canRefresh={canEdit} notes onRefresh={() => void flushAll().then(requestPreview)} onAskAi={canEdit ? askAiAboutRender : undefined} />
+        <PreviewPane {preview} slide={cursorSlide} stale={previewStale} canRefresh={canEdit} notes activity={viewer.activityOf({ kind: "deck", id: deckId })} onRefresh={() => void flushAll().then(requestPreview)} onAskAi={canEdit ? askAiAboutRender : undefined} />
         <p class="mt-2.5 px-1 text-[12px] leading-relaxed text-ink-3">{t("slides.editor.preview.hint")}</p>
       </section>
       </div>

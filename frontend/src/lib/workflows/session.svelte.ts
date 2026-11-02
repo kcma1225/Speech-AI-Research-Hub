@@ -1,5 +1,5 @@
 import { ApiError } from "#lib/api.ts";
-import { notifyArtifactChanged, refFromArtifact } from "#lib/agent/viewer.ts";
+import { artifactKey, notifyArtifactChanged, refFromArtifact, viewer } from "#lib/agent/viewer.ts";
 import { workflowsApi } from "./api.ts";
 import { ALL_KINDS, emitChanged, kindsOfArtifact } from "#lib/changes.ts";
 import { applyEvent, emptyState, type WorkflowState } from "./reduce.ts";
@@ -34,6 +34,8 @@ export class WorkflowSession {
   private frame = 0;
   private last = 0;
   private closed = false;
+  /** Artifacts this run wrote while it was live: 「AI 編輯中」 on their viewers until the run stops. */
+  private writing: Record<string, "editing"> = {};
 
   constructor(readonly id: string) {}
 
@@ -96,6 +98,11 @@ export class WorkflowSession {
         }
         if (type === "artifact" && data.artifact) {
           announceArtifact(data.artifact as Artifact, this.id, "changed");
+          const r = refFromArtifact(data.artifact as Artifact);
+          if (r && this.active) {
+            this.writing = { ...this.writing, [artifactKey(r.ref)]: "editing" };
+            viewer.setActivity(`workflow:${this.id}`, this.writing);
+          }
           emitChanged(kindsOfArtifact((data.artifact as Artifact).kind));
         }
         // Library imports happen inside steps (topic research, reading notes): a passed step may have added papers.
@@ -120,6 +127,8 @@ export class WorkflowSession {
   }
 
   private disconnect() {
+    this.writing = {};
+    viewer.setActivity(`workflow:${this.id}`, null);
     this.source?.close();
     this.source = null;
     this.live = false;

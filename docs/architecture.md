@@ -1684,7 +1684,14 @@ source revision is newer; polls while a preview/AI draft runs; pending `deck_sou
 suggestion review; a document whose own page is open shows the stored text instead, so one page never holds two providers of a
 doc); LaTeX = newest PDF (`PdfViewer`, reloads on `latex_compiled` / polling) + section text; paper = library PDF (Range route,
 pdf.js) at `focus.page`; meeting = `TranscriptPanel` + per-study drafts (read); upload = image or extracted text. 「已更新」
-flash on remote changes; 「跟隨 AI」 scrolls to the change (Y.Text delta → line → rendered block). Contract (also for workflow
+flash on remote changes; 「跟隨 AI」 scrolls to the change (Y.Text delta → line → rendered block; a deck edit goes to the
+first page its text lands on, `suggest_deck_edit` → `pages`). `PreviewPane` keeps one iframe per render id (the signed view
+URL changes on every poll and must not reload it): a new render loads under the shown one, goes to the slide being viewed
+(Reveal `slidechanged` state) and then replaces it, so neither the AI nor polling flashes the deck back to the cover.
+「AI 編輯中」／「AI 正在看這份簡報」 on the preview: `viewer.setActivity(source, {key: editing|reading})` per source —
+`ViewerSplit` from `turnActivity(run, toolCalls, {composing, candidates})` (calls of the running run; while the model streams
+an edit tool's arguments, the conversation's newest document of that kind), `WorkflowSession` for artifacts a live workflow
+wrote; `viewer.activityOf(ref)` (editing wins). Contract (also for workflow
 `artifact` events): `ArtifactRef {kind: deck|note|paper|meeting|latex_project|latex_file|upload, id, project_id?, version?,
 url?, title?}`, `openArtifact(ref, {focus?: {page, fileId, suggestionId, time, line}, highlight?, auto?})`,
 `refreshArtifact(ref, {focus?})`, `notifyArtifactChanged(ref, {focus?})`, `closeViewer()`, `refFromArtifact({kind?, id?, url?})`,
