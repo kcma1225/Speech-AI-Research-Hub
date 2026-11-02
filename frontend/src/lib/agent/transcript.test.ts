@@ -141,6 +141,35 @@ describe("transcript grouping", () => {
     expect(items.map((i) => i.kind)).toEqual(["message", "assistant", "message"]);
     expect(turns(items)[0]!.notices.map((m) => m.id)).toEqual([n.id]);
   });
+
+  // Production 64876e38: the runtime compacted the context between two steps of one run; the turn was split in two,
+  // both keyed `turn:<user id>`, and the keyed {#each} threw each_key_duplicate (the page showed 500).
+  it("a compaction in the middle of a run keeps one turn per user message, with unique keys", () => {
+    const u = msg("user", "Q");
+    const a1 = msg("assistant", "我先讀第 3–6 頁");
+    const c = msg("compaction", "較早的對話已整理成摘要");
+    const a2 = msg("assistant", "", { reasoning: "繼續" });
+    const a3 = msg("assistant", "完成了");
+    const u2 = msg("user", "Q2");
+    const a4 = msg("assistant", "好");
+    const items = buildTranscript([u, a1, c, a2, a3, u2, a4], [call(a1, "get_deck"), call(a2, "suggest_deck_edit", { risk: "write" })]);
+    expect(items.map((i) => i.key)).toEqual([u.id, c.id, `turn:${u.id}`, u2.id, `turn:${u2.id}`]);
+    const [t] = turns(items);
+    expect(t!.messages.map((m) => m.id)).toEqual([a1.id, a2.id, a3.id]);
+    expect(t!.final?.id).toBe(a3.id);
+    expect(t!.calls.map((x) => x.tool)).toEqual(["get_deck", "suggest_deck_edit"]);
+    // Still running right after the compaction: the live turn is the one turn, not a second one.
+    const live = buildTranscript([u, a1, c], [], { live: true });
+    expect(live.map((i) => i.key)).toEqual([u.id, c.id, `turn:${u.id}`]);
+    expect(turns(live)[0]!.live).toBe(true);
+  });
+
+  it("never repeats a key, whatever the stored order", () => {
+    const u = msg("user", "Q");
+    const items = buildTranscript([u, msg("assistant", "a"), u, msg("assistant", "b")], [], { live: true });
+    const keys = items.map((i) => i.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
 });
 
 describe("dropSupersededNotices", () => {

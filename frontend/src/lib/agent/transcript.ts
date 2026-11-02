@@ -164,13 +164,23 @@ export function buildTranscript(messages: Message[], calls: ToolCall[], opts: { 
   const out: TranscriptItem[] = [];
   let group: Message[] = [];
   let lastUser: Message | null = null;
+  // A compaction the runtime wrote in the middle of a run (between two steps) must not split the turn: one user
+  // message has one turn (its key is `turn:<user id>`). Its line is shown just before the turn it happened in.
+  let midTurn: Message[] = [];
   const flush = (isLast: boolean) => {
+    for (const c of midTurn) out.push({ kind: "message", key: c.id, message: c });
+    midTurn = [];
     if (!group.length) return;
     out.push(makeTurn(group, byMessage, answered, !!opts.live && isLast, lastUser));
     group = [];
   };
-  for (const m of messages) {
-    if (m.role === "user" || m.role === "compaction") {
+  const continuesTurn = (i: number) => {
+    const next = messages.slice(i + 1).find((x) => x.role !== "compaction");
+    return next ? next.role !== "user" : !!opts.live;
+  };
+  for (const [i, m] of messages.entries()) {
+    if (m.role === "compaction" && group.length && continuesTurn(i)) midTurn.push(m);
+    else if (m.role === "user" || m.role === "compaction") {
       flush(false);
       out.push({ kind: "message", key: m.id, message: m });
       if (m.role === "user") lastUser = m;
@@ -181,7 +191,20 @@ export function buildTranscript(messages: Message[], calls: ToolCall[], opts: { 
   if (opts.live && out.at(-1)?.kind !== "assistant") {
     out.push(makeTurn([], byMessage, answered, true, lastUser));
   }
-  return out;
+  return uniqueKeys(out);
+}
+
+/**
+ * The transcript renders as a keyed `{#each}`: a repeated key throws (each_key_duplicate) and takes the whole page
+ * down to the 500 screen. Whatever order stored messages come in, a repeated key gets a suffix instead.
+ */
+function uniqueKeys(items: TranscriptItem[]): TranscriptItem[] {
+  const seen = new Map<string, number>();
+  return items.map((item) => {
+    const n = seen.get(item.key) ?? 0;
+    seen.set(item.key, n + 1);
+    return n ? { ...item, key: `${item.key}#${n}` } : item;
+  });
 }
 
 function makeTurn(group: Message[], byMessage: Map<string, ToolCall[]>, answered: Set<string>, live: boolean, user: Message | null): AssistantTurn {
