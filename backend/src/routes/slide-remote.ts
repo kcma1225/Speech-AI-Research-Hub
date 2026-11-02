@@ -1,8 +1,11 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
 import { z } from "zod";
+import { toHttpError } from "../ai/platform/index.js";
 import { currentUser, requireUser } from "../lib/auth.js";
+import { HttpError, notFound, parse } from "../lib/http.js";
 import { projectById } from "../lib/slides/access.js";
+import { answerQuestion, ASK_LIMITS, isQuestion } from "../lib/slides/ask.js";
 import { deviceLabel, RemoteHub, type RemoteSession } from "../lib/slides/remote.js";
 
 declare module "fastify" {
@@ -18,9 +21,20 @@ declare module "fastify" {
  * version; `GET /api/slides/remote/control/:id` (WebSocket) is the phone's. Auth like /api/collab: Origin must be
  * APP_ORIGIN and the session cookie valid; a phone only reaches its own account's sessions. Registered after notes
  * (@fastify/websocket).
+ * `POST /api/slides/:id/ask` (SSE) is the phone's 「提問助手」 (lib/slides/ask.ts): `gate: true` first asks whether the
+ * heard utterance is a question for the presenter (`skip` when not), then streams the answer (`delta` … `done`).
  */
 const hostQuery = z.object({ version: z.uuid() });
 const controlParams = z.object({ id: z.uuid() });
+const deckParams = z.object({ id: z.uuid() });
+const askInput = z.object({
+  heard: z.string().trim().min(1).max(ASK_LIMITS.heard),
+  transcript: z.string().max(ASK_LIMITS.transcript).default(""),
+  page: z.number().int().min(1).max(10_000).nullable().default(null),
+  gate: z.boolean().default(false),
+});
+/** Per account and minute: automatic checks (one per heard utterance) and answers. */
+const ASK_PER_MINUTE = { gate: 40, answer: 12 };
 /** Server → both sides ping (mobile networks and proxies drop silent sockets). */
 const PING_MS = 25_000;
 /** A presentation longer than this is a forgotten tab. */
@@ -51,6 +65,50 @@ export default async function slideRemote(app: FastifyInstance) {
       clearTimeout(limit);
     };
   };
+
+  const budget = new Map<string, { at: number; gate: number; answer: number }>();
+  const spend = (userId: string, kind: "gate" | "answer") => {
+    const now = Date.now();
+    let b = budget.get(userId);
+    if (!b || now - b.at > 60_000) budget.set(userId, (b = { at: now, gate: 0, answer: 0 }));
+    if (b[kind] >= ASK_PER_MINUTE[kind]) throw new HttpError(429, kind === "gate" ? "自動偵測太頻繁，先暫停一下。" : "一分鐘內問太多題了，稍等一下再試。");
+    b[kind]++;
+  };
+
+  app.post("/slides/:id/ask", async (request, reply: FastifyReply) => {
+    const user = await requireUser(request);
+    const { id } = parse(deckParams, request.params);
+    const input = parse(askInput, request.body);
+    if (!(await projectById(app.db, id))) throw notFound("簡報不存在。");
+    spend(user.id, input.gate ? "gate" : "answer");
+    const controller = new AbortController();
+    reply.hijack();
+    const res = reply.raw;
+    res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
+    const send = (event: string, data: object) => void res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    res.on("close", () => controller.abort());
+    const ping = setInterval(() => res.write(": ping\n\n"), 15_000);
+    try {
+      if (input.gate) {
+        if (!(await isQuestion(app, input, { userId: user.id, signal: controller.signal }))) return void send("skip", {});
+        spend(user.id, "answer");
+        send("question", {});
+      }
+      await answerQuestion(app, id, input, { userId: user.id, signal: controller.signal, onDelta: (text) => send("delta", { text }) });
+    } catch (e) {
+      if (controller.signal.aborted) return;
+      const err = toHttpError(e);
+      if (err instanceof HttpError) send("error", { error: err.message, ...err.extra });
+      else {
+        request.log.error({ err: e }, "remote ask failed");
+        send("error", { error: "AI 回答時發生錯誤，請再試一次。" });
+      }
+    } finally {
+      clearInterval(ping);
+      send("done", {});
+      res.end();
+    }
+  });
 
   app.get("/slides/remote/sessions", async (request, reply) => {
     const user = await requireUser(request);

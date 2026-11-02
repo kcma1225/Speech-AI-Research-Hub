@@ -5,6 +5,7 @@
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
+  import AskPanel from "#lib/components/slides/AskPanel.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import { loadManifest, notesHtml } from "#lib/slides/pages.ts";
   import { containBox, toSlide } from "#lib/slides/laser.ts";
@@ -212,6 +213,12 @@
   });
 
   let showPages = $state(false);
+  // 「投影片」｜「提問助手」: the helper stays mounted (it keeps listening) while the slide tab is shown.
+  let tab = $state<"slides" | "ask">("slides");
+  let unseen = $state(0);
+  $effect(() => {
+    if (tab === "ask") unseen = 0;
+  });
   // Hardware keyboards / presenter clickers paired with the phone.
   function onKey(e: KeyboardEvent) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -255,7 +262,21 @@
     </header>
 
     <!-- Phones: slide, then notes; tablets / landscape: slide + controls beside the notes. -->
-    <main class="mx-auto grid min-h-0 w-full max-w-5xl flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden p-3 md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] md:grid-rows-1 md:gap-4 md:p-4 landscape:max-md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] landscape:max-md:grid-rows-1">
+    <div class="shrink-0 border-b border-line bg-surface px-3 pb-2" role="tablist" aria-label={t("remote.tabAsk")}>
+      <div class="mx-auto grid max-w-5xl grid-cols-2 gap-1 rounded-full bg-surface-2 p-1">
+        {#each [["slides", t("remote.tabSlides")], ["ask", t("remote.tabAsk")]] as [value, label] (value)}
+          <button type="button" role="tab" aria-selected={tab === value} class="relative min-h-10 cursor-pointer rounded-full text-[14px] font-medium {tab === value ? 'bg-surface text-ink shadow-card' : 'text-ink-3'}" onclick={() => (tab = value as "slides" | "ask")}>
+            {label}{#if value === "ask" && unseen}<span class="ml-1.5 inline-grid min-w-5 place-items-center rounded-full bg-danger px-1 text-[11px] leading-5 text-white tabular-nums">{unseen}</span>{/if}
+          </button>
+        {/each}
+      </div>
+    </div>
+
+    <div class="mx-auto min-h-0 w-full max-w-2xl flex-1 overflow-y-auto overscroll-contain p-3 md:p-4 {tab === 'ask' ? '' : 'hidden'}">
+      <AskPanel deckId={deck?.deckId ?? null} page={current} onanswer={() => tab !== "ask" && unseen++} />
+    </div>
+
+    <main class="mx-auto min-h-0 w-full max-w-5xl flex-1 {tab === 'slides' ? 'grid' : 'hidden'} grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden p-3 md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] md:grid-rows-1 md:gap-4 md:p-4 landscape:max-md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] landscape:max-md:grid-rows-1">
       <section class="flex min-h-0 flex-col gap-2">
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div

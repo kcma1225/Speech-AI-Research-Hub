@@ -543,6 +543,7 @@ Frontend: `components/doc-import/` (`DocImportSheet` — file drop, mode/placeme
 | GET `/slides/reference/:slug/:refId` | same as by-slug | stream PDF inline, or 302 to URL references |
 | GET `/slides/remote/sessions` | user | the account's presentations running now (phone remote): `{sessions:[{id, deckId, versionId, slug, title, device, page, total, startedAt, remotes}]}` newest first |
 | GET `/slides/remote/host?version=` (WebSocket) | user (not admin), Origin = APP_ORIGIN | the presenting player's socket for a **published** version: opens a session (`session {id}`), relays phone commands (see "Phone remote") |
+| POST `/slides/:id/ask` `{heard, transcript?, page?, gate?}` (SSE) | user | 「提問助手」: with `gate` the `fast` role first decides whether `heard` is a question for the presenter (`skip` → done), then `question` and the `assistant` role's answer as `delta` {text}… `error` `done`; ≤ 40 checks / 12 answers per account and minute (429) |
 | GET `/slides/remote/control/:id` (WebSocket) | the session's own account, Origin = APP_ORIGIN | the phone's socket: `state` on connect and on every move, `ended` when the player stops; another account's or an ended session → 404 |
 
 Detail (`GET /slides/:id`, by-slug) `project` also carries `metadata` and `source: {revision, published_revision} | null` (signed-in
@@ -2927,6 +2928,22 @@ laser pad (雷射筆 on: hold and drag, `touch-action: none`; off: horizontal sw
 hardware keys / clickers paired with the phone step too. Signed-out visitors go to `/login?next=`. Notes math: the worker's
 notes tree drops KaTeX's `annotation` (TeX source) and `.katex-html` (visual copy), `sanitizeNotes` does the same for live
 deck notes, so a formula reads once.
+
+「提問助手」 (phone remote tab; frontend `lib/slides/listen.svelte.ts`, `lib/slides/ask.ts`, `components/slides/AskPanel.svelte`;
+backend `lib/slides/ask.ts`): the phone hears the room with the browser's own speech recognition (`SpeechRecognition` /
+`webkitSpeechRecognition`: Google on Android Chrome, Apple on iOS Safari; zh-TW or en-US), so the server needs no ASR
+role. One recognition keeps running while listening; an utterance is the text heard since the last one, committed after
+1.3 s without new words; recognition that ends by itself restarts (a restart refused without a tap asks for one). In
+automatic mode every utterance (≥ 4 characters; one check at a time, utterances heard meanwhile checked together) goes
+to `POST /slides/:id/ask` with `gate`: the check sees only the recent transcript (cheap; it decides YES / NO, the
+presenter's own talk and rhetorical questions are NO), a YES gets the answer. 「回答這題」 (what is being said now, else the
+last utterance) and a typed question skip the check. The answer's context (built once per deck, kept 10 min in memory):
+the deck's view text by player page (in-app source: visible text + notes; else the published manifest's titles and
+notes), the paper's full text (`paperFullText` + `digest`, 45 000 chars, experiments / methods weighted; abstract when
+there is no PDF), the transcript and the current page; the reply format is the interpreted question, one sentence to
+say, 2–4 bullets with their source (page / § and p.). Reasoning effort `low` (an answer that comes back without text is
+retried once with thinking off). Nothing is stored: transcript and answers live in the page; the helper stays mounted
+on the slide tab (badge + vibration for a new answer).
 
 ## AI platform (`backend/src/ai/`, routes `ai-status.ts` + `ai-admin.ts`, `ai-worker/`)
 
