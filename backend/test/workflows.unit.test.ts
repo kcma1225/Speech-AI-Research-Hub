@@ -104,7 +104,7 @@ describe("workflow helpers", () => {
     const steps = slides.writerSteps(outline);
     expect(steps.map((s) => s.key)).toEqual(Array.from({ length: 11 }, (_, i) => `write_${i + 1}`));
     expect(steps[9]!.inputs).toEqual({ pages: [10], budget: { bullets: 4, words: 60 } });
-    expect(steps[9]!.title).toBe("撰寫第 10 頁「P10」");
+    expect(steps[9]!.title).toBe("撰寫第 11 頁「P10」");
     const count = steps[0]!.verify!.checks.find((c) => c.id === "slide_count");
     expect(count!.params).toEqual({ expected: 1 });
     const later = slides.laterSteps(outline, false).map((s) => s.key);

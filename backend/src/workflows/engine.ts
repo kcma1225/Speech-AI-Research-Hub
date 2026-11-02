@@ -20,6 +20,7 @@ import { asksOf, blockedQuestion, pendingAsk } from "./questions.js";
 import { autoApproval, autoApprovalNote } from "./autopilot.js";
 import { promoteQueued } from "./queue.js";
 import { runChecks } from "./checks.js";
+import { bibCriterion, fillVenueTerms, venueFacts } from "./venue.js";
 import { artifactKindOf, fixedHeadings, persistStanding, prepareRequirements, requirementRepair, translateTitle, withRequirementCriteria } from "./requirements.js";
 import { BRIEF_KIND_LABEL, BRIEF_KINDS, chooseDeliverable, clarifyDeliverable, clarifyOnce, playbookKind, prepareBrief, sameDeliverable, setChecklist, switchGuard, userGuidance } from "./brief.js";
 import { route, routeInputOf, routeNote, saveRoute, splitBatch } from "./route.js";
@@ -315,6 +316,8 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook, replans = 0): P
   }
   await env.db.query("DELETE FROM workflow_steps WHERE run_id=$1", [env.run.id]);
   await insertSteps(env.db, env.run.id, res.steps);
+  // The paper chosen while planning (paperOf) gives a venue requirement its checked words (workflows/venue.ts).
+  await fillVenueTerms(env).catch((e) => env.deps.log.warn({ err: e, workflowId: env.run.id }, "venue terms failed"));
   // Every requirement is a criterion and is shown on the plan card (「你的要求」).
   const reqs = env.requirements();
   const kind = artifactKindOf(pb.id);
@@ -331,6 +334,9 @@ async function planPhase(env: WorkflowEnv, pb: WorkflowPlaybook, replans = 0): P
   const allow = kind === "doc" ? fixedHeadings(env) : [];
   await env.setState({ req_allow: allow });
   const criteria: Criterion[] = withRequirementCriteria(res.criteria, reqs, kind, undefined, allow).map((c) => ({ ...c, status: "pending" }));
+  // A run about one paper: what it says about the paper's venue must match the library record (lib/artifacts/facts.ts).
+  const facts = kind !== "latex" ? await venueFacts(env).catch(() => null) : null;
+  if (facts?.label && !criteria.some((c) => c.id === "bib")) criteria.push({ ...bibCriterion(facts), status: "pending" });
   // The acceptance checklist of the Brief = these criteria (same ids; verification reads `checklistOf`).
   await setChecklist(env, criteria);
   await env.db.query(

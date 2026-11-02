@@ -62,6 +62,12 @@ export function scenarioFindings(s: Scenario, b: RunBundle, ctx: { studyId: stri
     if (s.expect.kind === "deck" && rt?.deck && rt.deck !== "material") out.push(f(b, "scenario.material_route", "critical", `用使用者的資料做簡報，路由卻是 ${rt.deck}`, { route: rt }));
     if (s.expect.kind === "note" && rt?.playbook === "topic_research") out.push(f(b, "scenario.material_route", "critical", "用使用者的資料寫筆記，卻改成線上主題調研", { route: rt }));
   }
+  // A position the user named (61666f10): a requirement on that page, about the venue when that was asked.
+  if (s.expect.placement && (planned || requirementsOf(run).length)) {
+    const want = s.expect.placement;
+    const hit = requirementsOf(run).find((q) => q.params?.page === want.page && (!want.venue || q.params?.venue === true));
+    if (!hit) out.push(f(b, "scenario.placement", "critical", `要求應在第 ${want.page} 頁${want.venue ? "標示論文的會議與年份" : ""}，要求裡沒有`, { expected: want, requirements: requirementsOf(run).map((q) => ({ text: q.text, params: q.params ?? null })) }));
+  }
   // Per-part language as stated (checked once requirements exist: the plan card or later).
   const p = s.expect.parts;
   if ((planned || requirementsOf(run).length) && (p.all || p.slides || p.notes)) {

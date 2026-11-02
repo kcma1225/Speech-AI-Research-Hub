@@ -19,7 +19,7 @@ import { normalizeDiagrams } from "../../lib/slides/deck-visuals.js";
 import { figureSyntax } from "../../lib/slides/content-lint.js";
 import { buildContentRefs, contentRefsOf, paperFigures } from "../content-refs.js";
 import { bodyIssues, closeOpenBlocks, combineScores, fixContent, fixFor, inventedNumbers, materializeVisuals, pagesToScore, pruneGeneratedFiles, replaceSlides, scoreTable, sourceIssues, visionScores, visualShare, VISUAL_RULES, type PageScore, type ShotPage } from "./slides-visual.js";
-import { assignTitles, duplicatePages, findByTitle, keptIssues, matchOriginals, parseSlides, PLACEHOLDER_RE, scrubPlaceholders, titleMatches, unbalanced, type OriginalPage } from "../checks.js";
+import { assignTitles, duplicatePages, findByTitle, keptIssues, matchOriginals, namedSlides, parseSlides, PLACEHOLDER_RE, scrubPlaceholders, slidePage, titleMatches, unbalanced, type OriginalPage } from "../checks.js";
 import { requireEditor, WorkflowInputError } from "../engine.js";
 import { dataBlock } from "../llm.js";
 import { addArtifact, getSteps, insertSteps } from "../store.js";
@@ -35,7 +35,9 @@ import { generateUnit, neighbourBlock } from "../units.js";
 import { loadMaterial, materialForPages, materialsOf, materialText, materialTitleOf, type LoadedMaterial } from "../material.js";
 import { applyStudentPages, runStudentInput, STUDENT_INPUT_KEY, studentInputStep, studentPagesOf } from "../student-input.js";
 import { checkedCriteria, LIBRARY_SURVEY_RE, localizeLabels, notesLanguage, runLabels, segmentClauses, targetLanguage, LANGUAGE_LABEL } from "../requirements.js";
-import { deckSubtitle, failingPages, fixPages, frontMatterText, frontTitle, guardRequirements, keepSlideBodies, splitChunks } from "./slides-requirements.js";
+import { coverCitation, venueFacts, type VenueFacts } from "../venue.js";
+import { previewView } from "../../lib/artifacts/view.js";
+import { coverExtras, deckSubtitle, failingPages, fixPages, frontMatterText, frontTitle, guardRequirements, keepSlideBodies, splitChunks } from "./slides-requirements.js";
 import { contentPage, keepPages, keptPage, pageScope, type PageScope } from "./slides-scope.js";
 import type { EditKind, Requirement } from "../types.js";
 
@@ -384,8 +386,9 @@ export function writerSteps(outline: SlideOutline[], deps: (p: SlideOutline) => 
     out.push({
       key: `write_${a}`,
       role: "writer",
-      title: a === b ? `撰寫第 ${a} 頁「${clipText(pages[0]!.title, 40)}」` : `撰寫第 ${a}–${b} 頁`,
-      instructions: `依大綱寫出第 ${a}${a === b ? "" : `–${b}`} 頁投影片與講稿：${pages.map((p) => `「${p.title}」${p.layout ? `（版型 ${p.layout}）` : ""}`).join("、")}。`,
+      // The player's numbers (the cover is page 1), as every page number the user sees (checks.ts `slidePage`).
+      title: a === b ? `撰寫第 ${slidePage(a)} 頁「${clipText(pages[0]!.title, 40)}」` : `撰寫第 ${slidePage(a)}–${slidePage(b)} 頁`,
+      instructions: `依大綱寫出第 ${slidePage(a)}${a === b ? "" : `–${slidePage(b)}`} 頁投影片與講稿（頁碼含封面：封面是第 1 頁）：${pages.map((p) => `「${p.title}」${p.layout ? `（版型 ${p.layout}）` : ""}`).join("、")}。`,
       depends_on: ["outline", ...new Set(pages.flatMap(deps))],
       inputs: { pages: pages.map((p) => p.n), budget: PAGE_BUDGET },
       expected: `${pages.length} 頁，每頁以「## 標題」開頭並附講稿`,
@@ -602,7 +605,8 @@ export function outlineFromText(text: string): OutlineJson["pages"] {
   return pages.filter((p) => p.title);
 }
 
-const outlineText = (o: SlideOutline[]) => o.map((p) => `${p.n}. ${p.title}${p.student_owned ? "（學生自填）" : ""}${p.item ? `（介紹：${p.item}）` : ""}${p.layout ? `（版型 ${p.layout}）` : ""}${p.sources?.length ? `（來源 ${p.sources.join("、")}）` : ""}\n${p.purpose ? `   目的：${p.purpose}\n` : ""}${p.points.map((x) => `   - ${x}`).join("\n")}`).join("\n");
+/** Outline pages for the writers, numbered as the player shows them (the cover is page 1). */
+const outlineText = (o: SlideOutline[]) => o.map((p) => `${slidePage(p.n)}. ${p.title}${p.student_owned ? "（學生自填）" : ""}${p.item ? `（介紹：${p.item}）` : ""}${p.layout ? `（版型 ${p.layout}）` : ""}${p.sources?.length ? `（來源 ${p.sources.join("、")}）` : ""}\n${p.purpose ? `   目的：${p.purpose}\n` : ""}${p.points.map((x) => `   - ${x}`).join("\n")}`).join("\n");
 
 async function paperBrief(env: WorkflowEnv, paper: { id: string; title: string; pdf_key: string | null }, fix: { previous: StepOutput; issues: string[] } | null) {
   const user = [
@@ -731,6 +735,9 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
   // Pages: the user's number (a requirement / inputs.pages), else a working default — 「頁數：未指定」, never a requirement.
   let pages = Math.min(40, Math.max(3, Number(env.run.inputs.pages) || requiredPages(env.requirements()) || (abstractOnly ? 5 : topic ? TOPIC_DEFAULT_PAGES : material ? MATERIAL_DEFAULT_PAGES : expectedPages(mode, words))));
   await env.setState({ mode, pages, abstract_only: abstractOnly });
+  // Where the paper was published (looked up when the library has only the preprint): the cover's citation and the
+  // venue the outline / writers use (workflows/venue.ts).
+  if (mode === "paper_report" && paper) await venueFacts(env, paper.id).catch((e) => env.deps.log.warn({ err: e, workflowId: env.run.id }, "venue facts failed"));
 
   // Research (paper: researcher sub-agent with read_paper; topic: papers to extract; progress: the study's own data).
   let brief = "";
@@ -779,6 +786,10 @@ async function plan(env: WorkflowEnv): Promise<import("./registry.js").PlanResul
     brief = mats.length ? `${data.slice(0, 14_000)}\n\n${materialText(mats, SOURCE_CHARS - Math.min(data.length, 14_000) - 1_000)}` : data;
     research = { key: "research", role: "researcher", title: "整理研究進度資料", instructions: "讀研究摘要、階段、里程碑、待辦、最近筆記與會議回饋。", expected: "進度資料", done: { output: { summary: `研究資料 ${data.length} 字`, text: data } } };
   }
+  // The paper's venue as the library knows it (verified when it could be looked up): what a page or a note may say about
+  // where it was published (production 61666f10: a writer called an Interspeech paper 「不是會議論文」 from 「arXiv」).
+  const vf = mode === "paper_report" ? env.state<VenueFacts>("venue_facts") : null;
+  if (vf?.label) brief = `# 論文出處\n\n${coverCitation(vf)}${vf.doi ? `（DOI ${vf.doi}）` : ""}${vf.preprint ? "：文獻庫只有 arXiv 預印本紀錄，只能寫「arXiv 預印本」，不要說它不是會議論文" : "：查證過的正式出處，提到發表會議／年份時照這裡寫"}。封面已經寫了這個出處。\n\n${brief}`;
   await env.setState({ brief: brief.slice(0, 40_000) });
   // Names, training sentences and the figure list the content checks compare slides against.
   // (The material in full: names and numbers anywhere in it count as grounded, not only the part the brief kept.)
@@ -1074,7 +1085,7 @@ function keptWriter(st: StepSpec, outline: SlideOutline[], keptRaw: (o: SlideOut
   const raws = pages.map(keptRaw);
   if (!raws.length || raws.some((r) => r === undefined)) return st;
   const { verify: _v, ...rest } = st;
-  return { ...rest, title: `沿用第 ${pages.map((o) => o.n).join("、")} 頁「${clipText(pages[0]!.title, 40)}」（沒有要求修改，原樣保留）`, done: { output: { summary: "沒有要求修改：原頁照原樣保留", text: raws.join("\n\n") } } };
+  return { ...rest, title: `沿用第 ${pages.map((o) => slidePage(o.n)).join("、")} 頁「${clipText(pages[0]!.title, 40)}」（沒有要求修改，原樣保留）`, done: { output: { summary: "沒有要求修改：原頁照原樣保留", text: raws.join("\n\n") } } };
 }
 
 /** What a page-scoped edit does, in the plan's words (「刪掉「X」，只改寫「Y」，新增 1 頁」). */
@@ -1397,6 +1408,7 @@ export async function writeAndRender(env: WorkflowEnv, body: string, opts: { sho
   // The run keeps the source form (```chart specs, paper-fig refs); the deck gets rendered SVG / cropped figures.
   const visuals = await materializeVisuals(env, deck, body, { paperPdfKey: mode === "paper_report" ? paper?.pdf_key ?? null : null, vision: await env.vision("slides") });
   if (visuals.problems.length) await env.note(`圖表處理：${visuals.problems.slice(0, 4).join("；")}`, "warn");
+  await coverExtras(env).catch((e) => env.deps.log.warn({ err: e, workflowId: env.run.id }, "cover extras failed"));
   const subtitle = deckSubtitle(env, mode === "paper_report" && !!paper, !!env.state<boolean>("abstract_only"));
   const qmd = draftQmd({ title, author: env.user.name, date: taipeiToday(), theme: true, ...(subtitle ? { subtitle } : {}) }, visuals.body);
   let revision: number;
@@ -1441,6 +1453,7 @@ async function frontOf(env: WorkflowEnv): Promise<string> {
   const st = env.state<DeckState>("deck");
   const base = st?.deck_title ?? (modeOf(env) === "paper_report" ? (await paperOf(env))?.title ?? "簡報" : "簡報");
   const title = env.state<string>("front_title") ?? (await frontTitle(env, base));
+  await coverExtras(env).catch(() => []);
   return frontMatterText(title, deckSubtitle(env, modeOf(env) === "paper_report", !!env.state<boolean>("abstract_only")));
 }
 
@@ -1471,7 +1484,7 @@ export function stripPositions(body: string): string {
 }
 
 /** The page outline as a writer sees it: its own unit in full, the deck's other pages by title. */
-const deckOutlineText = (outline: SlideOutline[], own: number[]) => outline.map((p) => (own.includes(p.n) ? outlineText([p]) : `${p.n}. ${p.title}`)).join("\n");
+const deckOutlineText = (outline: SlideOutline[], own: number[]) => ["1. （封面：標題、作者、日期，系統依 front matter 產生）", ...outline.map((p) => (own.includes(p.n) ? outlineText([p]) : `${slidePage(p.n)}. ${p.title}`))].join("\n");
 
 async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: StepOutput; issues: string[] } | null): Promise<StepOutput> {
   const outline = outlineOf(env);
@@ -1482,9 +1495,9 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
   if (pages.length && kept.every((k) => k !== undefined)) return { summary: "沒有要求修改：原頁照原樣保留", text: kept.join("\n\n") };
   const mode = modeOf(env);
   const brief = isTopicDeck(env) && env.state<TopicState>("topic")?.picks.length ? await topicPageBrief(env, pages) : isMaterialDeck(env) ? await materialPageBrief(env, pages) : env.state<string>("brief") ?? "";
-  const layoutRule = pages.map((p) => (p.layout ? `第 ${p.n} 頁用版型 ${p.layout}（${LAYOUTS[p.layout]}）。` : "")).filter(Boolean).join("");
+  const layoutRule = pages.map((p) => (p.layout ? `第 ${slidePage(p.n)} 頁用版型 ${p.layout}（${LAYOUTS[p.layout]}）。` : "")).filter(Boolean).join("");
   const format = [
-    `只輸出第 ${nums[0]}${nums.length > 1 ? `–${nums.at(-1)}` : ""} 頁（共 ${pages.length} 頁），依序每頁：`,
+    `只輸出第 ${slidePage(nums[0]!)}${nums.length > 1 ? `–${slidePage(nums.at(-1)!)}` : ""} 頁（共 ${pages.length} 頁；頁碼含封面），依序每頁：`,
     "`## 頁面標題`（標題照大綱逐字）→ 投影片內容（依視覺規則與指定的版型：圖／圖表／論文圖／表格 + 最多 4 個精簡條列）→ `::: {.notes}` 講稿（3–6 句，細節與數字都放這裡）`:::`。",
     layoutRule,
     `長度預算（每頁）：投影片上最多 ${PAGE_BUDGET.bullets} 個條列、約 ${PAGE_BUDGET.words} 個字詞以內（中文字算半個）；講稿 3–6 句。`,
@@ -1513,7 +1526,7 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
           your_pages: outlineText(pages),
           ...(neighbours ? { neighbours } : {}),
           // A page that keeps an original page: written from that page (title, figures, numbers kept), made more specific.
-          ...(carried.length ? { original_pages: `${carried.map((p) => `第 ${p.n} 頁改寫自原本的第 ${p.from} 頁：以原頁為基礎（標題照大綱、原頁的圖、表、數字與出處保留），依要求寫得更具體。`).join("\n")}\n\n${carried.map((p) => `<!-- 原第 ${p.from} 頁 -->\n${original![p.from! - 1]}`).join("\n\n")}` } : {}),
+          ...(carried.length ? { original_pages: `${carried.map((p) => `第 ${slidePage(p.n)} 頁改寫自原本的第 ${slidePage(p.from!)} 頁：以原頁為基礎（標題照大綱、原頁的圖、表、數字與出處保留），依要求寫得更具體。`).join("\n")}\n\n${carried.map((p) => `<!-- 原第 ${slidePage(p.from!)} 頁 -->\n${original![p.from! - 1]}`).join("\n\n")}` } : {}),
           research: brief.slice(0, SOURCE_CHARS),
         }
       : original
@@ -1523,7 +1536,7 @@ async function writeSection(env: WorkflowEnv, step: StepRow, fix: { previous: St
             ? `使用者的修改要求：${env.run.request}\n這次只改講稿（::: {.notes} 裡的文字）：投影片本體（標題、條列、圖、圖表、表格、出處）逐字照原頁輸出，系統也會把本體還原成原頁。`
             : `使用者的修改要求：${env.run.request}\n只照這個要求修改；保留原本的版型、圖、圖表（\`\`\`chart / diagram 規格）、論文圖（paper-fig 語法）、公式、表格、數字與出處，講稿一起修改。`,
           your_pages: outlineText(pages),
-          original_pages: pages.map((p) => `<!-- 第 ${p.n} 頁 -->\n${original[fromOf(p) - 1] ?? ""}`).join("\n\n"),
+          original_pages: pages.map((p) => `<!-- 第 ${slidePage(p.n)} 頁 -->\n${original[fromOf(p) - 1] ?? ""}`).join("\n\n"),
           format_rules: VISUAL_RULES,
         }
       : {
@@ -1604,7 +1617,7 @@ async function assemble(env: WorkflowEnv, step: StepRow, fix: { previous: StepOu
     // Only the pages the error points at (a quoted token, an open block) are sent for a syntax fix; the rest stay as they are.
     const suspects = suspectPages(prevState.body, prevState.render_error);
     const all = parseSlides(prevState.body).length;
-    await env.activity(step.key, "integrator", suspects.length && suspects.length < all ? `依編譯錯誤修正第 ${suspects.map((p) => p.index).join("、")} 頁的語法` : "依編譯錯誤修正語法");
+    await env.activity(step.key, "integrator", suspects.length && suspects.length < all ? `依編譯錯誤修正第 ${suspects.map((p) => slidePage(p.index)).join("、")} 頁的語法` : "依編譯錯誤修正語法");
     const scope = suspects.length && suspects.length < all ? suspects.map((p) => p.raw).join("\n\n") : prevState.body;
     const res = await env.call({ purpose: "render_fix", role: "integrator", aiRole: "slides", messages: fixMessages(modeOf(env), scope, prevState.render_error), maxTokens: 14_000 }, step.id);
     const repaired = cleanBody(res.text);
@@ -1893,13 +1906,14 @@ async function constraintsStep(env: WorkflowEnv, step: StepRow): Promise<StepOut
     if (!f.issues.length) break;
     // Only judge-fallback misses left after one targeted try: the final judge decides (they may be met in other words).
     if (!f.hard.length && round > 0) break;
-    log.push(`第 ${round + 1} 輪：${f.issues.length} 條要求未達成${f.pages.length ? `（${f.pages.map((p) => `第 ${p} 頁`).join("、")}）` : ""}`);
-    if (f.cover) await env.setState({ front_titles: {}, front_title: null });
+    log.push(`第 ${round + 1} 輪：${f.issues.length} 條要求未達成${f.pages.length ? `（${f.pages.map((p) => `第 ${slidePage(p)} 頁`).join("、")}）` : ""}`);
+    // The cover is code's (title in the target language, subtitle from the verified venue and the cover requirements).
+    if (f.cover) await env.setState({ front_titles: {}, front_title: null, cover_extra: null });
     if (!f.pages.length) {
       if (!f.cover) break;
       continue;
     }
-    await env.activity(step.key, "writer", `依你的要求修正 ${f.pages.length} 頁：${f.pages.map((p) => `第 ${p} 頁`).join("、")}`);
+    await env.activity(step.key, "writer", `依你的要求修正 ${f.pages.length} 頁：${f.pages.map((p) => `第 ${slidePage(p)} 頁`).join("、")}`);
     const fixed = await fixPages(env, body, f.pages, f.issues, step.id).catch(() => null);
     if (!fixed || fixed === body) break;
     body = fixContent(fixed, contentRefsOf(env, outlineOf(env))).body;
@@ -1977,9 +1991,11 @@ async function finalText(env: WorkflowEnv) {
   const st = env.state<DeckState>("deck");
   const body = st?.body ?? (await assembledBody(env));
   const refs = contentRefsOf(env, outlineOf(env));
-  // Requirement checks see the whole deck incl. the cover (`full`).
+  // Requirement checks see the whole deck incl. the cover (`full`), and what the player shows when the current body is
+  // rendered (`view`, lib/artifacts/view.ts: the verifier and the position checks read that).
   const full = `${await frontOf(env)}${body}`;
-  return { text: body, data: st ? { ...renderData(st), refs, full } : { renderError: "簡報還沒有寫入。", refs, full } };
+  const view = st?.preview_id && st.body === body && !st.render_error ? await previewView(env.db, env.storage, st.preview_id).catch(() => null) : null;
+  return { text: body, data: st ? { ...renderData(st), refs, full, ...(view ? { view } : {}) } : { renderError: "簡報還沒有寫入。", refs, full } };
 }
 
 const NAME_STOP = new Set(["the", "and", "for", "with", "of", "in", "on", "to", "a", "an", "by", "via", "based", "method", "methods", "approach", "approaches", "model", "models", "using"]);
@@ -2032,7 +2048,7 @@ async function structural(env: WorkflowEnv, failing: Criterion[], open: Set<stri
       add.push({ kind: "library", paper_id: p.id, title: p.title, year: p.year, cite_key: p.cite_key, has_pdf: true, reason: `最終驗收缺少：${notRead.join("、")}`, role: "core", ...(bibLine(p) ? { bib: bibLine(p) } : {}) });
     }
     // The pages the reason names, else the taxonomy page.
-    const named = [...(c.reason ?? "").matchAll(/第\s*(\d+)\s*頁/g)].map((m) => Number(m[1]));
+    const named = namedSlides(c.reason ?? "");
     const targets = named.length ? named : outline.filter((p) => p.kind === "taxonomy").map((p) => p.n);
     for (const n of targets) pagesFor.set(n, [...(pagesFor.get(n) ?? []), `${c.text}：${c.reason ?? ""}`]);
     none.fixed.push(c.id);
@@ -2076,7 +2092,7 @@ async function repair(env: WorkflowEnv, failing: Criterion[]) {
     if (c.id === "pages" || c.id === "kept" || c.id === "complete") {
       // One page per outline page (one-to-one): a page another page's copy stood in for is missing too.
       const at = assignTitles(outline.map((p) => p.title), slides.map((s) => s.title));
-      outline.forEach((p, i) => at[i]! < 0 && add(writeOf(p.n), `缺少第 ${p.n} 頁「${p.title}」，請完整寫出。`));
+      outline.forEach((p, i) => at[i]! < 0 && add(writeOf(p.n), `缺少第 ${slidePage(p.n)} 頁「${p.title}」，請完整寫出。`));
       // Every writer's page is there but some page is doubled: re-assembling from the writers' pages restores the deck.
       const dups = duplicatePages(slides, outline.map((p) => p.title));
       if (!out.size && (slides.length > outline.length || dups.length)) add("assemble", dups.length ? `有重複的頁面：${dups.join("、")}。` : `頁數比大綱多（${slides.length} > ${outline.length}）。`);
@@ -2088,14 +2104,21 @@ async function repair(env: WorkflowEnv, failing: Criterion[]) {
     else if (c.id === "notes") add("notes", c.reason ?? "講稿不完整");
     // The user's requirements: the checked ones are fixed page by page in `constraints`; judged ones go to the writers below.
     else if (c.id.startsWith("req_") && c.kind === "check") add("constraints", c.reason ?? c.text);
+    // A claim about the paper's venue the library does not support: the pages that say it (quoted in the reason).
+    else if (c.id === "bib") {
+      const quotes = [...(c.reason ?? "").matchAll(/「([^」]{6,60})」/g)].map((m) => m[1]!.slice(0, 30));
+      const pages = outline.filter((p) => { const s = findByTitle(slides, p.title, (x) => x.title); return !!s && quotes.some((q) => `${s.body}\n${s.notes}`.includes(q)); });
+      for (const p of pages.length ? pages : outline.slice(0, 1)) add(writeOf(p.n), `${c.text}：${c.reason ?? ""}`);
+    }
     else if (c.id === "clean") {
       for (const s of slides) {
         const p = findByTitle(outline, s.title, (o) => o.title);
-        if (p && !p.student_owned && /〔|待補|TODO|TBD/i.test(`${s.body}${s.notes}`)) add(writeOf(p.n), `第 ${p.n} 頁「${p.title}」還有佔位文字「${(PLACEHOLDER_RE.exec(`${s.body}\n${s.notes}`) ?? /〔[^〕]*〕|待補|TODO|TBD/i.exec(`${s.body}${s.notes}`))?.[0] ?? "〔　〕"}」：能從資料算出來就算出來，資料沒有就刪掉那一行，講稿也不要提到它。`);
+        if (p && !p.student_owned && /〔|待補|TODO|TBD/i.test(`${s.body}${s.notes}`)) add(writeOf(p.n), `第 ${slidePage(p.n)} 頁「${p.title}」還有佔位文字「${(PLACEHOLDER_RE.exec(`${s.body}\n${s.notes}`) ?? /〔[^〕]*〕|待補|TODO|TBD/i.exec(`${s.body}${s.notes}`))?.[0] ?? "〔　〕"}」：能從資料算出來就算出來，資料沒有就刪掉那一行，講稿也不要提到它。`);
       }
     } else {
       // Judged criteria: the pages named in the reason, else every writer (bounded: small decks only).
-      const named = [...(c.reason ?? "").matchAll(/第\s*(\d+)\s*頁/g)].map((m) => Number(m[1]));
+      // The verifier reads the deck with the player's page labels (checks.ts `numberedDeck`): back to `## ` indexes.
+      const named = namedSlides(c.reason ?? "");
       const keys = named.length ? [...new Set(named.map(writeOf))] : writes.length <= 5 ? writes.map((w) => w.key) : [];
       for (const k of keys) add(k, `${c.text}：${c.reason ?? "未達成"}`);
     }

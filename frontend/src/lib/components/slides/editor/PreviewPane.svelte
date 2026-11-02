@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { CircleAlert, Expand, LoaderCircle, LocateFixed, NotebookText, Presentation, RefreshCw } from "@lucide/svelte";
+  import { CircleAlert, Expand, LoaderCircle, LocateFixed, NotebookText, Presentation, RefreshCw, Sparkles } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
   import Progress from "#lib/components/ui/Progress.svelte";
@@ -14,7 +14,7 @@
    * after every reload and, with 「跟隨游標」 on, whenever it changes. `notes`: a toggleable panel under the preview with
    * the speaker notes of the slide shown (asked from the deck with Reveal's `getSlideNotes`, sanitised like the player's).
    */
-  let { preview, slide = 0, stale = false, canRefresh = false, notes: withNotes = false, onRefresh }: {
+  let { preview, slide = 0, stale = false, canRefresh = false, notes: withNotes = false, onRefresh, onAskAi }: {
     preview: PreviewInfo | null;
     slide?: number;
     /** The editor has changes newer than the shown render. */
@@ -23,7 +23,18 @@
     /** Offer the speaker-notes panel. */
     notes?: boolean;
     onRefresh?: () => void;
+    /** 「請 AI 找出問題」 under a failed render: the assistant reads the error and suggests a fix. */
+    onAskAi?: () => void | Promise<void>;
   } = $props();
+  let asking = $state(false);
+  async function askAi() {
+    asking = true;
+    try {
+      await onAskAi?.();
+    } finally {
+      asking = false;
+    }
+  }
 
   let frame = $state<HTMLIFrameElement | null>(null);
   let wrap = $state<HTMLElement | null>(null);
@@ -181,6 +192,12 @@
       </button>
       {#if showLog}
         <pre class="mt-2 max-h-56 overflow-auto rounded-xl bg-surface p-3 text-[11.5px] leading-relaxed break-words whitespace-pre-wrap text-ink-2">{renderLog(failed.error)}</pre>
+      {/if}
+      {#if onAskAi}
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="secondary" class="min-h-10" loading={asking} onclick={askAi}><Sparkles />{t("slides.editor.preview.askAi")}</Button>
+          <span class="text-[12px] text-ink-3">{t("slides.editor.preview.askAiHint")}</span>
+        </div>
       {/if}
     </div>
   {/if}

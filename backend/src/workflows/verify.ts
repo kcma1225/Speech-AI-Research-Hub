@@ -6,7 +6,8 @@
  * (same blocks, same order, no shorter cut) and only the checklist items of its own scope. No holistic scores, no
  * "find the gaps" prompts.
  */
-import { parseSlides, runChecks } from "./checks.js";
+import { numberedDeck, parseSlides, runChecks, slidePage } from "./checks.js";
+import { viewText, type ArtifactView } from "../lib/artifacts/view.js";
 import { getSteps } from "./store.js";
 import { dataBlock } from "./llm.js";
 import type { WorkflowEnv } from "./env.js";
@@ -259,6 +260,14 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
     } else judgeList.push(c);
   }
   const changedText = changed?.join("\n\n") ?? "";
+  // A deck is judged as the user sees it: the cover (front matter, `data.full`) included and every page labeled with the
+  // player's number (production 61666f10: a 「第一頁」 requirement was judged on the body without the cover).
+  const deck = env.run.playbook === "slides";
+  const full = (data as { full?: unknown } | null)?.full;
+  // The rendered view (what the player shows) when the playbook has one, else the source's (lib/artifacts/view.ts).
+  const view = (data as { view?: ArtifactView } | null)?.view;
+  const shown = deck ? (view?.units?.length ? viewText(view) : numberedDeck(typeof full === "string" && full.trim() ? full : text)) : text;
+  const quoted = deck ? `${typeof full === "string" && full.trim() ? full : text}\n${shown}` : text;
   if (judgeList.length) {
     await env.activity("final", "verifier", "依驗收清單逐條驗收");
     const src = await runSources(env);
@@ -273,7 +282,8 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
       src.blocks,
       src.blocks ? "<sources> 是撰寫者拿到的同一份資料（論文全文整理、頁面、研究資料），用它核對成果中的數字與主張。" : "",
       list.some(passedBefore) && changedText ? dataBlock("changed", changedText.slice(0, 15_000)) : "",
-      dataBlock("final", text.slice(0, 40_000)),
+      dataBlock("final", shown.slice(0, 40_000)),
+      deck ? "<final> 每一頁前面標了播放器的頁碼（<!-- 第 N 頁 -->；封面是第 1 頁）：提到頁面時用這個頁碼。講稿（::: {.notes}）不會顯示在投影片畫面上。" : "",
       '（再次提醒輸出格式：只輸出 {"results":[…]}，每條標準一筆。）',
     ].filter(Boolean).join("\n\n");
     const ask = async (list: Criterion[], note = "") =>
@@ -287,7 +297,7 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
     const invalidFail = (c: Criterion, r: CriteriaJudgement["results"][number] | undefined): string | null => {
       if (!r || r.pass !== false) return null;
       if (r.reason && selfContradictory(r.reason)) return "理由自相矛盾";
-      if (r.evidence?.trim() && !quoteIn(r.evidence, text)) return "引用的原文不在成果中";
+      if (r.evidence?.trim() && !quoteIn(r.evidence, quoted)) return "引用的原文不在成果中";
       if (passedBefore(c) && !quoteIn(r.evidence, changedText)) return "先前已通過，且沒有引用改過的部分";
       return null;
     };
@@ -319,7 +329,7 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
       let reason = !r ? (value ? "驗收者沒有判斷這一條。" : "驗收者沒有給出可解析的判定。") : r.pass === null ? (r.reason ?? "無法判斷") : r.reason;
       // A fail names where it is (production 0668a3d7: 「此數字…找不到對應來源」 with no number or page, so the repair could
       // not target it): the page holding the quoted evidence, and the numbers in it.
-      if (status === "fail" && r?.evidence) reason = withLocation(reason ?? "", String(r.evidence), text);
+      if (status === "fail" && r?.evidence) reason = withLocation(reason ?? "", String(r.evidence), text, deck);
       out.push({ ...rest, status, reason: reason?.slice(0, 400), ...(r?.evidence ? { evidence: String(r.evidence).slice(0, 200) } : {}), ...(r?.pass && !(r.evidence ?? "").trim() ? { note: "驗收者沒有引用證據" } : {}) });
     }
   }
@@ -334,7 +344,7 @@ export async function verifyCriteria(env: WorkflowEnv, text: string, data: unkno
 }
 
 /** 「第 N 頁「title」」 of the slide that holds `evidence` (+ the numbers it quotes) appended to a fail reason that names no page. */
-export function withLocation(reason: string, evidence: string, text: string): string {
+export function withLocation(reason: string, evidence: string, text: string, deck = false): string {
   if (/第\s*\d+\s*頁/.test(reason)) return reason;
   const slides = parseSlides(text.replace(/^---\n[\s\S]*?\n---\n?/, ""));
   if (!slides.length) return reason;
@@ -342,7 +352,8 @@ export function withLocation(reason: string, evidence: string, text: string): st
   const i = slides.findIndex((s) => quoteIn(want, `${s.title}\n${s.body}\n${s.notes}`));
   if (i < 0) return reason;
   const nums = [...new Set(evidence.match(/\d+(?:\.\d+)?%?/g) ?? [])].slice(0, 4);
-  return `${reason}（第 ${i + 1} 頁「${slides[i]!.title}」：「${want}」${nums.length ? `；數字 ${nums.join("、")}` : ""}）`.slice(0, 400);
+  // A deck: the player's page number (the cover is page 1, checks.ts `slidePage`).
+  return `${reason}（第 ${deck ? slidePage(i + 1) : i + 1} 頁「${slides[i]!.title}」：「${want}」${nums.length ? `；數字 ${nums.join("、")}` : ""}）`.slice(0, 400);
 }
 
 export type { CheckResult };

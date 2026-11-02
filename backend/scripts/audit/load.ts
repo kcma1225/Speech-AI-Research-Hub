@@ -125,6 +125,28 @@ export async function loadBundles(db: ReadOnlyDb, runs: Row[]): Promise<{ bundle
       )
     : [];
 
+  // Deck activity of the conversations (deck.render_failure_followed_up, deck.moved_content_left_behind): AI
+  // suggestions on deck files with what each hunk added, the decks' previews around them, the files' current text.
+  const deckSugs = convIds.length
+    ? await db.query<{ conversation_id: string; id: string; deck_id: string; file_id: string; title: string; source: string; status: string; created_at: string; decided_at: string | null; hunks: { before?: string; after?: string; status?: string }[] }>(
+        `SELECT s.created_by_conversation AS conversation_id, s.id, f.deck_id, f.id AS file_id, s.title, s.source, s.status, s.created_at, s.decided_at, s.hunks
+           FROM suggestions s JOIN deck_sources f ON f.id::text = s.target_id
+          WHERE s.target_type = 'deck_source' AND s.created_by_conversation = ANY($1::uuid[]) ORDER BY s.created_at`,
+        [convIds],
+      )
+    : [];
+  const sugDecks = [...new Set(deckSugs.map((x) => x.deck_id))];
+  const deckPreviews = sugDecks.length ? await db.query<{ deck_id: string; status: string; created_at: string }>("SELECT deck_id, status, created_at FROM deck_previews WHERE deck_id = ANY($1::uuid[]) ORDER BY created_at", [sugDecks]) : [];
+  const sugFiles = [...new Set(deckSugs.map((x) => x.file_id))];
+  const deckFiles = sugFiles.length ? await db.query<{ id: string; content: string | null }>("SELECT id, content FROM deck_sources WHERE id = ANY($1::uuid[])", [sugFiles]) : [];
+  const addedOf = (before = "", after = "") => {
+    let i = 0;
+    while (i < before.length && i < after.length && before[i] === after[i]) i++;
+    let j = 0;
+    while (j < before.length - i && j < after.length - i && before[before.length - 1 - j] === after[after.length - 1 - j]) j++;
+    return after.slice(i, after.length - j).trim();
+  };
+
   // Input artifacts → their study.
   const deckIds = new Set<string>();
   const noteIds = new Set<string>();
@@ -179,6 +201,17 @@ export async function loadBundles(db: ReadOnlyDb, runs: Row[]): Promise<{ bundle
     library: run.study_id ? (libBy.get(run.study_id) ?? []) : [],
     now,
   }));
-  const conversations: ConversationBundle[] = convIds.map((id) => ({ conversation: convMap.get(id) ?? { id }, messages: msgBy.get(id) ?? [], runs: sibBy.get(id) ?? [], toolCalls: tcBy.get(id) ?? [] }));
+  const deckFor = (id: string) => {
+    const sugs = deckSugs.filter((x) => x.conversation_id === id);
+    if (!sugs.length) return undefined;
+    const decks = new Set(sugs.map((x) => x.deck_id));
+    const files = new Set(sugs.map((x) => x.file_id));
+    return {
+      suggestions: sugs.map((x) => ({ id: x.id, deck_id: x.deck_id, file_id: x.file_id, title: x.title, source: x.source, status: x.status, created_at: iso(x.created_at)!, decided_at: iso(x.decided_at), added: (x.hunks ?? []).filter((h) => h.status !== "rejected").map((h) => addedOf(h.before, h.after)).filter((t) => t.length >= 8) })),
+      previews: deckPreviews.filter((p) => decks.has(p.deck_id)).map((p) => ({ deck_id: p.deck_id, status: p.status, created_at: iso(p.created_at)! })),
+      files: deckFiles.filter((f) => files.has(f.id)),
+    };
+  };
+  const conversations: ConversationBundle[] = convIds.map((id) => ({ conversation: convMap.get(id) ?? { id }, messages: msgBy.get(id) ?? [], runs: sibBy.get(id) ?? [], toolCalls: tcBy.get(id) ?? [], deck: deckFor(id) }));
   return { bundles, conversations };
 }

@@ -12,6 +12,8 @@ declare module "@mixmark-io/domino" {
     children: ArrayLike<DomElement>;
     closest(selector: string): DomElement | null;
     querySelector(selector: string): DomElement | null;
+    querySelectorAll(selector: string): ArrayLike<DomElement>;
+    remove(): void;
     /** HTMLTableElement */
     rows?: ArrayLike<DomElement>;
     /** HTMLTableRowElement */
@@ -22,6 +24,7 @@ declare module "@mixmark-io/domino" {
     body: DomElement | null;
     documentElement: DomElement | null;
     querySelector(selector: string): DomElement | null;
+    querySelectorAll(selector: string): ArrayLike<DomElement>;
   }
   export function createDocument(html?: string, force?: boolean): DomDocument;
 }

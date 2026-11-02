@@ -769,6 +769,15 @@ Tests pass `allowPrivateDownloads` as `true` or a predicate (only the mock serve
 on timeout / download failure it enqueues `ai_library_import` for that paper (`batchId: null`) → status `queued`. `has_pdf` is
 reported only when a file is stored.
 
+**Published version** (`lib/library/published.ts`, service `findPublishedVersion`): a preprint-only paper (venue arXiv /
+none, no publisher DOI) is looked up by Semantic Scholar (`ARXIV:<id>` / DOI: the same work, its publisher DOI trusted) →
+Crossref by that DOI, else a Crossref bibliographic match (title ≥ 0.95, compatible first author, not posted-content, year
+± 2); `mergeRecords` lets the published version win type / container / venue / year / volume / pages. Runs on
+`resolveIdentifier` of an arXiv id (import by identifier), in `ai_library_import` for every preprint-only paper of the job
+(batch imports queue their preprint entries even without `fetchPdfs`: `metadataOnly`), in the agent's
+`refresh_paper_metadata`, and in paper-report decks (`workflows/venue.ts`). Migration 0126 queued one metadata-only job for
+the existing preprint-only papers. `venueLabel` = 「Interspeech 2024」.
+
 **Full text** (`lib/library/fulltext.ts`): `paperFullText(storage, pdfKey)` = memory LRU (8) → S3 sidecar → pdf.js text of
 every page (≤ 80; no canvas) → lines (by y) → sections: abstract (also inline `Abstract—`), numbered `1` / `2.1` / `3.1.2`
 (accepted only in order, Title-case, ≤ 12 words, no trailing punctuation), IEEE Roman `IV.` + `A.` subsections, known
@@ -781,8 +790,11 @@ needs AVX and is removed from the image), JPEG q82, 1200 px wide pages / 1400 px
 private `/tmp` dir; `setPageRenderer` swaps it in tests.
 
 Job `ai_library_import` (ai-worker, `backend/src/ai-jobs/library/`, roles none, concurrency 1): payload
-`{batchId | null, paperIds, userId}` → for each paper still without a PDF: `fetchOpenAccessPdf` → result
-`{stored, notFound, failed, skipped, total}`; one paper failing never fails the job; checkpoint per paper; stage `fetching_pdfs`.
+`{batchId | null, paperIds, userId | null, metadataOnly?}` → for each paper: a preprint-only one first gets its published
+version (`refreshPublished`, see Published version), then, unless `metadataOnly`, a paper still without a PDF gets
+`fetchOpenAccessPdf` → result `{stored, notFound, failed, skipped, total, published}`; one paper failing never fails the job;
+checkpoint per paper; stage `fetching_pdfs`. Import confirm queues it for the batch's preprint entries even without
+`fetchPdfs` (`metadataOnly`; `pdfFetch` still reports only the PDF part).
 
 ### Search (`search.ts`, `lib/search/`)
 
@@ -1331,7 +1343,7 @@ stripped from the text).
 | PATCH `/agent/conversations/:id` `{title?, autopilot?, memory_enabled?, prereq_check?}` | owner | memory needs the user setting (409); emits `conversation`; `autopilot:true` settles the open step's cards (`applyAutopilot`) |
 | GET `/agent/conversations/:id/activity` | owner | what still runs: `{assistant: bool (an active agent run), workflows: [{id, title, status}] (unfinished runs of the conversation), goals: [{id, title, status}] (unfinished goals)}` — the delete dialog's warning (`frontend/src/lib/agent/delete.ts`) |
 | DELETE `/agent/conversations/:id` `?stop_agents=1` | owner | with an active run or unfinished workflows and no `stop_agents` → 409 `{code:"active_agents"}`; otherwise cancels the active run, stops (`cancelWorkflow`) and **deletes every workflow run of the conversation** (`deleteConversationWorkflows`; drafts they wrote — decks, notes — stay; a still-running job sees the cancel on its heartbeat and a retry finds the run `missing`); memories stay |
-| POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext, intent?: "make_note", attachments?: AttachmentRef[] ≤ 10, supersede?: boolean}` | owner | text and/or `ask_user` answers; `intent` = toolbar quick action (see Paper reading); `attachments` see Attachments (a ref the caller cannot read → 403/404 「附件 N：…」, nothing is sent); 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; while a reply runs → 202 `{queued}` (Queued message; answers → 409); consent cards pending and no `supersede: true` → 409 `{code:"pending_decision", pending:[{id,tool,title,summary}]}`; otherwise → 202 `{message, run}` |
+| POST `/agent/conversations/:id/messages` `{text? ≤ 20000, answers?: {tool_call_id, answers}, context?: PageContext, intent?: "make_note" \| "fix_render", attachments?: AttachmentRef[] ≤ 10, supersede?: boolean}` | owner | text and/or `ask_user` answers; `intent` = toolbar quick action (see Paper reading); `attachments` see Attachments (a ref the caller cannot read → 403/404 「附件 N：…」, nothing is sent); 503 `{code:"llm_unavailable"}` when the assistant role is unavailable; while a reply runs → 202 `{queued}` (Queued message; answers → 409); consent cards pending and no `supersede: true` → 409 `{code:"pending_decision", pending:[{id,tool,title,summary}]}`; otherwise → 202 `{message, run}` |
 | PUT `/agent/conversations/:id/queued` `{text?, attachments?}` · DELETE `…/queued` | owner | edit (hold kept) / remove the queued message → `{queued}` / `{ok}`; 404 when nothing is queued |
 | POST `/agent/conversations/:id/queued/send` `{supersede?}` | owner | send it now: a running reply is cancelled first (「停止並立即送出」); consent cards → 409 `pending_decision` unless `supersede`; a held question → sent as a plain message (the card stays answerable) → `{sent, queued}` |
 | POST `/agent/conversations/:id/messages/:messageId/edit` `{text?, answers?, context?, attachments?}` | owner | current-branch user message → new version (cancels the active run first; empty body = resubmit unchanged; the message's attachments are kept and re-resolved unless `attachments` is given); an answer message takes only `answers` (400) → 202 `{message, run}` |
@@ -1389,7 +1401,57 @@ access itself; writes to existing content produce suggestions (`createSuggestion
 `setAgentSearchProvider(fn)` (`tools/search.ts`; `fn(ctx, {query, studyId, types, limit}) → {hits:[{type,id,title,excerpt?,study?,url?,authorId?}], mode} | null`,
 null = keyword fallback) or replace `search` entirely; meetings register `get_meeting` / `get_transcript_excerpt`; slides register
 `suggest_deck_edit` (`lib/slides/agent-tools.ts`: one text file of the Quarto tree, `content` or exact `edits`; always a pending
-suggestion, also under autopilot, because deck sources keep no version history; on MCP with the `suggest` scope); LaTeX `latex_read_file` / `latex_suggest_edit`.
+suggestion, also under autopilot, because deck sources keep no version history; on MCP with the `suggest` scope). Before it is
+created the edited file must still compile (`lib/slides/source-lint.ts` `newSourceProblems`: front-matter / `.yml` YAML parsed
+with `yaml` (duplicate keys, an unquoted `: ` in a value), unclosed `:::` / ``` blocks, ```diagram specs; only problems the
+edit introduces) — else 400 naming the line. The result carries `pages` (player page numbers the added text lands on; the
+cover = front matter = 1), `earlier_suggestions` (this conversation's AI suggestions on the file: status + the pages their
+text is on now) and `warning` when the edit adds text like an earlier, still-present edit's on another page (a move must
+remove the old copy; production 61666f10). `get_deck_render_error {deck_id}` (read; `lib/slides/render-followup.ts`
+`renderDiagnosis`): the newest preview's status / error (ANSI stripped), the entry file's `sourceProblems` with lines, the
+suggestions applied since the last ready preview (by ai / user, conversation; `from_this_conversation`). LaTeX
+`latex_read_file` / `latex_suggest_edit` (refused when the edit breaks braces or `\begin`/`\end` pairs:
+`lib/latex-projects/source-lint.ts` `newLatexProblems`; under autopilot the edit is applied as is, so this is checked first).
+
+**Artifact edit gate** (`lib/artifacts/`; harness survey: SWE-agent's lint-gated edits, Cursor's shadow workspace,
+Aider's lint-after-edit, Claude Code's Stop hooks). Every assistant edit of an artifact — `suggest_deck_edit`,
+`latex_suggest_edit` (also when autopilot applies it), `suggest_note_edit` — goes through one gate before the suggestion
+exists:
+- *Rules* (`build-check.ts`): the kind's parsers, only problems the edit introduces — decks `source-lint.ts` (YAML via
+  `yaml`, blocks, diagram specs), LaTeX `source-lint.ts` (braces, `\begin`/`\end`), notes `noteProblems` (fences, `$$`,
+  `:::`, comments).
+- *Build* (decks, LaTeX; off in tests unless `setBuildCheck`): a dry run with the real compiler on a scratch copy — the
+  deck tree packed with the edited file (`packTree` overrides) as a `slide_preview` job with `dryRun: true` and no
+  `deck_previews` row (the finalizer leaves the output; the checker reads the rendered HTML, then deletes the prefix), the
+  LaTeX snapshot with the edited blob as a draft `latex_compile` job with no `latex_compiles` row. ≤ 120 s; errors the
+  artifact already had (its last failed preview / last compile) are not the edit's; a build that does not finish →
+  `build_check: "unverified"` with a note. A failure → 400 `這個修改沒有通過檢查…` with the error lines (ANSI stripped).
+- *Facts* (`facts.ts` `newBibClaimProblems`, decks with a paper): 「不是會議論文／only a preprint」 or a venue / year for
+  THIS paper that the library record (`preprintOnly`, venue, year) does not support → refused.
+- *The turn's own requirements* (`turn-requirements.ts`): `detectRequirements` on the turn's user message → every
+  deterministic criterion is run on the edited artifact (decks: the dry run's rendered view, else the source) and a
+  position requirement is compared with where the edit's text landed (`pages`); results → `user_requirements` /
+  `unmet_requirements` in the tool result.
+- *Turn end* (`agent/guards.ts` completion review, once per run): a refused edit with no later accepted edit of the same
+  artifact, or a last edit with `unmet_requirements`, sends the model back with a hidden correction prompt.
+Workflows verify their own renders (render-fix loop, visual QA, `req_*` checks on `data.view`).
+
+**Artifact view** (`lib/artifacts/view.ts`): one definition of an artifact's units for every consumer — decks: page 1 =
+the cover when the front matter has a title, then one page per `## ` slide; `visible` (what the player shows) apart from
+`notes`; `deckSourceView` (Quarto source), `deckRenderedView` (revealjs HTML: `#title-slide`, `section.slide`,
+`aside.notes`; styles / scripts / MathML copies dropped), `previewView` (a ready preview's HTML); notes `noteView` /
+LaTeX `latexView` by heading. `unitAt(view, page)` (−1 = last), `unitLabel`, `viewText` (labeled `<!-- 第 N 頁「…」 -->`,
+notes marked 不顯示) — the verifier (`verify.ts`, rendered view when the slides playbook passes `data.view`), `req_venue`,
+`numberedDeck`, `get_deck` (numbering; page 1 asked → the raw `front_matter`) and the edit tools' `pages` use it.
+
+**Deck build failures go back to the AI** (`lib/slides/render-followup.ts` `renderFailureFollowUp`, after commit of a failed
+`slide_preview`): when the failing revision follows an accepted AI suggestion from a conversation (no ready preview since,
+no newer revision queued, no workflow writing the deck), that conversation gets a `notice` (`kind: deck_render_failed`,
+`deckId`, `revision`, `auto`, `model: true`) and an automatic turn in the owner's name (`〔自動〕簡報編譯失敗了…`, `intent:
+"fix_render"`, page context = the deck): the assistant reads `get_deck_render_error` and suggests the minimal fix. Once per
+failing revision; ≤ 2 automatic turns per deck and conversation in 6 h (the third failure only notifies). The deck editor's
+render error box has 「請 AI 找出問題」 (any failure, incl. the user's own edits): the global assistant panel gets the same
+`fix_render` turn.
 
 `update_plan {explanation?, plan: 1–12 × {step ≤ 160, status pending|in_progress|completed}}` (`tools/plan.ts`; read, chat
 only, not on MCP; ≤ 1 `in_progress`): the whole plan per call; the SPA renders ONE live checklist per assistant turn (the newest `update_plan` state, `PlanChecklist`; see Compact transcript), earlier versions only as 「更新計畫（n/m）」 rows in the expanded timeline (i18n `i18n/agent-plan.ts`, `i18n/agent-activity.ts`).
@@ -1398,7 +1460,9 @@ Core tools: read `list_studies`, `get_study`, `get_study_progress`, `list_notes`
 `list_decks`, `get_deck`, `get_deck_pages`, `review_deck_layout`, `review_latex_layout`, `read_paper`, `view_paper_pages`, and (`tools/context-reads.ts`) `get_deck_reviews {deck_id? | study?, limit?}` (review comments with page, version, author role, replies), `get_study_bibtex {study, paper_ids?}` (the export route's BibTeX with study cite keys + download link `/api/studies/:slug/papers/export?format=bibtex`), `get_recent_activity {study?, since? (default 7 days), actor? me|anyone, limit?}` (`study_activity` of one study or of the caller's studies). `list_studies.member` takes `me`, `all` or a user id; `get_study_progress` also returns each recent meeting's feedback (direct feedback + the study's draft `feedback_md`) and the latest deck reviews; `search.types` also takes `meeting`, `deck`, `milestone` (meeting hits are always untrusted; results carry `date`/`author`); write `create_note`, `suggest_note_edit` (exact `before`/`after` edits, or full text; see *Part-scoped note edits* below),
 `suggest_study_summary`, `create_task`, `update_task`, `add_milestone`, `set_stage`, `import_paper` (open-world: resolves
 the identifier online, reuses a same/likely lab copy, then fetches the open-access PDF — result `paper.has_pdf`,
-`pdf.status`), `fetch_paper_pdf` (open-world; paper editors only), `create_deck`, `add_paper_to_study`, `remember` (memory); destructive `delete_task`,
+`pdf.status`), `refresh_paper_metadata {paper_id}` (write, not open-world: only the paper's stored arXiv id / DOI / title
+leave the hub, so it runs after the turn read untrusted content; `lib/library/published.ts` → status updated / unchanged /
+published / not_found with before / after; `list_papers` / `get_paper` add `venue_note` to a preprint-only paper), `fetch_paper_pdf` (open-world; paper editors only), `create_deck`, `add_paper_to_study`, `remember` (memory); destructive `delete_task`,
 `delete_note`, `remove_paper_from_study`; `ask_user` + `list_lab_members` (chat and interview); interview-only
 `propose_study_plan` (read, no side effects); with 「先確認先備知識」 on: `extract_prerequisites`, `next_concept`,
 `add_subconcepts`, `mark_concepts`, `build_quiz` (see Prerequisite check).
@@ -1992,7 +2056,21 @@ requirement is now a typed constraint that every step must keep and that is chec
   are ignored. zh is lenient: only a unit written entirely in English fails), `req_pages` (decks), `req_sections` (listed parts: a page / section each, below), `req_include` and
   `req_fields` (an item's pages are the slides / sections whose title names it; `items` come from the request, the
   model, or the outline's `item` field) with a **judged fallback** (`params.judge_fallback`: a deterministic miss goes to
-  the final verifier with the check's detail instead of failing), `req_exclude`; the rest are judged. Notes / LaTeX use
+  the final verifier with the check's detail instead of failing), `req_exclude`, `req_venue` (below); the rest are judged.
+- *Positions and the venue* (production 61666f10: 「簡報低一頁要有這是哪個會議哪一年的」 became 「至少要有一頁」, the venue
+  landed in page 2's notes and the judge passed it): `fixPageTypos` (低／弟 + 數字 + 頁 = 第…頁; not 降低／減少／最低) runs on
+  the user's words before detection and extraction; `detectPlacements` turns 「第 N 頁／封面／首頁／最後一頁 + 要有／放／加上／寫…」
+  into `{type: other, params: {page (player numbering: the cover is 1, -1 = last), part: slides}}` and 「哪個會議／期刊、哪一年」
+  into `params.venue` (removals, per-item fields and speaker-note asks are other rules'; 「第一頁，不是第二頁」 keeps page 1);
+  `anchorPlacement` gives any requirement whose quote names a page / the venue that position back. A venue requirement
+  gets the run paper's verified facts (`workflows/venue.ts` `venueFacts`, `withVenueTerms`; `fillVenueTerms` again once
+  planning picked the paper): its text names the label and `req_venue {terms: [venue, year], page?}` checks those words on
+  that page's slide (page 1 = front matter title / subtitle; never the notes). A position without checkable words is judged
+  with 「只看第 N 頁投影片畫面上的文字」. The extraction prompt keeps positions (`params.page`) and restores ASR typos.
+- *Page numbers* are the player's everywhere (checks.ts `slidePage` / `namedSlides`): a generated deck always has a cover
+  (page 1), so the n-th `## ` slide is page n + 1 in step titles (「撰寫第 2 頁…」), check details, notes, the writers'
+  outline text and the plan card (「1. 封面」 first); the final verifier reads the deck with `<!-- 第 N 頁 -->` labels and the
+  cover (`numberedDeck` of `data.full`), and repairs map 「第 N 頁」 back to `## ` indexes. Notes / LaTeX use
   sections as units (`params.doc`). Checks read the whole artifact from `data.full` (slides: front matter + body).
 - *Every step gets them* (`withRequirements` in `env.call` / `callJson`, so researchers, writers, notes pass, visual fix,
   render fix, integrators, LaTeX writers and verifiers all see one shared block; producers must follow it and it
@@ -2250,6 +2328,15 @@ outside autopilot a card `pdf_<paper>_<n>` asks 提供網址 (+ URL field) / 上
 abstract-only run, title 「論文報告（僅依摘要）」, subtitle and plan note say so, grounded criterion adapted) / 跳過這篇
 (run ends `cancelled`, `stop_reason skipped`); a URL that fails asks again with the error.
 
+**Deck cover** (`slides-requirements.ts` `deckSubtitle`, front matter written by code). A paper report's subtitle is the
+Lab-Hub template's citation 「Andrusenko et al., Interspeech 2024」 (`venue.ts` `coverCitation` from `state.venue_facts`:
+the run's paper, its published version looked up once when the library only has the preprint — a note says when the
+library was updated; still a preprint → 「arXiv preprint 2024」; unknown → 「Paper report」), 「（僅依摘要…）」 appended for an
+abstract-only run; the paper brief starts with a 「# 論文出處」 block (writers never call a preprint 「not a conference
+paper」). Other cover requirements (`params.page = 1`, not the venue) become ≤ 2 subtitle lines (`coverExtras`, one
+`cover_extra` call from the run's facts, cached by the requirements' text; what the facts lack is a warning note), joined
+with 「 · 」.
+
 **Safety.** Runs act with the owner's permissions (study edit access re-checked before each write; a lost membership →
 `failed`). Tool results and sub-agent outputs are untrusted data for the orchestrator (wrapped in `<data>` blocks with
 the injection notice; never instructions). Content the owner did not author (papers, others' notes, meetings, web) sets
@@ -2408,7 +2495,9 @@ materialises it into the deck tree:
   Big5-1 + GB2312-1 + CJK punctuation, KaTeX Main/Math/AMS for `$…$`; read with `opentype.js`, MIT) and drawn as glyph
   outlines (`<defs>` + `<use>`), so every label is wrapped into the box it was measured for and renders identically in any
   viewer; `$…$` is laid out by a small TeX subset (`diagram/math.ts`: scripts, `\frac`, `\sqrt`, accents, `\mathbf`, Greek,
-  operators). Box sizes come from the space the block gets on its slide (`visualFit`: column width, minus takeaways /
+  operators). Before sizing, a run of 2–4 visuals stacked on one slide (only blank lines between them, outside any div)
+  goes side by side (`deck-layout.ts` `arrangeVisuals`: one per `.column`, four as two columns of two; production 61666f10:
+  three result charts ran 463 px off 「Main results」). Box sizes come from the space the block gets on its slide (`visualFit`: column width, minus takeaways /
   bullets / other blocks); the renderer tries the normal, compact and large type scales (and a two-row snake for long
   pipelines, the other direction for graphs) and keeps the candidate that fills the box with every font ≥ 16 px; a
   diagram that cannot fit at 16 px is reported (`這張圖太大…`). Palette from hub-deck.css (blue models, amber

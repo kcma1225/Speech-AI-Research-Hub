@@ -28,6 +28,8 @@ const CHAT_RULES = [
   "修改既有內容（筆記、研究簡述）一律使用 suggest_* 工具產生建議，使用者會在編輯器中逐段接受或拒絕；建立新的東西才用 create_* 工具。",
   "修改筆記時只動使用者指定的部分：「第二段」「第三節」「『結論』那段」這類局部要求，先看 get_note 的 outline（章節編號：# 標題不算，## 是 1、2…，### 是 2.1…；段落是以空行分隔的區塊，全篇連續編號），用 section 讀那一節，再用 suggest_note_edit 的 edits 只替換那幾段，其他內容一字不改；只有短筆記或使用者要求整篇改寫（整篇重寫、翻成英文）並且讀完全文時才用 content_md。會議草稿的待辦也一樣：用 task_edits 新增、修改或移除指定的項目，不要重送整份清單。",
   "修改 LaTeX 檔案的一部分（某一節、某一段、某個表或圖、某個引用）用 latex_suggest_edit 的 edits：只送要改的那段原文（before）與新文字（after），其他內容不要重送；只有使用者要求整個檔案重寫時才用 content。",
+  "簡報的頁碼照播放器算：封面（front matter 的 title / subtitle）是第 1 頁，第一個「## 」投影片是第 2 頁；使用者說的「低一頁」「弟一頁」是「第一頁」的同音錯字。要放到第 1 頁就是改封面：修改 front matter 裡既有的 subtitle 那一行（沒有才新增），不要加第二個同名的 YAML 欄位，也不要改到第 2 頁。使用者說「放第 N 頁，不是第 M 頁」時，同一份建議裡也要把你先前放在第 M 頁的那段拿掉。",
+  "論文發表在哪個會議／期刊、哪一年：文獻庫的 venue 只寫 arXiv 只代表只有預印本紀錄，不代表它不是會議論文。要回答或寫進成果前先用 refresh_paper_metadata 查證並更新文獻庫（只送出文獻庫裡已有的識別碼）；線上搜尋結果標出 library_outdated 時也一樣直接更新，不要只口頭說文獻庫該改；查不到就照實說只有 arXiv 紀錄。交給 start_workflow 時，request 照使用者的原話保留位置（例如「第一頁（封面）要寫會議與年份」），不要自己加上文獻庫的出處或推論。",
   "不知道 id 時，先用 list_* 或 search 工具查詢；不要捏造 id、數據、引用或結果。",
   "要修改、刪除或交給工作流程處理某份既有成果（簡報、筆記、LaTeX 專案）時，對象只能是這個對話裡的成果（使用者開著的頁面、這個對話的工作流程或工具建立／修改的）或使用者說出標題完全相符的那份；用搜尋或列表挑出來的成果不要直接動手，先用 ask_user 列出候選問使用者要哪一份。",
   "被問到某份成果（簡報、筆記、LaTeX 論文）的內容——講了什麼、涵蓋哪些方法、偏向哪個方向——先用讀取工具讀那份成果本身（get_deck 會列出每一頁，需要細節帶 pages；get_note；latex_read_file）再回答，只說讀到的內容；get_workflow 只有進度與驗收結果，驗收理由裡提到的東西不代表成果裡有。",
@@ -149,7 +151,18 @@ export function pageContextText(ctx: PageContext | null | undefined): string {
 }
 
 /** Task instructions added to a quick-action user turn (the UI shows only the user's text). */
-export function intentText(intent: "make_note"): string {
+export function intentText(intent: "make_note" | "fix_render", ctx: PageContext | null = null): string {
+  if (intent === "fix_render") {
+    return [
+      `<task kind="fix_render" trust="user" note="簡報預覽編譯失敗">`,
+      `簡報${ctx?.deckId ? `（deck id ${ctx.deckId}）` : ""}的預覽編譯失敗了。`,
+      "1. 先用 get_deck_render_error 讀錯誤記錄：它列出錯誤訊息、目前原始檔的結構問題（YAML、沒關閉的區塊，附行號）和上次成功編譯後套用的修改（包括你在這個對話提過的建議）。",
+      "2. 需要時用 get_deck 讀相關頁面或 front matter 的原始內容，找出真正的原因；用一兩句白話說明是哪一行、為什麼壞掉（例如同一個 YAML 欄位寫了兩次）。",
+      "3. 用 suggest_deck_edit 提出最小的修正：只改造成錯誤的地方，保留使用者要的內容（例如兩行 subtitle 合成一行），不要順手改別的頁。建議會先檢查能不能編譯。",
+      "4. 錯誤不是原始檔造成的（例如編譯服務暫時失敗）時照實說，請使用者稍後重新預覽，不要亂改內容。",
+      "</task>",
+    ].join("\n");
+  }
   if (intent !== "make_note") return "";
   return [
     '<task kind="make_note" trust="user" note="使用者按了「整理成筆記」">',

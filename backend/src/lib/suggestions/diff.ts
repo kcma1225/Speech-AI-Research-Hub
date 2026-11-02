@@ -2,6 +2,13 @@ import { diffLines } from "diff";
 
 export type RawHunk = { from: number; to: number; before: string; after: string };
 
+/** The text after exact-passage edits (offsets into `text`; non-overlapping, applied from the end). */
+export function applyHunks(text: string, hunks: { from: number; to: number; after: string }[]): string {
+  let out = text;
+  for (const h of [...hunks].sort((a, b) => b.from - a.from)) out = `${out.slice(0, h.from)}${h.after}${out.slice(h.to)}`;
+  return out;
+}
+
 /**
  * Hunks turning `base` into `proposed`: a line diff (a Markdown paragraph or a code line is one line), with
  * adjacent changed lines merged into one hunk. Offsets are into `base`. The frontend shows a word diff inside

@@ -203,7 +203,8 @@ export async function saveBinary(client: Queryable, deckId: string, fileId: stri
 }
 
 /** Packs the tree into a ZIP (text from the DB, binaries from S3). Throws 400 when the entry file is missing. */
-export async function packTree(db: Queryable, storage: Storage, deckId: string): Promise<{ zip: Buffer; tree: SourceTree; fileCount: number }> {
+/** `overrides`: text files packed with this content instead of the stored one (a dry run of an edit, lib/artifacts). */
+export async function packTree(db: Queryable, storage: Storage, deckId: string, overrides: Record<string, string> = {}): Promise<{ zip: Buffer; tree: SourceTree; fileCount: number }> {
   const tree = await requireTree(db, deckId);
   const files = (await db.query<{ path: string; kind: SourceKind; content: string | null; s3_key: string | null }>(
     "SELECT path,kind,content,s3_key FROM deck_sources WHERE deck_id=$1 ORDER BY path",
@@ -212,7 +213,7 @@ export async function packTree(db: Queryable, storage: Storage, deckId: string):
   if (!files.some(file => file.path === tree.entry)) throw badRequest(`找不到入口檔 ${tree.entry}。`);
   const entries = [];
   for (const file of files) {
-    if (file.kind === "text") entries.push({ path: file.path, data: Buffer.from(file.content ?? "", "utf8") });
+    if (file.kind === "text") entries.push({ path: file.path, data: Buffer.from(overrides[file.path] ?? file.content ?? "", "utf8") });
     else {
       const data = file.s3_key ? await storage.getBuffer(file.s3_key) : null;
       if (!data) throw new HttpError(500, `檔案 ${file.path} 遺失，請重新上傳。`);

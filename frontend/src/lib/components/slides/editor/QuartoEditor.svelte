@@ -22,6 +22,8 @@
   import Textarea from "#lib/components/ui/Textarea.svelte";
   import TextField from "#lib/components/ui/TextField.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
+  import { assistantPanel } from "#lib/agent/panel.svelte.ts";
+  import { pageContextFrom } from "#lib/agent/context.ts";
   import { debounce, isImage, languageFor, slideIndexAt } from "#lib/slides/source.ts";
   import type { AiDraftJob, DeckTemplate, PreviewInfo, SlideDetail, SourceFile, SourceResponse } from "#lib/slides/types.ts";
   import { copyText, deckUrl } from "#lib/slides/util.ts";
@@ -39,6 +41,18 @@
    */
   let { deck, studySlug }: { deck: SlideDetail; studySlug: string } = $props();
   const deckId = $derived(deck.project.id);
+
+  /** 「請 AI 找出問題」: the global assistant reads the render error (get_deck_render_error) and suggests a fix. */
+  async function askAiAboutRender() {
+    assistantPanel.open = true;
+    // Opening the panel may be restoring this tab's conversation: send into it, not into a race-created new one.
+    for (let i = 0; i < 40 && assistantPanel.session.loading; i++) await new Promise((r) => setTimeout(r, 100));
+    try {
+      await assistantPanel.session.send(t("slides.editor.preview.askAiPrompt"), { ...(pageContextFrom(page.url) ?? {}), deckId, studySlug }, "fix_render");
+    } catch (e) {
+      toasts.show((e as Error).message, "error");
+    }
+  }
 
   type Buffer = { text: string; saved: string; version: number };
   let data = $state<SourceResponse | null>(null);
@@ -663,7 +677,7 @@
         class="min-w-0 rounded-[22px] border border-line/70 bg-surface p-3 shadow-card lg:sticky lg:top-4 lg:flex-1 {mobileTab === 'preview' ? '' : 'max-lg:hidden'} {previewHidden ? 'lg:hidden' : ''} {splitting ? 'pointer-events-none' : ''}"
         aria-label={t("slides.editor.tab.preview")}
       >
-        <PreviewPane {preview} slide={cursorSlide} stale={previewStale} canRefresh={canEdit} notes onRefresh={() => void flushAll().then(requestPreview)} />
+        <PreviewPane {preview} slide={cursorSlide} stale={previewStale} canRefresh={canEdit} notes onRefresh={() => void flushAll().then(requestPreview)} onAskAi={canEdit ? askAiAboutRender : undefined} />
         <p class="mt-2.5 px-1 text-[12px] leading-relaxed text-ink-3">{t("slides.editor.preview.hint")}</p>
       </section>
       </div>

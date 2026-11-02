@@ -241,7 +241,7 @@ integration("workflow units", () => {
       const deepPage = writerOf(3);
       expect(deepPage).toContain("DEEPMARK");
       expect(deepPage).not.toContain("SHALLOWMARK");
-      expect(deepPage).toContain("第 3 頁用版型 A");
+      expect(deepPage).toContain("第 4 頁用版型 A");
       expect(deepPage).toContain("上一個單元「做法分類」");
       expect(writerOf(1)).not.toContain("這頁沒有指定來源論文");
       const cmp = writerOf(5);

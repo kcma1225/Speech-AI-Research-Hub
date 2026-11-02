@@ -1,10 +1,12 @@
 /**
- * `ai_library_import` (ai-worker, needs internet): after an import is confirmed, finds and stores open-access PDFs
- * for the imported papers that have none. One paper failing never fails the job; resumes from a checkpoint.
+ * `ai_library_import` (ai-worker, needs internet): after an import is confirmed, finds the published version of
+ * preprint-only papers (venue / DOI / year) and stores open-access PDFs for the imported papers that have none. One paper
+ * failing never fails the job; resumes from a checkpoint.
  */
 import { AiJobInputError, registerAiJob } from "../../ai-worker/registry.js";
 import { fetchOpenAccessPdf } from "../../lib/library/files.js";
 import { libraryService } from "../../lib/library/settings.js";
+import { preprintOnly, refreshPublished } from "../../lib/library/published.js";
 import { getPaper } from "../../lib/library/store.js";
 import { LIBRARY_IMPORT_JOB, type LibraryImportPayload, type LibraryImportResult } from "./kinds.js";
 
@@ -16,16 +18,27 @@ registerAiJob<LibraryImportPayload>(LIBRARY_IMPORT_JOB, {
     const ids = job.payload?.paperIds;
     if (!Array.isArray(ids) || !ids.length) throw new AiJobInputError("沒有要下載全文的文獻。");
     const cp = (checkpoint ?? {}) as Partial<LibraryImportResult> & { next?: number };
-    const out: LibraryImportResult = { stored: cp.stored ?? 0, notFound: cp.notFound ?? 0, failed: cp.failed ?? 0, skipped: cp.skipped ?? 0, total: ids.length };
+    const out: LibraryImportResult = { stored: cp.stored ?? 0, notFound: cp.notFound ?? 0, failed: cp.failed ?? 0, skipped: cp.skipped ?? 0, total: ids.length, published: cp.published ?? 0 };
+    const userId = job.payload.userId ?? job.createdBy;
     const { service } = await libraryService(db);
     for (let i = cp.next ?? 0; i < ids.length; i++) {
       if (signal.aborted) throw new Error("aborted");
       await progress("fetching_pdfs", (i / ids.length) * 100);
-      const paper = await getPaper(db, ids[i]!);
-      if (!paper || paper.pdf_key) out.skipped++;
+      let paper = await getPaper(db, ids[i]!);
+      if (paper && preprintOnly(paper)) {
+        try {
+          const r = await refreshPublished(db, service, paper, userId, { signal });
+          paper = r.paper;
+          if (r.status === "updated") out.published!++;
+        } catch (e) {
+          if (signal.aborted) throw e;
+          log.warn({ err: e, paperId: paper.id }, "library published-version lookup failed");
+        }
+      }
+      if (!paper || paper.pdf_key || job.payload.metadataOnly) out.skipped++;
       else {
         try {
-          const r = await fetchOpenAccessPdf(db, storage, service, paper, job.payload.userId ?? job.createdBy, { signal });
+          const r = await fetchOpenAccessPdf(db, storage, service, paper, userId, { signal });
           if (r.status === "stored") out.stored++;
           else if (r.status === "not_found") out.notFound++;
           else if (r.status === "exists") out.skipped++;

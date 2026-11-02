@@ -16,7 +16,7 @@ import { contentIssues, fixDiagrams, fixFigureRefs, type ContentRefs } from "../
 
 /** Titles of result / ablation pages (they must show the paper's numbers). */
 export const RESULTS_TITLE_RE = /\b(main results?|results?|ablations?|key figure|evaluation)\b|主要結果|實驗結果|結果|消融/i;
-import { visualFit } from "../../lib/slides/deck-layout.js";
+import { arrangeVisuals, visualFit } from "../../lib/slides/deck-layout.js";
 import { mermaidCellsToDiagrams } from "../../lib/slides/diagram/mermaid.js";
 import { listFiles, loadTree, saveBinary, saveText, sourceKeys } from "../../lib/slides/sources.js";
 import { imageFromBuffer, type ReviewImage } from "../../lib/vision/review.js";
@@ -41,7 +41,7 @@ ${DIAGRAM_SPEC_HELP}
   {"type":"bar|hbar|line|scatter|heatmap","title":"短標題","labels":["A","B"],"series":[{"name":"WER","data":[3.1,2.4]}],"y_label":"WER (%)","best":"min|max","unit":"%","source":"Table 2"}
   grouped bar = 多個 series；heatmap 用 "rows":[…],"labels":[欄],"values":[[…],[…]]。同一組數字只用一種呈現：圖表或表格，不要兩個都放；整份簡報同一組數字只畫一次。
   一張圖表只有一種單位：每張都寫 y_label（含單位，hbar 寫 x_label）或 unit；不同的量（例如 CCA 值與層數、WER 與參數量）不要放在同一個軸上，分成兩張圖表或改用表格。
-- 圖表與 diagram 放整頁寬最清楚；放進欄位（.column）時欄寬至少 55%，否則字會太小。
+- 圖表與 diagram 放整頁寬最清楚；放進欄位（.column）時欄寬至少 55%，否則字會太小。一頁最多一個大視覺：真的要放兩三張圖表時用 :::: {.columns} 並排（不要上下疊，上下疊一定超出投影片），或合成一張 grouped 圖表（單位相同時）。
 - 論文的圖或表（一頁最多一張）：![Fig. 2: 一句說明 (p. 4)](paper-fig:<頁碼>@<上緣>-<下緣>)，上下緣是該圖在頁面高度的比例（0–1，例如 0.08-0.52）；只用研究摘要「圖表清單」裡列出的圖，照清單那一行的語法整段複製（頁碼與位置不要改），圖說保留同一個「Fig. N」或「Table N」（系統用它精準找出圖的範圍）。投影片文字與講稿提到的圖號要和這頁放的圖一致。
 - 表格 ≤ 5 列 × 5 欄，最好的數字用 **粗體**；每一格都要有資料裡的數字或內容。投影片上絕對不要寫「資料未提供」「N/A」或空格子：沒有資料的列、欄或條列直接刪掉（需要說明時寫在講稿）。
 - 一般文字不要用 LaTeX 語法（寫 N=1000，不要 N{=}1000 或 $N=1000$）；圖表 JSON 已畫出標題時，下面不要再重複寫一次標題；diagram 不要寫 title。
@@ -137,7 +137,8 @@ export async function pruneGeneratedFiles(env: Pick<WorkflowEnv, "db" | "storage
 
 export async function materializeVisuals(env: WorkflowEnv, deck: DeckRef, body: string, ctx: Ctx): Promise<{ body: string; charts: number; diagrams: number; figures: number; problems: string[] }> {
   const problems: string[] = [];
-  let out = normalizeDiagrams(body);
+  // Stacked visuals side by side first, so every chart / diagram is sized for the column it gets (deck-layout.ts).
+  let out = arrangeVisuals(normalizeDiagrams(body)).body;
   // Orphans first (not referenced by the deck's current entry), so new files fit under the file limit.
   const tree = await loadTree(env.db, deck.deck_id);
   const current = (await env.db.query<{ content: string | null }>("SELECT content FROM deck_sources WHERE deck_id=$1 AND path=$2", [deck.deck_id, tree?.entry ?? "index.qmd"])).rows[0]?.content ?? "";

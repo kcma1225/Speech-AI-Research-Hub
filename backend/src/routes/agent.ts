@@ -41,7 +41,7 @@ export const pageContextSchema = z
 const createInput = z.object({ mode: z.enum(["chat", "interview"]).optional(), context: pageContextSchema, autopilot: z.boolean().optional(), title: z.string().trim().min(1).max(120).optional(), prereq_check: z.boolean().optional() });
 const patchInput = z.object({ title: z.string().trim().min(1).max(120).optional(), autopilot: z.boolean().optional(), memory_enabled: z.boolean().optional(), prereq_check: z.boolean().optional() });
 const messageInput = z
-  .object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema, intent: z.enum(["make_note"]).optional(), attachments: attachmentsInput.optional(), supersede: z.boolean().optional() })
+  .object({ text: z.string().trim().max(20000).optional(), answers: answersInput.optional(), context: pageContextSchema, intent: z.enum(["make_note", "fix_render"]).optional(), attachments: attachmentsInput.optional(), supersede: z.boolean().optional() })
   .refine((v) => !!v.answers || !!v.text, { message: "empty" });
 const queuedEditInput = z.object({ text: z.string().trim().min(1).max(20000).optional(), attachments: attachmentsInput.optional() });
 const queuedSendInput = z.object({ supersede: z.boolean().optional() });

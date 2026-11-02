@@ -95,7 +95,7 @@ export class ChatSession {
    * While a reply is running the server queues the message instead (`{queued}`; sent when the reply ends).
    * `supersede`: the user confirmed cancelling the pending consent cards (otherwise 409 `pending_decision`).
    */
-  async send(text: string, context: PageContext | null = null, intent?: "make_note", attachments: { kind: string; id: string; project_id?: string; version?: string }[] = [], opts: { supersede?: boolean } = {}) {
+  async send(text: string, context: PageContext | null = null, intent?: "make_note" | "fix_render", attachments: { kind: string; id: string; project_id?: string; version?: string }[] = [], opts: { supersede?: boolean } = {}) {
     this.sending = true;
     try {
       if (!this.id) await this.create({ context });

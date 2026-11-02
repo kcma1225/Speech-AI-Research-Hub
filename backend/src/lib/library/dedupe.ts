@@ -1,4 +1,4 @@
-import { arxivIdFromDoi, compact, doiKey, familyKey, normalizeArxivId, normalizeDoi, normalizeTitle, titleSimilarity } from "./normalize.js";
+import { arxivIdFromDoi, compact, deriveVenue, doiKey, familyKey, normalizeArxivId, normalizeDoi, normalizeTitle, titleSimilarity } from "./normalize.js";
 import type { PaperAuthor, PaperIds, PaperRecord } from "./types.js";
 
 /**
@@ -106,11 +106,13 @@ export function mergeRecords(primary: PaperRecord, other: PaperRecord): PaperRec
   // Keep the primary title unless it is ALL CAPS and the other one is not.
   const shouting = (t: string) => /\p{Lu}/u.test(t) && !/\p{Ll}/u.test(t);
   out.title = primary.title && !(shouting(primary.title) && other.title && !shouting(other.title)) ? primary.title : other.title || primary.title;
-  // A published version beats the preprint for type / container.
+  // A published version beats the preprint for type / container / venue / year (the proceedings' year, not the preprint's).
   if (primary.type === "article" && other.type !== "article" && other.containerTitle) {
     out.type = other.type;
     out.containerTitle = other.containerTitle;
-    out.venue = other.venue ?? out.venue;
+    out.venue = other.venue ?? deriveVenue(other) ?? other.containerTitle;
+    if (other.year) out.year = other.year;
+    for (const k of ["volume", "issue", "pages", "publisher"] as const) if (other[k]) out[k] = other[k] as never;
   }
   if (primary.doi && arxivIdFromDoi(primary.doi) && other.doi && !arxivIdFromDoi(other.doi)) out.doi = other.doi;
   if (!out.month && other.month && out.year === other.year) out.month = other.month;

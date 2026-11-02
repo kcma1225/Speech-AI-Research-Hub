@@ -104,3 +104,60 @@ export function visualFit(body: string, start: number, end: number): VisualFit {
   const h = Math.max(220, Math.min(600, SLIDE_H - BODY_TOP - BOTTOM - used - 8));
   return { w: Math.round(w), h: Math.round(h), column: !!colWidth };
 }
+
+/** A visual block of a slide body: a ```chart / ```diagram fence or an image line (paper figure, generated SVG). */
+const VISUAL_START_RE = /^```[ \t]*\{?\.?(?:chart|diagram)\}?[^\n]*$/;
+const IMAGE_LINE_RE = /^!\[[^\]\n]*\]\([^)\n]+\)(?:\{[^}\n]*\})?\s*$/;
+
+/**
+ * Two or more visuals stacked one under another on a slide (production 61666f10: three result charts on 「Main results」
+ * ran 463 px off the slide; shrinking the page could not save it) are put side by side: a run of consecutive top-level
+ * visuals (only blank lines between them, outside any ::: div) becomes `.columns` — 2 or 3 visuals one per column, 4
+ * as two columns of two. Visuals inside columns, or separated by text, are left as written. Pure.
+ */
+export function arrangeVisuals(body: string): { body: string; arranged: string[] } {
+  const arranged: string[] = [];
+  const parts = body.split(/^(?=## )/m);
+  const out = parts.map((part) => {
+    if (!part.startsWith("## ")) return part;
+    const lines = part.split("\n");
+    type Block = { from: number; to: number };
+    const blocks: Block[] = [];
+    let depth = 0;
+    for (let i = 1; i < lines.length; i++) {
+      const l = lines[i]!;
+      if (/^```/.test(l)) {
+        // Find the fence's end; a visual fence at depth 0 is a block.
+        let j = i + 1;
+        while (j < lines.length && !/^```\s*$/.test(lines[j]!)) j++;
+        if (depth === 0 && VISUAL_START_RE.test(l)) blocks.push({ from: i, to: Math.min(j, lines.length - 1) });
+        i = j;
+        continue;
+      }
+      if (/^:{3,}\s*[^:\s]/.test(l)) depth++;
+      else if (/^:{3,}\s*$/.test(l)) depth = Math.max(0, depth - 1);
+      else if (depth === 0 && IMAGE_LINE_RE.test(l.trim())) blocks.push({ from: i, to: i });
+    }
+    // Runs of consecutive visuals (blank lines only between them).
+    const runs: Block[][] = [];
+    for (const b of blocks) {
+      const run = runs.at(-1);
+      const prev = run?.at(-1);
+      if (run && prev && lines.slice(prev.to + 1, b.from).every((x) => !x.trim())) run.push(b);
+      else runs.push([b]);
+    }
+    const todo = runs.filter((r) => r.length >= 2 && r.length <= 4);
+    if (!todo.length) return part;
+    let next = [...lines];
+    for (const run of [...todo].reverse()) {
+      const chunks = run.map((b) => lines.slice(b.from, b.to + 1).join("\n"));
+      const cols = run.length === 4 ? [`${chunks[0]}\n\n${chunks[1]}`, `${chunks[2]}\n\n${chunks[3]}`] : chunks;
+      const width = Math.floor(100 / cols.length);
+      const block = [":::: {.columns}", ...cols.map((c) => `::: {.column width="${width}%"}\n${c}\n:::`), "::::"].join("\n");
+      next = [...next.slice(0, run[0]!.from), block, ...next.slice(run.at(-1)!.to + 1)];
+    }
+    arranged.push(lines[0]!.replace(/^##\s+/, "").replace(/\{[^}]*\}\s*$/, "").trim());
+    return next.join("\n");
+  });
+  return { body: out.join(""), arranged };
+}

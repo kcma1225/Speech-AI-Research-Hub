@@ -3,8 +3,9 @@ import { z } from "zod";
 import { badRequest, conflict, HttpError, isUniqueViolation, notFound } from "../../lib/http.js";
 import { SourceError } from "../../lib/library/http.js";
 import { authorDisplayName } from "../../lib/library/normalize.js";
-import { DEFAULT_SEARCH_SOURCES, parseIdentifier } from "../../lib/library/service.js";
+import { DEFAULT_SEARCH_SOURCES, isPublishedRecord, parseIdentifier } from "../../lib/library/service.js";
 import { autoFetchPdf, autoPdfText, type AutoPdfOutcome } from "../../lib/library/auto-pdf.js";
+import { preprintOnly, refreshPublished, venueLabel } from "../../lib/library/published.js";
 import { libraryService } from "../../lib/library/settings.js";
 import { addPaperToStudy, findPaperMatches, getPaper, insertPaper, likeEscape, mergeIntoPaper, type PaperRow } from "../../lib/library/store.js";
 import type { PaperRecord } from "../../lib/library/types.js";
@@ -16,7 +17,9 @@ import { clip, editStudy, isUuid, readStudy, scrub, studyRef, studyTarget, uuidA
 const PAPER_MISSING = "文獻不存在。";
 
 const authorsOf = (r: PaperRecord | undefined) => (r?.authors ?? []).slice(0, 6).map(authorDisplayName).filter(Boolean).join(", ") + ((r?.authors?.length ?? 0) > 6 ? " et al." : "");
-const compactPaper = (p: PaperRow) => ({ id: p.id, title: scrub(p.title), authors: authorsOf(p.record), year: p.year, venue: p.venue, doi: p.doi, arxiv_id: p.arxiv_id, has_pdf: !!p.pdf_key });
+/** What a preprint-only venue means (production 61666f10: 「arXiv」 was taken as 「not a conference paper」 and put on a deck). */
+export const PREPRINT_VENUE_NOTE = "venue 只有 arXiv（預印本紀錄）：這篇可能已正式發表在會議或期刊。要說出發表出處（會議／期刊、年份）前先用 refresh_paper_metadata 查證；查不到也只能說「文獻庫只有 arXiv 預印本紀錄」，不要說它不是會議論文。";
+const compactPaper = (p: PaperRow) => ({ id: p.id, title: scrub(p.title), authors: authorsOf(p.record), year: p.year, venue: p.venue, doi: p.doi, arxiv_id: p.arxiv_id, has_pdf: !!p.pdf_key, ...(preprintOnly(p) ? { venue_note: PREPRINT_VENUE_NOTE } : {}) });
 
 /** Per-user throttle for agent-initiated online lookups (shares the spirit of /library/search: 20/min). */
 const hits = new Map<string, number[]>();
@@ -114,8 +117,14 @@ registerAgentTool({
       throw sourceError(e);
     });
     const hitsOut = [];
+    // Lab papers the library knows only as a preprint while a hit is a published version (production 61666f10: the
+    // search found Interspeech 2024, the library kept 「arXiv」): the assistant is told to update the library record.
+    const outdated: { paper_id: string; title: string; library_venue: string | null; found: string }[] = [];
     for (const h of result.hits.slice(0, a.limit ?? 5)) {
       const m = (await findPaperMatches(ctx.db, h.record, 1))[0];
+      if (m && (m.level === "same" || m.level === "likely") && preprintOnly(m.paper) && isPublishedRecord(h.record) && !outdated.some((o) => o.paper_id === m.paper.id)) {
+        outdated.push({ paper_id: m.paper.id, title: clip(scrub(m.paper.title), 80), library_venue: m.paper.venue, found: [h.record.venue ?? h.record.containerTitle, h.record.year].filter(Boolean).join(" ") });
+      }
       hitsOut.push({
         title: scrub(h.record.title), authors: authorsOf(h.record), year: h.record.year ?? null, venue: h.record.venue ?? h.record.containerTitle ?? null,
         doi: h.record.doi ?? null, arxiv_id: h.record.arxivId ?? null, abstract: clip(scrub(h.record.abstract ?? ""), 600),
@@ -123,7 +132,13 @@ registerAgentTool({
         open_access: !!(h.record.oaPdfUrl || h.record.arxivId),
       });
     }
-    return { data: { query, hits: hitsOut, errors: result.errors, skipped: result.skipped }, untrusted: true, source: "線上搜尋結果" };
+    return {
+      data: {
+        query, hits: hitsOut, errors: result.errors, skipped: result.skipped,
+        ...(outdated.length ? { library_outdated: outdated, library_hint: "這些文獻庫裡的論文只記錄了預印本，搜尋結果顯示已正式發表：用 refresh_paper_metadata（paper_id）更新文獻庫的出處，再告訴使用者更新前後的差別。" } : {}),
+      },
+      untrusted: true, source: "線上搜尋結果",
+    };
   },
 });
 
@@ -194,7 +209,7 @@ registerAgentTool({
   titleEn: "Import paper",
   risk: "write",
   openWorld: true,
-  description: "Import a paper by identifier (DOI, arXiv id, ACL Anthology / OpenAlex / Semantic Scholar URL) into the lab library and add it to a study's reading list. An existing lab copy is reused (no duplicates). The open-access PDF is fetched automatically when available (result `pdf.status`: stored / exists / queued (background) / not_found / failed).",
+  description: "Import a paper by identifier (DOI, arXiv id, ACL Anthology / OpenAlex / Semantic Scholar URL) into the lab library and add it to a study's reading list. An existing lab copy is reused (no duplicates). The open-access PDF is fetched automatically when available (result `pdf.status`: stored / exists / queued (background) / not_found / failed). To correct the venue / year / DOI of a paper already in the library, use refresh_paper_metadata instead (it also works after the turn read untrusted content).",
   input: z.object({ study: studyRef, identifier: z.string().trim().min(3).max(300) }),
   summarize: (a) => `匯入論文 ${a.identifier}`,
   target: async (a, ctx) => ({ ...studyTarget(await editStudy(ctx, a.study)), url: undefined }),
@@ -210,6 +225,44 @@ registerAgentTool({
       },
       untrusted: true,
       links: [{ label: clip(out.paper.title, 60), url: studyUrl(access.study.slug, "papers"), kind: "paper" }],
+    };
+  },
+});
+
+registerAgentTool({
+  name: "refresh_paper_metadata",
+  title: "查證文獻出處",
+  titleEn: "Check where a paper was published",
+  risk: "write",
+  // Not open-world for the outbound guard: only the paper's own stored identifiers (arXiv id / DOI) and title leave
+  // the hub, nothing from the conversation, so it stays available after the turn read untrusted content (production
+  // 61666f10: import_paper with a DOI from search results was skipped and the library kept 「arXiv」).
+  description: "Look up where a lab paper was actually published (conference / journal, year, DOI) and update the lab library record. Use it when a paper's venue is arXiv / missing (`venue_note`) and the user asks which conference / year it is, wants it on a deck, or says the library is wrong. Only the paper's stored identifiers are sent to Semantic Scholar / Crossref. Result: `status` updated / unchanged / published (already had a published venue) / not_found, with before / after.",
+  input: z.object({ paper_id: uuidArg("Paper") }),
+  summarize: () => "查證文獻的正式發表出處",
+  async target(a, ctx) {
+    if (!isUuid(a.paper_id)) throw notFound(PAPER_MISSING);
+    const paper = await getPaper(ctx.db, a.paper_id);
+    if (!paper) throw notFound(PAPER_MISSING);
+    return { studyId: null, label: clip(paper.title, 60), url: `/library?paper=${paper.id}` };
+  },
+  async execute(a, ctx) {
+    if (!isUuid(a.paper_id)) throw notFound(PAPER_MISSING);
+    const paper = await getPaper(ctx.db, a.paper_id);
+    if (!paper) throw notFound(PAPER_MISSING);
+    throttle(ctx.user.id);
+    const { service } = await libraryService(ctx.db);
+    const r = await refreshPublished(ctx.db, service, paper, ctx.user.id, { signal: ctx.signal }).catch((e) => {
+      throw sourceError(e);
+    });
+    const after = { venue: r.paper.venue, year: r.paper.year, doi: r.paper.doi, label: venueLabel(r.paper) };
+    const message = r.status === "updated" ? `已更新文獻庫：${venueLabel({ venue: r.before.venue, year: r.before.year }) || "（沒有出處）"} → ${after.label}${after.doi ? `（DOI ${after.doi}）` : ""}。`
+      : r.status === "published" ? `文獻庫已記錄正式出處：${after.label}。`
+        : r.status === "unchanged" ? "找到的發表資料和文獻庫一致，沒有變更。"
+          : "Semantic Scholar／Crossref 找不到這篇的正式發表版本：文獻庫只有預印本紀錄。告訴使用者查不到，不要自己推定會議或年份；使用者知道正確出處可以在文獻庫自己修改。";
+    return {
+      data: { status: r.status, before: r.before, after, paper: compactPaper(r.paper), message },
+      links: [{ label: clip(r.paper.title, 60), url: `/library?paper=${r.paper.id}`, kind: "paper" }],
     };
   },
 });

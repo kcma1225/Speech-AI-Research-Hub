@@ -54,6 +54,10 @@ export type Requirement = {
     sections?: boolean;
     /** Set by the system, not said by the user (the language of an English message): never makes an edit deck-wide. */
     inferred?: boolean;
+    /** Where it must be (the player's page number: the cover is 1, -1 = the last page): checked on the slide, never the notes. */
+    page?: number;
+    /** The paper's venue and year (「哪個會議哪一年」): `terms` filled from the verified library record (workflows/venue.ts). */
+    venue?: boolean;
   };
   source: "request" | "guidance" | "conversation" | "standing" | "user";
   /** The user's own words this requirement rests on (verbatim, from `brief.user_words` / guidance); standing ones have none. */

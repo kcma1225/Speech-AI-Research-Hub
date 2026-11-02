@@ -1,4 +1,4 @@
-import { dedupeRecords, mergeRecords } from "./dedupe.js";
+import { compareRecords, dedupeRecords, mergeRecords } from "./dedupe.js";
 import { GrobidClient } from "./grobid.js";
 import { SourceError, sourceLabel, type LimiterName, type RateLimiter } from "./http.js";
 import { arxivIdFromDoi, authorFamily, normalizeArxivId, normalizeDoi } from "./normalize.js";
@@ -221,9 +221,18 @@ export function createLibraryService(config: LibraryConfig = {}) {
         if (!record && acl) add(await quiet(clients.acl.getById(acl, signal)), "acl");
         break;
       }
-      case "arxiv":
+      case "arxiv": {
         add(await clients.arxiv.getById(id.value, signal), "arxiv");
+        // The published version (proceedings / journal) of the preprint, when there is one: the library records where the
+        // paper actually appeared (production 61666f10: an Interspeech 2024 paper stayed 「arXiv」 and a deck said it was
+        // not a conference paper).
+        const base = record as PaperRecord | null;
+        if (enrich && base) {
+          const pub = await quiet(findPublishedVersion(base, { signal }));
+          if (pub) add(pub.record, pub.source);
+        }
         break;
+      }
       case "acl":
         add(await clients.acl.getById(id.value, signal), "acl");
         break;
@@ -239,6 +248,33 @@ export function createLibraryService(config: LibraryConfig = {}) {
     }
     const rec = record as PaperRecord | null;
     return rec ? { record: rec, sources, identifier: id } : null;
+  }
+
+  /**
+   * The published version of a preprint-only record (arXiv): Semantic Scholar by the arXiv id / DOI (the same work, so
+   * its DOI is trusted) → Crossref by that DOI for the proceedings / journal metadata; else a Crossref bibliographic
+   * match of the title (≥ 0.95, compatible first author, not a posted preprint). Only the record's own identifiers and
+   * title leave the hub. Null when the record is already published or no published version is found.
+   */
+  async function findPublishedVersion(r: PaperRecord, opts: { signal?: AbortSignal } = {}): Promise<{ record: PaperRecord; source: SourceName } | null> {
+    if (isPublishedRecord(r)) return null;
+    const signal = opts.signal;
+    const arxivId = normalizeArxivId(r.arxivId) ?? arxivIdFromDoi(r.doi);
+    const s2 = arxivId || r.doi || r.ids?.s2 ? await quiet(clients.s2.getForRecord({ ...r, ...(arxivId ? { arxivId } : {}) }, signal)) : null;
+    const s2Doi = s2?.record.doi && !arxivIdFromDoi(s2.record.doi) ? s2.record.doi : null;
+    if (s2Doi) {
+      const cr = await quiet(clients.crossref.getByDoi(s2Doi, signal));
+      if (cr && isPublishedRecord(cr)) return { record: arxivId ? { ...cr, arxivId } : cr, source: "crossref" };
+      if (isPublishedRecord(s2!.record)) return { record: s2!.record, source: "s2" };
+    }
+    if (!r.title) return null;
+    const m = await quiet(clients.crossref.matchBibliographic(r.title, authorFamily(r.authors[0]) || undefined, { minScore: 0.95, signal }));
+    // (Crossref maps posted-content — a preprint server's copy — to type "article".)
+    if (!m || !isPublishedRecord(m.record) || m.record.type === "article") return null;
+    const same = compareRecords(r, m.record);
+    if (same.level !== "same" && same.level !== "likely") return null;
+    if (r.year && m.record.year && Math.abs(r.year - m.record.year) > 2) return null;
+    return { record: arxivId ? { ...m.record, arxivId } : m.record, source: "crossref" };
   }
 
   async function findOpenAccessPdf(r: PaperRecord, opts: { titleMatch?: boolean; signal?: AbortSignal } = {}): Promise<OpenAccessPdf | null> {
@@ -341,6 +377,7 @@ export function createLibraryService(config: LibraryConfig = {}) {
     searchPapers,
     relatedPapers,
     resolveIdentifier,
+    findPublishedVersion,
     findOpenAccessPdf,
     extractPdfRecord,
     downloadPdf: (url: string, opts: DownloadPdfOptions = {}): Promise<DownloadedPdf> =>
@@ -349,3 +386,10 @@ export function createLibraryService(config: LibraryConfig = {}) {
 }
 
 export type LibraryService = ReturnType<typeof createLibraryService>;
+
+/** A record of a published version: a DOI that is not arXiv's and a venue / container that is not arXiv. */
+export function isPublishedRecord(r: Pick<PaperRecord, "doi" | "venue" | "containerTitle">): boolean {
+  if (!r.doi || arxivIdFromDoi(r.doi) || /^10\.48550\//i.test(r.doi)) return false;
+  const where = r.venue ?? r.containerTitle ?? "";
+  return !/arxiv|preprint|corr\b/i.test(where);
+}

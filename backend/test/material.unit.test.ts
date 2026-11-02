@@ -163,7 +163,7 @@ describe("cover page (301b6e1a: pages 1 and 2 had the same title)", () => {
     expect(coverRepeat(parseSlides(body), full)).toContain("和封面的標題一樣");
     expect(runChecks([{ id: "slide_count", params: { expected: 2, no_cover_repeat: true } }], body, { full })[0]!.ok).toBe(false);
     expect(runChecks([{ id: "slide_count", params: { expected: 2 } }], body, { full })[0]!.ok).toBe(true);
-    expect(coverRepeat(parseSlides("## A\n\nx\n\n## A\n\ny\n"), null)).toContain("第 1 頁和第 2 頁");
+    expect(coverRepeat(parseSlides("## A\n\nx\n\n## A\n\ny\n"), null)).toContain("第 2 頁和第 3 頁");
     expect(coverRepeat(parseSlides("## 研究背景\n\nx\n"), full)).toBeNull();
   });
 });

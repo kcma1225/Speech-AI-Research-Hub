@@ -54,7 +54,7 @@ describe("original pages preserved (revise / expand)", () => {
     const rule = slides.keepRule(words, [fields], src, "expand")!;
     const r = CHECKS.pages_kept!("", { params: { originals: rule.originals, ordered: true, keep_titles: true }, data: { outline: PRODUCTION } });
     expect(r.ok).toBe(false);
-    expect(r.detail).toContain("第 6 頁「下週與要問」");
+    expect(r.detail).toContain("第 7 頁「下週與要問」");
     expect(r.detail).toContain("「目前進度」→「Table 1 現況與本週關鍵結果（對帳）」");
   });
 
@@ -89,7 +89,7 @@ describe("original pages preserved (revise / expand)", () => {
     expect(matchOriginals(tr.originals, english, { translate: true }).at).toEqual([0, 1, 2, 3, 4, 5]);
     // One page short: the claimed `from`s find the dropped one.
     const short = numbered([page("Problem", [], 1), page("Hotword methods", [], 2), page("Blocked", [], 4), page("Idea card", [], 5), page("Next steps", [], 6)]);
-    expect(keptIssues(tr.originals, short, matchOriginals(tr.originals, short, { translate: true })).join()).toContain("第 3 頁「目前進度」");
+    expect(keptIssues(tr.originals, short, matchOriginals(tr.originals, short, { translate: true })).join()).toContain("第 4 頁「目前進度」");
   });
 
   it("the deck check: the plan's kept pages all present, in order", () => {

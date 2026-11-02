@@ -31,7 +31,7 @@ describe("grounding: names not in the sources", () => {
     const text = deck(["Main result", "- HuBERT wins", "WavLM 也被拿來比較，結果更好，這裡說明完整的比較細節與數字。"]);
     const r = runChecks([{ id: "grounded_names" }], text, { refs: { terms: TERMS } })[0]!;
     expect(r.ok).toBe(false);
-    expect(r.detail).toMatch(/第 1 頁「Main result」.*WavLM/);
+    expect(r.detail).toMatch(/第 2 頁「Main result」.*WavLM/);
     expect(runChecks([{ id: "grounded_names" }], text, null)[0]!.ok).toBe(true);
     // Student-owned pages (the student's own answer, or study data under autopilot) are not the paper's claims.
     expect(runChecks([{ id: "grounded_names", params: { allow_titles: ["Main result"] } }], text, { refs: { terms: TERMS } })[0]!.ok).toBe(true);
@@ -146,7 +146,7 @@ describe("charts", () => {
     const issues = chartIssues([slide("R1", chart(ok)), slide("R2", chart(noAxis), "", 2), slide("R3", chart({ ...ok, type: "hbar", x_label: "WER (%)" }), "", 3)]);
     expect(issues.map((i) => [i.index, /座標軸/.test(i.issue) ? "axis" : /同一組數字/.test(i.issue) ? "dup" : "?"])).toEqual([[2, "axis"], [3, "dup"]]);
     const dup = chartIssues([slide("R1", chart({ ...ok, labels: ["A", "B", "C"], series: [{ name: "WER", data: [5.2, 4.1, 3.3] }] })), slide("R2", chart({ ...ok, labels: ["x", "y", "z"], series: [{ name: "WER", data: [3.3, 5.2, 4.1] }] }), "", 2)]);
-    expect(dup[0]!.issue).toContain("第 1 頁「R1」");
+    expect(dup[0]!.issue).toContain("第 2 頁「R1」");
   });
 });
 

@@ -108,8 +108,8 @@ describe("checks on the whole artifact", () => {
     const [r] = runChecks([{ id: "req_language", params: { language: "en" } }], "", { full: en });
     expect(r!.ok).toBe(false);
     expect(r!.detail).toContain("封面標題");
-    expect(r!.detail).toContain("第 2 頁「Methods」內文");
-    expect(r!.detail).toContain("第 3 頁「Next steps」講稿");
+    expect(r!.detail).toContain("第 3 頁「Methods」內文");
+    expect(r!.detail).toContain("第 4 頁「Next steps」講稿");
     const fixed = en.replace("Zipformer + RNNT 動態熱詞：學術現況", "Dynamic Hotwording for Zipformer + RNN-T").replace("編碼器", "Encoder").replace("下週要做的事情。", "Next week's plan.");
     expect(runChecks([{ id: "req_language", params: { language: "en" } }], fixed, null)[0]!.ok).toBe(true);
     expect(frontMatter(fixed)!.title).toBe("Dynamic Hotwording for Zipformer + RNN-T");
@@ -147,10 +147,10 @@ describe("checks on the whole artifact", () => {
     expect(runChecks([{ id: "req_pages", params: { min: 5 } }], body, null)[0]!.detail).toContain("實際 3 頁");
     expect(runChecks([{ id: "req_include", params: { topics: [{ name: "動態熱詞", aliases: ["shallow fusion"] }] } }], body, null)[0]!.ok).toBe(true);
     expect(runChecks([{ id: "req_include", params: { topics: [{ name: "WFST" }] } }], body, null)[0]!.detail).toContain("WFST");
-    expect(runChecks([{ id: "req_exclude", params: { terms: [{ name: "卡住" }], scope: "page" } }], body, null)[0]!.detail).toContain("第 3 頁");
+    expect(runChecks([{ id: "req_exclude", params: { terms: [{ name: "卡住" }], scope: "page" } }], body, null)[0]!.detail).toContain("第 4 頁");
     const fields = runChecks([{ id: "req_fields", params: { items: ["Shallow fusion", "TCPGen", "CLAS"], fields: [{ name: "架構", aliases: ["Architecture"] }, { name: "Pros" }, { name: "Cons", aliases: ["缺點", "Limitations"] }] } }], body, null)[0]!;
     expect(fields.ok).toBe(false);
-    expect(fields.detail).toContain("「Shallow fusion」（第 1 頁）缺少：Cons");
+    expect(fields.detail).toContain("「Shallow fusion」（第 2 頁）缺少：Cons");
     expect(fields.detail).toContain("找不到「CLAS」");
     expect(fields.detail).not.toContain("「TCPGen」");
   });

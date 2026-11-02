@@ -60,7 +60,13 @@ export type RunBundle = {
 /** An assistant tool call as stored (`tool_calls`): status, the result text the model saw, the user's deny reason. */
 /** `quiz_keys_shown`: an ask_user quiz card whose arguments (what the SPA receives) carry an answer-key field (computed by the loader). */
 export type StoredToolCall = { id: string; tool: string; status: string; summary?: string | null; result_text?: string | null; deny_reason?: string | null; created_at?: string; finished_at?: string | null; quiz_keys_shown?: boolean | null };
-export type ConversationBundle = { conversation: { id: string; study_id?: string | null }; messages: StoredMessage[]; runs?: StoredRun[]; toolCalls?: StoredToolCall[] };
+/** The conversation's AI suggestions on deck files, the decks' previews and the current text of those files (deck rules). */
+export type StoredDeckActivity = {
+  suggestions: { id: string; deck_id: string; file_id: string; title: string; source: string; status: string; created_at: string; decided_at: string | null; added: string[] }[];
+  previews: { deck_id: string; status: string; created_at: string }[];
+  files: { id: string; content: string | null }[];
+};
+export type ConversationBundle = { conversation: { id: string; study_id?: string | null }; messages: StoredMessage[]; runs?: StoredRun[]; toolCalls?: StoredToolCall[]; deck?: StoredDeckActivity };
 
 export type Finding = { invariant: string; severity: Severity; run_id: string | null; conversation_id: string | null; message: string; evidence: Record<string, unknown> };
 type Hit = { message: string; evidence: Record<string, unknown>; severity?: Severity };
@@ -297,6 +303,46 @@ export function setupAnswers(b: RunBundle): string[] {
   }
   return [...out];
 }
+
+// ---------------------------------------------------------------- page positions (own parser, independent of requirements.ts)
+
+const ZH_NUM: Record<string, number> = { 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+const pageNum = (s: string) => (/^\d+$/.test(s) ? Number(s) : s.length === 1 ? ZH_NUM[s] ?? 0 : s.startsWith("十") ? 10 + (ZH_NUM[s[1]!] ?? 0) : (ZH_NUM[s[0]!] ?? 0) * 10 + (ZH_NUM[s[2] ?? ""] ?? 0));
+const PLACE_VERB = /要有|要放|要寫|要加|放(?:上|在|到)?(?![棄心假大鬆下])|加(?:上|在|到|入)|寫(?:上|在|出)|標(?:示|明|出)|顯示|列出|註明|哪個?(?:會議|期刊)|(?:頁|封面)\s*(?:加|寫|補)|\b(?:show|put|add|include)\b/i;
+const REMOVE_VERB = /刪|拿掉|去掉|移除|不要/;
+/** 「第一頁要有…」「低一頁要有…」(typo) 「封面放…」「最後一頁加上…」 → the page (player numbering; -1 = last). */
+export function placementsOf(text: string): { page: number; clause: string }[] {
+  const out: { page: number; clause: string }[] = [];
+  for (const clause of text.split(/[。！？!?；;\n]+|[，,](?=\s*(?:而且|還有|另外|然後|我要|我是要))/)) {
+    if (!PLACE_VERB.test(clause) || REMOVE_VERB.test(clause) || /講稿|notes/i.test(clause)) continue;
+    // 「第一頁加，不是第二頁」: the page after 不是 is the one ruled out.
+    const m = /(?<![降減壓最])(?<!(?:不是|而非|並非|不要)\s*(?:放|在)?\s*)(?:第|低|弟)\s*(\d{1,2}|[一二兩三四五六七八九十]{1,3})\s*(?:頁|張投影片)/.exec(clause);
+    const page = m ? pageNum(m[1]!) : /封面|首頁|cover|title slide|first slide/i.test(clause) ? 1 : /最後一頁|last slide/i.test(clause) ? -1 : 0;
+    if (page) out.push({ page, clause: clause.trim() });
+  }
+  return out;
+}
+/** The player's page of an offset in a deck source (front matter = the cover = 1). */
+export function deckPageAt(text: string, at: number): number {
+  const fm = /^---\n[\s\S]*?\n---\n?/.exec(text);
+  if (fm && at < fm[0].length) return 1;
+  return Math.max(1, (text.slice(0, at).match(/^## /gm) ?? []).length + (fm && /^title:/m.test(fm[0]) ? 1 : 0));
+}
+const bigramDice = (a: string, b: string) => {
+  const g = (s: string) => {
+    const t = s.toLowerCase().replace(/[\s*_`>#:|：，,。.、()（）「」-]+/g, "");
+    const out = new Set<string>();
+    for (let i = 0; i + 1 < t.length; i++) out.add(t.slice(i, i + 2));
+    return out;
+  };
+  const x = g(a);
+  const y = g(b);
+  if (!x.size || !y.size) return 0;
+  let n = 0;
+  for (const k of x) if (y.has(k)) n++;
+  return (2 * n) / (x.size + y.size);
+};
+const NOT_CONFERENCE_RE = /(?:並?不是|並非|非)(?:一篇)?(?:正式的?)?(?:會議|研討會)論文|not a (?:conference|peer[- ]reviewed) paper/i;
 
 // ---------------------------------------------------------------- conversation: the task's turns
 
@@ -1007,8 +1053,9 @@ export const INVARIANTS: Invariant[] = [
       const titles = body ? [...body.matchAll(/^## (.+)$/gm)].map((m) => m[1]!.replace(/\{[^}]*\}\s*$/, "").trim()) : (b.run.plan?.outline ?? []).map((o) => o.title ?? "");
       const where = body ? "簡報" : "大綱";
       const hits: Hit[] = [];
-      if (cover && titles[0] && norm(titles[0]) === norm(cover)) hits.push({ message: `${where}第 1 頁「${clip(titles[0], 60)}」和封面標題一樣（封面重複）`, evidence: { cover, first: titles[0] } });
-      for (let i = 1; i < titles.length; i++) if (norm(titles[i]) && norm(titles[i]) === norm(titles[i - 1])) hits.push({ message: `${where}第 ${i} 頁和第 ${i + 1} 頁標題相同「${clip(titles[i], 60)}」`, evidence: { titles: titles.slice(Math.max(0, i - 1), i + 1) } });
+      // The player's page numbers: the cover is page 1, the first `## ` page 2.
+      if (cover && titles[0] && norm(titles[0]) === norm(cover)) hits.push({ message: `${where}第 2 頁「${clip(titles[0], 60)}」和封面標題一樣（封面重複）`, evidence: { cover, first: titles[0] } });
+      for (let i = 1; i < titles.length; i++) if (norm(titles[i]) && norm(titles[i]) === norm(titles[i - 1])) hits.push({ message: `${where}第 ${i + 1} 頁和第 ${i + 2} 頁標題相同「${clip(titles[i], 60)}」`, evidence: { titles: titles.slice(Math.max(0, i - 1), i + 1) } });
       return hits;
     },
   },
@@ -1242,6 +1289,135 @@ export const INVARIANTS: Invariant[] = [
         hits.push({ message: `工作流程在等回答（「${clip(w.question, 60)}」）時，使用者在對話裡打了「${clip(msgText(m), 60)}」，工作流程卻沒有收到任何回答`, evidence: { message_seq: m.seq, at: m.created_at, question: clip(w.question, 160), status: b.run.status } });
       }
       return hits;
+    },
+  },
+  // ------------------------------------------------------------ positions, venues and the deck build (production 61666f10)
+  {
+    id: "req.placement_kept", category: "requirements", scope: "run", severity: "critical",
+    title: "使用者說「第 N 頁／封面／最後一頁要有…」時，要求保留那個位置（同音錯字「低一頁」也算）",
+    reads: "brief.user_words + user guidance (page position + a content verb), state.requirements / plan.requirements (params.page or the position in the text)",
+    check: (b) => {
+      const words = [...(b.run.brief?.user_words ?? []), ...userGuidance(b.run).map((g) => g.text!)];
+      const asked = words.flatMap(placementsOf);
+      if (!asked.length) return [];
+      const reqs = [...(((b.run.state?.requirements as StoredRequirement[] | undefined) ?? [])), ...(b.run.plan?.requirements ?? [])];
+      if (!reqs.length) return [];
+      const kept = (page: number) => reqs.some((r) => r.params?.page === page || (page === 1 ? /封面|第\s*(?:1|一)\s*頁/.test(r.text ?? "") : page === -1 ? /最後一頁/.test(r.text ?? "") : new RegExp(`第\\s*${page}\\s*頁`).test(r.text ?? "")));
+      return asked.filter((a) => !kept(a.page)).map((a) => ({ message: `使用者要求「${clip(a.clause, 60)}」指定了${a.page === 1 ? "第 1 頁（封面）" : a.page === -1 ? "最後一頁" : `第 ${a.page} 頁`}，但要求裡沒有這個位置`, evidence: { clause: clip(a.clause, 120), page: a.page, requirements: reqs.map((r) => clip(r.text, 60)).slice(0, 8) } }));
+    },
+  },
+  {
+    id: "deck.cover_citation", category: "deliverable", scope: "run", severity: "medium",
+    title: "論文報告簡報的封面寫出論文出處（第一作者 et al., 會議 年份；Lab-Hub 模板）",
+    reads: "playbook slides, state.mode paper_report, state.venue_facts.label, state.deck.last_written (front matter subtitle)",
+    check: (b) => {
+      const st = (b.run.state ?? {}) as { mode?: string; venue_facts?: { label?: string; venue?: string | null; year?: number | null }; deck?: { last_written?: string } };
+      if (b.run.playbook !== "slides" || st.mode !== "paper_report" || !st.venue_facts?.label || !st.deck?.last_written) return [];
+      if (!["done", "partial"].includes(b.run.status)) return [];
+      const fm = /^---\n([\s\S]*?)\n---/.exec(st.deck.last_written)?.[1] ?? "";
+      const cover = fm.split("\n").filter((l) => /^(?:title|subtitle):/.test(l)).join(" ");
+      const want = [st.venue_facts.venue, st.venue_facts.year ? String(st.venue_facts.year) : ""].filter((x): x is string => !!x);
+      const missing = want.filter((w) => !cover.toLowerCase().includes(w.toLowerCase()));
+      return missing.length ? [{ message: `封面沒有寫出論文出處「${st.venue_facts.label}」`, evidence: { cover: clip(cover, 160), missing } }] : [];
+    },
+  },
+  {
+    id: "deck.placement_followed", category: "assistant", scope: "conversation", severity: "high",
+    title: "使用者指定頁面（第 N 頁／封面）時，助理的簡報建議就改在那一頁",
+    reads: "user messages with one page position + a content verb; the same turn's suggest_deck_edit results (`pages`: where the new text landed)",
+    check: (b) => {
+      const hits: Hit[] = [];
+      const ms = b.messages;
+      // The page asked last in the conversation stands until the user names another one.
+      let asked: { page: number; clause: string; seq: number } | null = null;
+      for (let i = 0; i < ms.length; i++) {
+        const m = ms[i]!;
+        if (m.role === "user") {
+          const p = placementsOf(msgText(m));
+          if (p.length === 1) asked = { page: p[0]!.page, clause: p[0]!.clause, seq: m.seq };
+          continue;
+        }
+        if (!asked || m.role !== "tool") continue;
+        for (const r of blocksOf(m)) {
+          if (r.type !== "tool_result") continue;
+          const text = typeof r.content === "string" ? r.content : JSON.stringify(r.content ?? "");
+          if (!/tool="suggest_deck_edit"/.test(text) || /status="error"/.test(text)) continue;
+          const pages = /"pages":\[([\d,\s-]*)\]/.exec(text)?.[1];
+          if (pages === undefined) continue;
+          const list = pages.split(",").map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x !== 0);
+          if (list.length && asked.page > 0 && !list.includes(asked.page)) hits.push({ message: `使用者要放在${asked.page === 1 ? "第 1 頁（封面）" : `第 ${asked.page} 頁`}（「${clip(asked.clause, 40)}」），助理的簡報建議卻改在第 ${list.join("、")} 頁`, evidence: { user_message: asked.seq, tool_message: m.seq, pages: list } });
+        }
+      }
+      return hits;
+    },
+  },
+  {
+    id: "assistant.preprint_not_conference", category: "grounding", scope: "conversation", severity: "high",
+    title: "沒有查證不說論文「不是會議論文」（文獻庫只有 arXiv 不代表沒有正式發表）",
+    reads: "assistant messages and suggest_deck_edit / suggest_note_edit inputs",
+    check: (b) => {
+      const hits: Hit[] = [];
+      for (const m of b.messages) {
+        if (m.role !== "assistant") continue;
+        const texts = [msgText(m), ...toolUses(m).filter((u) => /^suggest_(?:deck|note)_edit$|^create_note$/.test(u.name ?? "")).map((u) => JSON.stringify(u.input ?? {}))];
+        for (const t of texts) {
+          const hit = NOT_CONFERENCE_RE.exec(t);
+          if (hit) {
+            hits.push({ message: `助理說論文「${hit[0]}」（文獻庫只有 arXiv 紀錄時不能這樣推定，要先查證正式出處）`, evidence: { message: m.seq, text: clip(t.slice(Math.max(0, hit.index - 40), hit.index + 60), 140) } });
+            break;
+          }
+        }
+      }
+      return hits;
+    },
+  },
+  {
+    id: "deck.render_failure_followed_up", category: "assistant", scope: "conversation", severity: "high",
+    title: "接受 AI 的簡報建議後編譯失敗，這件事要回到那個對話（通知 + 自動請助理修）",
+    reads: "the conversation's AI suggestions on deck files (decided_at), the deck's previews after them, notices of kind deck_render_failed",
+    check: (b) => {
+      const d = b.deck;
+      if (!d) return [];
+      const hits: Hit[] = [];
+      const notices = b.messages.filter((m) => m.role === "notice" && JSON.stringify(m.content ?? "").includes("deck_render_failed"));
+      for (const s of d.suggestions.filter((x) => x.source === "ai" && (x.status === "applied" || x.status === "partial") && x.decided_at)) {
+        const at = Date.parse(s.decided_at!);
+        const next = d.previews.filter((p) => p.deck_id === s.deck_id && Date.parse(p.created_at) >= at - 5_000 && Date.parse(p.created_at) <= at + 15 * 60_000).sort((x, y) => Date.parse(x.created_at) - Date.parse(y.created_at));
+        // The first render after the edit was accepted is the one it decides.
+        const failed = next[0]?.status === "failed" ? next[0] : null;
+        if (!failed) continue;
+        const told = notices.some((n) => JSON.stringify(n.content ?? "").includes(s.deck_id) && Date.parse(n.created_at ?? "") >= Date.parse(failed.created_at) - 5_000);
+        if (!told) hits.push({ message: `接受了 AI 的建議「${clip(s.title, 40)}」後簡報編譯失敗，對話裡沒有通知，也沒有請助理修`, evidence: { suggestion: s.id, deck: s.deck_id, failed_at: failed.created_at } });
+      }
+      return hits;
+    },
+  },
+  {
+    id: "deck.moved_content_left_behind", category: "assistant", scope: "conversation", severity: "high",
+    title: "把內容搬到另一頁時，舊位置的那段也要拿掉（不會同一段出現在兩頁）",
+    reads: "the conversation's AI suggestions on one deck file (added text), the file's current text (where each added text sits)",
+    check: (b) => {
+      const d = b.deck;
+      if (!d) return [];
+      const hits: Hit[] = [];
+      const ai = d.suggestions.filter((x) => x.source === "ai" && x.status !== "rejected");
+      for (let i = 0; i < ai.length; i++) {
+        for (let j = i + 1; j < ai.length; j++) {
+          const a = ai[i]!;
+          const c = ai[j]!;
+          if (a.file_id !== c.file_id) continue;
+          const text = d.files.find((f) => f.id === a.file_id)?.content ?? "";
+          for (const x of a.added) {
+            for (const y of c.added) {
+              if (x.length < 8 || y.length < 8 || !text.includes(x) || !text.includes(y) || bigramDice(x, y) < 0.5) continue;
+              const px = deckPageAt(text, text.indexOf(x));
+              const py = deckPageAt(text, text.indexOf(y));
+              if (px !== py) hits.push({ message: `「${clip(c.title, 30)}」把內容放到第 ${py} 頁，先前「${clip(a.title, 30)}」放在第 ${px} 頁的相似內容還在`, evidence: { earlier: a.id, later: c.id, pages: [px, py], text: clip(x, 80) } });
+            }
+          }
+        }
+      }
+      return hits.slice(0, 4);
     },
   },
   // ------------------------------------------------------------ grounding

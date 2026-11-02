@@ -35,6 +35,7 @@ import {
 import { getAgentSettings } from "./settings.js";
 import { applyQuizAnswer } from "./quiz.js";
 import { applyConceptCheckAnswer, parseCardValue, rewindSessions, tagPending } from "./tutor.js";
+import { EDIT_REFUSED } from "../lib/artifacts/build-check.js";
 import { completionReview, failureNote, failureStreak, FAILURE_NOTE_AT, FAILURE_STOP, planReminder, REPEAT_NOTE, type RunCall } from "./guards.js";
 import type { Plan } from "./tools/plan.js";
 import { inlineToolImages, storeToolImages, toolResultContent, type StoredToolImage } from "./images.js";
@@ -57,8 +58,11 @@ export const SUPERSEDED_DENIED = "使用者確認取消這個操作，改提了�
 export const SUPERSEDED_CANCELLED = "使用者確認取消這一步，改提了其他要求；這個操作沒有執行。";
 /** Attachment fields of a built turn (stored list + taint labels of content the caller did not author). */
 const turnAttachments = (p?: PreparedAttachments) => ({ attachments: p?.stored.length ? p.stored : (null as StoredAttachment[] | null), taint: p?.taint ?? [] });
-/** Quick actions of the chat toolbar: the shown text stays the user's, the model also gets the task instructions. */
-export type TurnIntent = "make_note";
+/**
+ * Quick actions: the shown text stays the user's, the model also gets the task instructions. `fix_render`: a deck that
+ * stopped compiling (the preview's 「請 AI 找出問題」, or the automatic follow-up of lib/slides/render-followup.ts).
+ */
+export type TurnIntent = "make_note" | "fix_render";
 
 export type ModelCall = (req: RoleChatRequest, ctx: { userId: string; signal: AbortSignal; onRoute?: (info: { model: string }) => void }) => AsyncIterable<ChatEvent>;
 export type FastCall = (req: RoleChatRequest, ctx: { userId: string }) => Promise<string>;
@@ -418,7 +422,7 @@ export class AgentRuntime {
     const extra = input.text?.trim() ?? "";
     if (!input.answers) {
       if (!extra) throw new HttpError(400, "訊息不能是空的（最多 20 000 字）。");
-      const task: TextBlock[] = input.intent ? [{ type: "text", text: intentText(input.intent) }] : [];
+      const task: TextBlock[] = input.intent ? [{ type: "text", text: intentText(input.intent, ctx) }] : [];
       return { blocks: [...head, ...(input.prepared?.blocks ?? []), { type: "text" as const, text: extra }, ...task], text: extra, answers: null as StoredAnswers | null, ...turnAttachments(input.prepared) };
     }
     const call = (await client.query<ToolCallRow & { mseq: string; hidden_by: string | null }>(
@@ -737,7 +741,7 @@ export class AgentRuntime {
       const ctx = input.context !== undefined ? await this.resolveContext(input.context) : ((target.page_context as PageContext | null) ?? null);
       let turn: Awaited<ReturnType<AgentRuntime["buildTurn"]>>;
       // A quick action (「整理成筆記」) keeps its task instructions when edited or regenerated.
-      const intent = input.intent ?? (target.content.some((b) => b.type === "text" && b.text.startsWith('<task kind="make_note"')) ? ("make_note" as const) : undefined);
+      const intent = input.intent ?? (["make_note", "fix_render"] as const).find((k) => target.content.some((b) => b.type === "text" && b.text.startsWith(`<task kind="${k}"`)));
       // Attachments are kept unless the edit sends a new list; re-resolved (fresh content, access re-checked).
       const refs = input.attachments ?? (target.attachments ?? []).map(refOf);
       const prepared = refs.length && !target.answers ? await prepareAttachments(this.app, user, conv.id, refs) : undefined;
@@ -1341,11 +1345,25 @@ export class AgentRuntime {
    */
   private async turnFacts(conversationId: string) {
     const lastUser = (await this.db.query<{ seq: string | null }>("SELECT max(seq) AS seq FROM agent_messages WHERE conversation_id=$1 AND role='user' AND hidden_by IS NULL", [conversationId])).rows[0]?.seq ?? "0";
-    const rows = (await this.db.query<{ tool: string; risk: RunCall["risk"]; status: string; step: number; args: unknown; edited_args: unknown; result: { data?: { next?: { term?: string } | null } } | null }>(
-      `SELECT tc.tool, tc.risk, tc.status, tc.step, tc.args, tc.edited_args, CASE WHEN tc.tool='next_concept' THEN tc.result END AS result FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
+    const rows = (await this.db.query<{ tool: string; risk: RunCall["risk"]; status: string; step: number; args: unknown; edited_args: unknown; result: { data?: { next?: { term?: string } | null } } | null; refused: boolean | null; unmet: boolean | null }>(
+      `SELECT tc.tool, tc.risk, tc.status, tc.step, tc.args, tc.edited_args, CASE WHEN tc.tool='next_concept' THEN tc.result END AS result,
+              (tc.status = 'failed' AND position($3 in coalesce(tc.result_text, '')) > 0) AS refused,
+              (tc.status = 'done' AND jsonb_typeof(tc.result->'data'->'unmet_requirements') = 'array') AS unmet
+         FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
         WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL AND m.seq > $2 ORDER BY m.seq, tc.position`,
-      [conversationId, lastUser],
+      [conversationId, lastUser, EDIT_REFUSED],
     )).rows;
+    // The artifact an edit call targets (the edit gate's refusals are settled per artifact: a later accepted edit of
+    // the same one fixes it).
+    const target = (a: unknown) => {
+      const x = (a ?? {}) as Record<string, unknown>;
+      return [x.deck_id, x.note_id, x.project_id, x.file_id, x.path].filter((v) => typeof v === "string").join("|");
+    };
+    for (const r of rows as (typeof rows[number] & RunCall)[]) {
+      r.target = target(r.edited_args ?? r.args);
+      r.refused = !!r.refused;
+      r.unmet = !!r.unmet;
+    }
     const earlierWrite = ((await this.db.query(
       `SELECT 1 FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
         WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL AND m.seq < $2 AND tc.risk <> 'read' AND tc.status='done' LIMIT 1`,

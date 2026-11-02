@@ -266,11 +266,13 @@ export default async function libraryImports(app: FastifyInstance) {
       }
       let jobId: string | null = null;
       const targets = result.papers.map((p) => p.paperId);
-      if (input.fetchPdfs && targets.length && batch.source !== "pdf") {
-        const missing = (await client.query<{ id: string }>("SELECT id FROM papers WHERE id = ANY($1::uuid[]) AND pdf_key IS NULL LIMIT $2", [targets, MAX_PDF_FETCH])).rows.map((r) => r.id);
-        if (missing.length) {
-          jobId = await enqueueJob(client, LIBRARY_IMPORT_JOB, { batchId: id, paperIds: missing, userId: user.id } satisfies LibraryImportPayload, user.id);
-        }
+      const fetchPdfs = input.fetchPdfs && batch.source !== "pdf";
+      const missing = fetchPdfs && targets.length ? (await client.query<{ id: string }>("SELECT id FROM papers WHERE id = ANY($1::uuid[]) AND pdf_key IS NULL LIMIT $2", [targets, MAX_PDF_FETCH])).rows.map((r) => r.id) : [];
+      // Preprint-only entries (an arXiv BibTeX entry, a Zotero preprint): the job also looks up where they were published.
+      const preprints = targets.length ? (await client.query<{ id: string }>("SELECT id FROM papers WHERE id = ANY($1::uuid[]) AND (venue IS NULL OR venue ~* 'arxiv|preprint|corr') AND (arxiv_id IS NOT NULL OR doi IS NOT NULL) LIMIT $2", [targets, MAX_PDF_FETCH])).rows.map((r) => r.id) : [];
+      const jobPapers = [...new Set([...missing, ...preprints])];
+      if (jobPapers.length) {
+        jobId = await enqueueJob(client, LIBRARY_IMPORT_JOB, { batchId: id, paperIds: jobPapers, userId: user.id, ...(fetchPdfs ? {} : { metadataOnly: true }) } satisfies LibraryImportPayload, user.id);
       }
       const counts = { added: result.added, linked: result.linked, skipped: result.skipped, total: batch.items.length };
       await client.query(
@@ -285,7 +287,7 @@ export default async function libraryImports(app: FastifyInstance) {
           metadata: { count: result.papers.length, source: batch.source, format: batch.format },
         });
       }
-      return { result, jobId, fileKey: batch.file_key };
+      return { result, jobId, pdfQueued: missing.length > 0, fileKey: batch.file_key };
     });
     if (out.fileKey) await app.storage.delete(out.fileKey).catch(() => {});
     const batch = (await getImportBatch(app.db, id))!;
@@ -293,7 +295,7 @@ export default async function libraryImports(app: FastifyInstance) {
       batch: batchView(batch),
       result: out.result,
       jobId: out.jobId,
-      pdfFetch: input.fetchPdfs ? (out.jobId ? "queued" : "none") : null,
+      pdfFetch: input.fetchPdfs ? (out.pdfQueued ? "queued" : "none") : null,
     };
   });
 

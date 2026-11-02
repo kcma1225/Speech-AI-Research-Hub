@@ -216,9 +216,11 @@
               <ul class="flex flex-col gap-0.5">{#each w.plan.writes as wr, i (i)}<li class="break-words">· {wr.label}</li>{/each}</ul>
             {/if}
             {#if w.plan.outline?.length}
+              <!-- A deck counts the cover as page 1, as the player, the steps and the checks do. -->
               <ol class="flex flex-col gap-1">
+                {#if w.playbook === "slides"}<li class="min-w-0 break-words"><span class="tabular-nums text-ink-3">1.</span> <span class="text-ink-3">{t("wf.coverPage")}</span></li>{/if}
                 {#each w.plan.outline as o (o.n)}
-                  <li class="min-w-0 break-words"><span class="tabular-nums text-ink-3">{o.n}.</span> <span class="text-ink">{o.title}</span>{#if o.points.length}<span class="text-ink-3"> — {o.points.join("；")}</span>{/if}</li>
+                  <li class="min-w-0 break-words"><span class="tabular-nums text-ink-3">{w.playbook === "slides" ? o.n + 1 : o.n}.</span> <span class="text-ink">{o.title}</span>{#if o.points.length}<span class="text-ink-3"> — {o.points.join("；")}</span>{/if}</li>
                 {/each}
               </ol>
             {/if}

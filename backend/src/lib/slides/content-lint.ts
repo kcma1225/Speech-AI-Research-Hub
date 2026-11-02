@@ -26,7 +26,8 @@ export type RefFigure = { label: string; page: number; top: number; bottom: numb
 export type ContentRefs = { terms?: string[]; figures?: RefFigure[]; training?: string; outline?: { title: string; points: string[] }[] };
 export type SlideIssue = { index: number; title: string; issue: string };
 
-const where = (s: LintSlide) => (s.index ? `第 ${s.index} 頁「${s.title}」` : "");
+/** The player's page number (the cover is page 1; workflows/checks.ts `slidePage`). */
+const where = (s: LintSlide) => (s.index ? `第 ${s.index + 1} 頁「${s.title}」` : "");
 
 // ---------------------------------------------------------------- names (grounding)
 
@@ -491,4 +492,4 @@ export function contentIssues(slides: LintSlide[], refs: ContentRefs = {}): Slid
   return [...(refs.terms ? nameIssues(slides, refs.terms) : []), ...figureIssues(slides, refs.figures ?? []), ...diagramIssues(slides, refs), ...chartIssues(slides)];
 }
 
-export const formatIssues = (issues: SlideIssue[]) => issues.map((i) => `${i.index ? `第 ${i.index} 頁「${i.title}」` : ""}${i.index ? "：" : ""}${i.issue}`);
+export const formatIssues = (issues: SlideIssue[]) => issues.map((i) => `${i.index ? `第 ${i.index + 1} 頁「${i.title}」` : ""}${i.index ? "：" : ""}${i.issue}`);

@@ -28,7 +28,15 @@ export function truncateMiddle(text: string, max: number): string {
   return `${text.slice(0, headEnd)}${marker(tailStart - headEnd)}${text.slice(tailStart)}`;
 }
 
-export type RunCall = { tool: string; risk: "read" | "write" | "destructive"; status: string; step: number };
+export type RunCall = {
+  tool: string; risk: "read" | "write" | "destructive"; status: string; step: number;
+  /** The edit gate refused this edit (lib/artifacts/build-check.ts) — the artifact would not have compiled / parsed. */
+  refused?: boolean;
+  /** The artifact an edit targets (deck / note / project / file ids, path). */
+  target?: string;
+  /** The edit went through but does not meet a requirement of the user's turn (lib/artifacts/turn-requirements.ts). */
+  unmet?: boolean;
+};
 
 /** Failed calls at the end of the run's call list (denials and cancellations do not count: the user chose them). */
 export function failureStreak(calls: RunCall[]): number {
@@ -111,6 +119,19 @@ export function completionReview(f: CompletionFacts): string | null {
         ? `你的回答提到「${claim}」，但這一輪的寫入操作沒有成功（${failed.map((c) => `${c.tool}：${c.status === "denied" ? "使用者拒絕" : c.status === "cancelled" ? "已取消" : "失敗"}`).join("、")}）。`
         : `你的回答提到「${claim}」，但這一輪沒有執行任何寫入工具，所以什麼都還沒有被建立或修改。`,
     );
+  }
+  // An edit the gate refused (it would have broken the artifact's build) that no later edit of the same artifact in
+  // this turn replaced: the turn may not end as if it went through (production 61666f10 class: broken edits).
+  const refused = f.calls.filter((c, i) => c.refused && !f.calls.slice(i + 1).some((d) => d.tool === c.tool && d.target === c.target && d.status === "done"));
+  if (refused.length) {
+    issues.push(`這一輪有 ${refused.length} 個修改（${[...new Set(refused.map((c) => c.tool))].join("、")}）因為會讓成果編譯／解析失敗而沒有建立，之後也沒有成功的修正版。依工具結果的錯誤修正後再提一次；真的做不到就在回答中說明哪個修改沒有建立、為什麼。`);
+  }
+  // The last edit of an artifact in this turn misses a requirement of the user's message (a position, a language…).
+  const lastEdits = new Map<string, RunCall>();
+  for (const c of f.calls) if (c.target && c.status === "done") lastEdits.set(`${c.tool}|${c.target}`, c);
+  const unmet = [...lastEdits.values()].filter((c) => c.unmet);
+  if (unmet.length) {
+    issues.push(`這一輪最後的修改（${[...new Set(unmet.map((c) => c.tool))].join("、")}）沒有符合使用者這一輪的要求（見工具結果的 unmet_requirements）：再提一個修正，或在回答中說明哪一條沒有做到、為什麼。`);
   }
   if (f.teaching && !teaches(f.text, f.teaching)) {
     issues.push(`你在這一輪用 next_concept 取得了要教的概念「${f.teaching}」，但回答裡沒有講解它。現在就在回答中直接講解（依 next_concept 給的方式：直覺說明、這篇論文為什麼需要它），講完可以邀請使用者用一句話說明，然後結束這一輪；不要只更新計畫或說明進度。`);

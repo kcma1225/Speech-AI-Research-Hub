@@ -9,7 +9,12 @@ import { packTree, sourceKeys } from "./sources.js";
  * Quick previews of an in-app source tree: job kind `slide_preview` (worker: Quarto → HTML only, no PDF or pages,
  * claimed after every other slide job). Rows in `deck_previews`; the finalizer keeps only the newest ready one.
  */
-export type SlidePreviewPayload = { deckId: string; previewId: string; sourceKey: string; entry: string; outputPrefix: string; /** Also capture `_hub/shots/` (AI layout review). */ shots?: boolean };
+export type SlidePreviewPayload = {
+  deckId: string; previewId: string; sourceKey: string; entry: string; outputPrefix: string;
+  /** Also capture `_hub/shots/` (AI layout review). */ shots?: boolean;
+  /** An edit-gate dry run (lib/artifacts/build-check.ts): no preview row; the checker reads the output and deletes it. */
+  dryRun?: boolean;
+};
 export type PreviewShots = { count: number; total?: number; width?: number; height?: number; truncated?: boolean; error?: string };
 export type SlidePreviewResult = { entryHtml: string; fileCount: number; quartoVersion: string | null; shots?: PreviewShots };
 

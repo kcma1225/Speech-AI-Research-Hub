@@ -298,7 +298,7 @@ export function normalizePages(p: string | undefined): string | undefined {
   return s || undefined;
 }
 
-const VENUES: [RegExp, string][] = [
+export const VENUES: [RegExp, string][] = [
   [/\binterspeech\b|\beurospeech\b/i, "Interspeech"],
   [/\bicassp\b|international conference on acoustics,? speech,? and signal processing/i, "ICASSP"],
   [/\basru\b|automatic speech recognition and understanding/i, "ASRU"],

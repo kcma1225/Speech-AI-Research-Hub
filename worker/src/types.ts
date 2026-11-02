@@ -54,7 +54,12 @@ export type SlideRenderResult = {
  * `slide_preview` (quick HTML-only render of an in-app source tree). Keys: `slides/<deckId>/preview/<previewId>/source.zip`
  * and `…/output/`. Keep in sync with backend/src/lib/slides/preview.ts.
  */
-export type SlidePreviewPayload = { deckId: string; previewId: string; sourceKey: string; entry: string; outputPrefix: string; /** Also capture `_hub/shots/` (AI layout review). */ shots?: boolean };
+export type SlidePreviewPayload = {
+  deckId: string; previewId: string; sourceKey: string; entry: string; outputPrefix: string;
+  /** Also capture `_hub/shots/` (AI layout review). */ shots?: boolean;
+  /** An edit-gate dry run (backend lib/artifacts/build-check.ts): rendered like any preview; the backend reads and deletes it. */
+  dryRun?: boolean;
+};
 export type PreviewShots = { count: number; total?: number; width?: number; height?: number; truncated?: boolean; error?: string };
 export type SlidePreviewResult = { entryHtml: string; fileCount: number; quartoVersion: string | null; shots?: PreviewShots };
 

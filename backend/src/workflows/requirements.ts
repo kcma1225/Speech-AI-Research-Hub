@@ -8,12 +8,14 @@
  * `persistStanding` touch the DB.
  */
 import { createHash } from "node:crypto";
-import { CHECKS, parseSlides, runChecks } from "./checks.js";
+import { CHECKS, parseSlides, runChecks, slidePage } from "./checks.js";
 import { dataBlock, parseJson, wordsBlock } from "./llm.js";
 import type { WorkflowEnv } from "./env.js";
 import { baseWords, userGuidance, type Brief } from "./brief.js";
 import { MATERIAL_REF_RE } from "./material.js";
 import type { Criterion, Requirement, RequirementTerm, RequirementType, StepRow } from "./types.js";
+import { venueFacts, withVenueTerms } from "./venue.js";
+import { deckSourceView, unitAt, unitLabel, type ArtifactView } from "../lib/artifacts/view.js";
 
 export type ArtifactKind = "deck" | "doc" | "latex";
 /** Requirement types that are properties of the artifact: persisted on it and inherited by later edits (「沿用」). */
@@ -148,7 +150,7 @@ function languageViolationsAll(text: string, language: "en" | "zh", allow: strin
 
 const PART_LABEL: Record<Violation["part"], string> = { front: "", title: "標題", body: "內文", notes: "講稿" };
 export const whereOf = (v: Violation, slides = true) =>
-  v.part === "front" ? v.title : v.page === 0 ? "開頭" : `${slides ? `第 ${v.page} 頁` : `第 ${v.page} 段`}「${v.title}」${PART_LABEL[v.part]}`;
+  v.part === "front" ? v.title : v.page === 0 ? "開頭" : `${slides ? `第 ${slidePage(v.page)} 頁` : `第 ${v.page} 段`}「${v.title}」${PART_LABEL[v.part]}`;
 
 /** Pages (slide numbers) a language problem sits on; 0 = the cover. */
 export const violationPages = (vs: Violation[]) => [...new Set(vs.map((v) => v.page))].sort((a, b) => a - b);
@@ -448,6 +450,60 @@ export function detectExclude(text: string): Requirement["params"] | null {
   return { scope: "page", ...(uniq.length ? { pages: uniq } : {}), terms: names.map((t) => ({ name: t })) };
 }
 
+// ---------------------------------------------------------------- placement (a page position) and the paper's venue
+
+/**
+ * Homophone typos of 第 before a page number (「簡報低一頁要有這是哪個會議哪一年的」 = 第一頁; production 61666f10: the
+ * requirement became 「至少要有一頁」 and the position was lost). Not 「降低一頁」「減少一頁」「最低一頁」.
+ */
+export const fixPageTypos = (text: string) => text.replace(/(?<![降減壓最])[低弟](\s*[一二兩三四五六七八九十\d]{1,3}\s*(?:頁|張投影片|張(?![圖表照])))/g, "第$1");
+
+const COVER_RE = /封面|首頁|標題頁|\b(?:cover|title)\s+(?:slide|page)\b|\bthe\s+cover\b|\bon\s+the\s+cover\b|\bfirst\s+(?:slide|page)\b/i;
+const PLACE_VERB_RE = /要有|要放|要寫|要加|放(?:上|在|到)?(?![棄心假大鬆下])|加(?:上|在|到|入)|寫(?:上|在|出)|標(?:示|明|出|上|註)|註明|顯示|列出|呈現|要能看到|看得到|(?:頁|封面)\s*(?:加|寫|補)|\b(?:show|include|put|add|display|mention|list)\b/i;
+/** 「放第一頁，不是第二頁」「not on page 2」: the page that is ruled out is not the position. */
+const NOT_PAGE_RE = new RegExp(`(?:不是|而非|並非|不要|別)\\s*(?:放|在|加)?(?:在|到)?\\s*(?:${PAGE_REF_RE.source})|\\bnot\\s+(?:on\\s+)?(?:${PAGE_REF_RE.source})`, "gi");
+/** 「哪個會議哪一年」「發表在哪」「which conference」: the user asks for the paper's venue / year. */
+export const VENUE_ASK_RE = /(?:哪(?:個|一個|一|間|場)?|什麼)\s*(?:會議|期刊|研討會|conference|journal|venue)|(?:會議|期刊|研討會)[^。，,\n]{0,8}(?:哪一?年|年份|年度)|發表(?:在|於)?(?:哪|什麼)|發表(?:的)?(?:會議|期刊|年份|出處|資訊|來源)|(?:which|what)\s+(?:conference|venue|journal)|published\s+(?:at|in)\s+(?:which|what)|\bvenue\b[^.。\n]{0,16}(?:\byear\b|年份|年度)|(?:會議|期刊|研討會)(?:名稱)?\s*(?:跟|和|與|及|、)\s*(?:年份|年度|發表年)/i;
+
+export type Placement = { page: number | null; venue: boolean; content: string; quote: string };
+
+/** 「第 1 頁（封面）」「第 3 頁」「最後一頁」. */
+export const placeLabel = (page: number) => (page === 1 ? "第 1 頁（封面）" : pageLabel(page));
+
+/**
+ * What the user wants on a given page (「第一頁要有…」「封面放…」「最後一頁加上…」) and / or the paper's venue (「這是哪個
+ * 會議哪一年」). Page numbers are the player's (the cover is page 1). Removals, per-item fields and speaker-note asks are
+ * other rules'. Pure.
+ */
+export function detectPlacements(text: string): Placement[] {
+  const out: Placement[] = [];
+  for (const clause of segmentClauses(fixPageTypos(text))) {
+    if (detectExclude(clause) || detectPerItemFields(clause) || NOTES_WORD_RE.test(clause)) continue;
+    const refs = pageRefs(clause.replace(NOT_PAGE_RE, " "));
+    const page = refs.length === 1 ? refs[0]! : !refs.length && COVER_RE.test(clause) ? 1 : null;
+    const venue = VENUE_ASK_RE.test(clause);
+    if (page === null && !venue) continue;
+    if (page !== null && !venue && !PLACE_VERB_RE.test(clause)) continue;
+    // What must be there: the clause without the positions (the ruled-out one included) and the asking words.
+    const content = clause.replace(NOT_PAGE_RE, " ").replace(PAGE_REF_RE, " ").replace(COVER_RE, " ")
+      .replace(/^[\s，,]*(?:我是要|我要你|我想要|我希望|我要|請你|請|幫我|麻煩)?\s*(?:簡報|投影片|slides?|deck)?(?:的|裡|上)?\s*/i, "")
+      .replace(/[，,\s]+$/, "").replace(/\s+/g, " ").trim();
+    out.push({ page, venue, content: content || clause, quote: clause.slice(0, 200) });
+  }
+  return out;
+}
+
+/** The requirement of a placement (decks: a page position; any artifact: the venue). */
+function placementRequirement(p: Placement, kind: ArtifactKind | undefined): Omit<Requirement, "id" | "source"> | null {
+  const deck = kind !== "doc" && kind !== "latex";
+  if (p.venue) {
+    const where = deck ? (p.page !== null ? `${placeLabel(p.page)}的畫面上` : "投影片畫面上（只寫在講稿不算）") : "";
+    return { type: "other", text: `${where}標示這篇論文發表的會議／期刊與年份（以查證過的正式出處為準）`, params: { venue: true, ...(deck && p.page !== null ? { page: p.page, part: "slides" as const } : {}) }, quote: p.quote };
+  }
+  if (!deck || p.page === null) return null;
+  return { type: "other", text: `${placeLabel(p.page)}的畫面上要有：${p.content}（講稿不算）`, params: { page: p.page, part: "slides" }, quote: p.quote };
+}
+
 // ---------------------------------------------------------------- listed parts, distinctions, material
 
 /** A list item that only names a part of the deck (「包含封面和講稿」 extends a language requirement, not a section list). */
@@ -509,7 +565,8 @@ const SUBJECT_CLAUSE_RE = /^(?:(?:關於|有關|針對)\s*)?(?:〈[^〉]{2,80}�
 const NOTES_WORD_RE = /講稿|逐字稿|口稿|講者備註|備註|speaker notes?|\bnotes\b|\bscript\b/i;
 const NOTES_ACTION_RE = /拿掉|拿走|去掉|刪掉|刪除|移除|不要|別再|加上|加入|補上|改成|改為|改寫|重寫|精簡|縮短|\bremove\b|\bdelete\b|\bdrop\b|\btake\b[^.\n]{0,60}\bout\b|get rid of|\bno longer\b|\bdon'?t\b|\badd\b|\brewrite\b|\bshorten\b/i;
 
-export function detectRequirements(text: string, opts: { pages?: unknown; kind?: ArtifactKind } = {}): Omit<Requirement, "id" | "source">[] {
+export function detectRequirements(raw: string, opts: { pages?: unknown; kind?: ArtifactKind } = {}): Omit<Requirement, "id" | "source">[] {
+  const text = fixPageTypos(raw);
   const out: Omit<Requirement, "id" | "source">[] = [];
   const q = (re: RegExp) => { const c = clauseOf(text, re); return c ? { quote: c } : {}; };
   const termsEn = TERMS_EN_RE.test(text);
@@ -589,6 +646,11 @@ export function detectRequirements(text: string, opts: { pages?: unknown; kind?:
   const named = subj.map((c) => /〈([^〉]+)〉|「([^」]+)」/.exec(c)).find((m) => m)?.slice(1).find(Boolean);
   if (subj.length && named) out.push({ type: "other", text: `主題是〈${named}〉`, quote: subj.join(" ").slice(0, 200) });
   if (PROFESSOR_RE.test(text) && !out.some((r) => r.type === "audience")) out.push({ type: "audience", text: "對象是教授：像向教授報告一樣，重點與證據清楚，能拿來討論與做決定", quote: clauseOf(text, PROFESSOR_RE) });
+  // 「第一頁要有這是哪個會議哪一年的」: the content, the page it must be on (checked on the slide, not in the notes).
+  for (const pl of detectPlacements(text)) {
+    const r = placementRequirement(pl, opts.kind);
+    if (r && !out.some((o) => o.quote && normClause(o.quote) === normClause(pl.quote))) out.push(r);
+  }
   const ex = detectExclude(text);
   if (ex) out.push({ type: "exclude", text: `刪掉：${[...(ex.pages ?? []).map(pageLabel), ...(ex.terms ?? []).map((t) => `「${t.name}」`)].join("、")}`, params: ex, ...q(/刪掉|刪除|拿掉|去掉|移除|不要|remove|delete|drop/i) });
   return out;
@@ -644,6 +706,16 @@ export function cleanRequirement(raw: unknown, source: Requirement["source"], ki
     if (!params.fields.length) return text ? { type: "other", text, source } : null;
   }
   if (type === "tone" && (p.part === "notes" || p.part === "slides")) params.part = p.part;
+  // A position (player numbering, -1 = the last page) / the paper's venue: kept on any judged type.
+  if (kind === "deck" && typeof p.page === "number" && Number.isInteger(p.page) && p.page !== 0 && p.page >= -20 && p.page <= 80 && !["language", "page_count", "exclude"].includes(type)) {
+    params.page = p.page;
+    params.part = "slides";
+  }
+  if (p.venue === true) {
+    params.venue = true;
+    const t = terms(p.terms);
+    if (t.length) params.terms = t;
+  }
   if (!text && type !== "language" && type !== "page_count") return null;
   return { type, text: text || (type === "language" ? `成果全部用${LANGUAGE_LABEL[params.language!]}` : pageText(params)), ...(Object.keys(params).length ? { params } : {}), source };
 }
@@ -714,6 +786,11 @@ export function requirementCriteria(reqs: Requirement[], kind: ArtifactKind, all
     if (r.type === "include_topics" && p.topics?.length) return { id, kind: "check", text, check: { id: "req_include", params: { topics: p.topics, judge_fallback: true, ...doc } } };
     if (r.type === "exclude" && p.terms?.length) return { id, kind: "check", text, check: { id: "req_exclude", params: { terms: p.terms, scope: kind === "deck" ? p.scope ?? "page" : "content", ...doc } } };
     if (r.type === "per_item_fields" && p.fields?.length && p.items?.length) return { id, kind: "check", text, check: { id: "req_fields", params: { items: p.items, fields: p.fields, judge_fallback: true, ...doc } } };
+    // The paper's venue with the verified label (workflows/venue.ts): its words on the page (the cover = front matter).
+    if (p.venue && p.terms?.length && kind !== "latex") return { id, kind: "check", text, check: { id: "req_venue", params: { terms: p.terms, ...(kind === "deck" && typeof p.page === "number" ? { page: p.page } : {}), ...doc } } };
+    // A position without checkable words: judged on that page's slide only (production 61666f10: the judge accepted page 2's notes).
+    if (kind === "deck" && typeof p.page === "number") return { id, kind: "judge", text: `${text}（只看${placeLabel(p.page)}投影片畫面上的文字${p.page === 1 ? "：封面看 front matter 的 title / subtitle" : ""}；寫在其他頁或講稿裡都不算）` };
+    if (kind === "deck" && p.venue) return { id, kind: "judge", text: `${text}（要在投影片畫面上，寫在講稿裡不算）` };
     return { id, kind: "judge", text };
   });
 }
@@ -739,6 +816,11 @@ export function sectionTitleHit(title: string, t: RequirementTerm): boolean {
   });
 }
 
+/** A deck's view for the position checks: the rendered one the playbook passed (`data.view`), else the source's. */
+const viewOf = (full: string, data: unknown): ArtifactView => {
+  const v = (data as { view?: ArtifactView } | null)?.view;
+  return v?.units?.length ? v : deckSourceView(full);
+};
 const fullOf = (text: string, data: unknown) => {
   const full = (data as { full?: unknown } | null)?.full;
   return typeof full === "string" && full.trim() ? full : text;
@@ -792,10 +874,40 @@ const REQUIREMENT_CHECKS: typeof CHECKS = {
     for (const t of tlist(params.terms)) {
       for (const u of units) {
         const hay = normTerm(params.scope === "content" ? `${u.title}\n${visibleText(u.body)}` : u.title);
-        if (termHit(hay, t)) hits.push(`${slides ? `第 ${u.page} 頁` : `第 ${u.page} 段`}「${u.title}」（${t.name}）`);
+        if (termHit(hay, t)) hits.push(`${slides ? `第 ${slidePage(u.page)} 頁` : `第 ${u.page} 段`}「${u.title}」（${t.name}）`);
       }
     }
     return hits.length ? { ok: false, detail: `要求刪掉的內容還在：${hits.slice(0, 8).join("、")}。` } : { ok: true, detail: "要求刪掉的內容都已刪掉" };
+  },
+  /** The venue / year words on the page the user named (cover = the front matter's title / subtitle), never the notes. */
+  req_venue(text, { params, data }) {
+    const full = fullOf(text, data);
+    const want = tlist(params.terms);
+    const page = typeof params.page === "number" ? params.page : null;
+    let hay = "";
+    let where = "";
+    if (params.doc) {
+      hay = visibleText(full.replace(/<!--[\s\S]*?-->/g, " "));
+      where = "成果";
+    } else {
+      // The shared view (lib/artifacts/view.ts): what the player shows when rendered, else the source's visible text;
+      // speaker notes are never part of a page's visible text.
+      const view = viewOf(full, data);
+      if (page === null) {
+        hay = view.units.map((u) => u.visible).join("\n");
+        where = "投影片畫面上";
+      } else {
+        const u = unitAt(view, page);
+        hay = u?.visible ?? "";
+        where = u ? unitLabel(view, u) : `${pageLabel(page)}（沒有這一頁）`;
+      }
+    }
+    const h = normTerm(hay);
+    const missing = want.filter((t) => !termHit(h, t) && !h.includes(normTerm(t.name)));
+    const label = want.map((t) => t.name).join(" ");
+    return missing.length
+      ? { ok: false, detail: `${where}沒有寫出發表出處「${label}」（缺少：${missing.map((t) => t.name).join("、")}；寫在講稿或其他頁不算）。` }
+      : { ok: true, detail: `${where}有發表出處「${label}」` };
   },
   req_fields(text, { params, data }) {
     const { units, slides } = unitsOf(fullOf(text, data), !!params.doc);
@@ -810,7 +922,7 @@ const REQUIREMENT_CHECKS: typeof CHECKS = {
       }
       const hay = normTerm(own.map((u) => `${u.title}\n${visibleText(u.body)}`).join("\n"));
       const miss = fields.filter((f) => !termHit(hay, f));
-      if (miss.length) problems.push(`「${item}」（${own.map((u) => `${slides ? "第" : "第"} ${u.page} ${slides ? "頁" : "段"}`).join("、")}）缺少：${miss.map((f) => f.name).join("、")}`);
+      if (miss.length) problems.push(`「${item}」（${own.map((u) => `第 ${slides ? slidePage(u.page) : u.page} ${slides ? "頁" : "段"}`).join("、")}）缺少：${miss.map((f) => f.name).join("、")}`);
     }
     return problems.length ? { ok: false, detail: `每項要有的內容不完整：${problems.slice(0, 8).join("；")}。` } : { ok: true, detail: "每一項都有要求的內容" };
   },
@@ -850,6 +962,19 @@ export function requirementsBlock(reqs: Requirement[], audience: "producer" | "v
     if (r.type === "include_topics") return `- 一定要涵蓋：${(p.topics ?? []).map((t) => t.name).join("、")}（${r.text}）。`;
     if (r.type === "exclude") return `- 要刪掉／不要出現：${[...(p.pages ?? []).map((n) => `原本${pageLabel(n)}（頁碼含封面）`), ...(p.terms ?? []).map((t) => `「${t.name}」`)].join("、") || r.text}。`;
     if (r.type === "per_item_fields") return `- 每個${p.item_kind ?? "項目"}${p.items?.length ? `（${p.items.join("、")}）` : ""}都要有，而且用清楚的小標或欄位標出：${(p.fields ?? []).map((f) => f.name).join("、")}。`;
+    if (p.venue) {
+      const label = (p.terms ?? []).map((t) => t.name).join(" ");
+      const where = typeof p.page === "number" ? `${placeLabel(p.page)}的投影片畫面上` : "投影片畫面上（不是只寫在講稿）";
+      if (p.page === 1) return `- ${r.text}。封面（第 1 頁）由系統依文獻資料產生，已經寫上${label ? `「${label}」` : "出處"}；內容頁不必重複，也不要寫出和它矛盾的出處。`;
+      return label
+        ? `- 發表出處：${where}寫出「${label}」（照這裡寫，不要自己推定別的會議或年份）。`
+        : `- 發表出處：${where}寫出這篇論文發表的會議／期刊與年份，只用研究資料裡的出處；資料只有 arXiv 時寫「arXiv 預印本」，不要說它不是會議論文。`;
+    }
+    if (typeof p.page === "number") {
+      return p.page === 1
+        ? `- ${r.text}。第 1 頁是封面（由系統依 front matter 產生）：內容頁不用處理這一條。`
+        : `- ${r.text}。頁碼含封面：封面是第 1 頁，第一個「## 」投影片是第 2 頁${p.page === -1 ? "；最後一頁是最後一個「## 」投影片" : ""}；要寫在投影片畫面上，講稿不算。`;
+    }
     return `- ${r.text}`;
   });
   const head = audience === "producer"
@@ -967,6 +1092,7 @@ const EXTRACT_SYSTEM = [
   "同一種「每個方法／每篇論文都要…」的欄位（優缺點、架構圖、出處論文、會議或期刊…）合成一個 per_item_fields；主題或聚焦範圍（例如在某些模型架構下）是 include_topics；要用哪些來源、要統計或列出什麼（例如參考文獻庫、統計有哪幾種方法）寫成 other。",
   "只收使用者明確說出的要求（這次的要求、補充指示、最近幾輪對話中關於這份成果的要求）；不要加入一般性的品質期望，也不要替使用者決定研究方向或時程。",
   "type：language（成果語言；只在明確要求時）、page_count（明確的頁數或範圍）、include_topics（一定要涵蓋的主題，topics 每個附 aliases：中英文說法與縮寫）、exclude（要刪掉的頁面或內容，terms 附 aliases；刪頁面 scope=page）、per_item_fields（每個方法／模型要有的欄位，fields 附 aliases；使用者有列出項目時填 items）、audience（對象）、tone（語氣）、length（篇幅）、format（成果形式，例如 LaTeX、表格）、other。",
+  "位置一定要保留：使用者說「第 N 頁／封面／最後一頁要有…」時，text 寫出那個位置，params.page 填頁碼（頁碼含封面：封面 = 1，最後一頁 = -1），不要改寫成「至少有一頁」。語音輸入常有同音錯字（例如「低一頁」是「第一頁」），依上下文還原。問論文發表在哪個會議／期刊、哪一年時，params.venue 填 true。",
   "text 用繁體中文寫一句可以驗收的要求。quote 逐字複製使用者說出這個要求的原話（找不到原話就不要列）。主題、欄位、要刪的內容只能用使用者自己提到的詞（可以補上同義的中英文 aliases），不要自己細分出使用者沒說的欄位或主題。沒有要求就回 {\"requirements\":[]}。",
   '格式：{"requirements":[{"type":"include_topics","text":"聚焦在動態熱詞（dynamic hotwording）","quote":"我想要 focus 在動態熱詞","clauses":[2],"params":{"topics":[{"name":"dynamic hotwording","aliases":["動態熱詞","contextual biasing"]}]}}],"dropped":[{"clause":1,"reason":"只是在說要做簡報"}]}',
 ].join("\n");
@@ -1025,14 +1151,15 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string, br
   const brief = briefArg ?? env.run.brief ?? null;
   // The user's guidance only (the autopilot's own 繼續改 lines are not the user's words).
   // A 「請修正這幾項」 click is a fix request for listed items, not new requirements.
-  const guidance = (brief ? userGuidance(env.run) : (env.run.guidance ?? []).map((g) => g.text)).filter((g) => !FIX_REQUEST_RE.test(g));
+  const guidance = (brief ? userGuidance(env.run) : (env.run.guidance ?? []).map((g) => g.text)).filter((g) => !FIX_REQUEST_RE.test(g)).map(fixPageTypos);
   const standing = await standingOf(env);
   // With a Brief its `user_words` are the conversation turns that asked; older runs read the recent turns themselves.
   const recent = brief ? [] : await recentTurns(env);
   // The request of a run the assistant started is ITS paraphrase (production: it added 「所有內容使用繁體中文」 and pages: 12
   // that the user never said): requirements come from the user's own words only, never from the paraphrase.
   const legacyOwn = brief ? null : ownWords(env, recent, guidance);
-  const start: string[] = brief ? baseWords(brief) : legacyOwn ? legacyOwn.slice(0, legacyOwn.length - guidance.length) : [env.run.request];
+  // Page-number typos are fixed once here (「低一頁」 = 第一頁), so the clauses, the model and the quotes all see the same words.
+  const start: string[] = (brief ? baseWords(brief) : legacyOwn ? legacyOwn.slice(0, legacyOwn.length - guidance.length) : [env.run.request]).map(fixPageTypos);
   const paraphrase = brief ? !!brief.paraphrase : legacyOwn !== null;
   const key = hashOf(JSON.stringify([start, guidance, standing.list, kind]));
   const prev = env.state<Requirement[]>("requirements");
@@ -1071,8 +1198,10 @@ export async function prepareRequirements(env: WorkflowEnv, playbook: string, br
   const rt = (env.run.state?.route ?? {}) as { deck?: string; edit?: string };
   const editing = rt.deck === "edit" || !!rt.edit || !!(env.run.inputs as { project_id?: unknown }).project_id;
   const fromMessage = editing ? [] : messageLanguage(start);
-  const merged = mergeRequirements(userEdits, det, llm, fromClauses, fromChat, standing.list, fromMessage).filter((r) => !removed.has(keyOf(r)));
-  const reqs = merged.map((r, i) => ({ ...r, id: `r${i + 1}` }));
+  const merged = mergeRequirements(userEdits, det, llm, fromClauses, fromChat, standing.list, fromMessage).filter((r) => !removed.has(keyOf(r))).map((r) => anchorPlacement(r, kind));
+  // The paper's venue (「哪個會議哪一年」): looked up once and turned into checked words (workflows/venue.ts).
+  const facts = kind !== "latex" && merged.some((r) => r.params?.venue) ? await venueFacts(env).catch(() => null) : null;
+  const reqs = withVenueTerms(merged.map((r, i) => ({ ...r, id: `r${i + 1}` })), facts);
   await env.setState({ requirements: reqs, requirements_key: key });
   return reqs;
 }
@@ -1163,6 +1292,20 @@ export function anchorTerms(r: Omit<Requirement, "id">, words: string): Omit<Req
     return t.length ? { ...r, params: { ...p, terms: t } } : { type: "other", text: r.text, source: r.source, ...(r.quote ? { quote: r.quote } : {}) };
   }
   return r;
+}
+
+/**
+ * A requirement whose quote names a page (「第一頁要有…」「封面…」) or asks for the venue keeps that position / venue even
+ * when its text lost it (production 61666f10: 「簡報低一頁要有這是哪個會議哪一年的」 became 「至少要有一頁說明…」). Pure.
+ */
+export function anchorPlacement<R extends Omit<Requirement, "id">>(r: R, kind: ArtifactKind): R {
+  if (!r.quote || !["other", "include_topics", "format"].includes(r.type)) return r;
+  const pl = detectPlacements(r.quote);
+  const page = kind === "deck" && typeof r.params?.page !== "number" ? pl.find((x) => x.page !== null)?.page ?? null : null;
+  const venue = !r.params?.venue && pl.some((x) => x.venue) && r.type === "other";
+  if (page === null && !venue) return r;
+  const text = page !== null && !/第\s*\d+\s*頁|封面|最後一頁|倒數第/.test(r.text) ? `${placeLabel(page)}：${r.text}` : r.text;
+  return { ...r, text, params: { ...r.params, ...(page !== null ? { page, part: "slides" as const } : {}), ...(venue ? { venue: true } : {}) } };
 }
 
 /** Requirements edited on the plan card: typed from their text when the type is unknown or the text changed. */

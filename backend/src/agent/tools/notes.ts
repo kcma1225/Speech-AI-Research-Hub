@@ -1,5 +1,8 @@
 /** Note tools (notes module helpers: lib/notes/store.ts, lib/suggestions/service.ts). */
 import { z } from "zod";
+import { checkNoteEdit, refusal as editRefusal } from "../../lib/artifacts/build-check.js";
+import { checkTurnRequirements, turnWords, unmetOf } from "../../lib/artifacts/turn-requirements.js";
+import { applyHunks } from "../../lib/suggestions/diff.js";
 import { transaction } from "../../db.js";
 import { badRequest, conflict, forbidden, notFound } from "../../lib/http.js";
 import { createNote, disconnectNotes, findNote, forgetNoteDocs, listNotes, NOTE_KINDS, noteDocName, noteUrl, type NoteKind } from "../../lib/notes/store.js";
@@ -225,6 +228,14 @@ registerAgentTool({
       const refusal = scopeRefusal(text, hunks, words);
       if (refusal) throw badRequest(refusal);
     }
+    // The edit gate (lib/artifacts/build-check.ts): no unclosed fence / math / div the note did not already have.
+    const edited = a.content_md ?? applyHunks(text, hunks!);
+    const check = checkNoteEdit(text, edited);
+    if (!check.ok) throw badRequest(editRefusal("筆記", check, "get_note"));
+    // The turn's own requirements on the edited note (language, removals, topics…: lib/artifacts/turn-requirements.ts).
+    const turnReqs = checkTurnRequirements(await turnWords(ctx.db, ctx.conversationId), "doc", edited);
+    const unmet = unmetOf(turnReqs);
+    const reqData = { ...(turnReqs.length ? { user_requirements: turnReqs } : {}), ...(unmet.length ? { unmet_requirements: unmet.map((r) => `${r.text}：${r.detail}`), unmet_hint: "這個修改沒有符合使用者這一輪的要求：再提一個修正（或在回答中說明為什麼做不到）。" } : {}) };
     const input = {
       targetType: "note", targetId: note.id, proposedText: a.content_md, hunks, title: a.title || "AI 建議",
       source: "ai" as const, actorId: ctx.user.id, conversationId: ctx.conversationId, user: ctx.user,
@@ -233,11 +244,11 @@ registerAgentTool({
     const url = noteUrl(access.study.slug, note.id);
     if (ctx.autopilot && ctx.source === "agent") {
       const r = await applySuggestionNow(deps, { ...input, source: "autopilot" });
-      return { data: { applied: r.applied, suggestion_id: r.suggestion.id, note: { id: note.id, title: note.title } }, links: [{ label: "已自動套用 · 到版本紀錄復原", url: `${url}?versions=1`, kind: "suggestion" }] };
+      return { data: { applied: r.applied, suggestion_id: r.suggestion.id, note: { id: note.id, title: note.title }, ...reqData }, links: [{ label: "已自動套用 · 到版本紀錄復原", url: `${url}?versions=1`, kind: "suggestion" }] };
     }
     const s = await createSuggestion(deps, input);
     return {
-      data: { suggestion_id: s.id, hunks: s.pending, status: "pending_review", note: { id: note.id, title: note.title } },
+      data: { suggestion_id: s.id, hunks: s.pending, status: "pending_review", note: { id: note.id, title: note.title }, ...reqData },
       links: [{ label: "在筆記中檢視建議", url: `${url}?suggestion=${s.id}`, kind: "suggestion" }],
     };
   },

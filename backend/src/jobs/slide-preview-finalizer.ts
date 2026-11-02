@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { registerFinalizer } from "./queue.js";
 import type { SlidePreviewPayload, SlidePreviewResult } from "../lib/slides/preview.js";
+import { renderFailureFollowUp } from "../lib/slides/render-followup.js";
 import { sourceKeys } from "../lib/slides/sources.js";
 
 /** Entry HTML relative to the output prefix, if it is a plain relative `.html` path. */
@@ -23,14 +24,19 @@ export function registerSlidePreviewFinalizer(app: FastifyInstance) {
       "SELECT id FROM deck_previews WHERE id=$1 AND job_id=$2 FOR UPDATE",
       [payload.previewId, job.id],
     )).rows[0];
-    if (!row) return () => app.storage.deletePrefix(prefix);
+    // An edit-gate dry run's output is read and removed by its checker (lib/artifacts/build-check.ts).
+    if (!row) return payload.dryRun ? undefined : () => app.storage.deletePrefix(prefix);
     const result = job.status === "succeeded" ? (job.result as SlidePreviewResult | null) : null;
     const entryHtml = validEntryHtml(result?.entryHtml);
     if (!entryHtml) {
       const status = job.status === "cancelled" ? "cancelled" : "failed";
       const error = status === "failed" ? (job.error ?? "預覽編譯失敗。").slice(-4000) : null;
       await client.query("UPDATE deck_previews SET status=$2,error=$3,finished_at=now() WHERE id=$1", [row.id, status, error]);
-      return () => app.storage.deletePrefix(prefix);
+      return async () => {
+        await app.storage.deletePrefix(prefix);
+        // A failure right after an AI suggestion goes back to its conversation (lib/slides/render-followup.ts).
+        if (status === "failed") await renderFailureFollowUp(app, payload.deckId, row.id).catch((e) => app.log.warn({ err: e, deckId: payload.deckId }, "render follow-up failed"));
+      };
     }
     await client.query("UPDATE deck_previews SET status='ready',entry_html=$2,error=NULL,finished_at=now() WHERE id=$1", [row.id, entryHtml]);
     // Older finished previews go; queued/running ones newer than this stay (they will replace this one).

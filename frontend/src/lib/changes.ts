@@ -16,6 +16,7 @@ const TOOL_KINDS: Record<string, ChangeKind[]> = {
   remove_paper_from_study: ["papers"],
   update_study_paper: ["papers"],
   fetch_paper_pdf: ["papers"],
+  refresh_paper_metadata: ["papers"],
   create_note: ["notes"],
   delete_note: ["notes"],
   suggest_note_edit: ["notes"],

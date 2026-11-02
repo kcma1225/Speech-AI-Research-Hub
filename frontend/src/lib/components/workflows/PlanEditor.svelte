@@ -18,6 +18,8 @@
   let { session, workflow, steps, onCancel }: { session: WorkflowSession; workflow: Workflow; steps: Step[]; onCancel: () => void } = $props();
 
   const original = $derived(workflow.plan?.outline);
+  // Deck pages are numbered as the player shows them: the cover is page 1, the first outline page page 2.
+  const pageBase = $derived(workflow.playbook === "slides" ? 2 : 1);
   let outline = $state<EditableOutline>([]);
   let criteria = $state<{ id?: string; text: string }[]>([]);
   // 「你的要求」: typed requirements (language, pages, topics…); `standing` ones are kept from the artifact (沿用).
@@ -168,13 +170,14 @@
   {#if original}
     <div>
       <p class="mb-2 text-[13px] font-semibold text-ink">{t("wf.outline")} · {t("wf.outlinePages", { n: outline.length })}</p>
+      {#if pageBase === 2}<p class="-mt-1 mb-2 text-[12px] text-ink-3">{t("wf.coverNote")}</p>{/if}
       <!-- Wide cards: two pages side by side (reading order left → right), so a long outline is not one tall column. -->
       <ol class="grid gap-2 @min-[52rem]:grid-cols-2">
         {#each outline as page, i (i)}
           <!-- Controls sit in a header row so the title and points get the full width (phones too); points wrap. -->
           <li class="rounded-xl border border-line bg-surface p-2 sm:p-2.5">
             <div class="flex items-center gap-1">
-              <span class="pl-2 text-[12px] text-ink-3 tabular-nums">{t("wf.page", { n: i + 1 })}</span>
+              <span class="pl-2 text-[12px] text-ink-3 tabular-nums">{t("wf.page", { n: i + pageBase })}</span>
               {#if owned.has(page.title)}<span class="ml-1 rounded-full bg-surface-3 px-2 py-0.5 text-[11.5px] text-ink-3">{t("wf.studentOwned")}</span>{/if}
               <span class="flex-1"></span>
               <button type="button" class="grid size-9 place-items-center rounded-full text-ink-3 hover:bg-surface-3 hover:text-ink disabled:opacity-30" aria-label={t("wf.moveUp")} disabled={i === 0} onclick={() => (outline = moveItem(outline, i, i - 1))}><ChevronUp class="size-4" /></button>

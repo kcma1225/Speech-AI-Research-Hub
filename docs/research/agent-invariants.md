@@ -62,10 +62,16 @@
 | `chat.no_silent_supersede` | 對話 | critical | 待確認的操作（同意卡片）只有在使用者明確確認「取消它並送出」後，才會因為新訊息被取消；結果文字／拒絕理由要記錄「使用者確認取消」 | 對話的 tool_calls：denied／cancelled 且結果是「改提其他要求」、deny_reason | 舊行為：送新訊息就把待確認的動作默默拒絕（「使用者改提了其他要求，這個操作沒有執行。」） |
 | `chat.duplicate_workflow` | 對話 | high | 同一個對話裡，前一個工作流程還在進行（建立時尚未結束）時，不能為同一份成果再開一個：同一份簡報／筆記／LaTeX 專案（輸入或已寫入的成果），或沒指定成果時同一種交付物＋同一個研究（論文不同不算）；使用者最新的話明說「另外一份」除外；同批次、目標階段不算 | siblings 的建立／結束時間、inputs、artifacts、brief.deliverable、study、paper、原話 | 執行中說「改成 8 頁」，助理又開了一個新的簡報工作流程 |
 | `wf.chat_answer_lost` | 問題 | high | 工作流程停在 awaiting_input 時，使用者在對話裡打的訊息要交給它：那則訊息之後（容許 2 秒）要有補充指示或卡片回答；使用者按了「改成一般對話」（page_context.chatOnly）、ask_user 的回答不算 | 狀態快照的 awaiting_input 區間、那段時間的使用者訊息、guidance／卡片回答時間 | e6d552fc：問題只能在卡片上回答，對話裡打的回覆沒有送到工作流程 |
+| `req.placement_kept` | 要求 | critical | 使用者說「第 N 頁／封面／最後一頁要有…」（含同音錯字「低一頁」）時，要求要保留那個位置（params.page 或文字寫出那一頁） | brief.user_words＋補充指示（自己的解析器）、state.requirements／plan.requirements | 61666f10：「簡報低一頁要有這是哪個會議哪一年的」變成「至少要有一頁說明…」，會議只寫在第 2 頁講稿 |
+| `deck.cover_citation` | 交付物 | medium | 論文報告簡報的封面寫出論文出處（Lab-Hub 模板：第一作者 et al., 會議 年份） | state.mode、state.venue_facts、state.deck.last_written 的 front matter | 61666f10：封面只寫「Paper report」 |
+| `deck.placement_followed` | 助理 | high | 使用者指定頁面（第 N 頁／封面）時，助理的 suggest_deck_edit 結果 `pages` 要包含那一頁 | 使用者訊息的位置、同一輪 suggest_deck_edit 的結果 | 61666f10：使用者說第一頁，兩次都改在第 2 頁 |
+| `assistant.preprint_not_conference` | 依據 | high | 沒查證不說論文「不是會議論文」（文獻庫只有 arXiv 不代表沒有正式發表） | 助理訊息、suggest_deck_edit／suggest_note_edit／create_note 的參數 | 61666f10：Interspeech 2024 的論文被寫成「arXiv，不是會議論文」 |
+| `deck.render_failure_followed_up` | 助理 | high | 接受 AI 的簡報建議後第一次預覽編譯失敗，那個對話要有 deck_render_failed 通知（並自動請助理修） | 對話的 AI 簡報建議（decided_at）、那份簡報之後的預覽、通知 | 61666f10：封面建議造成 duplicated mapping key，AI 完全不知道 |
+| `deck.moved_content_left_behind` | 助理 | high | 把內容搬到另一頁時舊位置那段也要拿掉：同一個對話兩個 AI 建議加的相似內容不能同時留在兩頁 | 對話的 AI 簡報建議加的文字、檔案目前內容（各段在第幾頁） | 61666f10：會議資訊同時在封面與第 2 頁 |
 | `grounding.library_fields` | 依據 | high | 文獻庫有 venue／year 時，不能說「venue 未提供」（說法數超過真的沒有 venue 的篇數才算） | 文獻庫欄位、步驟輸出、topic picks、report、criteria | 0668a3d7：10/10 有 venue，8 處說未提供 |
 | `grounding.library_coverage` | 依據 | medium | 要用文獻庫整理、且有 PDF 的論文 ≤ 12 篇時，讀到的要 ≥ 60% | 原話、文獻庫、state.topic.picks | 0668a3d7：10 篇只讀 4 篇 |
 
-情境矩陣另有**情境專屬期望**（`scripts/eval/scenarios/oracles.ts`，id `scenario.*`）：`scenario.kind`（交付物種類）、`scenario.deck_resolved`（從頁面／前一個 run／指代找到要改的那份簡報）、`scenario.edit_route`、`scenario.edit_kind`、`scenario.new_not_edit`（在簡報頁要「新」簡報不能變成修改那份）、`scenario.study_resolved`、`scenario.part_language`（投影片／講稿的語言照使用者講的）、`scenario.started`（聊天要交給工作流程）、`scenario.reached_plan`、`scenario.material_input`（使用者提供的資料要進 inputs.materials）、`scenario.material_route`（用資料做簡報要走 material 路線；用資料寫筆記不能變成線上主題調研）。
+情境矩陣另有**情境專屬期望**（`scripts/eval/scenarios/oracles.ts`，id `scenario.*`）：`scenario.kind`（交付物種類）、`scenario.deck_resolved`（從頁面／前一個 run／指代找到要改的那份簡報）、`scenario.edit_route`、`scenario.edit_kind`、`scenario.new_not_edit`（在簡報頁要「新」簡報不能變成修改那份）、`scenario.study_resolved`、`scenario.part_language`（投影片／講稿的語言照使用者講的）、`scenario.started`（聊天要交給工作流程）、`scenario.reached_plan`、`scenario.material_input`（使用者提供的資料要進 inputs.materials）、`scenario.material_route`（用資料做簡報要走 material 路線；用資料寫筆記不能變成線上主題調研）、`scenario.placement`（指定頁面／會議年份的要求要有那一頁與 venue，v 區塊 4 個：口語錯字原句、封面打字、英文 first slide、中英混 venue 跟年份）。
 
 ### 關鍵的判讀工具（`invariants.ts`）
 
@@ -73,6 +79,19 @@
 - `languageClaims`：每句判斷講的是講稿、投影片還是整份，以及中文／英文；「多用英文的專有名詞」是名詞用法，不是語言要求。
 - `taskTurns`：從 start_workflow 的 tool_result 找回是哪一則助理訊息啟動了這個 run，往回收連續的使用者訊息（中間若是助理的澄清問題就繼續往回），遇到助理的回答就停。
 - `setupAnswers`：問過「哪個研究／哪篇論文」之後，短的回答若是研究／論文名稱、「剛剛那個」「你決定」，或 guidance 帶 `setup`、或「（回答「哪個研究…」）」行，就是設定回答。
+
+## 失敗分類 → 通用機制（修一類，不修一個案例）
+
+每個事故先找「第一個出錯的地方」歸到下面一類，修在那一類的機制上，再把事故加進回歸測試（情境矩陣／整合測試／不變量）。新增一條只對單一說法的 regex 或提示句之前，先問：哪個機制本來該擋住它？
+
+| 類別 | 通用機制（程式） | 例子 |
+|---|---|---|
+| 修改讓成果壞掉（編譯、解析、結構） | 成果編輯關卡：規則 → 副本上真的編譯 → 錯誤回給模型；一輪結束前檢查（`lib/artifacts/build-check.ts`、`guards.ts`） | 61666f10 重複 `subtitle:`；未關閉的區塊 |
+| 成果和使用者這一輪的要求不符（位置、語言、刪除、主題） | 要求帳本：同一套 `detectRequirements` → 驗收題，工作流程對最終渲染驗收，對話裡的修改由 `turn-requirements.ts` 在建議時檢查 | 「第一頁不是第二頁」改到第 2 頁；只寫在講稿 |
+| 編號／範圍各說各話（第幾頁、哪一節、畫面還是講稿） | 標準檢視 `lib/artifacts/view.ts`：所有工具、檢查、驗收模型、寫作提示用同一份 | 步驟第 10 頁、截圖第 11 頁 |
+| 說了沒有來源的事實 | 事實要對到紀錄：`facts.ts`（出處）、`grounded_names`（模型／資料集名稱）、`venueFacts` 先查證 | 「arXiv，不是會議論文」 |
+| 錯誤沒有回到 AI | 失敗回饋：編譯失敗的通知＋自動修正輪（`render-followup.ts`）、編輯關卡的錯誤當工具結果 | 接受建議後預覽失敗，AI 不知道 |
+| 驗收判斷不可靠 | 能用程式檢查就不交給模型；模型看標好頁碼的渲染檢視；可以回答無法判斷 | 講稿的內容被判成「有一頁說明」 |
 
 ## 正式站稽核（唯讀）
 
@@ -101,7 +120,7 @@ npx tsx scripts/audit/run.ts --staging --since 30d          # staging（hubv3 �
 
 ```bash
 cd backend
-npx tsx scripts/eval/scenarios/matrix.ts                    # 列出 78 個情境與每個維度的覆蓋
+npx tsx scripts/eval/scenarios/matrix.ts                    # 列出 90 個情境與每個維度的覆蓋
 npx tsx scripts/eval/scenarios/run.ts --concurrency 2       # 全部；--only id,id / --match regex / --resume <dir>
 npx tsx scripts/eval/scenarios/run.ts --resume <dir> --sweep # 取消某次執行留下的 run
 ```

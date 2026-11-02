@@ -18,11 +18,11 @@ const PASTED_NOTES_REQUEST = PASTED_NOTES;
 export const ENTRIES = ["home", "study", "deck"] as const;
 export const HISTORIES = ["none", "artifact", "unrelated"] as const;
 export const STYLES = ["typed", "spoken", "english", "mixed"] as const;
-export const INTENTS = ["new_progress", "new_paper_report", "new_topic", "revise_notes_lang", "revise_slides_lang", "expand_method", "add_page", "remove_page", "translate", "note_topic", "lit_review", "latex_section", "material_deck", "material_note", "notes_remove_cite", "remove_page_number"] as const;
+export const INTENTS = ["new_progress", "new_paper_report", "new_topic", "revise_notes_lang", "revise_slides_lang", "expand_method", "add_page", "remove_page", "translate", "note_topic", "lit_review", "latex_section", "material_deck", "material_note", "notes_remove_cite", "remove_page_number", "paper_venue_cover"] as const;
 /** Intents of the material block only (not in the base grid): the user hands over their own material (301b6e1a). */
 export const MATERIAL_INTENTS = new Set<string>(["material_deck", "material_note"]);
 /** Intents of their own block only (not in the base grid). */
-const BLOCK_INTENTS = new Set<string>([...MATERIAL_INTENTS, "notes_remove_cite", "remove_page_number"]);
+const BLOCK_INTENTS = new Set<string>([...MATERIAL_INTENTS, "notes_remove_cite", "remove_page_number", "paper_venue_cover"]);
 /** How the material reaches the chat: a file attached to the turn, notes pasted into it, or a PDF uploaded earlier. */
 export const MATERIALS = ["attach", "paste", "earlier_pdf"] as const;
 export type Material = (typeof MATERIALS)[number];
@@ -47,7 +47,7 @@ export const DECK_FOR: Partial<Record<Intent, "zh" | "en">> = {
 export const EDIT_INTENTS = new Set<Intent>(Object.keys(DECK_FOR) as Intent[]);
 export const KIND_FOR: Record<Intent, "deck" | "note" | "latex"> = {
   new_progress: "deck", new_paper_report: "deck", new_topic: "deck", revise_notes_lang: "deck", revise_slides_lang: "deck", expand_method: "deck", add_page: "deck",
-  remove_page: "deck", translate: "deck", note_topic: "note", lit_review: "note", latex_section: "latex", material_deck: "deck", material_note: "note", notes_remove_cite: "deck", remove_page_number: "deck",
+  remove_page: "deck", translate: "deck", note_topic: "note", lit_review: "note", latex_section: "latex", material_deck: "deck", material_note: "note", notes_remove_cite: "deck", remove_page_number: "deck", paper_venue_cover: "deck",
 };
 /** Per-part language each edit intent states by itself (the `lang` dimension applies to creation intents). */
 const EDIT_LANG: Partial<Record<Intent, Lang>> = { revise_notes_lang: "slides_en_notes_zh", revise_slides_lang: "slides_en_notes_zh", translate: "all_en" };
@@ -70,6 +70,8 @@ export type Scenario = {
     removePages?: number;
     /** Languages the user stated per part. */
     parts: { slides?: "zh" | "en"; notes?: "zh" | "en"; all?: "zh" | "en" };
+    /** A position the user named (player page; 1 = the cover) and whether it is the paper's venue (61666f10). */
+    placement?: { page: number; venue: boolean };
   };
   /** A production request reproduced verbatim. */
   production?: string;
@@ -112,6 +114,7 @@ const BASE: Record<Intent, Clauses> = {
   latex_section: { zh: ["幫我寫論文的 Related Work 章節（LaTeX）", "整理文獻庫裡的熱詞偏置方法"], en: ["Write the Related Work section of my paper in LaTeX", "covering the hotword-biasing methods in our library"], mixed: ["幫我寫 paper 的 Related Work section（LaTeX）", "整理 library 裡的 hotword biasing methods"] },
   material_deck: { zh: ["我已經有一個 deep research 的結果（附件）", "幫我以此做成能像教授報告的簡報"], en: ["I already have a deep research result (attached)", "turn it into a deck I can present to my professor"], mixed: ["我有一份 deep research 的結果（attached）", "幫我以此做成給教授看的 slides"] },
   remove_page_number: { zh: ["我要你把第三頁刪掉"], en: ["Delete slide 3 from this deck"], mixed: ["把 slide 3 刪掉"] },
+  paper_venue_cover: { zh: [`幫我做〈${PAPER}〉的論文報告簡報`, "封面要寫這篇是哪個會議哪一年發表的"], en: [`Make a paper-report deck on "${PAPER}"`, "put which conference and year it was published at on the first slide"], mixed: [`幫我做 paper report 的 slides，報告〈${PAPER}〉`, "第一頁要寫 venue 跟年份"] },
   notes_remove_cite: { zh: ["我想要從講稿中拿掉引用論文的部分", "這樣子還要講他來自哪一個論文很奇怪"], en: ["Take the paper citations out of the speaker notes", "it sounds odd to say which paper each idea came from"], mixed: ["把 speaker notes 裡引用 paper 的部分拿掉", "講出處很奇怪"] },
   material_note: { zh: ["以附件的 deep research 結果為主要材料", "幫我整理成一份筆記"], en: ["Use the attached deep research result as the main material", "and write it up as a note"], mixed: ["用附件的 deep research 結果", "幫我整理成一份 note"] },
 };
@@ -162,6 +165,7 @@ function scenario(id: string, d: Omit<Scenario, "id" | "request" | "expect" | "p
       editKind: deckKnown ? (d.intent === "expand_method" ? "expand" : ["revise_notes_lang", "revise_slides_lang", "translate", "notes_remove_cite", "remove_page_number"].includes(d.intent) ? "revise" : undefined) : undefined,
       ...(deckKnown && ["revise_notes_lang", "notes_remove_cite"].includes(d.intent) ? { notesOnly: true } : {}),
       ...(deckKnown && d.intent === "remove_page_number" ? { removePages: 1 } : {}),
+      ...(d.intent === "paper_venue_cover" ? { placement: { page: 1, venue: true } } : {}),
       studyDerivable: d.entry !== "home" || d.history === "artifact",
       parts: partsOf(d.intent, d.lang),
     },
@@ -249,6 +253,12 @@ export function buildMatrix(): Scenario[] {
   out.push(scenario(`p${String(++k).padStart(2, "0")}_remove_page_history`, { ...base, entry: "home", history: "artifact", style: "typed", intent: "remove_page_number", answer: "free_text", start: "chat" }));
   out.push(scenario(`p${String(++k).padStart(2, "0")}_remove_page_english`, { ...base, entry: "deck", style: "english", intent: "remove_page_number" }));
   out.push(scenario(`p${String(++k).padStart(2, "0")}_remove_page_mixed`, { ...base, entry: "deck", style: "mixed", intent: "remove_page_number", start: "chat" }));
+  // 10. A position + the venue (61666f10: 「簡報低一頁要有這是哪個會議哪一年的」 became 「至少要有一頁」 and the venue landed in
+  //     page 2's notes): the requirement keeps page 1 and is about the venue, whatever the phrasing (incl. the ASR typo).
+  out.push(scenario(`v${String(++k).padStart(2, "0")}_venue_typo_spoken`, { ...base, entry: "study", style: "spoken", intent: "paper_venue_cover", start: "chat" }, `#簡報 我這週 meeting paper 要報告〈${PAPER}〉這篇 我要你幫我做簡報 簡報低一頁要有這是哪個會議哪一年的`));
+  out.push(scenario(`v${String(++k).padStart(2, "0")}_venue_cover_typed`, { ...base, entry: "study", style: "typed", intent: "paper_venue_cover" }));
+  out.push(scenario(`v${String(++k).padStart(2, "0")}_venue_english`, { ...base, entry: "study", style: "english", intent: "paper_venue_cover" }));
+  out.push(scenario(`v${String(++k).padStart(2, "0")}_venue_mixed`, { ...base, entry: "home", history: "unrelated", style: "mixed", intent: "paper_venue_cover", start: "chat" }));
   return out;
 }
 

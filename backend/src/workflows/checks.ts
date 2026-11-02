@@ -6,10 +6,30 @@ import type { CheckResult, CheckSpec } from "./types.js";
 import { chartBlocks, lintMermaid, mermaidBlocks } from "../lib/slides/deck-visuals.js";
 import { lintDiagrams } from "../lib/slides/diagram/index.js";
 import { chartIssues, diagramIssues, figureIssues, formatIssues, nameIssues, type ContentRefs, type LintSlide } from "../lib/slides/content-lint.js";
+import { deckSourceView, viewText } from "../lib/artifacts/view.js";
 
 export type Slide = { title: string; body: string; notes: string; index: number };
 
 /** Splits a Quarto body into `## ` slides; notes = `::: notes` / `::: {.notes}` blocks. */
+/**
+ * Page numbers shown to the user and to the models are the player's (production 61666f10: steps said 「第 10 頁 Main
+ * results」, the screenshot check 「第 11 頁」, the assistant counted the cover — 「第一頁」 ended up on page 2). A
+ * generated deck always has a cover (front matter title), which is page 1: the n-th `## ` slide is page n + 1.
+ */
+export const slidePage = (n: number) => n + 1;
+/** The n-th `## ` slide (1-based) of a player's page number; 0 = the cover. */
+export const slideOfPage = (page: number) => page - 1;
+/** 「第 N 頁」 numbers named in a text (a verdict's reason, a check's detail) as `## ` slide indexes (the cover dropped). */
+export const namedSlides = (text: string) => [...text.matchAll(/第\s*(\d+)\s*頁/g)].map((m) => slideOfPage(Number(m[1]))).filter((n) => n >= 1);
+
+/**
+ * The deck as a verifier reads it (lib/artifacts/view.ts): every page labeled with the player's number, its visible text,
+ * its notes marked as not shown — a verdict names pages the way the user and the code count them.
+ */
+export function numberedDeck(full: string): string {
+  return viewText(deckSourceView(full));
+}
+
 export function parseSlides(text: string): Slide[] {
   const parts = text.replace(/\r\n/g, "\n").split(/^(?=## )/m).filter((p) => p.startsWith("## "));
   return parts.map((p, i) => {
@@ -106,7 +126,7 @@ export function matchOriginals(originals: OriginalPage[], pages: PlannedPage[], 
 export function keptIssues(originals: OriginalPage[], pages: PlannedPage[], match: PageMatch, opts: { ordered?: boolean; keepTitles?: boolean } = {}): string[] {
   const issues: string[] = [];
   const missing = originals.filter((_, i) => match.at[i] === null);
-  if (missing.length) issues.push(`原本的這些頁面不見了：${missing.map((o) => `第 ${o.n} 頁「${o.title}」`).join("、")}。使用者沒有要求刪掉或合併，請保留（可以在前後插入新頁、把內容寫得更具體）`);
+  if (missing.length) issues.push(`原本的這些頁面不見了：${missing.map((o) => `第 ${slidePage(o.n)} 頁「${o.title}」`).join("、")}。使用者沒有要求刪掉或合併，請保留（可以在前後插入新頁、把內容寫得更具體）`);
   const placed = match.at.map((j, i) => ({ j, o: originals[i]! })).filter((x): x is { j: number; o: OriginalPage } => x.j !== null);
   if (opts.ordered && placed.some((x, k) => k > 0 && x.j < placed[k - 1]!.j)) issues.push(`原本頁面的順序被改了（應為 ${placed.map((x) => `「${x.o.title}」`).join(" → ")}）。使用者沒有要求調整順序，請照原本的順序`);
   if (opts.keepTitles) {
@@ -162,7 +182,7 @@ export function coverRepeat(slides: Slide[], full: unknown): string | null {
   const cover = coverTitleOf(full);
   const first = slides[0];
   if (cover && first && norm(first.title) && norm(first.title) === norm(cover)) return `第 1 頁「${first.title}」和封面的標題一樣（封面由系統產生，不要再做一頁題目頁）。`;
-  for (let i = 1; i < slides.length; i++) if (norm(slides[i]!.title) && norm(slides[i]!.title) === norm(slides[i - 1]!.title)) return `第 ${i} 頁和第 ${i + 1} 頁的標題都是「${slides[i]!.title}」。`;
+  for (let i = 1; i < slides.length; i++) if (norm(slides[i]!.title) && norm(slides[i]!.title) === norm(slides[i - 1]!.title)) return `第 ${slidePage(i)} 頁和第 ${slidePage(i + 1)} 頁的標題都是「${slides[i]!.title}」。`;
   return null;
 }
 
@@ -182,7 +202,7 @@ export function duplicatePages(slides: Slide[], want: string[] = []): string[] {
     const b = s.body.replace(/\s+/g, "");
     if (b.length < 120) continue;
     const first = bodies.get(b);
-    if (first && norm(first.title) !== norm(s.title)) out.push(`第 ${first.index} 頁「${first.title}」與第 ${s.index} 頁「${s.title}」內容完全相同`);
+    if (first && norm(first.title) !== norm(s.title)) out.push(`第 ${slidePage(first.index)} 頁「${first.title}」與第 ${slidePage(s.index)} 頁「${s.title}」內容完全相同`);
     else if (!first) bodies.set(b, s);
   }
   return out;
@@ -322,18 +342,18 @@ export const CHECKS: Record<string, CheckFn> = {
     const min = num(params.min_chars, 30);
     const allow = strs(params.allow_titles);
     const bad = parseSlides(text).filter((s) => s.notes.replace(/\s+/g, "").length < min && !allow.some((a) => titleMatches(a, s.title)));
-    return bad.length ? { ok: false, detail: `這些頁面沒有講稿或講稿太短（< ${min} 字）：${bad.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。` } : { ok: true, detail: "每頁都有講稿" };
+    return bad.length ? { ok: false, detail: `這些頁面沒有講稿或講稿太短（< ${min} 字）：${bad.map((s) => `第 ${slidePage(s.index)} 頁「${s.title}」`).join("、")}。` } : { ok: true, detail: "每頁都有講稿" };
   },
   no_placeholder(text, { params }) {
     const allow = strs(params.allow_titles);
     const slides = parseSlides(text);
     if (slides.length) {
       const bad = slides.filter((s) => !allow.some((a) => titleMatches(a, s.title)) && PLACEHOLDER_RE.test(`${s.body}\n${s.notes}`));
-      if (bad.length) return { ok: false, detail: `這些頁面還有佔位文字（〔　〕、待補、TODO…）：${bad.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請填入依據資料的內容；資料裡真的沒有就明寫「資料未提供」。` };
+      if (bad.length) return { ok: false, detail: `這些頁面還有佔位文字（〔　〕、待補、TODO…）：${bad.map((s) => `第 ${slidePage(s.index)} 頁「${s.title}」`).join("、")}。請填入依據資料的內容；資料裡真的沒有就明寫「資料未提供」。` };
       // Decks (`on_slide: true`): 「資料未提供」 is fine in the notes, never on the slide itself (an empty table cell or
       // bullet the audience reads). The writer drops that row / column / bullet instead.
       const missing = params.on_slide ? slides.filter((s) => !allow.some((a) => titleMatches(a, s.title)) && SLIDE_MISSING_RE.test(s.body)) : [];
-      if (missing.length) return { ok: false, detail: `這些頁面的投影片上寫了「資料未提供／N/A」：${missing.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。投影片上不要出現沒有資料的格子或條列：刪掉那一列、那一欄或那一條（或改放有數字的比較），說明可以寫在講稿。` };
+      if (missing.length) return { ok: false, detail: `這些頁面的投影片上寫了「資料未提供／N/A」：${missing.map((s) => `第 ${slidePage(s.index)} 頁「${s.title}」`).join("、")}。投影片上不要出現沒有資料的格子或條列：刪掉那一列、那一欄或那一條（或改放有數字的比較），說明可以寫在講稿。` };
       return { ok: true, detail: "沒有佔位文字" };
     }
     const m = PLACEHOLDER_RE.exec(text);
@@ -357,7 +377,7 @@ export const CHECKS: Record<string, CheckFn> = {
       const visible = s.body.replace(/```[^\n]*\n[\s\S]*?```/g, "");
       return visible.length > maxChars || (visible.match(/^\s*[-*+] /gm) ?? []).length > maxBullets;
     });
-    return bad.length ? { ok: false, detail: `這些頁面內容太多，投影片放不下（> ${maxChars} 字或 > ${maxBullets} 個條列）：${bad.map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請精簡或移到講稿。` } : { ok: true, detail: "每頁份量適中" };
+    return bad.length ? { ok: false, detail: `這些頁面內容太多，投影片放不下（> ${maxChars} 字或 > ${maxBullets} 個條列）：${bad.map((s) => `第 ${slidePage(s.index)} 頁「${s.title}」`).join("、")}。請精簡或移到講稿。` } : { ok: true, detail: "每頁份量適中" };
   },
   /** Slide density: visible bullets and words per slide (code, charts, notes excluded; CJK chars count as ½ word). */
   slide_density(text, { params }) {
@@ -369,7 +389,7 @@ export const CHECKS: Record<string, CheckFn> = {
       if (allow.some((a) => titleMatches(a, s.title))) continue;
       const w = visibleWords(s.body);
       const b = (s.body.replace(/^```[\s\S]*?^```/gm, "").match(/^\s*(?:[-*+]|\d+\.) /gm) ?? []).length;
-      if (w > maxWords || b > maxBullets) bad.push(`第 ${s.index} 頁「${s.title}」（約 ${w} 字詞、${b} 個條列）`);
+      if (w > maxWords || b > maxBullets) bad.push(`第 ${slidePage(s.index)} 頁「${s.title}」（約 ${w} 字詞、${b} 個條列）`);
     }
     return bad.length ? { ok: false, detail: `這些頁面文字太多（上限約 ${maxWords} 字詞、${maxBullets} 個條列；中文 2 字算 1 詞）：${bad.join("、")}。保留一個重點，把細節移到講稿，改用圖、表或圖表呈現。` } : { ok: true, detail: "每頁文字量適中" };
   },
@@ -393,7 +413,7 @@ export const CHECKS: Record<string, CheckFn> = {
     const without = slides.filter((s) => !hasVisual(s.body));
     const have = slides.length - without.length;
     const need = Math.ceil(slides.length * ratio);
-    return have >= need ? { ok: true, detail: `${have}/${slides.length} 頁有視覺元素` } : { ok: false, detail: `只有 ${have}/${slides.length} 頁有圖、表或圖表（至少需要 ${need} 頁）。這些頁面只有文字：${without.slice(0, 8).map((s) => `第 ${s.index} 頁「${s.title}」`).join("、")}。請改用 Mermaid 流程圖、\`\`\`chart 圖表、論文圖（paper-fig）或表格。` };
+    return have >= need ? { ok: true, detail: `${have}/${slides.length} 頁有視覺元素` } : { ok: false, detail: `只有 ${have}/${slides.length} 頁有圖、表或圖表（至少需要 ${need} 頁）。這些頁面只有文字：${without.slice(0, 8).map((s) => `第 ${slidePage(s.index)} 頁「${s.title}」`).join("、")}。請改用 Mermaid 流程圖、\`\`\`chart 圖表、論文圖（paper-fig）或表格。` };
   },
   /**
    * Result of the slides playbook's screenshot QA (`data.visualQa`): fails only on hard defects (`failed`: overflow, raw

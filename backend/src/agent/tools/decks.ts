@@ -1,5 +1,6 @@
 /** Read-only deck tools (the slides module may add `suggest_deck_edit` / `generate_deck_draft` via the registry). */
 import { z } from "zod";
+import { deckSourceView } from "../../lib/artifacts/view.js";
 import { notFound } from "../../lib/http.js";
 import { loadStudyAccess } from "../../lib/studies/access.js";
 import { registerAgentTool } from "./registry.js";
@@ -57,13 +58,17 @@ registerAgentTool({
       othersWrote ||= files.some((f) => f.updated_by && f.updated_by !== ctx.user.id);
       // Every slide is listed (a long deck's clipped entry text once hid half of it from the assistant), the asked pages in full.
       const slides = entry?.content ? parseSlides(entry.content.replace(/^---\n[\s\S]*?\n---\n?/, "")) : [];
-      // The player's numbering (what the user says, what get_deck_pages returns): the front-matter cover is page 1.
-      const cover = /^---\n[\s\S]*?^title:\s*\S/m.test(entry?.content ?? "") ? (/^title:\s*(.+)$/m.exec(entry!.content!)?.[1] ?? "").replace(/^["']|["']$/g, "") : null;
-      const at = (i: number) => i + 1 + (cover !== null ? 1 : 0);
+      // The player's numbering from the shared artifact view (lib/artifacts/view.ts): the front-matter cover is page 1.
+      const view = deckSourceView(entry?.content ?? "");
+      const cover = view.units[0]?.kind === "cover" ? view.units[0] : null;
+      const at = (i: number) => view.units.filter((u) => u.kind === "slide")[i]?.page ?? i + 1;
       const want = new Set(a.pages ?? []);
+      // Page 1 asked for: the raw front matter (production 61666f10: the assistant saw only the cover title, could not see
+      // the existing `subtitle:` and added a second one, which broke the build).
+      const front = cover && want.has(1) ? (/^---[ \t]*\n[\s\S]*?\n---[ \t]*(?:\n|$)/.exec(entry!.content!)?.[0] ?? null) : null;
       source = {
         entry: tree.entry, entry_file_id: entry?.id ?? null, files: files.map((f) => ({ id: f.id, path: f.path, kind: f.kind, bytes: f.bytes })),
-        ...(cover !== null ? { cover: { n: 1, title: scrub(cover), note: "封面（由 front matter 產生）算第 1 頁；第一個 ## 投影片是第 2 頁" } } : {}),
+        ...(cover ? { cover: { n: 1, title: scrub(cover.title), shown: clip(scrub(cover.visible), 400), note: "封面（由 front matter 的 title / subtitle / author / date 產生）算第 1 頁；第一個 ## 投影片是第 2 頁。改封面＝改 front matter 既有的欄位，不要新增同名欄位", ...(front ? { front_matter: clip(scrub(front), 4000) } : {}) } } : {}),
         slides: slides.map((s, i) => (want.has(at(i)) ? { n: at(i), title: scrub(s.title), body: clip(scrub(s.body), 4000), notes: clip(scrub(s.notes), 3000) } : { n: at(i), title: scrub(s.title), preview: clip(scrub(s.body.replace(/\s+/g, " ")), 240), notes_preview: clip(scrub(s.notes.replace(/\s+/g, " ")), 160) })),
         entry_text: entry?.content && !want.size ? clip(scrub(entry.content), 12000) : null,
       };

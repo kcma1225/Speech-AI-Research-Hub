@@ -126,6 +126,8 @@ export function setLibraryServiceFactory(factory: ((config: LibraryConfig) => Li
   override = factory;
   serviceCache = undefined;
 }
+/** Online lookups background code may make on its own (workflows): not in tests unless a test installed a mock service. */
+export const onlineLookupsAllowed = () => process.env.NODE_ENV !== "test" || !!override;
 
 /** The LibraryService for the current settings (rebuilt when a setting changes; rate limiters are process-wide). */
 export async function libraryService(db: Queryable): Promise<{ service: LibraryService; settings: LibrarySettings }> {

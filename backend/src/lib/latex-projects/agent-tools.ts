@@ -3,6 +3,9 @@
  * suggest edits to one file (suggestion), and start a compile (write).
  */
 import { z } from "zod";
+import { applyHunks } from "../suggestions/diff.js";
+import { checkLatexEdit, refusal } from "../artifacts/build-check.js";
+import { checkTurnRequirements, turnWords, unmetOf } from "../artifacts/turn-requirements.js";
 import { registerAgentTool, type AgentToolContext } from "../../agent/tools/registry.js";
 import { clip, isUuid, readStudy, scrub, studyRef, uuidArg } from "../../agent/tools/util.js";
 import { applySuggestionNow, createSuggestion } from "../suggestions/service.js";
@@ -183,6 +186,16 @@ registerAgentTool({
         return { from: at, to: at + e.before.length, before: e.before, after: e.after };
       });
     }
+    // The edit gate (lib/artifacts/build-check.ts): braces / environments, then a draft compile with the edited file —
+    // under autopilot the edit is applied as is, so it is checked first.
+    const before = await liveText(ctx.db, ctx.app.collab, file);
+    const after = a.content ?? applyHunks(before, hunks!);
+    const check = await checkLatexEdit(ctx.app, project, file, before, after, { signal: ctx.signal });
+    if (!check.ok) throw badRequest(refusal("LaTeX", check, "latex_read_file"));
+    // The turn's own requirements on the edited file (lib/artifacts/turn-requirements.ts).
+    const turnReqs = checkTurnRequirements(await turnWords(ctx.db, ctx.conversationId), "latex", after);
+    const unmet = unmetOf(turnReqs);
+    const reqData = { ...(turnReqs.length ? { user_requirements: turnReqs } : {}), ...(unmet.length ? { unmet_requirements: unmet.map((r) => `${r.text}：${r.detail}`), unmet_hint: "這個修改沒有符合使用者這一輪的要求：再提一個修正（或在回答中說明為什麼做不到）。" } : {}) };
     const input = {
       targetType: "latex_file", targetId: file.id, proposedText: a.content, hunks, title: a.title || "AI 建議",
       source: "ai" as const, actorId: ctx.user.id, conversationId: ctx.conversationId, user: ctx.user,
@@ -191,10 +204,10 @@ registerAgentTool({
     const url = latexUrl(access.study.slug, project.id, file.id);
     if (ctx.autopilot && ctx.source === "agent") {
       const r = await applySuggestionNow(deps, { ...input, source: "autopilot" });
-      return { data: { applied: r.applied, suggestion_id: r.suggestion.id, file: { id: file.id, path: file.path } }, links: [{ label: "已自動套用（可在建議紀錄查看）", url }] };
+      return { data: { applied: r.applied, suggestion_id: r.suggestion.id, file: { id: file.id, path: file.path }, build_check: check.verified, ...(check.note ? { build_note: check.note } : {}), ...reqData }, links: [{ label: "已自動套用（可在建議紀錄查看）", url }] };
     }
     const s = await createSuggestion(deps, input);
-    return { data: { suggestion_id: s.id, hunks: s.pending, status: "pending_review", file: { id: file.id, path: file.path } }, links: [{ label: "在論文編輯器檢視建議", url: `${url}&suggestion=${s.id}`, kind: "suggestion" }] };
+    return { data: { suggestion_id: s.id, hunks: s.pending, status: "pending_review", file: { id: file.id, path: file.path }, build_check: check.verified, ...(check.note ? { build_note: check.note } : {}), ...reqData }, links: [{ label: "在論文編輯器檢視建議", url: `${url}&suggestion=${s.id}`, kind: "suggestion" }] };
   },
 });
 

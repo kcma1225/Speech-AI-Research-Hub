@@ -1,3 +1,4 @@
+import { setBuildCheck } from "../src/lib/artifacts/build-check.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestContext, hasTestDb, hasTestS3, ORIGIN, type TestContext } from "./helpers.js";
 import { addStudyMember, insertStudy } from "./study-fixtures.js";
@@ -333,6 +334,31 @@ describe.skipIf(!hasTestDb || !hasTestS3)("LaTeX projects (routes)", () => {
     expect((sug.data as { status: string }).status).toBe("pending_review");
     const bib = files.files.find((f) => f.path === "refs.bib")!;
     await expect(run("latex_suggest_edit", { project_id: projectId, file_id: bib.id, content: "x" }, await ctx(bob))).rejects.toMatchObject({ status: 400 });
+    // The edit gate: a brace the edit leaves open is refused statically; a draft compile of the edited project that
+    // reports a new error refuses the edit; one with no new error lets it through (lib/artifacts/build-check.ts).
+    await expect(run("latex_suggest_edit", { project_id: projectId, file_id: intro.id, edits: [{ before: "研究背景與動機", after: "\\textbf{研究背景" }] }, await ctx(bob))).rejects.toThrow(/沒有通過檢查.*沒有關閉/);
+    const rowsBefore = (await t.db.query("SELECT 1 FROM latex_compiles WHERE project_id=$1", [projectId])).rowCount;
+    setBuildCheck({ enabled: true, waitMs: 15_000 });
+    let compiles = 0;
+    const timer = setInterval(async () => {
+      const jobs = (await t.db.query<{ id: string }>("SELECT j.id FROM jobs j WHERE j.kind='latex_compile' AND j.status='queued' AND NOT EXISTS (SELECT 1 FROM latex_compiles c WHERE c.job_id=j.id)")).rows;
+      for (const j of jobs) {
+        compiles++;
+        const errors = compiles === 1 ? [{ message: "Undefined control sequence \\foo", file: "sections/introduction.tex", line: 3 }] : [];
+        await t.db.query("UPDATE jobs SET status='succeeded', result=$2, finished_at=now() WHERE id=$1", [j.id, JSON.stringify({ status: errors.length ? "failure" : "success", errors, warnings: [] })]);
+      }
+    }, 200);
+    try {
+      await expect(run("latex_suggest_edit", { project_id: projectId, file_id: intro.id, edits: [{ before: "研究背景與動機", after: "研究背景 \\foo" }] }, await ctx(bob))).rejects.toThrow(/實際編譯.*Undefined control sequence/);
+      const okEdit = await run("latex_suggest_edit", { project_id: projectId, file_id: intro.id, edits: [{ before: "研究背景與動機", after: "研究背景與目的" }] }, await ctx(bob));
+      expect(okEdit.data).toMatchObject({ status: "pending_review", build_check: "built" });
+    } finally {
+      clearInterval(timer);
+      setBuildCheck({ enabled: false });
+    }
+    expect(compiles).toBe(2);
+    // Dry runs write no compile row.
+    expect((await t.db.query("SELECT 1 FROM latex_compiles WHERE project_id=$1", [projectId])).rowCount).toBe(rowsBefore);
     const comp = await run("latex_compile", { project_id: projectId, draft: true }, await ctx(bob));
     expect((comp.data as { status: string }).status).toBe("queued");
     const logView = (await run("latex_get_compile_log", { project_id: projectId }, await ctx(carol))).data as { compile: { status: string } };
