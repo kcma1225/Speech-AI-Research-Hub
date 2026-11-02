@@ -10,6 +10,11 @@
  *      is written (their finalizers only clean the scratch objects), so the real preview and the user's PDF are untouched.
  *      Errors the current artifact already has are not the edit's (deck: its last failed preview; LaTeX: its last compile).
  *
+ *   3. look (decks): the dry run also screenshots and measures the pages whose visible content the edit changes
+ *      (`shots`): objective defects on them (overflow, raw diagram code, diagram syntax errors, labels outside their boxes,
+ *      text < 16 px) refuse the edit like a build error; the screenshots go back to the tool, which shows them to the model
+ *      and has the vision reviewer look at them (production 64876e38: 「已通過編譯檢查」 on a diagram with blank nodes).
+ *
  * `ok: false` → the tool refuses with `problems` (one actionable line each); the completion review keeps the turn from
  * ending on an edit that never went through (agent/guards.ts). `verified: "unverified"`: the build did not finish in time
  * (busy worker) — the suggestion is created on the static check alone and the result says so.
@@ -25,12 +30,18 @@ import { packTree, sourceKeys } from "../slides/sources.js";
 import type { SlidePreviewPayload } from "../slides/preview.js";
 import { newSourceProblems } from "../slides/source-lint.js";
 import { plainLog } from "../slides/render-followup.js";
-import { deckRenderedView, type ArtifactView } from "./view.js";
+import { HARD_METRIC_RE, metricIssues, type ShotPage } from "../../workflows/playbooks/slides-visual.js";
+import { MAX_REVIEW_SLIDES } from "../vision/slides.js";
+import { deckRenderedView, deckSourceView, type ArtifactView } from "./view.js";
 
 export type EditCheck = {
   ok: boolean; problems: string[]; verified: "built" | "static" | "unverified"; note?: string;
   /** What the edited artifact shows (a deck's dry-run render, lib/artifacts/view.ts), for the turn's requirement checks. */
   view?: ArtifactView;
+  /** Decks: screenshots of the edited pages from the dry run (page = player page). */
+  shots?: { page: number; title?: string; image: Buffer }[];
+  /** Decks: layout measurements of the edited pages that are not hard defects (too many words, empty space…). */
+  layoutNotes?: string[];
 };
 
 /** Max wait for a dry-run build (tests set it low; no worker runs there). */
@@ -67,30 +78,47 @@ const errKey = (l: string) => l.replace(/\(.*?\)|\d+/g, "").replace(/\s+/g, " ")
 
 // ---------------------------------------------------------------- decks
 
-/** A deck source edit: static rules, then a dry-run render of the tree with the edited file. */
-export async function checkDeckEdit(app: FastifyInstance, deck: { id: string }, path: string, before: string, after: string, opts: { signal?: AbortSignal } = {}): Promise<EditCheck> {
+/** Shots of at most this many edited pages are read back (screenshots for the model and the vision review). */
+export const LOOK_PAGES = 4;
+
+/**
+ * Player pages whose visible content (title + what the slide shows; not speaker notes) differs after the edit — the
+ * pages a screenshot can judge. A page counts as unchanged when the old deck had a page with the same title and text.
+ */
+export function visiblyChangedPages(before: string, after: string): number[] {
+  const key = (u: { title: string; visible: string }) => `${u.title}\n${u.visible.replace(/\s+/g, " ").trim()}`;
+  const old = new Set(deckSourceView(before).units.filter((u) => u.kind !== "preamble").map(key));
+  return deckSourceView(after).units.filter((u) => u.kind !== "preamble" && !old.has(key(u))).map((u) => u.page);
+}
+
+/** A deck source edit: static rules, then a dry-run render of the tree with the edited file (+ shots of the changed pages). */
+export async function checkDeckEdit(app: FastifyInstance, deck: { id: string }, path: string, before: string, after: string, opts: { signal?: AbortSignal; look?: boolean } = {}): Promise<EditCheck> {
   const stat = newSourceProblems(path, before, after);
   if (stat.length) return { ok: false, problems: stat, verified: "static" };
   if (!BUILDS_ON || !/\.(?:qmd|md|ya?ml|css|scss|bib|lua|json)$/i.test(path)) return { ok: true, problems: [], verified: "static" };
+  // Only the entry .qmd maps to pages; other files (css, data) are judged by the build alone.
+  const look = opts.look !== false && /\.qmd$/i.test(path) ? visiblyChangedPages(before, after).filter((n) => n <= MAX_REVIEW_SLIDES).slice(0, LOOK_PAGES) : [];
   const previewId = randomUUID();
   const { zip, tree } = await packTree(app.db, app.storage, deck.id, { [path]: after });
-  const payload: SlidePreviewPayload = { deckId: deck.id, previewId, sourceKey: sourceKeys.previewSource(deck.id, previewId), entry: tree.entry, outputPrefix: sourceKeys.previewOutput(deck.id, previewId), dryRun: true };
+  const payload: SlidePreviewPayload = { deckId: deck.id, previewId, sourceKey: sourceKeys.previewSource(deck.id, previewId), entry: tree.entry, outputPrefix: sourceKeys.previewOutput(deck.id, previewId), dryRun: true, ...(look.length ? { shots: true } : {}) };
   await app.storage.put(payload.sourceKey, zip, "application/zip");
   const jobId = await enqueueJob(app.db, "slide_preview", payload, null, 1);
   try {
-    return await deckOutcome(app, deck.id, payload, await waitJob(app, jobId, opts.signal));
+    return await deckOutcome(app, deck.id, payload, await waitJob(app, jobId, opts.signal), look);
   } finally {
     // The dry run's scratch objects (source ZIP + render) are ours to remove (its finalizer leaves them for this read).
     await app.storage.deletePrefix(sourceKeys.previewPrefix(deck.id, previewId)).catch(() => undefined);
   }
 }
 
-async function deckOutcome(app: FastifyInstance, deckId: string, payload: SlidePreviewPayload, end: JobEnd): Promise<EditCheck> {
+async function deckOutcome(app: FastifyInstance, deckId: string, payload: SlidePreviewPayload, end: JobEnd, look: number[] = []): Promise<EditCheck> {
   if (!end) return { ok: true, problems: [], verified: "unverified", note: "編譯檢查沒有在時間內完成（編譯服務忙碌），這個建議只通過了語法檢查；使用者接受後若預覽失敗會再通知你。" };
   if (end.status === "succeeded") {
-    const entry = (end.result as { entryHtml?: unknown } | null)?.entryHtml;
+    const result = end.result as { entryHtml?: unknown; shots?: { count?: number } } | null;
+    const entry = result?.entryHtml;
     const html = typeof entry === "string" && /^[\w./-]+\.html?$/.test(entry) && !entry.includes("..") ? await app.storage.getBuffer(`${payload.outputPrefix}${entry}`).catch(() => null) : null;
-    return { ok: true, problems: [], verified: "built", ...(html ? { view: deckRenderedView(html.toString("utf8")) } : {}) };
+    const base: EditCheck = { ok: true, problems: [], verified: "built", ...(html ? { view: deckRenderedView(html.toString("utf8")) } : {}) };
+    return look.length ? withShots(app, payload.outputPrefix, result?.shots?.count ?? 0, look, base) : base;
   }
   const deck = { id: deckId };
   const lines = errorLines(end.error ?? "");
@@ -101,6 +129,26 @@ async function deckOutcome(app: FastifyInstance, deckId: string, payload: SlideP
     if (lines.every((l) => had.has(errKey(l)))) return { ok: true, problems: [], verified: "built", note: `簡報在這次修改之前就編譯失敗（${lines[0] ?? "錯誤"}）；這個修改沒有讓它更糟，可以順便修正那個錯誤。` };
   }
   return { ok: false, problems: lines.map((l) => `編譯錯誤：${l}`), verified: "built" };
+}
+
+/** Reads the dry run's screenshots + layout measurements of the edited pages: hard defects refuse the edit. */
+async function withShots(app: FastifyInstance, prefix: string, count: number, look: number[], base: EditCheck): Promise<EditCheck> {
+  if (!count) return { ...base, note: "這次修改的頁面沒有擷取到截圖，畫面沒有實際看過；接受後請用 review_deck_layout 檢查。" };
+  const manifest = await app.storage.getBuffer(`${prefix}_hub/shots.json`).then((b) => (b ? (JSON.parse(b.toString("utf8")) as { pages?: ShotPage[] }) : null)).catch(() => null);
+  const pages = (manifest?.pages ?? []).filter((p) => look.includes(p.index));
+  const hard: string[] = [];
+  const soft: string[] = [];
+  for (const p of pages) {
+    const label = `第 ${p.index} 頁${p.title ? `「${p.title}」` : ""}`;
+    for (const issue of metricIssues(p, { allowed: p.index === 1 })) (HARD_METRIC_RE.test(issue) ? hard : soft).push(`${label}：${issue}`);
+  }
+  if (hard.length) return { ok: false, problems: hard.map((h) => `截圖量測：${h}`), verified: "built" };
+  const shots: NonNullable<EditCheck["shots"]> = [];
+  for (const n of look.filter((n) => n <= count)) {
+    const image = await app.storage.getBuffer(`${prefix}_hub/shots/${n}.webp`).catch(() => null);
+    if (image) shots.push({ page: n, title: pages.find((p) => p.index === n)?.title, image });
+  }
+  return { ...base, shots, ...(soft.length ? { layoutNotes: soft } : {}) };
 }
 
 // ---------------------------------------------------------------- LaTeX

@@ -1417,6 +1417,11 @@ suggestions applied since the last ready preview (by ai / user, conversation; `f
 Aider's lint-after-edit, Claude Code's Stop hooks). Every assistant edit of an artifact — `suggest_deck_edit`,
 `latex_suggest_edit` (also when autopilot applies it), `suggest_note_edit` — goes through one gate before the suggestion
 exists:
+- *Locate* (`locate.ts` `locateEdits`, all three tools): `before` must be the file's own text — exact and unique, or the
+  same text up to whitespace / line breaks (the file's text is then used); repeated text → the error names its deck pages /
+  lines, and deck edits take `page` to pick one; overlapping edits are refused; a miss explains itself from the target's
+  suggestion trail (`suggestionTrail`: a pending suggestion's new text not accepted yet / text an applied suggestion
+  replaced) and returns the closest passage of the file (bigram window, its page / line) to retry with.
 - *Rules* (`build-check.ts`): the kind's parsers, only problems the edit introduces — decks `source-lint.ts` (YAML via
   `yaml`, blocks, diagram specs), LaTeX `source-lint.ts` (braces, `\begin`/`\end`), notes `noteProblems` (fences, `$$`,
   `:::`, comments).
@@ -1426,6 +1431,13 @@ exists:
   LaTeX snapshot with the edited blob as a draft `latex_compile` job with no `latex_compiles` row. ≤ 120 s; errors the
   artifact already had (its last failed preview / last compile) are not the edit's; a build that does not finish →
   `build_check: "unverified"` with a note. A failure → 400 `這個修改沒有通過檢查…` with the error lines (ANSI stripped).
+- *Look* (decks; entry `.qmd`): the pages whose visible content changed (`visiblyChangedPages`: title + shown text, not
+  notes; ≤ 4, within the 20 captured) make the dry run `shots: true`; the worker's layout metrics of those pages run
+  through `metricIssues` — hard defects (`HARD_METRIC_RE`: overflow, raw diagram code, Mermaid syntax error, labels
+  outside their boxes, text < 16 px) refuse the edit (`截圖量測：第 N 頁…`), soft ones come back as `layout_notes`. The
+  screenshots are attached to the tool result for a model that sees images (`screenshots`, `screenshot_note`) and, when
+  the `slides` role has vision, `reviewSlides` reviews them (`visual_review`); its high-severity findings are
+  `visual_issues`, which the completion review treats like `unmet_requirements`.
 - *Facts* (`facts.ts` `newBibClaimProblems`, decks with a paper): 「不是會議論文／only a preprint」 or a venue / year for
   THIS paper that the library record (`preprintOnly`, venue, year) does not support → refused.
 - *The turn's own requirements* (`turn-requirements.ts`): `detectRequirements` on the turn's user message → every
@@ -1433,7 +1445,7 @@ exists:
   position requirement is compared with where the edit's text landed (`pages`); results → `user_requirements` /
   `unmet_requirements` in the tool result.
 - *Turn end* (`agent/guards.ts` completion review, once per run): a refused edit with no later accepted edit of the same
-  artifact, or a last edit with `unmet_requirements`, sends the model back with a hidden correction prompt.
+  artifact, or a last edit with `unmet_requirements` / `visual_issues`, sends the model back with a hidden correction prompt.
 Workflows verify their own renders (render-fix loop, visual QA, `req_*` checks on `data.view`).
 
 **Artifact view** (`lib/artifacts/view.ts`): one definition of an artifact's units for every consumer — decks: page 1 =

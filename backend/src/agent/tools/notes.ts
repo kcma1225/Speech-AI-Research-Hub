@@ -1,10 +1,11 @@
 /** Note tools (notes module helpers: lib/notes/store.ts, lib/suggestions/service.ts). */
 import { z } from "zod";
 import { checkNoteEdit, refusal as editRefusal } from "../../lib/artifacts/build-check.js";
+import { locateEdits, suggestionTrail } from "../../lib/artifacts/locate.js";
 import { checkTurnRequirements, turnWords, unmetOf } from "../../lib/artifacts/turn-requirements.js";
 import { applyHunks } from "../../lib/suggestions/diff.js";
 import { transaction } from "../../db.js";
-import { badRequest, conflict, forbidden, notFound } from "../../lib/http.js";
+import { badRequest, forbidden, notFound } from "../../lib/http.js";
 import { createNote, disconnectNotes, findNote, forgetNoteDocs, listNotes, NOTE_KINDS, noteDocName, noteUrl, type NoteKind } from "../../lib/notes/store.js";
 import { loadStudyAccess } from "../../lib/studies/access.js";
 import { applySuggestionNow, createSuggestion } from "../../lib/suggestions/service.js";
@@ -218,12 +219,11 @@ registerAgentTool({
       const refusal = fullTextRefusal({ text, proposed: a.content_md, words, readAll: await readWholeNote(ctx, note.id, text) }) ?? scopeRefusal(text, computeHunks(text, a.content_md), words);
       if (refusal) throw badRequest(refusal);
     } else {
-      hunks = a.edits!.map((e) => {
-        const first = text.indexOf(e.before);
-        if (first < 0) throw conflict(`筆記中找不到這段文字：「${clip(e.before, 40)}」，請先用 get_note 讀取目前內容。`);
-        if (text.indexOf(e.before, first + 1) >= 0) throw badRequest(`這段文字在筆記中出現多次，請提供更長的段落：「${clip(e.before, 40)}」`);
-        const at = locate(text, { from: first, to: first + e.before.length, before: e.before, after: e.after }) ?? { from: first, to: first + e.before.length };
-        return { from: at.from, to: at.to, before: e.before, after: e.after };
+      // Shared locating (lib/artifacts/locate.ts): whitespace-tolerant, and a miss says why and shows the closest text.
+      const trail = await suggestionTrail(ctx.db, "note", note.id, ctx.conversationId);
+      hunks = locateEdits(text, a.edits!, { kind: "note", reread: "get_note", trail }).map((h) => {
+        const at = locate(text, h) ?? h;
+        return { from: at.from, to: at.to, before: h.before, after: h.after };
       });
       const refusal = scopeRefusal(text, hunks, words);
       if (refusal) throw badRequest(refusal);

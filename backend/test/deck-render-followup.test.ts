@@ -213,6 +213,72 @@ describe.skipIf(!(hasTestDb && hasTestS3))("deck edits that break the build (616
     expect((await t.db.query("SELECT 1 FROM deck_previews WHERE deck_id=$1", [deckId])).rowCount).toBe(previewsBefore);
   });
 
+  it("the edit gate looks at the edited page: overflow measured on the dry run's screenshot refuses the edit; a clean one comes back with its screenshot", async () => {
+    const conv = json(await req("POST", "/api/agent/conversations", { context: { deckId }, autopilot: true })).conversation.id as string;
+    const qmd = (await entry()).content;
+    const firstSlide = qmd.match(/^## .+$/m)![0];
+    setBuildCheck({ enabled: true, waitMs: 20_000 });
+    let dry = 0;
+    const shotPayloads: Record<string, unknown>[] = [];
+    const since = new Date();
+    const seen = new Set<string>();
+    let busy = false;
+    // Play the worker: dry runs succeed with shots; the first one measures an overflow on page 2.
+    const timer = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const jobs = (await t.db.query<{ id: string; payload: { outputPrefix: string; shots?: boolean } }>("SELECT j.id, j.payload FROM jobs j WHERE j.kind='slide_preview' AND j.status='queued' AND j.created_at >= $1 AND NOT EXISTS (SELECT 1 FROM deck_previews p WHERE p.job_id=j.id) ORDER BY j.created_at", [since])).rows;
+        for (const j of jobs) {
+          if (seen.has(j.id)) continue;
+          seen.add(j.id);
+          dry++;
+          shotPayloads.push(j.payload);
+          const metrics = { words: 20, bullets: 2, minFont: 20, maxFont: 40, overflowY: dry === 1 ? 120 : 0, overflowX: 0, visuals: 1, tables: 0, diagrams: 1, diagramErrors: 0, rawDiagramCode: 0, codeBlocks: 0 };
+          await t.app.storage.put(`${j.payload.outputPrefix}_hub/shots.json`, Buffer.from(JSON.stringify({ version: 1, width: 1280, height: 800, total: 2, pages: [{ index: 1, h: 0 }, { index: 2, h: 1, title: "x", metrics }] })), "application/json");
+          await t.app.storage.put(`${j.payload.outputPrefix}_hub/shots/2.webp`, Buffer.from("RIFF\u0000\u0000\u0000\u0000WEBPVP8 "), "image/webp");
+          await t.db.query("UPDATE jobs SET status='succeeded', result=$2, finished_at=now() WHERE id=$1", [j.id, JSON.stringify({ entryHtml: "index.html", fileCount: 1, quartoVersion: "x", shots: { count: 2 } })]);
+        }
+      } finally {
+        busy = false;
+      }
+    }, 200);
+    try {
+      script = [
+        calls(["suggest_deck_edit", { deck_id: deckId, edits: [{ before: firstSlide, after: `${firstSlide}\n\n- 很長的一段` }], title: "加內容" }]),
+        calls(["suggest_deck_edit", { deck_id: deckId, edits: [{ before: firstSlide, after: `${firstSlide}\n\n- 短` }], title: "加短內容" }]),
+        say("第 2 頁加上了，截圖看過沒有超出。"),
+      ];
+      await send(conv, "第 2 頁加一點內容");
+    } finally {
+      clearInterval(timer);
+      setBuildCheck({ enabled: false });
+    }
+    const results = await toolResults(conv);
+    expect(shotPayloads[0]).toMatchObject({ dryRun: true, shots: true });
+    expect(results[0]).toContain("這個修改沒有通過檢查");
+    expect(results[0]).toContain("截圖量測：第 2 頁");
+    expect(results[0]).toContain("內容超出投影片範圍");
+    expect(results[1]).toContain('"screenshots":[2]');
+  });
+
+  it("a passage that is not in the file: the edit says it is the text of a pending suggestion and shows the closest real text; `page` picks one of repeated passages", async () => {
+    const conv = json(await req("POST", "/api/agent/conversations", { context: { deckId }, autopilot: true })).conversation.id as string;
+    const file = await entry();
+    const firstSlide = file.content.match(/^## .+$/m)![0];
+    // A suggestion of this conversation that was not accepted yet (its new text is not in the file).
+    await createSuggestion({ db: t.db }, { targetType: "deck_source", targetId: file.id, hunks: [{ from: file.content.indexOf(firstSlide), to: file.content.indexOf(firstSlide) + firstSlide.length, before: firstSlide, after: `${firstSlide} (simple version)` }], title: "簡化結論", source: "ai", actorId: alice.id, conversationId: conv, user: { id: alice.id } as never });
+    script = [
+      calls(["suggest_deck_edit", { deck_id: deckId, edits: [{ before: `${firstSlide} (simple version)`, after: "## Takeaways" }], title: "改標題" }]),
+      say("找不到原文，我會用檔案目前的文字。"),
+    ];
+    await send(conv, "標題改短");
+    const results = await toolResults(conv);
+    expect(results[0]).toContain("還沒被接受的建議〈簡化結論〉");
+    expect(results[0]).toContain("檔案目前最接近的是第 2 頁");
+    expect(results[0]).toContain(firstSlide);
+  });
+
   it("a failure without an AI suggestion (the user's own edit) posts nothing", async () => {
     const before = (await t.db.query("SELECT 1 FROM agent_messages WHERE role='notice'")).rowCount;
     await t.db.query("UPDATE suggestions SET decided_at = now() - interval '2 days' WHERE target_type='deck_source'");

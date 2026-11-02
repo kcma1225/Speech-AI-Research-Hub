@@ -1348,7 +1348,7 @@ export class AgentRuntime {
     const rows = (await this.db.query<{ tool: string; risk: RunCall["risk"]; status: string; step: number; args: unknown; edited_args: unknown; result: { data?: { next?: { term?: string } | null } } | null; refused: boolean | null; unmet: boolean | null }>(
       `SELECT tc.tool, tc.risk, tc.status, tc.step, tc.args, tc.edited_args, CASE WHEN tc.tool='next_concept' THEN tc.result END AS result,
               (tc.status = 'failed' AND position($3 in coalesce(tc.result_text, '')) > 0) AS refused,
-              (tc.status = 'done' AND jsonb_typeof(tc.result->'data'->'unmet_requirements') = 'array') AS unmet
+              (tc.status = 'done' AND (jsonb_typeof(tc.result->'data'->'unmet_requirements') = 'array' OR jsonb_typeof(tc.result->'data'->'visual_issues') = 'array')) AS unmet
          FROM tool_calls tc JOIN agent_messages m ON m.id=tc.message_id
         WHERE tc.conversation_id=$1 AND m.hidden_by IS NULL AND m.seq > $2 ORDER BY m.seq, tc.position`,
       [conversationId, lastUser, EDIT_REFUSED],

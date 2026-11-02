@@ -5,11 +5,12 @@
 import { z } from "zod";
 import { applyHunks } from "../suggestions/diff.js";
 import { checkLatexEdit, refusal } from "../artifacts/build-check.js";
+import { locateEdits, suggestionTrail } from "../artifacts/locate.js";
 import { checkTurnRequirements, turnWords, unmetOf } from "../artifacts/turn-requirements.js";
 import { registerAgentTool, type AgentToolContext } from "../../agent/tools/registry.js";
 import { clip, isUuid, readStudy, scrub, studyRef, uuidArg } from "../../agent/tools/util.js";
 import { applySuggestionNow, createSuggestion } from "../suggestions/service.js";
-import { badRequest, conflict, forbidden, notFound } from "../http.js";
+import { badRequest, forbidden, notFound } from "../http.js";
 import { loadStudyAccess } from "../studies/access.js";
 import { compileView, findCompile, requestCompile } from "./service.js";
 import { findFile, findFileByPath, findProject, isGeneratedBib, latexUrl, listFiles, liveText, sectionTitle } from "./store.js";
@@ -179,12 +180,7 @@ registerAgentTool({
     }
     if (a.content === undefined) {
       const text = await liveText(ctx.db, ctx.app.collab, file);
-      hunks = a.edits!.map((e) => {
-        const at = text.indexOf(e.before);
-        if (at < 0) throw conflict(`檔案中找不到這段文字：「${clip(e.before, 40)}」，請先用 latex_read_file 讀取目前內容。`);
-        if (text.indexOf(e.before, at + 1) >= 0) throw badRequest(`這段文字出現多次，請提供更長的段落：「${clip(e.before, 40)}」`);
-        return { from: at, to: at + e.before.length, before: e.before, after: e.after };
-      });
+      hunks = locateEdits(text, a.edits!, { kind: "latex", reread: "latex_read_file", trail: await suggestionTrail(ctx.db, "latex_file", file.id, ctx.conversationId) });
     }
     // The edit gate (lib/artifacts/build-check.ts): braces / environments, then a draft compile with the edited file —
     // under autopilot the edit is applied as is, so it is checked first.

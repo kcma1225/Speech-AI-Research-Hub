@@ -34,7 +34,8 @@ export type RunCall = {
   refused?: boolean;
   /** The artifact an edit targets (deck / note / project / file ids, path). */
   target?: string;
-  /** The edit went through but does not meet a requirement of the user's turn (lib/artifacts/turn-requirements.ts). */
+  /** The edit went through but does not meet a requirement of the user's turn (lib/artifacts/turn-requirements.ts), or the
+   * screenshots of the edited pages show a high-severity problem (`visual_issues`, lib/slides/agent-tools.ts). */
   unmet?: boolean;
 };
 
@@ -131,7 +132,7 @@ export function completionReview(f: CompletionFacts): string | null {
   for (const c of f.calls) if (c.target && c.status === "done") lastEdits.set(`${c.tool}|${c.target}`, c);
   const unmet = [...lastEdits.values()].filter((c) => c.unmet);
   if (unmet.length) {
-    issues.push(`這一輪最後的修改（${[...new Set(unmet.map((c) => c.tool))].join("、")}）沒有符合使用者這一輪的要求（見工具結果的 unmet_requirements）：再提一個修正，或在回答中說明哪一條沒有做到、為什麼。`);
+    issues.push(`這一輪最後的修改（${[...new Set(unmet.map((c) => c.tool))].join("、")}）沒有符合使用者這一輪的要求，或修改後的截圖上有明顯問題（見工具結果的 unmet_requirements / visual_issues）：再提一個修正，或在回答中照實說明哪裡還沒做到、畫面還有什麼問題。`);
   }
   if (f.teaching && !teaches(f.text, f.teaching)) {
     issues.push(`你在這一輪用 next_concept 取得了要教的概念「${f.teaching}」，但回答裡沒有講解它。現在就在回答中直接講解（依 next_concept 給的方式：直覺說明、這篇論文為什麼需要它），講完可以邀請使用者用一句話說明，然後結束這一輪；不要只更新計畫或說明進度。`);

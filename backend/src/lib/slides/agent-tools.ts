@@ -8,12 +8,17 @@ import { registerAgentTool, type AgentToolContext } from "../../agent/tools/regi
 import { clip, isUuid, scrub, uuidArg } from "../../agent/tools/util.js";
 import { applyHunks } from "../suggestions/diff.js";
 import { createSuggestion } from "../suggestions/service.js";
-import { badRequest, conflict, forbidden, notFound } from "../http.js";
+import { badRequest, forbidden, notFound } from "../http.js";
 import { loadStudyAccess } from "../studies/access.js";
 import { deckPageOfOffset } from "../artifacts/view.js";
 import { checkTurnRequirements, turnWords, unmetOf } from "../artifacts/turn-requirements.js";
 import { renderDiagnosis } from "./render-followup.js";
-import { checkDeckEdit, refusal } from "../artifacts/build-check.js";
+import { checkDeckEdit, refusal, type EditCheck } from "../artifacts/build-check.js";
+import { aiFor } from "../../ai/platform/index.js";
+import type { ToolImage } from "../../agent/images.js";
+import { imageFromBuffer, requireVision } from "../vision/review.js";
+import { reviewSlides } from "../vision/slides.js";
+import { locateEdits, suggestionTrail } from "../artifacts/locate.js";
 import { newBibClaimProblems } from "../artifacts/facts.js";
 import { preprintOnly } from "../library/published.js";
 import { deckEditorUrl } from "./suggest-target.js";
@@ -47,13 +52,17 @@ registerAgentTool({
   risk: "write",
   suggests: true,
   description:
-    "Propose changes to ONE text file of a deck's in-app Quarto source (default: the entry .qmd; read it first with get_deck). Give `content` (the full new file text) or `edits` (exact `before` passages from the current text and their replacement). Keep the Lab-Hub format (fixed YAML, one `## title` per slide, speaker notes in `::: {.notes}`). Page 1 is the cover = the front matter's title / subtitle: change the existing `subtitle:` line (never add a second key of the same name). An edit that would break the build (YAML errors, unclosed blocks) is refused with the reason. Creates a suggestion the user reviews in the Quarto editor; nothing is changed directly. The result lists `pages` (player page numbers the new text lands on), this conversation's `earlier_suggestions` on the file and a `warning` when an earlier edit put similar text on another page (moving content means removing the old copy too).",
+    "Propose changes to ONE text file of a deck's in-app Quarto source (default: the entry .qmd; read it first with get_deck). Give `content` (the full new file text) or `edits` (exact `before` passages from the current text and their replacement). Keep the Lab-Hub format (fixed YAML, one `## title` per slide, speaker notes in `::: {.notes}`). Page 1 is the cover = the front matter's title / subtitle: change the existing `subtitle:` line (never add a second key of the same name). An edit that would break the build (YAML errors, unclosed blocks) or the edited pages' layout (overflow, raw diagram code, labels outside their boxes, text < 16 px; measured on a real render) is refused with the reason. The result attaches screenshots of the edited pages as rendered (look at them before answering) and the layout reviewer's findings (`visual_issues`: fix them with another suggestion or tell the user). When the same text is on several pages, add `page` to the edit; a missing `before` comes back with the closest passage of the file. Creates a suggestion the user reviews in the Quarto editor; nothing is changed directly. The result lists `pages` (player page numbers the new text lands on), this conversation's `earlier_suggestions` on the file and a `warning` when an earlier edit put similar text on another page (moving content means removing the old copy too).",
   input: z.object({
     deck_id: uuidArg("Deck"),
     file_id: uuidArg("Source file").optional(),
     path: z.string().max(200).optional().describe("File path in the deck source, e.g. index.qmd (default: the entry file)"),
     content: z.string().max(200000).optional(),
-    edits: z.array(z.object({ before: z.string().min(1).max(20000).describe("Exact current text (must appear once)"), after: z.string().max(20000) })).max(30).optional(),
+    edits: z.array(z.object({
+      before: z.string().min(1).max(20000).describe("Exact current text of the file (unique, or unique on `page`)"),
+      after: z.string().max(20000),
+      page: z.number().int().min(1).max(500).optional().describe("Player page the passage is on (when the same text is on several pages, e.g. a repeated speaker-notes line)"),
+    })).max(30).optional(),
     title: z.string().max(80).optional().describe("Short label, e.g. 補上實驗結果"),
   }),
   summarize: (a) => `建議修改簡報${a.path ? ` ${a.path}` : ""}${a.title ? `：${a.title}` : ""}${a.edits ? `（${a.edits.length} 處）` : ""}`,
@@ -69,12 +78,9 @@ registerAgentTool({
     const text = file.content ?? "";
     let hunks: { from: number; to: number; before: string; after: string }[] | undefined;
     if (a.content === undefined) {
-      hunks = a.edits!.map((e) => {
-        const at = text.indexOf(e.before);
-        if (at < 0) throw conflict(`檔案中找不到這段文字：「${clip(scrub(e.before), 40)}」，請先用 get_deck 讀取目前內容。`);
-        if (text.indexOf(e.before, at + 1) >= 0) throw badRequest(`這段文字出現多次，請提供更長的段落：「${clip(scrub(e.before), 40)}」`);
-        return { from: at, to: at + e.before.length, before: e.before, after: e.after };
-      });
+      // Shared locating (lib/artifacts/locate.ts): `page` scopes a passage repeated across pages; a miss says why
+      // (pending / applied suggestions) and shows the closest passage of the file.
+      hunks = locateEdits(text, a.edits!, { kind: "deck", reread: "get_deck", trail: await suggestionTrail(ctx.db, "deck_source", file.id, ctx.conversationId) });
     }
     // The file as it would be after the edit must still compile (production 61666f10: a second `subtitle:` in the front
     // matter broke the preview after the user accepted it): an edit's own breakage goes back to the model.
@@ -95,6 +101,8 @@ registerAgentTool({
     const isEntry = (await ctx.db.query<{ entry: string }>("SELECT entry FROM deck_source_trees WHERE deck_id=$1", [file.deck_id])).rows[0]?.entry === file.path;
     const turnReqs = isEntry ? checkTurnRequirements(await turnWords(ctx.db, ctx.conversationId), "deck", after, { view: check.view, landed, venue: paper }) : [];
     const unmet = unmetOf(turnReqs);
+    // What the edited pages look like (the dry run's screenshots): shown to the model, judged by the vision reviewer.
+    const look = await lookAtEdit(ctx, file.deck_id, check);
     const s = await createSuggestion({ db: ctx.db }, {
       targetType: "deck_source", targetId: file.id, proposedText: a.content, hunks, title: a.title || "AI 建議",
       source: "ai", actorId: ctx.user.id, conversationId: ctx.conversationId, user: ctx.user,
@@ -108,11 +116,57 @@ registerAgentTool({
         ...(earlier.list.length ? { earlier_suggestions: earlier.list } : {}),
         ...(earlier.warning ? { warning: earlier.warning } : {}),
         build_check: check.verified, ...(check.note ? { build_note: check.note } : {}),
+        ...look.data,
       },
+      ...(look.images.length ? { images: look.images } : {}),
       links: [{ label: "在簡報編輯器檢視建議", url: `${url}&suggestion=${s.id}`, kind: "suggestion" }],
     };
   },
 });
+
+/**
+ * The edited pages as rendered by the edit gate's dry run: their screenshots go back to the model (when it can see
+ * images) and to the vision layout reviewer. High-severity findings become `visual_issues`: the turn-end review keeps the
+ * turn from ending until a later edit fixes them or the answer says what is still wrong (agent/guards.ts).
+ */
+async function lookAtEdit(ctx: AgentToolContext, deckId: string, check: EditCheck): Promise<{ data: Record<string, unknown>; images: ToolImage[] }> {
+  const shots = check.shots ?? [];
+  if (!shots.length) return { data: check.layoutNotes?.length ? { layout_notes: check.layoutNotes } : {}, images: [] };
+  const seen = ctx.vision ? await ctx.vision().catch(() => false) : false;
+  const images: ToolImage[] = seen ? shots.map((x) => ({ mediaType: "image/webp" as const, data: x.image, label: `修改後的第 ${x.page} 頁（編譯截圖）` })) : [];
+  const data: Record<string, unknown> = {
+    screenshots: shots.map((x) => x.page),
+    screenshot_note: seen ? "附上這次修改後實際編譯出來的頁面截圖：先看過再回答；有問題就再提一個修正。" : "目前的模型不能看圖；截圖交給排版審查者檢查。",
+    ...(check.layoutNotes?.length ? { layout_notes: check.layoutNotes } : {}),
+  };
+  const platform = aiFor(ctx.app);
+  try {
+    await requireVision(platform, "slides");
+  } catch {
+    // No vision model bound to `slides`: the screenshots and measurements above are what the model gets.
+    return { data, images };
+  }
+  try {
+    const deck = (await ctx.db.query<{ kind: "progress" | "paper_report"; title: string }>("SELECT kind, title FROM decks WHERE id=$1", [deckId])).rows[0];
+    const reviewImages = shots.map((x) => imageFromBuffer(x.page, x.image, x.title)).filter((x): x is NonNullable<typeof x> => !!x);
+    if (!deck || !reviewImages.length) return { data, images };
+    const review = await reviewSlides(platform, ctx.db, ctx.app.storage, { id: deckId, kind: deck.kind, title: deck.title }, reviewImages, {
+      userId: ctx.user.id, signal: ctx.signal,
+      note: "這些截圖是「套用這次修改之後」的頁面（原始碼仍是修改前的版本，find/replace 一律用 null）。只回報截圖上真的看得到的問題：圖的方框沒有文字、文字或圖被裁切、重疊、看不清楚、版面明顯不專業。",
+    });
+    const high = review.issues.filter((i) => i.severity === "high");
+    data.visual_review = { summary: review.summary, issues: review.issues.map((i) => ({ page: i.page, severity: i.severity, title: i.title, detail: i.detail, suggestion: i.suggestion })) };
+    if (high.length) {
+      data.visual_issues = high.map((i) => `第 ${i.page} 頁：${i.title}（${i.detail}）`);
+      data.visual_hint = "建議已建立，但截圖上有明顯問題：再提一個修正（新的建議會跟這個一起列給使用者），或在回答中照實說明畫面還有什麼問題。";
+    }
+  } catch (error) {
+    // The review failing must not read as a clean page: say it did not run.
+    ctx.app.log.warn({ err: error, deckId }, "edit screenshot review failed");
+    data.visual_review_note = `排版審查沒有完成（${clip((error as Error).message, 80)}），截圖上的問題沒有人檢查過；${seen ? "請自己看附上的截圖" : "接受後請用 review_deck_layout 檢查"}。`;
+  }
+  return { data, images };
+}
 
 registerAgentTool({
   name: "get_deck_render_error",
