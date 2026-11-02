@@ -1,13 +1,16 @@
 <script lang="ts">
   import { untrack, type Snippet } from "svelte";
-  import { ChevronLeft, ChevronRight, Expand, GalleryHorizontal, Minimize, NotebookText, Presentation, ScreenShare } from "@lucide/svelte";
+  import { ChevronLeft, ChevronRight, Expand, GalleryHorizontal, Minimize, NotebookText, Presentation, ScreenShare, Smartphone } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import Spinner from "#lib/components/ui/Spinner.svelte";
   import { toasts } from "#lib/components/ui/toast.svelte.ts";
   import { loadManifest, notesHtml, openSpeaker, pageAt, preload, readPosition, writePosition } from "#lib/slides/pages.ts";
   import { deckChannel, type DeckChannel } from "#lib/slides/sync.ts";
   import { containBox, revealFitTracker, revealSlideBox } from "#lib/slides/laser.ts";
+  import { hostEvent, liveSocket, socketUrl, type LinkState } from "#lib/slides/remote.ts";
+  import { session } from "#lib/stores/session.svelte.ts";
   import LaserOverlay from "./LaserOverlay.svelte";
+  import RemotePanel from "./RemotePanel.svelte";
   import type { PageManifest, SlideVersion } from "#lib/slides/types.ts";
 
   /**
@@ -15,6 +18,8 @@
    * page images of the manifest; quarto decks run in the sandboxed iframe (never add allow-same-origin:
    * the deck runs untrusted scripts and must keep an opaque origin) and are driven through Reveal's
    * postMessage API. Same chrome for both: counter, thumbnails, keyboard, swipe, fullscreen, speaker window.
+   * Phone remote (`remote`): while presenting, the player is the host of a `/remote` session — the phone steps, jumps
+   * and points the laser here, this player reports its page back (lib/slides/remote.ts).
    */
   let {
     version,
@@ -28,6 +33,7 @@
     counts = {},
     shareKey = null,
     speaker = true,
+    remote = "fullscreen",
     class: cls = "",
     empty,
   }: {
@@ -47,6 +53,11 @@
     shareKey?: string | null;
     /** Offer the speaker window (published versions only: it loads the deck through the player routes). */
     speaker?: boolean;
+    /**
+     * Phone remote host: "always" (the standalone presentation page), "fullscreen" (while fullscreen, or once 「用手機遙控」
+     * is opened), "off". Signed-in workspace accounts, published versions only.
+     */
+    remote?: "always" | "fullscreen" | "off";
     class?: string;
     empty?: Snippet;
   } = $props();
@@ -277,6 +288,57 @@
     });
   });
 
+  // ---- Phone remote (host) ---------------------------------------------------------------------
+  let remoteAsked = $state(false);
+  let showRemote = $state(false);
+  let remoteSession = $state<string | null>(null);
+  let remotes = $state(0);
+  let remoteLink = $state<LinkState>("closed");
+  const canRemote = $derived(remote !== "off" && !!session.user && !session.user.is_admin && version?.status === "published");
+  const hosting = $derived(canRemote && (remote === "always" || isFullscreen || remoteAsked));
+  let host: ReturnType<typeof liveSocket> | null = null;
+  $effect(() => {
+    const id = hosting ? version?.id : null;
+    if (!id) return;
+    const sock = liveSocket(socketUrl(`/slides/remote/host?version=${encodeURIComponent(id)}`), {
+      onState: (s) => (remoteLink = s),
+      onOpen: () => sock.send({ type: "state", page: untrack(() => page), total: untrack(() => total) }),
+      // A refused host (too many sessions, version gone) does not retry.
+      onClose: (code) => {
+        remoteSession = null;
+        remotes = 0;
+        return code !== 1008;
+      },
+      onMessage: (data) => {
+        const m = hostEvent(data);
+        if (!m) return;
+        if (m.type === "session") remoteSession = m.id;
+        else if (m.type === "remotes") remotes = m.count;
+        else if (m.type === "goto") goto(m.page);
+        else if (m.type === "step") step(m.dir);
+        else if (m.type === "laser") m.page === page ? laser?.point(m.x, m.y, m.down) : laser?.hide();
+        else if (m.type === "laserOff") laser?.hide();
+      },
+    });
+    host = sock;
+    return () => {
+      sock.close();
+      host = null;
+      remoteSession = null;
+      remotes = 0;
+      remoteLink = "closed";
+    };
+  });
+  // The phone follows every move, whoever made it.
+  $effect(() => {
+    const state = { type: "state", page, total };
+    untrack(() => host?.send(state));
+  });
+  function toggleRemote() {
+    remoteAsked = true;
+    showRemote = !showRemote;
+  }
+
   // ---- Keyboard & touch -----------------------------------------------------------------------
   function onKey(e: KeyboardEvent) {
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing || !version) return;
@@ -432,8 +494,18 @@
           {@render counter(true)}
           <button type="button" class={fsBtn} aria-label={t("slides.player.next")} disabled={!live && page >= total} onclick={() => step(1)}><ChevronRight /></button>
           {#if canSpeak}<button type="button" class={fsBtn} aria-label={t("slides.player.speaker")} onclick={speak}><ScreenShare /></button>{/if}
+          {#if canRemote}
+            <button type="button" class="{fsBtn} relative" aria-label={t("slides.remote.title")} aria-expanded={showRemote} onclick={toggleRemote}>
+              <Smartphone />{#if remotes}<span class="absolute top-1.5 right-1.5 size-2 rounded-full bg-success"></span>{/if}
+            </button>
+          {/if}
           <button type="button" class={fsBtn} aria-label={t("slides.player.exitFullscreen")} onclick={fullscreen}><Minimize /></button>
         </div>
+      </div>
+    {/if}
+    {#if showRemote && canRemote}
+      <div class="absolute right-3 z-20 {isFullscreen ? 'bottom-20' : 'bottom-3'}">
+        <RemotePanel sessionId={remoteSession} {remotes} link={remoteLink} onclose={() => (showRemote = false)} />
       </div>
     {/if}
   </div>
@@ -455,6 +527,11 @@
       {#if canSpeak}
         <!-- A second window means nothing on a phone (S still works with a keyboard). -->
         <button type="button" class="{btn} max-sm:hidden" aria-label={t("slides.player.speaker")} title="{t('slides.player.speaker')} (S)" onclick={speak}><ScreenShare /></button>
+      {/if}
+      {#if canRemote}
+        <button type="button" class="{btn} relative {showRemote ? toggleOn : ''}" aria-label={t("slides.remote.title")} title={t("slides.remote.title")} aria-expanded={showRemote} onclick={toggleRemote}>
+          <Smartphone />{#if remotes}<span class="absolute top-1.5 right-1.5 size-2 rounded-full bg-success"></span>{/if}
+        </button>
       {/if}
       <button type="button" class={btn} aria-label={t("slides.fullscreen")} title="{t('slides.fullscreen')} (F)" onclick={fullscreen}><Expand /></button>
     </div>

@@ -109,6 +109,7 @@ export async function buildApp(deps: AppDeps, options: FastifyServerOptions = {}
 
   await app.register((await import("./routes/search.js")).default, { prefix: "/api" }); // search (M8)
   await app.register((await import("./routes/meetings.js")).default, { prefix: "/api" }); // meetings (M6; WS /api/meetings/:id/live, after notes)
+  await app.register((await import("./routes/slide-remote.js")).default, { prefix: "/api" }); // phone remote for presentations (WS host / control, after notes)
   await app.register((await import("./routes/latex.js")).default, { prefix: "/api" }); // LaTeX editor (M7; after notes: app.collab)
   await app.register((await import("./routes/vision-review.js")).default, { prefix: "/api" }); // AI 檢查排版 (slides + LaTeX; after latex: app.collab)
   await app.register((await import("./routes/agent.js")).default, { prefix: "/api" }); // agent + memories + MCP (M3)

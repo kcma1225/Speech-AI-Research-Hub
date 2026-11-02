@@ -32,10 +32,22 @@ export function pageAt(manifest: PageManifest | null, h: number, v = 0): SlidePa
 export function notesHtml(page: SlidePage | null | undefined): string | null {
   return sanitizeNotes(page?.notes?.html);
 }
+/**
+ * KaTeX math in live notes: keep the readable MathML text only. Its TeX source (`annotation`) and the visual copy
+ * (`.katex-html`) would otherwise all survive sanitising as text and repeat the formula (once as \mathcal{L}_{…}).
+ * Parsed in an inert document (no scripts run, nothing loads).
+ */
+function dropMathCopies(html: string): string {
+  if (!/katex|<annotation/i.test(html) || typeof DOMParser === "undefined") return html;
+  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
+  doc.querySelectorAll("annotation, .katex-html").forEach((el) => el.remove());
+  return doc.body.innerHTML;
+}
+
 /** The same sanitising for notes HTML reported by a live deck (Reveal `getSlideNotes`); null when empty. */
 export function sanitizeNotes(html: unknown): string | null {
   if (typeof html !== "string" || !html.trim() || html.length > 200_000) return null;
-  const clean = DOMPurify.sanitize(html, {
+  const clean = DOMPurify.sanitize(dropMathCopies(html), {
     ALLOWED_TAGS: ["p", "br", "strong", "b", "em", "i", "u", "s", "code", "pre", "ul", "ol", "li", "blockquote", "a", "span", "sub", "sup", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "table", "thead", "tbody", "tr", "th", "td"],
     ALLOWED_ATTR: ["href", "title"],
     ALLOW_DATA_ATTR: false,

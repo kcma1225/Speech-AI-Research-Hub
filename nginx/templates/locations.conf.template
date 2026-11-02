@@ -40,6 +40,11 @@
         limit_req zone=api_limit burst=20 nodelay;
         include /etc/nginx/snippets/proxy-websocket.conf;
     }
+    # Phone remote for presentations (WebSocket: the presenting player and the /remote PWA). The backend checks Origin and session.
+    location ~ ^/api/slides/remote/(host|control/[0-9a-f-]+)$ {
+        limit_req zone=api_limit burst=20 nodelay;
+        include /etc/nginx/snippets/proxy-websocket.conf;
+    }
     # Streaming responses (SSE): AI status/chat/agent runs and the note editor's AI actions.
     location /api/ai/ {
         limit_req zone=api_limit burst=200 nodelay;

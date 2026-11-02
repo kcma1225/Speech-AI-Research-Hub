@@ -1,0 +1,18 @@
+{
+  "id": "/remote",
+  "name": "Speech-AI Hub 簡報遙控器",
+  "short_name": "簡報遙控",
+  "description": "用手機換頁、看講稿、當雷射筆，遙控電腦上正在播放的簡報。",
+  "lang": "zh-Hant",
+  "start_url": "/remote",
+  "scope": "/remote",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ecebe7",
+  "theme_color": "#ecebe7",
+  "icons": [
+    { "src": "/icons/remote-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/remote-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/remote-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -25,6 +25,7 @@ import * as agentActivity from "./i18n/agent-activity.ts";
 import * as crud from "./i18n/crud.ts";
 import * as people from "./i18n/people.ts";
 import * as goals from "./i18n/goals.ts";
+import * as remote from "./i18n/remote.ts";
 
 const zh = {
   ...core.zh,
@@ -52,6 +53,7 @@ const zh = {
   ...crud.zh,
   ...people.zh,
   ...goals.zh,
+  ...remote.zh,
 };
 export type MessageKey = keyof typeof zh;
 
@@ -81,6 +83,7 @@ const en: Record<MessageKey, string> = {
   ...crud.en,
   ...people.en,
   ...goals.en,
+  ...remote.en,
 };
 
 export const messages: Record<"zh-TW" | "en", Record<MessageKey, string>> = { "zh-TW": zh, en };

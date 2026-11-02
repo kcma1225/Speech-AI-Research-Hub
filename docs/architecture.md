@@ -541,6 +541,9 @@ Frontend: `components/doc-import/` (`DocImportSheet` — file drop, mode/placeme
 | GET `/slides/view/:slug/:token/:versionId/*` | capability | serve rendered asset from S3 (see "Slide viewing") |
 | GET `/slides/pdf/:slug/:versionId` | same as by-slug | stream `slides.pdf` as attachment `<slug>-v<n>.pdf` |
 | GET `/slides/reference/:slug/:refId` | same as by-slug | stream PDF inline, or 302 to URL references |
+| GET `/slides/remote/sessions` | user | the account's presentations running now (phone remote): `{sessions:[{id, deckId, versionId, slug, title, device, page, total, startedAt, remotes}]}` newest first |
+| GET `/slides/remote/host?version=` (WebSocket) | user (not admin), Origin = APP_ORIGIN | the presenting player's socket for a **published** version: opens a session (`session {id}`), relays phone commands (see "Phone remote") |
+| GET `/slides/remote/control/:id` (WebSocket) | the session's own account, Origin = APP_ORIGIN | the phone's socket: `state` on connect and on every move, `ended` when the player stops; another account's or an ended session → 404 |
 
 Detail (`GET /slides/:id`, by-slug) `project` also carries `metadata` and `source: {revision, published_revision} | null` (signed-in
 viewers only).
@@ -2903,6 +2906,27 @@ from `"speaker"`, finite fractions, integer page, boolean `down`). The player dr
 plugin's laser) in a `pointer-events: none` overlay above the iframe/image in its stage, so it works for every already
 rendered deck, stays visible in fullscreen and leaves the deck's own annotate tools untouched; it ignores lasers for another
 page and clears on every page change, `laserOff` or `bye`. The speaker preview shows the same overlay locally.
+
+Phone remote (`/remote` PWA; backend `lib/slides/remote.ts` + `routes/slide-remote.ts`, frontend `lib/slides/remote.ts`,
+`routes/remote/`): a cross-device version of the speaker sync, relayed by the backend because a phone shares no
+`BroadcastChannel` with the computer. `SlidePlayer` `remote` = `"always"` (`/slides/play/<slug>`), `"fullscreen"` (default:
+in fullscreen or after 「用手機遙控」 was opened) or `"off"`; for a signed-in workspace account and a published version it
+opens the host socket, shows 「用手機遙控」 (QR code of `/remote/<session>` drawn from `qrcode-generator` modules as one SVG
+path, copy link, phones connected) inside the player so it also shows in fullscreen, and acts on phone commands exactly as on
+the speaker window's: `goto {page}`, `step {dir}` (quarto: fragments), `laser {page,x,y,down}` (slide fractions, drawn by
+`LaserOverlay` when it is the shown page), `laserOff`; it sends `state {page,total}` on open and on every move (whoever made
+it). Sessions are kept in the backend process's memory (single backend; a restart ends them, the player re-hosts, a phone
+whose session is gone shows 「這場簡報已經結束」 after checking the list): ≤ 8 per account, ≤ 4 phones per session, text
+frames ≤ 512 bytes validated on both ends, laser ≤ 60 frames/s per phone, ping every 25 s, 8 h limit; nginx proxies both
+paths as WebSockets. The PWA (`static/remote.webmanifest`, scope `/remote`, icons `static/icons/`; nginx maps
+`.webmanifest` → `application/manifest+json`; the push service worker `/sw.js` is registered, no offline cache) lists the
+running presentations (`/remote`, every 4 s while visible, 「安裝到主畫面」 via `beforeinstallprompt`, iOS Share-sheet hint)
+and controls one (`/remote/<session>`): 上一頁／下一頁 (64 px), the current page image from the version's manifest as
+laser pad (雷射筆 on: hold and drag, `touch-action: none`; off: horizontal swipe steps), speaker notes (`notesHtml`, size
+13–28 px per phone), next slide, all pages sheet, talk timer, Screen Wake Lock while visible, a short vibration per step;
+hardware keys / clickers paired with the phone step too. Signed-out visitors go to `/login?next=`. Notes math: the worker's
+notes tree drops KaTeX's `annotation` (TeX source) and `.katex-html` (visual copy), `sanitizeNotes` does the same for live
+deck notes, so a formula reads once.
 
 ## AI platform (`backend/src/ai/`, routes `ai-status.ts` + `ai-admin.ts`, `ai-worker/`)
 

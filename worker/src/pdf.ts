@@ -138,7 +138,8 @@ const THUMBNAIL_TIMEOUT_MS = 30_000;
 
 /**
  * Lists the deck's slides in Reveal order with title and notes, and shows all fragments. Runs in the page,
- * so it returns plain data only; the notes tree is serialised (and filtered) in Node by pages.ts.
+ * so it returns plain data only; the notes tree is serialised (and filtered) in Node by pages.ts. Formulas in notes
+ * keep only their MathML text.
  */
 export const SLIDE_LIST = `(() => {
   const reveal = window.Reveal;
@@ -152,6 +153,9 @@ export const SLIDE_LIST = `(() => {
       else if (child.nodeType === 1) {
         const tag = child.localName;
         if (tag === "script" || tag === "style") continue;
+        // KaTeX math: keep the readable MathML text only — its TeX source (annotation) and the visual copy
+        // (.katex-html) would repeat every formula (once as TeX) in the speaker notes.
+        if (tag === "annotation" || child.classList.contains("katex-html")) continue;
         const entry = { tag, children: tree(child, depth + 1) };
         if (tag === "a" && child.getAttribute("href")) entry.href = child.getAttribute("href");
         out.push(entry);

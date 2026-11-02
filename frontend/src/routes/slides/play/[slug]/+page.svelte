@@ -105,6 +105,7 @@
         {startPage}
         {shareKey}
         variant="stage"
+        remote="always"
         globalKeys
         class="absolute inset-0"
       >
