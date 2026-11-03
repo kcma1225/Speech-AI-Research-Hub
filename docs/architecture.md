@@ -2924,10 +2924,12 @@ paths as WebSockets. The PWA (`static/remote.webmanifest`, scope `/remote`, icon
 running presentations (`/remote`, every 4 s while visible, 「安裝到主畫面」 via `beforeinstallprompt`, iOS Share-sheet hint)
 and controls one (`/remote/<session>`): 上一頁／下一頁 (64 px), the current page image from the version's manifest as
 laser pad (雷射筆 on: hold and drag, `touch-action: none`; off: horizontal swipe steps) shown large, small or hidden
-(per phone, `hub-remote-slide`; large shows small on short screens and while an answer is open), 轉動指向 (hold: the dot
-starts at the centre and follows the phone's turning, `devicemotion.rotationRate` — yaw about the measured gravity,
-pitch about the screen's x axis, 36° / 22° per slide width / height, `lib/slides/tilt.ts`; iOS asks motion access once;
-works with the slide hidden), speaker notes (`notesHtml`, size
+(per phone, `hub-remote-slide`; large shows small on short screens and while an answer is open), 轉動指向 (tap on / off: the
+dot starts at the centre and follows the phone's turning, `devicemotion.rotationRate` — yaw about the measured gravity,
+pitch about the screen's x axis, 36° / 22° per slide width / height, `lib/slides/tilt.ts`; Apple's WebKit reports
+rotationRate in Core Motion order (alpha / beta / gamma = x / y / z) and gravity pointing down, normalised to the spec
+frame; iOS asks motion access from the first tap (a click, not a press-down); 左右反向／上下反向 per phone; works with
+the slide hidden), speaker notes (`notesHtml`, size
 13–28 px per phone), next slide, all pages sheet, talk timer, Screen Wake Lock while visible, a short vibration per step;
 hardware keys / clickers paired with the phone step too. Signed-out visitors go to `/login?next=`. Notes math: the worker's
 notes tree drops KaTeX's `annotation` (TeX source) and `.katex-html` (visual copy), `sanitizeNotes` does the same for live

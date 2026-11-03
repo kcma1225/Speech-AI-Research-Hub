@@ -18,7 +18,7 @@
   /**
    * Phone controller of one presentation (`/remote/<session>`), all on one screen: big 上一頁／下一頁, the current slide
    * (large, small or hidden, per phone) with its speaker notes and the next slide, jump to any page, a laser pointer
-   * (hold a finger on the slide, or hold 轉動指向 and turn the phone), a talk timer, the screen kept awake, and
+   * (hold a finger on the slide, or tap 轉動指向 and turn the phone), a talk timer, the screen kept awake, and
    * 「提問助手」 under the notes (the professor asks in the middle of the talk). The computer's player does the moving
    * (lib/slides/remote.ts); this page follows its `state`.
    */
@@ -164,15 +164,31 @@
     if (!laserOn) untrack(laserOff);
   });
 
-  // ---- Laser by turning the phone: hold 轉動指向, the dot starts at the centre (lib/slides/tilt.ts) -------------------
+  // ---- Laser by turning the phone: tap 轉動指向 on / off, the dot starts at the centre (lib/slides/tilt.ts) -------------------
   const canTilt = tiltSupported();
   // iOS gives motion readings only after a tap on 轉動指向 allowed them (requestPermission must run in a click, a
   // press-down is refused as "no user gesture"); readings arriving means access was given earlier in this tab.
   let tiltAllowed = $state(!canTilt || !tiltNeedsAsk());
   let tilting = $state(false);
-  let holding = false;
   let tiltNote = $state<string | null>(null);
   let stopTilt: (() => void) | null = null;
+  // A per-phone fix when the dot moves the wrong way (shown once 轉動指向 has been used).
+  const readFlip = () => {
+    try {
+      const v = JSON.parse(localStorage.getItem("hub-remote-tilt-flip") ?? "{}") as { x?: number; y?: number };
+      return { x: v.x === -1 ? -1 : 1, y: v.y === -1 ? -1 : 1 } as { x: 1 | -1; y: 1 | -1 };
+    } catch {
+      return { x: 1, y: 1 } as { x: 1 | -1; y: 1 | -1 };
+    }
+  };
+  let flip = $state(readFlip());
+  let tiltUsed = $state(false);
+  function toggleFlip(axis: "x" | "y") {
+    flip = { ...flip, [axis]: flip[axis] === 1 ? -1 : 1 };
+    try {
+      localStorage.setItem("hub-remote-tilt-flip", JSON.stringify(flip));
+    } catch {}
+  }
   $effect(() => {
     if (tiltAllowed) return;
     // Browsers without a gyroscope send one empty event: only a reading counts.
@@ -183,42 +199,40 @@
     window.addEventListener("devicemotion", on);
     return () => window.removeEventListener("devicemotion", on);
   });
+  /** Tap: on (the dot starts at the centre) / off. The first tap on iOS asks for motion access, then turns it on. */
   async function tiltClick() {
-    if (tiltAllowed) return;
-    if (await tiltPermission()) {
+    if (tilting) return tiltOff();
+    if (!tiltAllowed) {
+      if (!(await tiltPermission())) return void (tiltNote = iosOtherBrowser() ? t("remote.tiltIosBrowser", { name: iosOtherBrowser()! }) : t("remote.tiltDenied"));
       tiltAllowed = true;
-      tiltNote = t("remote.tiltAllowed");
-    } else tiltNote = iosOtherBrowser() ? t("remote.tiltIosBrowser", { name: iosOtherBrowser()! }) : t("remote.tiltDenied");
-  }
-  function tiltDown(e: PointerEvent) {
-    // Not allowed yet: the click that follows asks.
-    if (!tiltAllowed) return;
-    e.preventDefault();
-    try {
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    } catch {}
+    }
     tiltNote = null;
-    holding = true;
     laserOn = false;
     tilting = true;
+    tiltUsed = true;
     buzz();
     stopTilt = startTilt(
       (p) => sendLaser(p, true),
       () => {
         tiltNote = t("remote.tiltSilent");
-        tiltUp();
+        tiltOff();
       },
+      () => flip,
     );
   }
-  function tiltUp() {
-    holding = false;
+  function tiltOff() {
     if (!tilting) return;
     tilting = false;
     stopTilt?.();
     stopTilt = null;
     laserOff();
   }
-  $effect(() => () => stopTilt?.());
+  // Stops when the phone locks or the page is left.
+  $effect(() => {
+    const hide = () => document.visibilityState === "hidden" && tiltOff();
+    document.addEventListener("visibilitychange", hide);
+    return () => (document.removeEventListener("visibilitychange", hide), stopTilt?.());
+  });
 
   // ---- Timer ---------------------------------------------------------------------------------
   let elapsed = $state(0);
@@ -360,19 +374,14 @@
   </div>
 {/snippet}
 
-<!-- Hold to point by turning the phone (works with the slide hidden too). -->
+<!-- Tap to point by turning the phone, tap again to stop (works with the slide hidden too). -->
 {#snippet tiltButton(compact: boolean)}
   <button
     type="button"
-    class="inline-flex shrink-0 cursor-pointer touch-none items-center justify-center gap-1.5 rounded-xl border text-[14px] font-medium select-none {compact ? 'size-10' : 'min-h-11 flex-1 px-3'} {tilting ? 'border-danger bg-danger text-white' : 'border-line bg-surface-2 text-ink'}"
+    class="inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-xl border text-[14px] font-medium select-none {compact ? 'size-10' : 'min-h-11 flex-1 px-3'} {tilting ? 'border-danger bg-danger text-white' : 'border-line bg-surface-2 text-ink'}"
     aria-label={tiltAllowed ? t("remote.tilt") : t("remote.tiltEnable")}
     aria-pressed={tilting}
-    onpointerdown={tiltDown}
     onclick={tiltClick}
-    onpointerup={tiltUp}
-    onpointercancel={tiltUp}
-    onlostpointercapture={tiltUp}
-    oncontextmenu={(e) => e.preventDefault()}
   >
     <Rotate3d class="size-4.5" />{#if !compact}{tilting ? t("remote.tiltOn") : tiltAllowed ? t("remote.tilt") : t("remote.tiltEnable")}{/if}
   </button>
@@ -421,7 +430,7 @@
               {#if next}<span class="min-w-0 truncate text-[12.5px] text-ink-3">{t("remote.next")}：{next.title ?? t("remote.page", { n: next.index })}</span>{/if}
             </p>
             <div class="flex items-center gap-2">
-              <Button variant={laserOn ? "primary" : "secondary"} class="min-h-11 flex-1" aria-pressed={laserOn} onclick={() => (laserOn = !laserOn)}><MousePointer2 />{t("remote.laser")}</Button>
+              <Button variant={laserOn ? "primary" : "secondary"} class="min-h-11 flex-1" aria-pressed={laserOn} onclick={() => (tiltOff(), (laserOn = !laserOn))}><MousePointer2 />{t("remote.laser")}</Button>
               {#if canTilt}{@render tiltButton(false)}{/if}
               <Button variant="secondary" size="icon" class="size-11" aria-label={t("remote.pages")} disabled={!pages.length} onclick={() => (showPages = true)}><LayoutGrid /></Button>
             </div>
@@ -433,7 +442,7 @@
               <p class="text-[15px] font-semibold tabular-nums" aria-live="polite">{count ? `${current} / ${count}` : current}</p>
               {#if next}<p class="line-clamp-2 text-[12px] text-ink-3">{t("remote.next")}：{next.title ?? t("remote.page", { n: next.index })}</p>{/if}
               <div class="mt-auto flex items-center gap-1.5">
-                <Button variant={laserOn ? "primary" : "secondary"} size="icon" class="size-10" aria-label={t("remote.laser")} aria-pressed={laserOn} onclick={() => (laserOn = !laserOn)}><MousePointer2 /></Button>
+                <Button variant={laserOn ? "primary" : "secondary"} size="icon" class="size-10" aria-label={t("remote.laser")} aria-pressed={laserOn} onclick={() => (tiltOff(), (laserOn = !laserOn))}><MousePointer2 /></Button>
                 {#if canTilt}{@render tiltButton(true)}{/if}
                 <Button variant="secondary" size="icon" class="size-10" aria-label={t("remote.pages")} disabled={!pages.length} onclick={() => (showPages = true)}><LayoutGrid /></Button>
               </div>
@@ -449,6 +458,14 @@
           </section>
         {/if}
         {#if tiltNote}<p class="shrink-0 px-0.5 text-[12.5px] text-ink-3" role="status">{tiltNote}</p>{/if}
+        {#if tiltUsed}
+          <div class="flex shrink-0 flex-wrap items-center gap-1.5 px-0.5 text-[12.5px] text-ink-3">
+            {t("remote.tiltWrongWay")}
+            {#each [["x", t("remote.tiltFlipX")], ["y", t("remote.tiltFlipY")]] as [axis, label] (axis)}
+              <button type="button" class="min-h-8 cursor-pointer rounded-full border px-2.5 {flip[axis as 'x' | 'y'] === -1 ? 'border-ink bg-ink text-canvas' : 'border-line bg-surface-2 text-ink-2'}" aria-pressed={flip[axis as "x" | "y"] === -1} onclick={() => toggleFlip(axis as "x" | "y")}>{label}</button>
+            {/each}
+          </div>
+        {/if}
 
         <section class="flex min-h-24 flex-1 flex-col rounded-2xl border border-line bg-surface" aria-label={t("slides.player.notes")}>
           <div class="flex shrink-0 items-center gap-1 border-b border-line px-3 py-1">

@@ -1,7 +1,7 @@
 /**
- * Air-mouse laser for the phone remote: while 「轉動指向」 is held, the pointer starts at the slide's centre and follows
+ * Air-mouse laser for the phone remote: while 「轉動指向」 is on, the pointer starts at the slide's centre and follows
  * the phone's turning (gyroscope, `devicemotion.rotationRate`), like a TV remote pointer. Turning is measured, not the
- * absolute direction, so it needs no compass and no calibration; letting go and holding again re-centres it.
+ * absolute direction, so it needs no compass and no calibration; turning it off and on again re-centres it.
  *
  * Left / right is the rotation around the room's vertical (the gravity direction measured in the phone's frame), so it
  * works the same with the phone held flat, tilted or upright; up / down is the rotation around the screen's horizontal
@@ -35,6 +35,21 @@ export function tiltStep(rate: Vec, gravity: Vec | null, angle: number, dt: numb
   return { dx: (-dead(yaw) * dt) / SPAN.x || 0, dy: (-dead(pitch) * dt) / SPAN.y || 0 };
 }
 
+/**
+ * A reading in the spec's frame (rotation about x / y / z, gravity pointing up). Apple's WebKit (every iPhone browser)
+ * passes Core Motion through as is: rotationRate alpha / beta / gamma are the rotations about x / y / z (the spec has
+ * alpha = z, beta = x, gamma = y), and accelerationIncludingGravity has gravity pointing down
+ * (WebCoreMotionManager.mm, DeviceMotionClientIOS.mm).
+ */
+export function deviceFrame(r: { alpha: number | null; beta: number | null; gamma: number | null }, g: Vec | null, apple: boolean): [Vec, Vec | null] {
+  if (apple) return [{ x: r.alpha ?? 0, y: r.beta ?? 0, z: r.gamma ?? 0 }, g && { x: -g.x, y: -g.y, z: -g.z }];
+  return [{ x: r.beta ?? 0, y: r.gamma ?? 0, z: r.alpha ?? 0 }, g];
+}
+
+/** iPhone / iPad (any browser there is Apple's WebKit). */
+export const isAppleWebKit = (ua = typeof navigator === "undefined" ? "" : navigator.userAgent) =>
+  /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && typeof navigator !== "undefined" && navigator.maxTouchPoints > 1);
+
 type MotionCtor = { requestPermission?: () => Promise<"granted" | "denied"> };
 type Motion = {
   rotationRate: { alpha: number | null; beta: number | null; gamma: number | null } | null;
@@ -63,7 +78,8 @@ export async function tiltPermission(): Promise<boolean> {
  * Follows the phone's turning from the centre until stopped; `onMove` gets slide fractions (0–1), smoothed.
  * `onSilent` fires when no reading arrived within a second (no gyroscope, or access refused).
  */
-export function startTilt(onMove: (p: { x: number; y: number }) => void, onSilent: () => void): () => void {
+export function startTilt(onMove: (p: { x: number; y: number }) => void, onSilent: () => void, flip: () => { x: 1 | -1; y: 1 | -1 } = () => ({ x: 1, y: 1 })): () => void {
+  const apple = isAppleWebKit();
   let x = 0.5;
   let y = 0.5;
   let sx = x;
@@ -82,9 +98,10 @@ export function startTilt(onMove: (p: { x: number; y: number }) => void, onSilen
     last = t;
     const gi = m.accelerationIncludingGravity;
     const g = gi && gi.x != null && gi.y != null && gi.z != null ? { x: gi.x, y: gi.y, z: gi.z } : null;
-    const d = tiltStep({ x: r.beta ?? 0, y: r.gamma ?? 0, z: r.alpha ?? 0 }, g, angle(), dt);
-    x = Math.min(1, Math.max(0, x + d.dx));
-    y = Math.min(1, Math.max(0, y + d.dy));
+    const d = tiltStep(...deviceFrame(r, g, apple), angle(), dt);
+    const f = flip();
+    x = Math.min(1, Math.max(0, x + d.dx * f.x));
+    y = Math.min(1, Math.max(0, y + d.dy * f.y));
     // Light smoothing against jitter; still follows quick turns.
     sx += (x - sx) * 0.5;
     sy += (y - sy) * 0.5;
