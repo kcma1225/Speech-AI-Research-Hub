@@ -154,6 +154,11 @@
     -webkit-font-smoothing: antialiased;
     -webkit-tap-highlight-color: transparent;
   }
+  /* Phone remote (/remote): no double-tap zoom. */
+  html.no-zoom,
+  html.no-zoom * {
+    touch-action: manipulation;
+  }
   body {
     min-height: 100dvh;
     background: var(--canvas);

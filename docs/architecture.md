@@ -2921,7 +2921,9 @@ whose session is gone shows 「這場簡報已經結束」 after checking the li
 frames ≤ 512 bytes validated on both ends, laser ≤ 60 frames/s per phone, ping every 25 s, 8 h limit; nginx proxies both
 paths as WebSockets. The PWA (`static/remote.webmanifest`, scope `/remote`, icons `static/icons/`; nginx maps
 `.webmanifest` → `application/manifest+json`; the push service worker `/sw.js` is registered, no offline cache) lists the
-running presentations (`/remote`, every 4 s while visible, 「安裝到主畫面」 via `beforeinstallprompt`, iOS Share-sheet hint)
+running presentations (no zoom under `/remote`: `touch-action: manipulation` (`html.no-zoom`) against double-tap zoom,
+viewport `maximum-scale=1, user-scalable=no` while mounted, iOS `gesturestart` / two-finger `touchmove` cancelled; inputs
+16 px) (`/remote`, every 4 s while visible, 「安裝到主畫面」 via `beforeinstallprompt`, iOS Share-sheet hint)
 and controls one (`/remote/<session>`): 上一頁／下一頁 (64 px), the current page image from the version's manifest as
 laser pad (雷射筆 on: hold and drag, `touch-action: none`; off: horizontal swipe steps) shown large, small or hidden
 (per phone, `hub-remote-slide`; large shows small on short screens and while an answer is open), 轉動指向 (tap on / off: the
@@ -2940,11 +2942,15 @@ deck notes, so a formula reads once.
 backend `lib/slides/ask.ts`): the phone hears the room with the browser's own speech recognition (`SpeechRecognition` /
 `webkitSpeechRecognition`: Google on Android Chrome, Apple on iOS Safari; zh-TW or en-US), so the server needs no ASR
 role. One recognition keeps running while listening; an utterance is the text heard since the last one, committed after
-1.3 s without new words; recognition that ends by itself restarts (a restart refused without a tap asks for one). In
+1.3 s without new words; recognition that ends by itself restarts (a restart refused without a tap asks for one). 停止
+retires the recognition (its late events are ignored by a generation counter) and keeps answers on their way; 聆聽 waits
+(≤ 0.7 s) for the stopped one to end, since iOS starts a new one that never hears while the old one holds the microphone;
+a recognition without `audiostart` / results within 4 s is replaced twice, then reported (`ask.err.stuck`). In
 automatic mode every utterance (≥ 4 characters; one check at a time, utterances heard meanwhile checked together) goes
 to `POST /slides/:id/ask` with `gate`: the check sees only the recent transcript (cheap; it decides YES / NO, the
 presenter's own talk and rhetorical questions are NO), a YES gets the answer. 「回答這題」 (what is being said now, else the
-last utterance) and a typed question skip the check. The answer's context (built once per deck, kept 10 min in memory):
+last utterance not answered yet in this listening: answered utterances, auto-answered ones and everything heard before
+a 停止 are `used` and never offered again) and a typed question skip the check. The answer's context (built once per deck, kept 10 min in memory):
 the deck's view text by player page (in-app source: visible text + notes; else the published manifest's titles and
 notes), the paper's full text (`paperFullText` + `digest`, 45 000 chars, experiments / methods weighted; abstract when
 there is no PDF), the transcript and the current page; the reply format is the interpreted question, one sentence to

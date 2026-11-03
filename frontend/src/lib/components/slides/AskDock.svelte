@@ -52,6 +52,7 @@
       "service-not-allowed": t("ask.err.service"),
       "audio-capture": t("ask.err.audio"),
       network: t("ask.err.network"),
+      stuck: t("ask.err.stuck"),
       other: t("ask.err.other"),
     })[e];
   // iPhone Chrome / Firefox / in-app browsers cannot hear at all: say so before the first tap, not "no permission".
@@ -78,7 +79,8 @@
     return () => clearInterval(timer);
   });
   const waited = (at: Date) => Math.max(0, Math.round((now - at.getTime()) / 1000));
-  const lastHeard = $derived(listener.interim ? `${listener.interim}…` : (session.heard.at(-1)?.text ?? ""));
+  // What this listening has heard and not answered yet (an answered or older question is not offered again).
+  const lastHeard = $derived(listener.interim ? `${listener.interim}…` : (session.open.at(-1)?.text ?? ""));
   const answering = $derived(session.cards.filter((c) => c.status === "answering").length);
 </script>
 
@@ -87,12 +89,12 @@
   <div class="flex shrink-0 items-center gap-1.5 p-1.5">
     <button
       type="button"
-      class="inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-xl px-3 text-[14px] font-semibold disabled:opacity-40 {listener.listening ? 'bg-danger-soft text-danger' : 'bg-ink text-canvas'}"
-      aria-pressed={listener.listening}
+      class="inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-xl px-3 text-[14px] font-semibold disabled:opacity-40 {listener.listening || listener.starting ? 'bg-danger-soft text-danger' : 'bg-ink text-canvas'}"
+      aria-pressed={listener.listening || listener.starting}
       {disabled}
       onclick={() => session.toggleListen()}
     >
-      {#if listener.listening}<MicOff class="size-4" />{t("ask.stopShort")}{:else}<Mic class="size-4" />{t("ask.startShort")}{/if}
+      {#if listener.listening || listener.starting}<MicOff class="size-4" />{t("ask.stopShort")}{:else}<Mic class="size-4" />{t("ask.startShort")}{/if}
     </button>
     <button type="button" class="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-xl px-1.5 text-left" onclick={() => (open = !open)} aria-expanded={expanded} aria-live="polite">
       {#if session.checking || answering}
@@ -101,7 +103,7 @@
         <Ear class="size-4 shrink-0 {listener.listening ? 'animate-pulse text-success motion-reduce:animate-none' : 'text-ink-3'}" />
       {/if}
       <span class="min-w-0 flex-1 truncate text-[13px] {problem ? 'text-danger' : listener.interim ? 'text-ink-3' : 'text-ink-2'}">
-        {problem ? t("ask.problemShort") : lastHeard || (listener.listening ? t("ask.hearing") : t("ask.idleShort"))}
+        {problem ? t("ask.problemShort") : lastHeard || (listener.starting ? t("ask.starting") : listener.listening ? t("ask.hearing") : t("ask.idleShort"))}
       </span>
     </button>
     <button type="button" class="inline-flex min-h-11 shrink-0 cursor-pointer items-center gap-1 rounded-xl border border-line bg-surface-2 px-2.5 text-[14px] font-semibold disabled:opacity-40" disabled={disabled || !session.canAnswerNow} onclick={() => ((open = true), session.answerNow())}>
@@ -118,7 +120,7 @@
 
   {#if typing}
     <form class="flex shrink-0 gap-2 px-1.5 pb-1.5" onsubmit={(e) => (e.preventDefault(), sendTyped())}>
-      <input bind:this={input} bind:value={typed} class="min-h-11 min-w-0 flex-1 rounded-xl border border-line bg-surface-2 px-3 text-[15px]" placeholder={t("ask.typeHint")} enterkeyhint="send" />
+      <input bind:this={input} bind:value={typed} class="min-h-11 min-w-0 flex-1 rounded-xl border border-line bg-surface-2 px-3 text-[16px]" placeholder={t("ask.typeHint")} enterkeyhint="send" />
       <button type="submit" class="grid size-11 shrink-0 cursor-pointer place-items-center rounded-xl bg-ink text-canvas disabled:opacity-40" aria-label={t("ask.send")} disabled={!typed.trim() || disabled}><Send class="size-4" /></button>
     </form>
   {/if}
@@ -152,9 +154,9 @@
         </article>
       {:else}
         <div class="rounded-xl bg-surface-2 px-3 py-2 text-[13px] leading-relaxed">
-          {#each session.heard.slice(-3) as h (h.at)}<p class="text-ink-2">{h.text}</p>{/each}
+          {#each session.open.slice(-3) as h (h.at)}<p class="text-ink-2">{h.text}</p>{/each}
           {#if listener.interim}<p class="text-ink-3">{listener.interim}…</p>{/if}
-          {#if !session.heard.length && !listener.interim}<p class="text-ink-3">{t("ask.emptyHint")}</p>{/if}
+          {#if !session.open.length && !listener.interim}<p class="text-ink-3">{t("ask.emptyHint")}</p>{/if}
         </div>
       {/each}
 

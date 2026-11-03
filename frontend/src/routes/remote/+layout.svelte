@@ -20,6 +20,25 @@
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker.getRegistration("/").then((r) => r ?? navigator.serviceWorker.register("/sw.js", { scope: "/" })).catch(() => {});
   });
+  // A remote control, not a document: no double-tap or pinch zoom (a quick second tap on 下一頁 zoomed the app).
+  // touch-action: manipulation stops double-tap zoom everywhere; the viewport limits stop pinch on Android and focus
+  // zoom on iOS; iOS ignores user-scalable for pinch, so its gesture events are cancelled.
+  $effect(() => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    const before = meta?.content;
+    if (meta) meta.content = `${before}, maximum-scale=1, user-scalable=no`;
+    document.documentElement.classList.add("no-zoom");
+    const stop = (e: Event) => e.preventDefault();
+    const pinch = (e: TouchEvent) => e.touches.length > 1 && e.preventDefault();
+    for (const g of ["gesturestart", "gesturechange"]) document.addEventListener(g, stop, { passive: false });
+    document.addEventListener("touchmove", pinch, { passive: false });
+    return () => {
+      if (meta && before != null) meta.content = before;
+      document.documentElement.classList.remove("no-zoom");
+      for (const g of ["gesturestart", "gesturechange"]) document.removeEventListener(g, stop);
+      document.removeEventListener("touchmove", pinch);
+    };
+  });
 </script>
 
 <svelte:head>

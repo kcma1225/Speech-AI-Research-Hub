@@ -26,7 +26,8 @@ const write = (key: string, value: string) => {
 
 export class AskSession {
   cards = $state<AskCard[]>([]);
-  heard = $state<{ at: number; text: string }[]>([]);
+  /** Everything heard (the server's context); `used`: answered, or heard before the current listening started. */
+  heard = $state<{ at: number; text: string; used: boolean }[]>([]);
   checking = $state(false);
   /** A note from automatic mode (rate limit reached). */
   autoNote = $state<string | null>(null);
@@ -35,7 +36,7 @@ export class AskSession {
   readonly listener: Listener;
 
   private nextId = 1;
-  private pending: string[] = [];
+  private pending: { at: number; text: string }[] = [];
   private suppress = false;
 
   constructor(
@@ -62,32 +63,54 @@ export class AskSession {
   }
 
   toggleListen() {
-    if (this.listener.listening) this.listener.stop();
+    // Stopping listening keeps answers on their way; only leaving the page (stop) cancels them.
+    if (this.listener.listening || this.listener.starting) this.stopListening();
     else {
+      this.retireHeard();
       this.autoNote = null;
       this.listener.lang = this._lang;
       this.listener.start();
     }
   }
-  stop() {
+  private stopListening() {
     this.listener.stop();
+    this.pending = [];
+    this.retireHeard();
+  }
+  stop() {
+    this.stopListening();
     for (const c of this.cards) if (c.status === "answering") c.ctl.abort();
   }
 
   /** The room's recent words, oldest first (≤ 5000 chars), for the server's context. */
   private transcript = () => this.heard.map((h) => h.text).join("\n").slice(-5000);
 
+  /** Heard and not answered yet, in this listening, oldest first. */
+  get open() {
+    return this.heard.filter((h) => !h.used);
+  }
+  private retireHeard() {
+    if (this.heard.some((h) => !h.used)) this.heard = this.heard.map((h) => (h.used ? h : { ...h, used: true }));
+  }
+  /** Marks heard utterances as answered (an answered question is not 「回答這題」's default again). */
+  private markUsed(ats: number[]) {
+    if (ats.length) this.heard = this.heard.map((h) => (ats.includes(h.at) ? { ...h, used: true } : h));
+  }
+
   private onUtterance(text: string) {
-    this.heard = [...this.heard, { at: Date.now(), text }].slice(-80);
+    let at = Date.now();
+    if (this.heard.at(-1)?.at === at) at++;
+    this.heard = [...this.heard, { at, text, used: false }].slice(-80);
     if (this.suppress || !this._auto || text.replace(/\s/g, "").length < 4) return;
-    if (this.checking) this.pending.push(text);
-    else void this.check(text);
+    if (this.checking) this.pending.push({ at, text });
+    else void this.check([{ at, text }]);
   }
 
   // Automatic: one check at a time; utterances heard meanwhile are checked together next.
-  private async check(text: string) {
+  private async check(items: { at: number; text: string }[]) {
     const { deckId, page } = this.ctx();
     if (!deckId) return;
+    const text = items.map((i) => i.text).join(" ");
     this.checking = true;
     const ctl = new AbortController();
     let card: AskCard | null = null;
@@ -99,6 +122,7 @@ export class AskSession {
           signal: ctl.signal,
           onQuestion: () => {
             card = this.addCard(text, true, ctl);
+            this.markUsed(items.map((i) => i.at));
           },
           onDelta: (d) => card && this.append(card.id, d),
         },
@@ -109,8 +133,8 @@ export class AskSession {
       else if ((e as { status?: number }).status === 429) this.autoNote = (e as Error).message;
     } finally {
       this.checking = false;
-      const next = this.pending.splice(0).join(" ");
-      if (next && this._auto && this.listener.listening) void this.check(next);
+      const next = this.pending.splice(0).filter((p) => this.open.some((h) => h.at === p.at));
+      if (next.length && this._auto && this.listener.listening) void this.check(next);
     }
   }
 
@@ -142,18 +166,28 @@ export class AskSession {
     }
   }
 
-  /** Something to answer now: words being heard, or anything heard so far. */
+  /** Something to answer now: words being heard, or something heard in this listening and not answered yet. */
   get canAnswerNow() {
-    return !!this.heard.length || !!this.listener.interim;
+    return !!this.listener.interim || this.open.length > 0;
   }
-  /** 「回答這題」: what is being said now, else the last thing heard (with the one before when it was short). */
+  /**
+   * 「回答這題」: what is being said now, else the last unanswered thing heard in this listening (with the one before
+   * when it was short); never a question already answered or heard before a stop.
+   */
   answerNow() {
     this.suppress = true;
     const now = this.listener.flush();
     this.suppress = false;
-    if (now) return void this.answer(now);
-    const last = this.heard.at(-1);
-    const prev = this.heard.at(-2);
-    void this.answer(last && prev && last.text.length < 12 ? `${prev.text} ${last.text}` : (last?.text ?? ""));
+    const open = this.open;
+    if (now) {
+      this.markUsed(open.filter((h) => h.text === now).map((h) => h.at));
+      return void this.answer(now);
+    }
+    const last = open.at(-1);
+    if (!last) return;
+    const prev = open.at(-2);
+    const both = !!prev && last.text.length < 12;
+    this.markUsed(both ? [prev!.at, last.at] : [last.at]);
+    void this.answer(both ? `${prev!.text} ${last.text}` : last.text);
   }
 }

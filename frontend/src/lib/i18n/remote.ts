@@ -76,6 +76,8 @@ export const zh = {
   "ask.err.audio": "抓不到麥克風，請確認沒有其他 App 正在使用麥克風。",
   "ask.err.network": "語音辨識需要網路，連線不穩，會自動重試。",
   "ask.err.other": "語音辨識停止了，請再按一次開始聆聽。",
+  "ask.err.stuck": "語音辨識沒有反應（麥克風沒有打開）。請再按一次聆聽；還是不行就重新整理這一頁。",
+  "ask.starting": "啟動中…",
 } as const;
 
 export const en: Record<keyof typeof zh, string> = {
@@ -155,4 +157,6 @@ export const en: Record<keyof typeof zh, string> = {
   "ask.err.audio": "No microphone found; make sure no other app is using it.",
   "ask.err.network": "Speech recognition needs the network; the connection is unstable, retrying.",
   "ask.err.other": "Speech recognition stopped; tap Start listening again.",
+  "ask.err.stuck": "Speech recognition isn't responding (the microphone didn't open). Tap Listen again; if it still fails, reload this page.",
+  "ask.starting": "Starting…",
 };
