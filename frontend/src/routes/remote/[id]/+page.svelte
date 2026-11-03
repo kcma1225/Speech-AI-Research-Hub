@@ -12,6 +12,7 @@
   import { controlEvent, liveSocket, socketUrl, type LinkState } from "#lib/slides/remote.ts";
   import { AskSession } from "#lib/slides/ask-session.svelte.ts";
   import { startTilt, tiltPermission, tiltSupported } from "#lib/slides/tilt.ts";
+  import { iosOtherBrowser } from "#lib/slides/device.ts";
   import type { PageManifest, SlideDetail } from "#lib/slides/types.ts";
 
   /**
@@ -179,7 +180,7 @@
     holding = true;
     if (!tiltAllowed) {
       tiltAllowed = await tiltPermission();
-      if (!tiltAllowed) return void (tiltNote = t("remote.tiltDenied"));
+      if (!tiltAllowed) return void (tiltNote = iosOtherBrowser() ? t("remote.tiltIosBrowser", { name: iosOtherBrowser()! }) : t("remote.tiltDenied"));
       // iOS showed its dialog, so the finger is gone: the next hold points.
       if (!holding) return void (tiltNote = t("remote.tiltAllowed"));
     }

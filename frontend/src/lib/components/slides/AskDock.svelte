@@ -1,10 +1,11 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { ChevronDown, ChevronUp, Ear, Hand, Keyboard, LoaderCircle, Mic, MicOff, Send, Square, TriangleAlert } from "@lucide/svelte";
+  import { ChevronDown, ChevronUp, Copy, Ear, Hand, Keyboard, LoaderCircle, Mic, MicOff, Send, Square, TriangleAlert } from "@lucide/svelte";
   import { t } from "#lib/i18n.svelte.ts";
   import { renderMarkdown } from "#lib/markdown.ts";
   import type { AskSession } from "#lib/slides/ask-session.svelte.ts";
   import type { ListenError } from "#lib/slides/listen.svelte.ts";
+  import { iosOtherBrowser } from "#lib/slides/device.ts";
 
   /**
    * 「提問助手」 view on the phone remote, on the same screen as the speaker notes (the professor asks in the middle of
@@ -53,7 +54,21 @@
       network: t("ask.err.network"),
       other: t("ask.err.other"),
     })[e];
-  const problem = $derived(listener.error ? errorText(listener.error) : !listener.supported ? t("ask.err.unsupported") : null);
+  // iPhone Chrome / Firefox / in-app browsers cannot hear at all: say so before the first tap, not "no permission".
+  const otherBrowser = iosOtherBrowser();
+  const problem = $derived(
+    otherBrowser && listener.error !== "network" ? t("ask.err.iosBrowser", { name: otherBrowser }) : listener.error ? errorText(listener.error) : !listener.supported ? t("ask.err.unsupported") : null,
+  );
+  let copied = $state(false);
+  async function copyLink() {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      copied = true;
+      setTimeout(() => (copied = false), 2500);
+    } catch {
+      prompt(t("ask.copyLink"), location.href);
+    }
+  }
   const clock = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   // Seconds an answer has been on its way (a reasoning model can think a while before the first word).
   let now = $state(Date.now());
@@ -111,7 +126,12 @@
   {#if expanded}
     <div bind:this={list} class="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain border-t border-line p-2.5">
       {#if problem}
-        <p class="flex gap-2 rounded-xl bg-danger-soft px-3 py-2 text-[12.5px] text-danger" role="alert"><TriangleAlert class="mt-0.5 size-4 shrink-0" />{problem}</p>
+        <div class="rounded-xl bg-danger-soft px-3 py-2 text-[12.5px] text-danger" role="alert">
+          <p class="flex gap-2"><TriangleAlert class="mt-0.5 size-4 shrink-0" />{problem}</p>
+          {#if otherBrowser}
+            <button type="button" class="mt-2 inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg bg-surface px-3 text-[13px] font-medium text-ink" onclick={copyLink}><Copy class="size-4" />{copied ? t("ask.copied") : t("ask.copyLink")}</button>
+          {/if}
+        </div>
       {/if}
       {#if session.autoNote}<p class="text-[12.5px] text-ink-3">{session.autoNote}</p>{/if}
 
