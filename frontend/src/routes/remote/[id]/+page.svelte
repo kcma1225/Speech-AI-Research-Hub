@@ -11,7 +11,7 @@
   import { containBox, toSlide } from "#lib/slides/laser.ts";
   import { controlEvent, liveSocket, socketUrl, type LinkState } from "#lib/slides/remote.ts";
   import { AskSession } from "#lib/slides/ask-session.svelte.ts";
-  import { startTilt, tiltPermission, tiltSupported } from "#lib/slides/tilt.ts";
+  import { startTilt, tiltNeedsAsk, tiltPermission, tiltSupported } from "#lib/slides/tilt.ts";
   import { iosOtherBrowser } from "#lib/slides/device.ts";
   import type { PageManifest, SlideDetail } from "#lib/slides/types.ts";
 
@@ -166,25 +166,39 @@
 
   // ---- Laser by turning the phone: hold 轉動指向, the dot starts at the centre (lib/slides/tilt.ts) -------------------
   const canTilt = tiltSupported();
-  let tiltAllowed = false;
+  // iOS gives motion readings only after a tap on 轉動指向 allowed them (requestPermission must run in a click, a
+  // press-down is refused as "no user gesture"); readings arriving means access was given earlier in this tab.
+  let tiltAllowed = $state(!canTilt || !tiltNeedsAsk());
   let tilting = $state(false);
   let holding = false;
   let tiltNote = $state<string | null>(null);
   let stopTilt: (() => void) | null = null;
-  async function tiltDown(e: PointerEvent) {
+  $effect(() => {
+    if (tiltAllowed) return;
+    // Browsers without a gyroscope send one empty event: only a reading counts.
+    const on = (e: DeviceMotionEvent) => {
+      const r = e.rotationRate;
+      if (r && (r.alpha != null || r.beta != null || r.gamma != null)) tiltAllowed = true;
+    };
+    window.addEventListener("devicemotion", on);
+    return () => window.removeEventListener("devicemotion", on);
+  });
+  async function tiltClick() {
+    if (tiltAllowed) return;
+    if (await tiltPermission()) {
+      tiltAllowed = true;
+      tiltNote = t("remote.tiltAllowed");
+    } else tiltNote = iosOtherBrowser() ? t("remote.tiltIosBrowser", { name: iosOtherBrowser()! }) : t("remote.tiltDenied");
+  }
+  function tiltDown(e: PointerEvent) {
+    // Not allowed yet: the click that follows asks.
+    if (!tiltAllowed) return;
     e.preventDefault();
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } catch {}
     tiltNote = null;
     holding = true;
-    if (!tiltAllowed) {
-      tiltAllowed = await tiltPermission();
-      if (!tiltAllowed) return void (tiltNote = iosOtherBrowser() ? t("remote.tiltIosBrowser", { name: iosOtherBrowser()! }) : t("remote.tiltDenied"));
-      // iOS showed its dialog, so the finger is gone: the next hold points.
-      if (!holding) return void (tiltNote = t("remote.tiltAllowed"));
-    }
-    if (!holding) return;
     laserOn = false;
     tilting = true;
     buzz();
@@ -351,15 +365,16 @@
   <button
     type="button"
     class="inline-flex shrink-0 cursor-pointer touch-none items-center justify-center gap-1.5 rounded-xl border text-[14px] font-medium select-none {compact ? 'size-10' : 'min-h-11 flex-1 px-3'} {tilting ? 'border-danger bg-danger text-white' : 'border-line bg-surface-2 text-ink'}"
-    aria-label={t("remote.tilt")}
+    aria-label={tiltAllowed ? t("remote.tilt") : t("remote.tiltEnable")}
     aria-pressed={tilting}
     onpointerdown={tiltDown}
+    onclick={tiltClick}
     onpointerup={tiltUp}
     onpointercancel={tiltUp}
     onlostpointercapture={tiltUp}
     oncontextmenu={(e) => e.preventDefault()}
   >
-    <Rotate3d class="size-4.5" />{#if !compact}{tilting ? t("remote.tiltOn") : t("remote.tilt")}{/if}
+    <Rotate3d class="size-4.5" />{#if !compact}{tilting ? t("remote.tiltOn") : tiltAllowed ? t("remote.tilt") : t("remote.tiltEnable")}{/if}
   </button>
 {/snippet}
 

@@ -45,7 +45,10 @@ type Motion = {
 
 export const tiltSupported = () => typeof window !== "undefined" && "DeviceMotionEvent" in window && (window.isSecureContext ?? true);
 
-/** iOS: ask for motion access (must run inside a tap). Elsewhere: granted. */
+/** iOS (and browsers on its web view) ask for motion access, and only from a tap (`click`, not `pointerdown`). */
+export const tiltNeedsAsk = () => !!(window as unknown as { DeviceMotionEvent?: MotionCtor }).DeviceMotionEvent?.requestPermission;
+
+/** Asks for motion access; call it from a click handler. Without the iOS prompt: granted. */
 export async function tiltPermission(): Promise<boolean> {
   const C = (window as unknown as { DeviceMotionEvent?: MotionCtor }).DeviceMotionEvent;
   if (!C?.requestPermission) return true;
