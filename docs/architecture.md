@@ -2923,13 +2923,18 @@ paths as WebSockets. The PWA (`static/remote.webmanifest`, scope `/remote`, icon
 `.webmanifest` → `application/manifest+json`; the push service worker `/sw.js` is registered, no offline cache) lists the
 running presentations (`/remote`, every 4 s while visible, 「安裝到主畫面」 via `beforeinstallprompt`, iOS Share-sheet hint)
 and controls one (`/remote/<session>`): 上一頁／下一頁 (64 px), the current page image from the version's manifest as
-laser pad (雷射筆 on: hold and drag, `touch-action: none`; off: horizontal swipe steps), speaker notes (`notesHtml`, size
+laser pad (雷射筆 on: hold and drag, `touch-action: none`; off: horizontal swipe steps) shown large, small or hidden
+(per phone, `hub-remote-slide`; large shows small on short screens and while an answer is open), 轉動指向 (hold: the dot
+starts at the centre and follows the phone's turning, `devicemotion.rotationRate` — yaw about the measured gravity,
+pitch about the screen's x axis, 36° / 22° per slide width / height, `lib/slides/tilt.ts`; iOS asks motion access once;
+works with the slide hidden), speaker notes (`notesHtml`, size
 13–28 px per phone), next slide, all pages sheet, talk timer, Screen Wake Lock while visible, a short vibration per step;
 hardware keys / clickers paired with the phone step too. Signed-out visitors go to `/login?next=`. Notes math: the worker's
 notes tree drops KaTeX's `annotation` (TeX source) and `.katex-html` (visual copy), `sanitizeNotes` does the same for live
 deck notes, so a formula reads once.
 
-「提問助手」 (phone remote tab; frontend `lib/slides/listen.svelte.ts`, `lib/slides/ask.ts`, `components/slides/AskPanel.svelte`;
+「提問助手」 (on the controller's one screen, under the notes on phones and beside them on wide screens; frontend
+`lib/slides/listen.svelte.ts`, `lib/slides/ask.ts`, `lib/slides/ask-session.svelte.ts`, `components/slides/AskDock.svelte`;
 backend `lib/slides/ask.ts`): the phone hears the room with the browser's own speech recognition (`SpeechRecognition` /
 `webkitSpeechRecognition`: Google on Android Chrome, Apple on iOS Safari; zh-TW or en-US), so the server needs no ASR
 role. One recognition keeps running while listening; an utterance is the text heard since the last one, committed after
@@ -2942,8 +2947,9 @@ the deck's view text by player page (in-app source: visible text + notes; else t
 notes), the paper's full text (`paperFullText` + `digest`, 45 000 chars, experiments / methods weighted; abstract when
 there is no PDF), the transcript and the current page; the reply format is the interpreted question, one sentence to
 say, 2–4 bullets with their source (page / § and p.). Reasoning effort `low` (an answer that comes back without text is
-retried once with thinking off). Nothing is stored: transcript and answers live in the page; the helper stays mounted
-on the slide tab (badge + vibration for a new answer).
+retried once with thinking off). Nothing is stored: transcript and answers live in the page. On phones the helper is a
+one-row bar (聆聽, what is being heard, 回答, keyboard, open) that opens over part of the notes when an answer arrives
+(vibration) and collapses back.
 
 ## AI platform (`backend/src/ai/`, routes `ai-status.ts` + `ai-admin.ts`, `ai-worker/`)
 

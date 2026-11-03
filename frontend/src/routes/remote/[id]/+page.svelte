@@ -1,21 +1,25 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { page as route } from "$app/state";
-  import { ArrowLeft, ChevronLeft, ChevronRight, LayoutGrid, Minus, MonitorX, MousePointer2, Pause, Play, Plus, RotateCcw, X } from "@lucide/svelte";
+  import { ArrowLeft, ChevronLeft, ChevronRight, Image, ImageMinus, ImageOff, LayoutGrid, Minus, MonitorX, MousePointer2, Pause, Play, Plus, Rotate3d, RotateCcw, X } from "@lucide/svelte";
   import { api } from "#lib/api.ts";
   import { t } from "#lib/i18n.svelte.ts";
   import Button from "#lib/components/ui/Button.svelte";
-  import AskPanel from "#lib/components/slides/AskPanel.svelte";
+  import AskDock from "#lib/components/slides/AskDock.svelte";
   import EmptyState from "#lib/components/ui/EmptyState.svelte";
   import { loadManifest, notesHtml } from "#lib/slides/pages.ts";
   import { containBox, toSlide } from "#lib/slides/laser.ts";
   import { controlEvent, liveSocket, socketUrl, type LinkState } from "#lib/slides/remote.ts";
+  import { AskSession } from "#lib/slides/ask-session.svelte.ts";
+  import { startTilt, tiltPermission, tiltSupported } from "#lib/slides/tilt.ts";
   import type { PageManifest, SlideDetail } from "#lib/slides/types.ts";
 
   /**
-   * Phone controller of one presentation (`/remote/<session>`): big 上一頁／下一頁, the current slide with its speaker
-   * notes and the next slide, jump to any page, a laser pointer (hold a finger on the slide), a talk timer, and the
-   * screen kept awake. The computer's player does the moving (lib/slides/remote.ts); this page follows its `state`.
+   * Phone controller of one presentation (`/remote/<session>`), all on one screen: big 上一頁／下一頁, the current slide
+   * (large, small or hidden, per phone) with its speaker notes and the next slide, jump to any page, a laser pointer
+   * (hold a finger on the slide, or hold 轉動指向 and turn the phone), a talk timer, the screen kept awake, and
+   * 「提問助手」 under the notes (the professor asks in the middle of the talk). The computer's player does the moving
+   * (lib/slides/remote.ts); this page follows its `state`.
    */
   const id = $derived(route.params.id!);
   let link = $state<LinkState>("connecting");
@@ -116,16 +120,19 @@
     const r = pad?.getBoundingClientRect();
     return r ? containBox(r, ratio, 1) : null;
   }
-  function laserAt(e: PointerEvent, down: boolean) {
-    const b = slideBox();
-    const p = b ? toSlide(b, e.clientX, e.clientY) : null;
-    if (!p) return laserOff();
+  function sendLaser(p: { x: number; y: number }, down: boolean) {
     pointer = p;
     const now = performance.now();
     // ~50 frames per second is smooth on the projector and under the server's limit.
     if (now - lastSent < 20 && down) return;
     lastSent = now;
     sock?.send({ type: "laser", page: current, x: p.x, y: p.y, down });
+  }
+  function laserAt(e: PointerEvent, down: boolean) {
+    const b = slideBox();
+    const p = b ? toSlide(b, e.clientX, e.clientY) : null;
+    if (!p) return laserOff();
+    sendLaser(p, down);
   }
   function laserOff() {
     if (!pointer) return;
@@ -135,6 +142,7 @@
   // Without the laser, a horizontal swipe on the slide steps.
   let swipe: { x: number; y: number } | null = null;
   function padDown(e: PointerEvent) {
+    if (tilting) return;
     if (laserOn) {
       pad?.setPointerCapture(e.pointerId);
       laserAt(e, true);
@@ -154,6 +162,48 @@
   $effect(() => {
     if (!laserOn) untrack(laserOff);
   });
+
+  // ---- Laser by turning the phone: hold 轉動指向, the dot starts at the centre (lib/slides/tilt.ts) -------------------
+  const canTilt = tiltSupported();
+  let tiltAllowed = false;
+  let tilting = $state(false);
+  let holding = false;
+  let tiltNote = $state<string | null>(null);
+  let stopTilt: (() => void) | null = null;
+  async function tiltDown(e: PointerEvent) {
+    e.preventDefault();
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+    tiltNote = null;
+    holding = true;
+    if (!tiltAllowed) {
+      tiltAllowed = await tiltPermission();
+      if (!tiltAllowed) return void (tiltNote = t("remote.tiltDenied"));
+      // iOS showed its dialog, so the finger is gone: the next hold points.
+      if (!holding) return void (tiltNote = t("remote.tiltAllowed"));
+    }
+    if (!holding) return;
+    laserOn = false;
+    tilting = true;
+    buzz();
+    stopTilt = startTilt(
+      (p) => sendLaser(p, true),
+      () => {
+        tiltNote = t("remote.tiltSilent");
+        tiltUp();
+      },
+    );
+  }
+  function tiltUp() {
+    holding = false;
+    if (!tilting) return;
+    tilting = false;
+    stopTilt?.();
+    stopTilt = null;
+    laserOff();
+  }
+  $effect(() => () => stopTilt?.());
 
   // ---- Timer ---------------------------------------------------------------------------------
   let elapsed = $state(0);
@@ -212,13 +262,52 @@
     } catch {}
   });
 
-  let showPages = $state(false);
-  // 「投影片」｜「提問助手」: the helper stays mounted (it keeps listening) while the slide tab is shown.
-  let tab = $state<"slides" | "ask">("slides");
-  let unseen = $state(0);
+  // ---- Slide size (per phone): large, small beside the page info, or hidden for more notes / answers ---------------
+  type SlideView = "large" | "small" | "off";
+  const VIEWS: SlideView[] = ["large", "small", "off"];
+  const readView = (): SlideView => {
+    try {
+      const v = localStorage.getItem("hub-remote-slide") as SlideView | null;
+      return v && VIEWS.includes(v) ? v : "large";
+    } catch {
+      return "large";
+    }
+  };
+  let view = $state<SlideView>(readView());
   $effect(() => {
-    if (tab === "ask") unseen = 0;
+    try {
+      localStorage.setItem("hub-remote-slide", view);
+    } catch {}
   });
+  const cycleView = () => (view = VIEWS[(VIEWS.indexOf(view) + 1) % VIEWS.length]!);
+
+  // Wide screens (tablets, phones in landscape): 提問助手 is a column beside the notes.
+  // Short screens (phones in landscape) show a large slide small: it would leave no room for the notes.
+  let wide = $state(false);
+  let short = $state(false);
+  $effect(() => {
+    const mq = matchMedia("(min-width: 768px), (orientation: landscape)");
+    const low = matchMedia("(max-height: 560px)");
+    const set = () => ((wide = mq.matches), (short = low.matches));
+    set();
+    mq.addEventListener("change", set);
+    low.addEventListener("change", set);
+    return () => (mq.removeEventListener("change", set), low.removeEventListener("change", set));
+  });
+
+  // 提問助手: opens over part of the notes when an answer arrives; a large slide then shrinks to make room.
+  let askOpen = $state(false);
+  const ask = new AskSession(
+    () => ({ deckId: deck?.deckId ?? null, page: current }),
+    () => (askOpen = true),
+  );
+  $effect(() => () => ask.stop());
+  const shownView = $derived<SlideView>(view === "large" && (short || (!wide && askOpen)) ? "small" : view);
+  $effect(() => {
+    if (shownView === "off") untrack(() => (laserOn = false));
+  });
+
+  let showPages = $state(false);
   // Hardware keyboards / presenter clickers paired with the phone.
   function onKey(e: KeyboardEvent) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -231,6 +320,47 @@
 
 <svelte:head><title>{deck ? `${deck.title} · ` : ""}{t("remote.appName")}</title></svelte:head>
 <svelte:window onkeydown={onKey} />
+
+{#snippet slidePad(cls: string)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    bind:this={pad}
+    class="relative overflow-hidden rounded-2xl border-2 bg-black select-none {cls} {laserOn || tilting ? 'border-danger' : 'border-line'} {laserOn ? 'touch-none' : 'touch-pan-y'}"
+    style="aspect-ratio:{ratio}"
+    onpointerdown={padDown}
+    onpointermove={padMove}
+    onpointerup={padUp}
+    onpointercancel={() => (laserOn ? laserOff() : (swipe = null))}
+    oncontextmenu={(e) => e.preventDefault()}
+  >
+    {#if shown}
+      <img src={shown.full ?? shown.thumb} alt={shown.title ?? t("slides.player.pageAlt", { n: current })} class="size-full object-contain" draggable="false" />
+    {:else}
+      <div class="grid size-full place-items-center text-[44px] font-semibold text-white/80 tabular-nums">{current}</div>
+    {/if}
+    {#if pointer && (laserOn || tilting)}
+      <span class="pointer-events-none absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#ff2828] shadow-[0_0_12px_4px_rgba(255,40,40,.7)]" style="left:{pointer.x * 100}%;top:{pointer.y * 100}%"></span>
+    {/if}
+    {#if laserOn}<span class="pointer-events-none absolute top-2 right-2 rounded-full bg-danger px-2 py-0.5 text-[12px] font-medium text-white">{t("remote.laserHold")}</span>{/if}
+  </div>
+{/snippet}
+
+<!-- Hold to point by turning the phone (works with the slide hidden too). -->
+{#snippet tiltButton(compact: boolean)}
+  <button
+    type="button"
+    class="inline-flex shrink-0 cursor-pointer touch-none items-center justify-center gap-1.5 rounded-xl border text-[14px] font-medium select-none {compact ? 'size-10' : 'min-h-11 flex-1 px-3'} {tilting ? 'border-danger bg-danger text-white' : 'border-line bg-surface-2 text-ink'}"
+    aria-label={t("remote.tilt")}
+    aria-pressed={tilting}
+    onpointerdown={tiltDown}
+    onpointerup={tiltUp}
+    onpointercancel={tiltUp}
+    onlostpointercapture={tiltUp}
+    oncontextmenu={(e) => e.preventDefault()}
+  >
+    <Rotate3d class="size-4.5" />{#if !compact}{tilting ? t("remote.tiltOn") : t("remote.tilt")}{/if}
+  </button>
+{/snippet}
 
 {#if ended}
   <div class="grid min-h-dvh place-items-center bg-canvas px-6">
@@ -251,6 +381,9 @@
             {link === "open" ? t("remote.linked") : link === "connecting" ? t("remote.connecting") : t("remote.reconnecting")}
           </p>
         </div>
+        <button type="button" class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3" aria-label={t(`remote.view.${view}`)} title={t(`remote.view.${view}`)} onclick={cycleView}>
+          {#if view === "large"}<Image class="size-5" />{:else if view === "small"}<ImageMinus class="size-5" />{:else}<ImageOff class="size-5" />{/if}
+        </button>
         <div class="flex items-center rounded-full bg-surface-2 p-0.5">
           <span class="px-2 text-[14px] font-semibold tabular-nums" aria-label={t("remote.timer")}>{clock}</span>
           <button type="button" class="grid size-9 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3" aria-label={running ? t("remote.pause") : t("remote.resume")} onclick={() => (running = !running)}>
@@ -261,80 +394,73 @@
       </div>
     </header>
 
-    <!-- Phones: slide, then notes; tablets / landscape: slide + controls beside the notes. -->
-    <div class="shrink-0 border-b border-line bg-surface px-3 pb-2" role="tablist" aria-label={t("remote.tabAsk")}>
-      <div class="mx-auto grid max-w-5xl grid-cols-2 gap-1 rounded-full bg-surface-2 p-1">
-        {#each [["slides", t("remote.tabSlides")], ["ask", t("remote.tabAsk")]] as [value, label] (value)}
-          <button type="button" role="tab" aria-selected={tab === value} class="relative min-h-10 cursor-pointer rounded-full text-[14px] font-medium {tab === value ? 'bg-surface text-ink shadow-card' : 'text-ink-3'}" onclick={() => (tab = value as "slides" | "ask")}>
-            {label}{#if value === "ask" && unseen}<span class="ml-1.5 inline-grid min-w-5 place-items-center rounded-full bg-danger px-1 text-[11px] leading-5 text-white tabular-nums">{unseen}</span>{/if}
-          </button>
-        {/each}
-      </div>
-    </div>
-
-    <div class="mx-auto min-h-0 w-full max-w-2xl flex-1 overflow-y-auto overscroll-contain p-3 md:p-4 {tab === 'ask' ? '' : 'hidden'}">
-      <AskPanel deckId={deck?.deckId ?? null} page={current} onanswer={() => tab !== "ask" && unseen++} />
-    </div>
-
-    <main class="mx-auto min-h-0 w-full max-w-5xl flex-1 {tab === 'slides' ? 'grid' : 'hidden'} grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden p-3 md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] md:grid-rows-1 md:gap-4 md:p-4 landscape:max-md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] landscape:max-md:grid-rows-1">
-      <section class="flex min-h-0 flex-col gap-2">
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          bind:this={pad}
-          class="relative w-full overflow-hidden rounded-2xl border-2 bg-black select-none {laserOn ? 'border-danger touch-none' : 'border-line touch-pan-y'}"
-          style="aspect-ratio:{ratio}"
-          onpointerdown={padDown}
-          onpointermove={padMove}
-          onpointerup={padUp}
-          onpointercancel={() => (laserOn ? laserOff() : (swipe = null))}
-          oncontextmenu={(e) => e.preventDefault()}
-        >
-          {#if shown}
-            <img src={shown.full ?? shown.thumb} alt={shown.title ?? t("slides.player.pageAlt", { n: current })} class="size-full object-contain" draggable="false" />
-          {:else}
-            <div class="grid size-full place-items-center text-[44px] font-semibold text-white/80 tabular-nums">{current}</div>
-          {/if}
-          {#if pointer && laserOn}
-            <span class="pointer-events-none absolute size-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#ff2828] shadow-[0_0_12px_4px_rgba(255,40,40,.7)]" style="left:{pointer.x * 100}%;top:{pointer.y * 100}%"></span>
-          {/if}
-          {#if laserOn}<span class="pointer-events-none absolute top-2 right-2 rounded-full bg-danger px-2 py-0.5 text-[12px] font-medium text-white">{t("remote.laserHold")}</span>{/if}
-        </div>
-        <p class="flex min-w-0 items-baseline gap-2 px-0.5" aria-live="polite">
-          <span class="shrink-0 text-[15px] font-semibold tabular-nums">{count ? `${current} / ${count}` : current}</span>
-          {#if next}<span class="min-w-0 truncate text-[12.5px] text-ink-3">{t("remote.next")}：{next.title ?? t("remote.page", { n: next.index })}</span>{/if}
-        </p>
-        <div class="flex items-center gap-2">
-          <Button variant={laserOn ? "primary" : "secondary"} class="min-h-11 flex-1" aria-pressed={laserOn} onclick={() => (laserOn = !laserOn)}><MousePointer2 />{t("remote.laser")}</Button>
-          <Button variant="secondary" class="min-h-11 flex-1" disabled={!pages.length} onclick={() => (showPages = true)}><LayoutGrid />{t("remote.pages")}</Button>
-        </div>
-        {#if next}
-          <!-- Tablets / desktop: the next slide itself. -->
-          <img src={next.thumb} alt={t("remote.next")} class="hidden h-20 self-start rounded-lg border border-line md:block" style="aspect-ratio:{ratio}" />
+    <!-- One screen: slide (large / small / hidden) and notes, 提問助手 under them (phones) or beside them (wide). -->
+    <main class="mx-auto flex min-h-0 w-full max-w-6xl flex-1 gap-2.5 overflow-hidden p-2.5 md:gap-4 md:p-4 {wide ? 'flex-row' : 'flex-col'}">
+      <div class="flex min-h-0 min-w-0 flex-col gap-2 {wide ? 'flex-[1.25]' : 'flex-1'}">
+        {#if shownView === "large"}
+          <section class="flex shrink-0 flex-col gap-2">
+            {@render slidePad("w-full")}
+            <p class="flex min-w-0 items-baseline gap-2 px-0.5" aria-live="polite">
+              <span class="shrink-0 text-[15px] font-semibold tabular-nums">{count ? `${current} / ${count}` : current}</span>
+              {#if next}<span class="min-w-0 truncate text-[12.5px] text-ink-3">{t("remote.next")}：{next.title ?? t("remote.page", { n: next.index })}</span>{/if}
+            </p>
+            <div class="flex items-center gap-2">
+              <Button variant={laserOn ? "primary" : "secondary"} class="min-h-11 flex-1" aria-pressed={laserOn} onclick={() => (laserOn = !laserOn)}><MousePointer2 />{t("remote.laser")}</Button>
+              {#if canTilt}{@render tiltButton(false)}{/if}
+              <Button variant="secondary" size="icon" class="size-11" aria-label={t("remote.pages")} disabled={!pages.length} onclick={() => (showPages = true)}><LayoutGrid /></Button>
+            </div>
+          </section>
+        {:else if shownView === "small"}
+          <section class="grid shrink-0 grid-cols-[minmax(0,42%)_minmax(0,1fr)] gap-2.5">
+            {@render slidePad("w-full self-start")}
+            <div class="flex min-w-0 flex-col gap-1.5">
+              <p class="text-[15px] font-semibold tabular-nums" aria-live="polite">{count ? `${current} / ${count}` : current}</p>
+              {#if next}<p class="line-clamp-2 text-[12px] text-ink-3">{t("remote.next")}：{next.title ?? t("remote.page", { n: next.index })}</p>{/if}
+              <div class="mt-auto flex items-center gap-1.5">
+                <Button variant={laserOn ? "primary" : "secondary"} size="icon" class="size-10" aria-label={t("remote.laser")} aria-pressed={laserOn} onclick={() => (laserOn = !laserOn)}><MousePointer2 /></Button>
+                {#if canTilt}{@render tiltButton(true)}{/if}
+                <Button variant="secondary" size="icon" class="size-10" aria-label={t("remote.pages")} disabled={!pages.length} onclick={() => (showPages = true)}><LayoutGrid /></Button>
+              </div>
+            </div>
+          </section>
+        {:else}
+          <section class="flex shrink-0 items-center gap-2 px-0.5">
+            <p class="min-w-0 flex-1 truncate text-[13px] text-ink-3" aria-live="polite">
+              <span class="mr-1.5 text-[15px] font-semibold text-ink tabular-nums">{count ? `${current} / ${count}` : current}</span>{#if next}{t("remote.next")}：{next.title ?? t("remote.page", { n: next.index })}{/if}
+            </p>
+            {#if canTilt}{@render tiltButton(true)}{/if}
+            <Button variant="secondary" size="icon" class="size-10" aria-label={t("remote.pages")} disabled={!pages.length} onclick={() => (showPages = true)}><LayoutGrid /></Button>
+          </section>
         {/if}
-      </section>
+        {#if tiltNote}<p class="shrink-0 px-0.5 text-[12.5px] text-ink-3" role="status">{tiltNote}</p>{/if}
 
-      <section class="flex min-h-0 flex-col rounded-2xl border border-line bg-surface" aria-label={t("slides.player.notes")}>
-        <div class="flex shrink-0 items-center gap-1 border-b border-line px-3 py-1.5">
-          <p class="min-w-0 flex-1 truncate text-[13px] font-medium text-ink-2">{shown?.title ?? t("slides.player.notes")}</p>
-          <button type="button" class="grid size-9 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 disabled:opacity-40" aria-label={t("remote.smaller")} disabled={notesSize <= 13} onclick={() => (notesSize -= 1)}><Minus class="size-4" /></button>
-          <button type="button" class="grid size-9 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 disabled:opacity-40" aria-label={t("remote.larger")} disabled={notesSize >= 28} onclick={() => (notesSize += 1)}><Plus class="size-4" /></button>
-        </div>
-        <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 leading-relaxed [overflow-wrap:anywhere] text-ink" style="font-size:{notesSize}px">
-          {#if notes}
-            <div class="speaker-notes">{@html notes}</div>
-          {:else if shown?.notes}
-            <p class="whitespace-pre-wrap">{shown.notes.text}</p>
-          {:else}
-            <p class="text-[14px] text-ink-3">{manifest ? t("slides.player.noNotes") : t("remote.noPages")}</p>
-          {/if}
-        </div>
-      </section>
+        <section class="flex min-h-24 flex-1 flex-col rounded-2xl border border-line bg-surface" aria-label={t("slides.player.notes")}>
+          <div class="flex shrink-0 items-center gap-1 border-b border-line px-3 py-1">
+            <p class="min-w-0 flex-1 truncate text-[13px] font-medium text-ink-2">{shown?.title ?? t("slides.player.notes")}</p>
+            <button type="button" class="grid size-9 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 disabled:opacity-40" aria-label={t("remote.smaller")} disabled={notesSize <= 13} onclick={() => (notesSize -= 1)}><Minus class="size-4" /></button>
+            <button type="button" class="grid size-9 cursor-pointer place-items-center rounded-full text-ink-2 hover:bg-surface-3 disabled:opacity-40" aria-label={t("remote.larger")} disabled={notesSize >= 28} onclick={() => (notesSize += 1)}><Plus class="size-4" /></button>
+          </div>
+          <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 leading-relaxed [overflow-wrap:anywhere] text-ink" style="font-size:{notesSize}px">
+            {#if notes}
+              <div class="speaker-notes">{@html notes}</div>
+            {:else if shown?.notes}
+              <p class="whitespace-pre-wrap">{shown.notes.text}</p>
+            {:else}
+              <p class="text-[14px] text-ink-3">{manifest ? t("slides.player.noNotes") : t("remote.noPages")}</p>
+            {/if}
+          </div>
+        </section>
+      </div>
+
+      <div class="flex min-h-0 min-w-0 flex-col {wide ? 'flex-1' : askOpen ? 'h-[55%] shrink-0' : 'shrink-0'}">
+        <AskDock session={ask} {wide} bind:open={askOpen} disabled={!deck} />
+      </div>
     </main>
 
     <nav class="shrink-0 border-t border-line bg-surface px-3 pt-2.5 pb-[calc(10px+env(safe-area-inset-bottom))]" aria-label={t("remote.controls")}>
       <div class="mx-auto grid max-w-5xl grid-cols-[1fr_1.6fr] gap-2.5">
-        <button type="button" class="flex min-h-16 cursor-pointer items-center justify-center gap-1.5 rounded-2xl border border-line bg-surface-2 text-[16px] font-semibold text-ink active:bg-surface-3 disabled:opacity-40" disabled={!canPrev} onclick={() => step(-1)}><ChevronLeft class="size-6" />{t("remote.prev")}</button>
-        <button type="button" class="flex min-h-16 cursor-pointer items-center justify-center gap-1.5 rounded-2xl bg-ink text-[17px] font-semibold text-canvas active:opacity-85 disabled:opacity-40" disabled={!canNext} onclick={() => step(1)}>{t("remote.nextBtn")}<ChevronRight class="size-6" /></button>
+        <button type="button" class="flex min-h-16 cursor-pointer items-center justify-center gap-1.5 rounded-2xl border [@media(max-height:560px)]:min-h-12 border-line bg-surface-2 text-[16px] font-semibold text-ink active:bg-surface-3 disabled:opacity-40" disabled={!canPrev} onclick={() => step(-1)}><ChevronLeft class="size-6" />{t("remote.prev")}</button>
+        <button type="button" class="flex min-h-16 cursor-pointer items-center justify-center gap-1.5 rounded-2xl bg-ink [@media(max-height:560px)]:min-h-12 text-[17px] font-semibold text-canvas active:opacity-85 disabled:opacity-40" disabled={!canNext} onclick={() => step(1)}>{t("remote.nextBtn")}<ChevronRight class="size-6" /></button>
       </div>
     </nav>
   </div>
